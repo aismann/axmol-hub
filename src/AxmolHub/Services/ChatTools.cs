@@ -43,7 +43,7 @@ internal static class ChatTools
     {
         "get_projects" or "get_engines" or "get_toolchain_status" or "read_file" or "memory_read"
             or "list_sessions" or "read_session"
-            or "search_text" or "list_directory" or "find_files"
+            or "search_text" or "list_directory" or "find_files" or "workspace_map"
             => ToolRisk.ReadOnly,
         "file_write" or "send_to_session" => ToolRisk.WorkspaceWrite,
         // Decided by one method rather than an inline ternary, because there are now two things that can make a
@@ -192,6 +192,9 @@ internal static class ChatTools
             AIFunctionFactory.Create(tools.SearchText, Options("search_text")),
             AIFunctionFactory.Create(tools.ListDirectory, Options("list_directory")),
             AIFunctionFactory.Create(tools.FindFiles, Options("find_files")),
+            // The method is MapWorkspace because WorkspaceMap is the Core class it delegates to; the name the
+            // model sees is the tool's own, and AIFunctionFactory would have taken the method name otherwise.
+            AIFunctionFactory.Create(tools.MapWorkspace, Options("workspace_map")),
             AIFunctionFactory.Create(tools.MemoryRead, Options("memory_read")),
             AIFunctionFactory.Create(tools.ListSessions, Options("list_sessions")),
             AIFunctionFactory.Create(tools.ReadSession, Options("read_session")),

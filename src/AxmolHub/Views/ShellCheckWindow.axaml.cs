@@ -5067,10 +5067,10 @@ public partial class ShellCheckWindow : Window
             // tool that has to ask in every mode is the bug this catches, and it is invisible at compile time
             // because registering it in ReadOnlyTools and mis-tiering it in RiskOf both build fine.
             var looksAsk = false;
-            foreach (var look in new[] { "search_text", "list_directory", "find_files" })
+            foreach (var look in new[] { "search_text", "list_directory", "find_files", "workspace_map" })
             foreach (var mode in new[] { ToolApprovalModes.Ask, ToolApprovalModes.Auto, ToolApprovalModes.Full })
                 looksAsk |= ToolApprovalPolicy.RequiresApproval(mode, ChatTools.RiskOf(look, null, sandbox));
-            Check(!looksAsk, "检索三件套在三个审批档位上都不弹卡，探索陌生仓库不再一路点卡片");
+            Check(!looksAsk, "探索四件套（检索、列目录、找文件、workspace_map）在三个审批档位上都不弹卡，陌生仓库不用一路点卡片");
             Check(ChatTools.RiskOf("memory_write", """{"scope":"project"}""", sandbox) == ToolRisk.AssistantNote
                   && ChatTools.RiskOf("memory_write", """{"scope":"workspace"}""", sandbox) == ToolRisk.AssistantNote
                   && ChatTools.RiskOf("memory_write", """{"scope":"global"}""", sandbox) == ToolRisk.WorkspaceWrite
@@ -5108,7 +5108,7 @@ public partial class ShellCheckWindow : Window
                 new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "schema", [], null, null)));
             var schema = string.Join("\n", agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
                 .Select(tool => tool.JsonSchema.GetRawText()));
-            Check(agentTools.Count == 18
+            Check(agentTools.Count == 19
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Select(tool => tool.Name)
                       .All(name => name.Contains('_', StringComparison.Ordinal))
                   && schema.Contains("old_string") && schema.Contains("new_string")

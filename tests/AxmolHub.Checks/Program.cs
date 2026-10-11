@@ -3655,6 +3655,178 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception("find_files found nothing and said something else.");
     Console.WriteLine("PASS: search_text, list_directory and find_files look around without a shell and refuse in sentences.");
 
+    // ── workspace_map: what a directory IS, before anything is read out of it ──
+    // The tools above answer questions about contents. None of them answers "what is this tree", and a model that
+    // has to grep its way there spends the whole turn doing it. What is asserted here is the shape it reports, the
+    // two claims it must not confuse (a plain folder is not a defect; an unreadable repository is not "no
+    // repository"), and that it counts source rather than build output.
+    var mapTree = Path.Combine(workspace, "map-tree");
+    Directory.CreateDirectory(Path.Combine(mapTree, "src", "Core"));
+    Directory.CreateDirectory(Path.Combine(mapTree, "src", "App"));
+    Directory.CreateDirectory(Path.Combine(mapTree, "bin", "Debug"));
+    File.WriteAllText(Path.Combine(mapTree, "Tree.sln"), "Microsoft Visual Studio Solution File\n");
+    File.WriteAllText(Path.Combine(mapTree, "src", "Core", "Core.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>");
+    File.WriteAllText(Path.Combine(mapTree, "src", "App", "App.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0-windows</TargetFramework>"
+        + "</PropertyGroup><ItemGroup><ProjectReference Include=\"..\\Core\\Core.csproj\" /></ItemGroup></Project>");
+    File.WriteAllText(Path.Combine(mapTree, "src", "App", "Program.cs"), "internal static class Program { }\n");
+    File.WriteAllText(Path.Combine(mapTree, "bin", "Debug", "App.dll"), "not source at all\n");
+
+    var mapped = await tools.MapWorkspace("map-tree");
+    // The solution first: it is the answer to "what is this tree", and the projects below it are the answer after.
+    if (!mapped.Contains("Tree.sln [solution]", StringComparison.Ordinal)
+        || !mapped.Contains("App.csproj [csproj]", StringComparison.Ordinal)
+        || !mapped.Contains("net8.0-windows", StringComparison.Ordinal)
+        || !mapped.Contains("refs: ..\\Core\\Core.csproj", StringComparison.Ordinal)
+        || !mapped.Contains("Core.csproj [csproj]", StringComparison.Ordinal))
+        throw new Exception($"A .NET tree did not map to its units and references:{Environment.NewLine}{mapped}");
+    // Build output is not part of what a person wrote. Pinned three ways because the obvious needle is vacuous: a
+    // dll never becomes a build unit, so "App.dll is not named" would pass with the skip list deleted. What a walk
+    // into bin\ actually changes is the file count, the honest sentence about what was left out, and a directory
+    // row that would rank a compiled artifact above the manifests it came from. The fixture lives under an ignored
+    // path, so this is the walk branch; git's branch is pinned on a real repository further down.
+    if (!mapped.Contains("Files: 4 files", StringComparison.Ordinal))
+        throw new Exception($"The map counted build output among the files:{Environment.NewLine}{mapped}");
+    if (!mapped.Contains("left out", StringComparison.Ordinal))
+        throw new Exception($"The map did not say which source bounded its file list:{Environment.NewLine}{mapped}");
+    if (mapped.Contains("\n  bin:", StringComparison.Ordinal))
+        throw new Exception($"bin/ was reported as a directory of the tree:{Environment.NewLine}{mapped}");
+    if (!mapped.Contains("Program.cs", StringComparison.Ordinal))
+        throw new Exception($"The map missed the entry point it can name:{Environment.NewLine}{mapped}");
+
+    // Which side of the git line is correct depends on where this checkout lives — anything inside the repository
+    // really is a repository — so the expectation is asked of git rather than assumed. That is the only way this
+    // cell says something on both a developer's machine and a runner's.
+    var gitSaysRepo = CommandShells.Resolve("git") is { } gitTool
+        && (await new ProcessRunner(_ => { }).RunAsync(gitTool, ["rev-parse", "--is-inside-work-tree"],
+            Path.GetFullPath(mapTree), timeout: TimeSpan.FromSeconds(20))).ExitCode == 0;
+    if (gitSaysRepo != mapped.Contains("Git: a repository", StringComparison.Ordinal))
+        throw new Exception($"The map's git line disagreed with git itself (git answered inside-a-work-tree: {gitSaysRepo})."
+                            + $"{Environment.NewLine}{mapped}");
+
+    // The other source, on a repository this check builds rather than the one its own scratch directory happens to
+    // sit inside. Two facts only git's list can give: what a repository ignores stays out even though it is on
+    // disk, and what is new since the last commit stays in even though no commit has heard of it. A tracked file
+    // that has been deleted is the one path both sources must not count, and has to say why it is missing.
+    if (CommandShells.Resolve("git") is { } listGit)
+    {
+        // Built in the OS temp directory, not under this group's own scratch root: git's object files are
+        // read-only, and a red run that leaves a repository behind makes the *group's* cleanup throw before anyone
+        // reads the assertion that failed. A directory outside the workspace has to be mapped through its own
+        // scope, because a tool may not climb out of the workspace it was given.
+        var repoTree = Path.Combine(Path.GetTempPath(), $"hub-map-repo-{Guid.NewGuid():N}");
+        static void WipeRepository(string directory)
+        {
+            foreach (var leftover in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+                File.SetAttributes(leftover, FileAttributes.Normal);
+            Directory.Delete(directory, recursive: true);
+        }
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(repoTree, "src", "Util"));
+            Directory.CreateDirectory(Path.Combine(repoTree, "bin", "Debug"));
+            File.WriteAllText(Path.Combine(repoTree, ".gitignore"), "bin/\n");
+            File.WriteAllText(Path.Combine(repoTree, "App.csproj"),
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>");
+            File.WriteAllText(Path.Combine(repoTree, "src", "Util", "Util.csproj"), "<Project/>\n");
+            File.WriteAllText(Path.Combine(repoTree, "Gone.csproj"), "<Project/>\n");
+            File.WriteAllText(Path.Combine(repoTree, "bin", "Debug", "App.dll"), "ignored, and on disk\n");
+            var repoRunner = new ProcessRunner(_ => { });
+            async Task RepoGit(params string[] arguments)
+            {
+                var answer = await repoRunner.RunAsync(listGit,
+                    ["-c", "core.quotepath=false", "--no-optional-locks", "--no-pager", .. arguments],
+                    repoTree, timeout: TimeSpan.FromSeconds(20));
+                if (answer.ExitCode != 0)
+                    throw new Exception($"git {string.Join(" ", arguments)} failed in the map fixture: {answer.Error}");
+            }
+            await RepoGit("init", "-q");
+            await RepoGit("add", "-A");
+            // Named identities, as the repository fixture in the workspace group does: a check that commits must
+            // not depend on whose laptop it ran on.
+            await RepoGit("-c", "user.name=hub-check", "-c", "user.email=hub@example.invalid", "commit", "-q",
+                "-m", "fixture: baseline");
+            File.Delete(Path.Combine(repoTree, "Gone.csproj"));
+            File.WriteAllText(Path.Combine(repoTree, "Program.cs"), "// written after the commit, never committed\n");
+
+            var repoMap = await new WorkspaceTools(new WorkspaceToolScope(repoTree, guards, dataRoot, "map-repo",
+                [], null, null)).MapWorkspace("");
+            // Four: the two committed projects, the ignore file, and the new entry point. Not three, which is what
+            // a list of tracked files alone would give, and not five, which is what a walk of the disk would give.
+            if (!repoMap.Contains("git's list", StringComparison.Ordinal))
+                throw new Exception($"A repository's own file list was not the map's source:{Environment.NewLine}{repoMap}");
+            if (!repoMap.Contains("Files: 4 files", StringComparison.Ordinal))
+                throw new Exception($"A repository map counted the wrong files:{Environment.NewLine}{repoMap}");
+            if (!repoMap.Contains("Probable entry points: Program.cs", StringComparison.Ordinal))
+                throw new Exception($"A file newer than the last commit was not on the map:{Environment.NewLine}{repoMap}");
+            if (!repoMap.Contains("Gone.csproj", StringComparison.Ordinal)
+                || !repoMap.Contains("1 path(s) git lists but does not have on disk", StringComparison.Ordinal))
+                throw new Exception($"A deleted-but-tracked project was counted, or its absence went unexplained:"
+                                    + $"{Environment.NewLine}{repoMap}");
+            if (repoMap.Contains("\n  bin:", StringComparison.Ordinal))
+                throw new Exception($"An ignored bin/ still reached a git-sourced map:{Environment.NewLine}{repoMap}");
+        }
+        finally
+        {
+            if (Directory.Exists(repoTree)) WipeRepository(repoTree);
+        }
+    }
+    else
+    {
+        Console.WriteLine("SKIP: no git on PATH — the map's git-sourced branch cannot be shown on this host.");
+    }
+
+    // One text-level rule and no more: references are what a manifest states about itself. An Axmol game project is
+    // a CMake tree like any other, which is why the generic scanner needs no engine-shaped branch.
+    var mapGame = Path.Combine(workspace, "map-game");
+    Directory.CreateDirectory(Path.Combine(mapGame, "Classes"));
+    File.WriteAllText(Path.Combine(mapGame, "CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.4)\nproject(MyGame)\nadd_subdirectory(Classes)\n");
+    File.WriteAllText(Path.Combine(mapGame, "Classes", "AppDelegate.cpp"), "// entry\n");
+    var gameMap = await tools.MapWorkspace("map-game");
+    if (!gameMap.Contains("[cmake]", StringComparison.Ordinal) || !gameMap.Contains("MyGame", StringComparison.Ordinal)
+        || !gameMap.Contains("refs: Classes", StringComparison.Ordinal))
+        throw new Exception($"A CMake tree did not map its project or its subdirectory:{Environment.NewLine}{gameMap}");
+
+    // The Hub-specific attribute, said as an attribute of the same directory. And a workspace that is not a
+    // registered project gets no such line: an ordinary folder is a complete answer, not a missing one.
+    var attributed = await new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "map-project",
+        [], null, null, Projects: [new WorkspaceProject(mapTree, "MapTree", "3.0.0", "windows-x64", "Debug")]))
+        .MapWorkspace("map-tree");
+    if (!attributed.Contains("Also a Hub project: MapTree, engine 3.0.0, target windows-x64/Debug",
+            StringComparison.Ordinal))
+        throw new Exception($"A registered project was not stated as an attribute of its workspace:{Environment.NewLine}{attributed}");
+    var unattributed = await new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "map-other",
+        [], null, null, Projects: [new WorkspaceProject(mapTree, "MapTree", "3.0.0", "windows-x64", "Debug")]))
+        .MapWorkspace("map-game");
+    if (unattributed.Contains("Also a Hub project", StringComparison.Ordinal))
+        throw new Exception("A folder that is not a registered project was labelled one anyway.");
+
+    // No manifest, no units — and the sentence has to stop short of telling the model the tree does not build,
+    // because a script it did not look for may say otherwise.
+    var naked = Path.Combine(workspace, "map-naked");
+    Directory.CreateDirectory(naked);
+    File.WriteAllText(Path.Combine(naked, "notes.txt"), "nothing here is a manifest\n");
+    var nakedMap = await tools.MapWorkspace("map-naked");
+    if (!nakedMap.Contains("Build units: none found by manifest", StringComparison.Ordinal)
+        || !nakedMap.Contains("read the directory list", StringComparison.Ordinal))
+        throw new Exception($"A folder with no manifest was reported as a defect:{Environment.NewLine}{nakedMap}");
+
+    // The list is bounded and says so. Thirty projects is a real monorepo, and a map that truncates in silence is
+    // the one thing a model cannot plan around.
+    var many = Path.Combine(workspace, "map-many");
+    for (var unit = 0; unit < 30; unit++)
+        Directory.CreateDirectory(Path.Combine(many, $"p{unit:D2}"));
+    for (var unit = 0; unit < 30; unit++)
+        File.WriteAllText(Path.Combine(many, $"p{unit:D2}", $"Unit{unit:D2}.csproj"), "<Project/>\n");
+    var manyMap = await tools.MapWorkspace("map-many");
+    if (!manyMap.Contains("Build units (30)", StringComparison.Ordinal)
+        || !manyMap.Contains("more manifests not listed", StringComparison.Ordinal))
+        throw new Exception($"Thirty units were not counted and cut in words:{Environment.NewLine}{manyMap}");
+    Console.WriteLine("PASS: workspace_map says what a directory is — units and their references, the project and "
+                      + "git attributes of the same workspace, and where its own scan stopped.");
+
     // ── the frozen card text for every tool ──
     string Preview(string name, string json)
         => ToolPreviews.PreviewFor(name, json, scope, [workspace]);
@@ -3731,7 +3903,8 @@ if (args.Contains("--check-ai-tools"))
                  ("memory_read", tools.MemoryRead), ("memory_write", tools.MemoryWrite),
                  ("search_text", tools.SearchText), ("list_directory", tools.ListDirectory),
                  ("find_files", tools.FindFiles), ("capture_screen", tools.CaptureScreen),
-                 // web_fetch binds here too, but against a host that answers from memory: the eleven bodies this
+                 ("workspace_map", tools.MapWorkspace),
+                 // web_fetch binds here too, but against a host that answers from memory: the twelve bodies this
                  // loop binds are the ones asserted without a network, and the page-fetch tool belongs to that set
                  // for exactly the reason the capture tool does — the decision is Core's, the socket is somebody
                  // else's, and the stub is what makes the branches reachable at all.
@@ -3764,7 +3937,15 @@ if (args.Contains("--check-ai-tools"))
     }));
     if (!Convert.ToString(boundSearch)!.Contains("probe/app.cpp:3:", StringComparison.Ordinal))
         throw new Exception($"search_text did not bind the parameter names its schema advertises ({boundSearch}).");
-    Console.WriteLine("PASS: all eleven tools bind, and the schema names are the names a call is accepted by.");
+    // The newest tool in the set is bound the same way, because a name the schema advertises and the invocation
+    // rejects is exactly the failure that reads like a model bug rather than a registration one.
+    var boundMap = await bound["workspace_map"].InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+    {
+        ["path"] = "map-tree",
+    }));
+    if (!Convert.ToString(boundMap)!.Contains("Build units", StringComparison.Ordinal))
+        throw new Exception($"workspace_map did not bind the parameter names its schema advertises ({boundMap}).");
+    Console.WriteLine("PASS: all twelve tools bind, and the schema names are the names a call is accepted by.");
 
     // ── capture_screen: target matching, black frames not sent, normal frames landing in the session directory ──
     // The tool's every branch is asserted against a host that draws nothing, because the decision — which window,

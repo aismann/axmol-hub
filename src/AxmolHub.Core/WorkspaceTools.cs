@@ -24,6 +24,9 @@ namespace AxmolHub.Core;
 /// <param name="RecordFrames">Where a captured frame is handed to the app so the result turn can carry it. The
 /// turn is written by the app, not by this class, and the call id never reaches a tool body — so the frame goes
 /// out through the request's own scope, which is one request and one conversation by construction.</param>
+/// <param name="Projects">The directories Hub also knows as registered Axmol game projects, so a workspace map can
+/// state that attribute. Null in a build with no snapshot, which the map reads as "nothing extra is known" rather
+/// than as "this is not a project" — the two are different claims and only one of them is this build's to make.</param>
 /// <param name="Web">The host's side of an outbound fetch: the setting that allows it and the socket that makes it.
 /// Null in a scope with nothing to send with — <c>web_fetch</c> then says so out loud rather than pretending the
 /// address was bad, which is the only way a zero-network self-check and a real Hub answer the same question.</param>
@@ -39,7 +42,8 @@ public sealed record WorkspaceToolScope(
     CrossSessionBridge? CrossSession = null,
     ScreenCaptureBridge? Screen = null,
     Action<IReadOnlyList<ChatImage>>? RecordFrames = null,
-    WebBridge? Web = null)
+    WebBridge? Web = null,
+    IReadOnlyList<WorkspaceProject>? Projects = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
@@ -833,6 +837,25 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             .Append($"\n{found.Count} file(s).");
         if (found.Count >= MaxFoundFiles) builder.Append(" Cut at the limit — narrow with path.");
         return builder.ToString();
+    }
+
+    [Description("Ask what a directory IS before reading what is in it: whether this workspace is also a registered "
+                 + "Hub project, whether it is a git repository and on what branch, which build units it holds and "
+                 + "how they reference each other, what each top-level directory contains, and which parts the scan "
+                 + "left out. Reads listings and manifest files only — no symbols, no index — and changes nothing. "
+                 + "Make this the first call in a tree you have not seen; use search_text and read_file for "
+                 + "questions about contents.")]
+    public async Task<string> MapWorkspace(
+        [Description("Directory to map, relative to the workspace. Empty or \".\" means the workspace itself.")]
+        string path = "",
+        CancellationToken cancellationToken = default)
+    {
+        // Inside the same guard as the listing tools: a map walks directories the session may already list, so it
+        // reaches nowhere new in any approval mode, and it is registered as ReadOnly for the reason search_text
+        // is — exploration that costs a card gets replaced by a grep inside a command that costs nothing.
+        var directory = WorkspacePaths.ResolveDirectory(context.WorkspaceRoot, path, context.Guards);
+        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Relative, path);
+        return await WorkspaceMap.ReadAsync(context, directory.Full, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Builds a matcher for one glob, or null when the glob is empty (no filter) or cannot be used.
