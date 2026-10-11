@@ -10422,6 +10422,137 @@ public partial class ShellCheckWindow : Window
         Check(!shell.TransferSlotVisibleForCheck && !shell.QueuePopupOpenForCheck,
             "清掉脚本队列与脚本更新后下载槽熄灭、面板收起");
 
+        // --- 5.1c Retry, dismiss, and the download the settings card used to own ---
+        // The three things this round added, asserted where they are decided: the pure function for which
+        // branch wins, the live strip and popover for what the user can actually press.
+        var retryWord = HubTexts.Get("TransferRetry", HubStrings.Language);
+        var dismissWord = HubTexts.Get("TransferDismiss", HubStrings.Language);
+        var cancelWord = HubTexts.Get("Cancel", HubStrings.Language);
+
+        // A failure outranks an offer: the strip that lights 「下载更新」 over a download that just died
+        // would be asking for more work while hiding the work that failed.
+        var outrank = new[] { Waiting("9.9.9") };
+        outrank[0].Fail("fixture: digest mismatch");
+        Check(MainWindow.TransferSlotStateFor(outrank, UpdateService.DownloadState.None,
+                    canStartDownload: true, armed: false).Action == MainWindow.TransferSlotAction.OpenQueue,
+            "有失败行时下载动作不抢槽，失败先要被人看见");
+
+        var downloadOffer = MainWindow.TransferSlotStateFor(
+            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.None, canStartDownload: true, armed: false);
+        Check(downloadOffer.Visible && downloadOffer.Action == MainWindow.TransferSlotAction.Download
+              && downloadOffer.Label == HubTexts.Get("TransferDownloadAction", HubStrings.Language),
+            "发现新版本且没开自动下载时，槽就是下载动作（实际 " + downloadOffer.Label + "）");
+
+        // Live, and with the real fetch refused: asking Velopack here would reach GitHub.
+        var autoDownloadWas = UpdateService.Instance.AutoDownload;
+        var downloaded = "";
+        UpdateService.Instance.DownloadOverrideForCheck = update => downloaded = update.TargetFullRelease.Version.ToString();
+        UpdateService.Instance.AutoDownload = false;
+        UpdateService.Instance.SetPendingForCheck(pendingUpdate);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.TransferSlotVisibleForCheck && shell.TransferSlotAccentForCheck
+              && shell.TransferSlotTextForCheck == HubTexts.Get("TransferDownloadAction", HubStrings.Language),
+            "自动下载关着时状态条真的亮成下载动作（实际 " + shell.TransferSlotTextForCheck + "）");
+
+        shell.ClickTransferSlotForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(downloaded == "9.9.9" && TransferQueue.Instance.Items.Count == 0 && !shell.RestartArmedForCheck,
+            "点下载动作只发起那一次下载，不入队也不武装重启（实际版本 " + downloaded + "）");
+
+        // With auto-download back on nobody needs to be asked: the transfer starts by itself, so the offer
+        // would be a second button for the same act.
+        UpdateService.Instance.AutoDownload = true;
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(!shell.TransferSlotVisibleForCheck,
+            "自动下载开着时槽不亮下载，因为那件事已经在跑");
+        UpdateService.Instance.AutoDownload = autoDownloadWas;
+        UpdateService.Instance.DownloadOverrideForCheck = null;
+        UpdateService.Instance.ClearForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
+        // A failed row is the one settled state with answers left to give, and the retry has to be the same
+        // row: a second row for one download would make 「取消这个」 ambiguous.
+        var retryIdentity = "engine:install:9.9.2";
+        var firstAttempt = TransferQueue.Instance.EnqueueForCheck(retryIdentity, "TransferEnginePackage", "9.9.2")
+            ?? throw new InvalidOperationException("fixture: the retry transfer was refused");
+        var firstCompletion = firstAttempt.Completion;
+        TransferQueue.Instance.FinishTransferForCheck(retryIdentity, TransferQueue.Phase.Failed, "fixture: 503");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        shell.OpenQueuePopupForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.QueueRowCountForCheck == 1 && shell.QueueRowActionsForCheck == retryWord + "+" + dismissWord,
+            "失败的那一行给的是重试和忽略，不是取消（实际 " + shell.QueueRowActionsForCheck + "）");
+
+        // The trap the retry could walk into: a completion source is single-shot, so reusing it hands an
+        // awaiting caller an already-settled task and 「还在下载」 reads as 「装完了」.
+        shell.ClickQueueRowActionForCheck(retryIdentity, retryWord);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(firstCompletion.IsCompleted && !firstAttempt.Completion.IsCompleted
+              && firstAttempt.State is TransferQueue.Phase.Queued or TransferQueue.Phase.Transferring
+              && shell.QueueRowCountForCheck == 1 && shell.QueueRowActionsForCheck == cancelWord,
+            "重试让同一行重新计时，旧的完成承诺不再算数（实际 " + firstAttempt.State + "）");
+
+        TransferQueue.Instance.FinishTransferForCheck(retryIdentity, TransferQueue.Phase.Failed, "fixture: 503 again");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.QueueRowActionsForCheck == retryWord + "+" + dismissWord,
+            "又失败一次，行仍然给那两条路（实际 " + shell.QueueRowActionsForCheck + "）");
+        shell.ClickQueueRowActionForCheck(retryIdentity, dismissWord);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(TransferQueue.Instance.Items.Count == 0 && shell.QueueRowCountForCheck == 0
+              && !shell.TransferSlotVisibleForCheck,
+            "忽略之后这一行不再报，槽也跟着熄灭");
+
+        var dupIdentity = "engine:install:9.9.1";
+        TransferQueue.Instance.EnqueueForCheck(dupIdentity, "TransferEnginePackage", "9.9.1");
+        TransferQueue.Instance.FinishTransferForCheck(dupIdentity, TransferQueue.Phase.Failed, "fixture: first attempt");
+        TransferQueue.Instance.EnqueueForCheck(dupIdentity, "TransferEnginePackage", "9.9.1");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(TransferQueue.Instance.Items.Count(item => item.Identity == dupIdentity) == 1,
+            "同一次下载的旧失败行让位给新尝试，不并列成两行（实际 "
+            + TransferQueue.Instance.Items.Count(item => item.Identity == dupIdentity) + " 行）");
+
+        // An estimate is not a measurement. The row's measure column stays the transport's own number, and
+        // what its owner guessed lives in the tooltip — the shape the settings card's bar used to have.
+        var estimateIdentity = "hub:update:8.8.8";
+        var estimateRow = TransferQueue.Instance.EnqueueForCheck(estimateIdentity, "TransferHubUpdate", "8.8.8")
+            ?? throw new InvalidOperationException("fixture: the estimate transfer was refused");
+        estimateRow.ReportPercent(42);
+        estimateRow.ReportEstimate(1_900_000, 3.5 * 1024 * 1024);
+        // The rows only exist while the popover is open, and dismissing the last one closed it: reopen so
+        // this reads the live row rather than a stale one left over from the previous cell.
+        shell.OpenQueuePopupForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var rowReading = shell.QueueRowMeasureForCheck(estimateIdentity);
+        Check(rowReading.EndsWith("|42%", StringComparison.Ordinal)
+              && rowReading.StartsWith(HubTexts.Get("TransferEstimateSize", HubStrings.Language), StringComparison.Ordinal)
+              && rowReading.Contains("MB/s", StringComparison.Ordinal),
+            "更新行只报百分比，估算的体积与速率留在 tooltip（实际 " + rowReading + "）");
+
+        // And the round's original defect, closed: no control on the settings page may hand out a restart,
+        // because that press bypasses the armed second tap the strip does the deciding for.
+        var restartWords = settings.GetVisualDescendants().OfType<Button>()
+            .Select(button => button.Content as string ?? "")
+            .Where(text => text.Contains("重启", StringComparison.Ordinal))
+            .ToList();
+        Check(restartWords.Count == 0,
+            "设置页上没有任何会重启的按钮，两下闸门只长在槽位上（实际 " + string.Join("/", restartWords) + "）");
+
+        TransferQueue.Instance.ClearForCheck();
+        UpdateService.Instance.ClearForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
         // --- 5.2 Really switch the language once ---
         // The shell-side probe uses a nav item that is still a RadioButton (NavToolchains): it is built at
         // shell construction time, so its text changing proves DynamicResource re-resolves in place. Settings

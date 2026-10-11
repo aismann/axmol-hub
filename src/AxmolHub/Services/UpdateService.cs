@@ -342,6 +342,13 @@ internal sealed class UpdateService
     internal Action<UpdateInfo>? ApplyOverrideForCheck { get; set; }
 
     /// <summary>
+    /// Set by <c>--verify-shell</c> to observe a download request without making one. The same shape as
+    /// <see cref="ApplyOverrideForCheck"/> for the other half of the flow: a self-check that really asked
+    /// Velopack would reach GitHub, and a delta would end with the updater taking the process.
+    /// </summary>
+    internal Action<UpdateInfo>? DownloadOverrideForCheck { get; set; }
+
+    /// <summary>
     /// Puts this update's download on the shared <see cref="TransferQueue"/> rather than on a cancellation
     /// token of its own. An update downloading next to an engine install is two transfers on one pipe, and
     /// before this they did not know the other existed.
@@ -361,6 +368,12 @@ internal sealed class UpdateService
     /// </summary>
     private void StartDownload(UpdateInfo update)
     {
+        if (DownloadOverrideForCheck is { } observer)
+        {
+            observer(update);
+            return;
+        }
+
         var version = update.TargetFullRelease.Version.ToString();
         _transferIdentity = $"hub:update:{version}";
         TransferQueue.Instance.Enqueue(_transferIdentity, "TransferHubUpdate", version, async (item, token) =>
