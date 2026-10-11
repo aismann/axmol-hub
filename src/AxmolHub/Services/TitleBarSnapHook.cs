@@ -6,29 +6,39 @@ using Avalonia.Controls;
 namespace AxmolHub;
 
 /// <summary>
-/// Windows 11 Snap Layouts for the app's own maximize button.
+/// The app's own maximize plate, as far as Windows is concerned: the Snap Layouts flyout, the pressed plate, and
+/// the click itself.
 ///
-/// <para>Windows decides whether to raise the layouts flyout from the return value of
-/// <c>WM_NCHITTEST</c>: the cursor being over the maximize button must answer <c>HTMAXBUTTON</c>. A native
-/// caption button gets that for free; a button the app draws does not, which is why GitHub Copilot Desktop
-/// shows the flyout and this app did not.</para>
+/// <para>Windows decides whether to raise the layouts flyout from the return value of <c>WM_NCHITTEST</c>: the
+/// cursor being over the maximize button must answer <c>HTMAXBUTTON</c>. A native caption button gets that for
+/// free; a button the app draws does not, which is why GitHub Copilot Desktop shows the flyout and this app did
+/// not.</para>
+///
+/// <para>Answering it has a price that the first cut of this hook paid without noticing: the system sends the hit
+/// test when the cursor moves <em>and when a mouse button goes down</em>, so a press over the plate is classified
+/// as a non-client press and arrives as <c>WM_NCLBUTTONDOWN</c> — never as <c>WM_LBUTTONDOWN</c>, which is the
+/// only thing Avalonia turns into a click. The plate's <c>Click</c> handler therefore never ran. Letting the
+/// system's own caption handling do the work instead is not available either: at
+/// <see cref="WindowDecorations.BorderOnly"/> this window is created without <c>WS_SYSMENU</c> (Avalonia adds that
+/// style only for the <c>Full</c> decorations) and Avalonia's window procedure does not handle incoming
+/// non-client button messages at all, so <c>DefWindowProc</c> has no caption to act on. So the hook answers the
+/// hit test <em>and</em> runs the plate's press/click protocol itself — the same protocol a real caption button
+/// has, which is why <c>HTMAXBUTTON</c> is still answered while the button is down.</para>
 ///
 /// <para>Why this is hand-written rather than configured: as of Avalonia 12.1.3 the Win32 backend has no
 /// <c>HTMAXBUTTON</c> handling at all — <c>WindowImpl</c> answers only the eight resize edges — and
 /// <c>WindowImpl.WndProcHookCallback</c> is internal, with no public property on <c>Window</c> to reach it.
 /// So the window procedure is subclassed here, exactly as the Avalonia issue that asked for this feature
-/// (#11409) said it would have to be. The hook is the app's only Win32 message hook; every message except the
-/// hit test is passed straight through to the previous procedure, so nothing else about the window changes.</para>
-///
-/// <para><b>Hover only.</b> <c>HTMAXBUTTON</c> is answered for a move over the button and deliberately *not*
-/// for a press: a press would make the system treat the click as a caption-button click, which would
-/// double-apply our own click handler (it toggles the window state) and change what dragging the bar does.
-/// The flyout appears on hover, and clicking still runs the app's handler.</para>
+/// (#11409) said it would have to be. The hook is the app's only Win32 message hook; every message it does not
+/// own is passed straight through to the previous procedure, so nothing else about the window changes.</para>
 /// </summary>
 internal static class TitleBarSnapHook
 {
+    private const int WmCancelMode = 0x001F;
     private const int WmNcHitTest = 0x0084;
     private const int WmNcMouseMove = 0x00A0;
+    private const int WmNcLButtonDown = 0x00A1;
+    private const int WmNcLButtonUp = 0x00A2;
     private const int WmNcMouseLeave = 0x02A2;
     private const int HtMaxButton = 9;
     private const int GwlWndProc = -4;
@@ -58,10 +68,89 @@ internal static class TitleBarSnapHook
     /// whole life. A delegate collected while Win32 still points at it is a crash on the next message.</summary>
     private static readonly System.Collections.Generic.Dictionary<IntPtr, WindowBridge> Bridges = [];
 
-    /// <summary>Installs the hook, or does nothing when there is nothing to install (a non-Windows host, or the
-    /// platform handle is not a Win32 one — a headless/self-check run). Never throws: a missing flyout is an
-    /// appearance problem and must not take the window down with it.</summary>
-    internal static void Install(Window window, Button maximizeButton)
+    /// <summary>
+    /// What the hook does with one non-client message. Named as effects rather than as message numbers because the
+    /// message numbers are not a protocol the app owns: the system repeats the hit test, the move and the button
+    /// messages in an order this hook must not assume.
+    /// </summary>
+    internal enum NcAction
+    {
+        /// <summary>Not ours: hand it to the procedure that was there before this hook.</summary>
+        Forward,
+
+        /// <summary>Answer <c>HTMAXBUTTON</c>, which is what raises the flyout.</summary>
+        HitTest,
+
+        /// <summary>The plate went down: show it pressed and keep the message.</summary>
+        Press,
+
+        /// <summary>The cursor is over the plate and nothing is held down.</summary>
+        HoverOn,
+
+        /// <summary>The cursor has left the plate, or the window, with nothing held down.</summary>
+        HoverOff,
+
+        /// <summary>A press this hook owns ended somewhere that is not the plate: drop it without acting.</summary>
+        Release,
+
+        /// <summary>The system cancelled whatever was in progress under the cursor. The press state is dropped for
+        /// the same reason as <see cref="Release"/> — its release is a message that will never come — but the
+        /// message itself still belongs to whoever else is listening, so it is forwarded.</summary>
+        CancelPress,
+
+        /// <summary>A press this hook owns ended on the plate: run the action.</summary>
+        Toggle,
+    }
+
+    /// <summary>
+    /// The plate's whole non-client protocol as one pure decision, so the self-check can drive every arm without a
+    /// mouse — and so the arms that are easy to get wrong (a release that lost the plate, a press with no release)
+    /// are stated once instead of being spread over a message switch.
+    /// </summary>
+    internal static NcAction Classify(uint message, bool overPlate, bool pressed)
+    {
+        switch (message)
+        {
+            case WmNcHitTest:
+                return overPlate ? NcAction.HitTest : NcAction.Forward;
+
+            case WmNcLButtonDown:
+                return overPlate ? NcAction.Press : NcAction.Forward;
+
+            case WmNcLButtonUp:
+                // A release this hook never saw the press for belongs to something else — a resize edge, the
+                // flyout's own zone, a caption the system decided to drag.
+                if (!pressed) return NcAction.Forward;
+                return overPlate ? NcAction.Toggle : NcAction.Release;
+
+            case WmNcMouseMove:
+                if (pressed) return overPlate ? NcAction.Forward : NcAction.Release;
+                return overPlate ? NcAction.HoverOn : NcAction.HoverOff;
+
+            case WmNcMouseLeave:
+                return pressed ? NcAction.Release : NcAction.HoverOff;
+
+            // The system's "whatever modal thing you were doing is over" — a dialog opening under the cursor, the
+            // window losing the foreground. Without this the plate can be left dark forever, because the release
+            // it is waiting for is a message that will never come.
+            case WmCancelMode:
+                return pressed ? NcAction.CancelPress : NcAction.Forward;
+
+            default:
+                return NcAction.Forward;
+        }
+    }
+
+    /// <summary>
+    /// Installs the hook, or does nothing when there is nothing to install (a non-Windows host, or the platform
+    /// handle is not a Win32 one — a headless/self-check run). Never throws: a missing flyout is an appearance
+    /// problem and must not take the window down with it.
+    ///
+    /// <paramref name="toggleMaximize"/> is the window's own maximize/restore flip, not a state this hook sets:
+    /// which of the two states the window is in is the shell's business, and it is the same method the plate's
+    /// client click calls, so the glyph and the tooltip follow either way through one path.
+    /// </summary>
+    internal static void Install(Window window, Button maximizeButton, Action toggleMaximize)
     {
         if (!OperatingSystem.IsWindows()) return;
 
@@ -70,7 +159,7 @@ internal static class TitleBarSnapHook
             if (window.TryGetPlatformHandle()?.Handle is not { } hwnd || hwnd == IntPtr.Zero) return;
             if (Bridges.ContainsKey(hwnd)) return;
 
-            var bridge = new WindowBridge(window, maximizeButton);
+            var bridge = new WindowBridge(window, maximizeButton, toggleMaximize);
             var previous = SetWindowLongPtr(hwnd, GwlWndProc, bridge.Proc);
             if (previous == IntPtr.Zero)
             {
@@ -94,15 +183,21 @@ internal static class TitleBarSnapHook
     {
         private readonly Window _window;
         private readonly Button _maximize;
+        private readonly Action _toggleMaximize;
         private readonly WndProc _proc;
         private bool _hovered;
 
+        /// <summary>Whether a press this hook answered with <see cref="NcAction.Press"/> is still open. Cleared by
+        /// every arm that ends one — and, in case the release never arrives, by the next press.</summary>
+        private bool _pressed;
+
         internal IntPtr Previous;
 
-        internal WindowBridge(Window window, Button maximizeButton)
+        internal WindowBridge(Window window, Button maximizeButton, Action toggleMaximize)
         {
             _window = window;
             _maximize = maximizeButton;
+            _toggleMaximize = toggleMaximize;
             _proc = Dispatch;
         }
 
@@ -119,21 +214,44 @@ internal static class TitleBarSnapHook
 
             try
             {
-                switch (msg)
+                // Only these four carry a screen point in lParam. Asking the others would convert a size or a
+                // command into a coordinate and answer a question nobody asked.
+                var overPlate = (msg == WmNcHitTest || msg == WmNcMouseMove
+                                 || msg == WmNcLButtonDown || msg == WmNcLButtonUp)
+                                && _maximize.Bounds.Width > 0
+                                && IsOverMaximizeButton(lParam);
+
+                switch (Classify(msg, overPlate, _pressed))
                 {
-                    case WmNcHitTest when _maximize.Bounds.Width > 0 && IsOverMaximizeButton(lParam):
+                    case NcAction.HitTest:
                         return (IntPtr)HtMaxButton;
 
-                    // Answering HTMAXBUTTON above is what raises the flyout, and it is also why the plate's own
-                    // hover never appears: the system treats that point as a *non-client* caption button and stops
-                    // sending client mouse moves, so Avalonia's :pointerover never fires for this one control.
-                    // The non-client messages it sends instead are the same information, so the hover state is
-                    // driven from them. Every other control keeps its normal client hover untouched.
-                    case WmNcMouseMove when IsOverMaximizeButton(lParam):
+                    // The action is run here, inside the window procedure, the way a real caption button does it:
+                    // posting it instead would land the toggle a frame after the click and add a state to race.
+                    case NcAction.Toggle:
+                        SetPressed(false);
+                        _toggleMaximize();
+                        return IntPtr.Zero;
+
+                    case NcAction.Press:
+                        SetPressed(true);
+                        return IntPtr.Zero;
+
+                    case NcAction.Release:
+                        SetPressed(false);
+                        SetMaximizeHover(false);
+                        return IntPtr.Zero;
+
+                    case NcAction.CancelPress:
+                        SetPressed(false);
+                        SetMaximizeHover(false);
+                        break;
+
+                    case NcAction.HoverOn:
                         SetMaximizeHover(true);
                         break;
 
-                    case WmNcMouseLeave:
+                    case NcAction.HoverOff:
                         SetMaximizeHover(false);
                         break;
                 }
@@ -157,12 +275,22 @@ internal static class TitleBarSnapHook
             _maximize.Classes.Set("nchover", hovered);
         }
 
+        /// <summary>The plate's pressed background. <c>:pressed</c> cannot serve here for the same reason
+        /// <c>:pointerover</c> cannot: the point is non-client, so the pseudo-class never fires on this one plate
+        /// while it works on the two beside it.</summary>
+        private void SetPressed(bool pressed)
+        {
+            if (pressed == _pressed) return;
+            _pressed = pressed;
+            _maximize.Classes.Set("ncpressed", pressed);
+        }
+
         /// <summary>Whether the hit test's cursor position falls inside the maximize plate. The position is
         /// converted through <see cref="TopLevel.PointToScreen"/> and both rects come from the same place, so
         /// DPI cancels out and no scale factor has to be assumed.</summary>
         private bool IsOverMaximizeButton(IntPtr lParam)
         {
-            var position = new PixelPoint((short)((long)lParam & 0xFFFF), (short)(((long)lParam >> 16) & 0xFFFF));
+            var position = UnpackPoint(lParam);
             var local = _window.PointToClient(position);
             var origin = _maximize.TranslatePoint(new Point(0, 0), _window);
             if (origin is not { } topLeft) return false;
@@ -180,6 +308,31 @@ internal static class TitleBarSnapHook
     /// a typo in the message constant.</summary>
     internal static bool InstalledForCheck { get; private set; }
 
+    /// <summary>
+    /// Sends the window one non-client message at a screen point, exactly as the system would. The self-check's
+    /// only way in: the press protocol above is invisible to every assertion that can be written against the object
+    /// graph — the click that goes missing is a message the app never receives — so it is driven the way Windows
+    /// drives it, through the real window procedure of the real window.
+    ///
+    /// Sends rather than posts, so the state a check reads next is the state the message produced; and sends on the
+    /// calling thread, which is the UI thread the window belongs to, so this is a direct call and not a wait.
+    /// </summary>
+    internal static IntPtr SendNonClientForCheck(Window window, uint message, PixelPoint screen)
+    {
+        if (!OperatingSystem.IsWindows()) return IntPtr.Zero;
+        if (window.TryGetPlatformHandle()?.Handle is not { } hwnd || hwnd == IntPtr.Zero) return IntPtr.Zero;
+        return SendMessage(hwnd, message, new IntPtr(HtMaxButton), PackPoint(screen));
+    }
+
+    /// <summary>A screen point packed into an <c>lParam</c> the way the non-client messages carry it: x in the low
+    /// word, y in the high word, both signed 16-bit. Shared with the check on purpose, so a probe cannot disagree
+    /// with <see cref="WindowBridge.IsOverMaximizeButton"/> about what a coordinate means.</summary>
+    internal static IntPtr PackPoint(PixelPoint point)
+        => new((point.X & 0xFFFF) | ((point.Y & 0xFFFF) << 16));
+
+    private static PixelPoint UnpackPoint(IntPtr lParam)
+        => new((short)((long)lParam & 0xFFFF), (short)(((long)lParam >> 16) & 0xFFFF));
+
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", ExactSpelling = true)]
     private static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
 
@@ -188,6 +341,9 @@ internal static class TitleBarSnapHook
     /// converting it to a delegate instead is what crashed the process the first time this hook was tried.</summary>
     [DllImport("user32.dll", EntryPoint = "CallWindowProcW", ExactSpelling = true)]
     private static extern IntPtr CallWindowProc(IntPtr previous, IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
+    private static extern IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern int GetSystemMetrics(int index);

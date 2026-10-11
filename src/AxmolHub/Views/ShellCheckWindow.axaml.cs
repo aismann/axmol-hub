@@ -762,6 +762,61 @@ public partial class ShellCheckWindow : Window
               && !shell.MaximizeGlyphIsRestoreForCheck,
             "还原后那枚按钮改回「最大化」并换回方框图形");
 
+        // ── the caption semantics of the bar itself ──
+        // Both halves of this were dead in the shipped build and neither could fail a build: answering
+        // HTMAXBUTTON turns a press on the plate into a *non-client* press, which Avalonia never turns into a
+        // click, and the bar had no double-click handling at all because the first press went straight into the
+        // platform's modal move loop. The press protocol itself is asserted further down against real window
+        // messages; these two are the decisions it is built from, and they are pure so every click count and every
+        // pointer distance can be driven here.
+        Check(MainWindow.TitleBarPressToggles(2) && MainWindow.TitleBarPressToggles(3)
+              && !MainWindow.TitleBarPressToggles(1),
+            "标题栏上的第二下（以及第三下）是「最大化/还原」，第一下才是「准备拖动」");
+        // A move past the threshold is deliberately NOT driven here: that arm calls BeginMoveDrag, which enters
+        // the platform's own move loop and does not return until a mouse moves — a check that walked into it would
+        // hang the whole suite. The decision is asserted instead, and the drag itself is a manual step.
+        Check(!MainWindow.TitleBarDragExceeded(new Point(100, 16), new Point(102, 18))
+              && MainWindow.TitleBarDragExceeded(new Point(100, 16), new Point(105, 16))
+              && MainWindow.TitleBarDragExceeded(new Point(100, 16), new Point(100, 21)),
+            "指针没挪出阈值之前标题栏不动窗口：这是双击能被认出来的前提（否则第一下就已经进了系统的拖动循环）");
+
+        // The double-click, driven through the real event on the real control rather than through the method it
+        // ends up calling. The pointer is one this check made (Avalonia's IPointer cannot be implemented from
+        // outside its assembly), and that is enough precisely because the toggle arm asks it nothing — see the
+        // comment on OnTitleBarPressed, which is shaped that way for this check's sake.
+        var dragArea = NamedDescendant<Border>(shell, "TitleBarDragArea");
+        Check(dragArea is not null, "标题栏的拖动层还在（找不到就没法验证双击）");
+        if (dragArea is not null)
+        {
+            PressTitleBar(dragArea, shell, 2);
+            Dispatcher.UIThread.RunJobs();
+            Check(shell.WindowState == WindowState.Maximized && !shell.TitleBarDragArmedForCheck,
+                  "双击标题区域把窗口最大化，并且没有顺手武装一次拖动（实际 " + shell.WindowState + " / 武装 "
+                  + shell.TitleBarDragArmedForCheck + "）");
+            PressTitleBar(dragArea, shell, 2);
+            Dispatcher.UIThread.RunJobs();
+            Check(shell.WindowState == WindowState.Normal,
+                  "再双击一次还原回来（实际 " + shell.WindowState + "）");
+
+            // The first click arms the drag and its release disarms it: the state a double-click has to survive
+            // between its two clicks, since the second press is what toggles.
+            PressTitleBar(dragArea, shell, 1);
+            Check(shell.TitleBarDragArmedForCheck, "标题栏上的第一下武装了拖动");
+            dragArea.RaiseEvent(new PointerReleasedEventArgs(
+                dragArea, CheckPointer, shell, BarPressPoint(dragArea, shell), 0,
+                new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased),
+                KeyModifiers.None, MouseButton.Left));
+            Check(!shell.TitleBarDragArmedForCheck, "松开后拖动解除武装，不会留下一个等着被移动的窗口");
+        }
+
+        // The page title is a label sitting in the middle of that surface, and a label that answers hit tests is a
+        // dead hole in it — exactly where a reader would double-click. Pinned as the property that decides it, the
+        // same way the drawn decorations are: the pixels can only be proven with a hand on the mouse.
+        Check(!shell.PageTitleHitTestableForCheck,
+            "标题栏里的页面标题不参与命中测试：整条标题栏是一整块可按可拖的面，标签不能在上面开洞");
+
+        CheckSnapHookPress(shell);
+
         // The ghost icon buttons hover as a square around their glyph. They sit in fixed-height rows, so
         // a stretching default makes the plate a tall rectangle; the remaining slack below is the icon's
         // own Uniform-scaled box, which is a fraction of a DIP off square and invisible.
@@ -7340,6 +7395,125 @@ public partial class ShellCheckWindow : Window
     /// <c>titleBarHeight</c> pixels are the app's title bar, whose ☰ drawer is *supposed* to sit in the collapsed
     /// sidebar's place, so a strip taken from row 0 would report the drawer as the overflow this guards against.
     /// </summary>
+    /// <summary>
+    /// The maximize plate's click, driven through real window messages. This is the only assertion that can see the
+    /// bug it was written for: answering <c>HTMAXBUTTON</c> makes the press a *non-client* press, so the click the
+    /// app loses is a message it never receives — the plate keeps its bounds, its handler stays wired, and the
+    /// state simply never changes. Nothing in the object graph reports that, which is exactly why the plate's whole
+    /// press protocol is a pure decision (<c>TitleBarSnapHook.Classify</c>) with one door onto the real window.
+    /// Windows only, and skipped elsewhere: without a Win32 window procedure there is no hook to drive.
+    /// </summary>
+    private void CheckSnapHookPress(MainWindow shell)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            _lines.Add("SKIP  非 Windows 平台没有 Win32 窗口过程，跳过最大化按钮的真实非客户区点击");
+            return;
+        }
+
+        Check(shell.SnapHookInstalledForCheck,
+            "最大化按钮的 Win32 子类化真装上了：没有它既没有悬停弹出层，也收不到那一下点击");
+
+        if (NamedDescendant<Button>(shell, "MaximizeButton") is not { } plate
+            || NamedDescendant<Button>(shell, "CloseButton") is not { } close)
+        {
+            Check(false, "找不到最大化 / 关闭按钮，无法验证非客户区点击");
+            return;
+        }
+
+        const uint wmNcHitTest = 0x0084;
+        const uint wmNcMouseMove = 0x00A0;
+        const uint wmNcLButtonDown = 0x00A1;
+        const uint wmNcLButtonUp = 0x00A2;
+        const int htMaxButton = 9;
+
+        shell.SetWindowStateForCheck(WindowState.Normal);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        if (ScreenCentreOf(plate, shell) is not { } over || ScreenCentreOf(close, shell) is not { } away)
+        {
+            _lines.Add("SKIP  窗口还没落到屏幕上，取不到按钮的屏幕坐标");
+            return;
+        }
+
+        // The hit test stays narrowed to the plate: it is what raises the flyout, and answering it across the bar
+        // would turn the whole caption into a non-client area — which would cost every other control its click.
+        Check(TitleBarSnapHook.SendNonClientForCheck(shell, wmNcHitTest, over).ToInt64() == htMaxButton
+              && TitleBarSnapHook.SendNonClientForCheck(shell, wmNcHitTest, away).ToInt64() != htMaxButton,
+            "命中测试只把最大化按钮那一块报成 HTMAXBUTTON（弹出层要它），旁边那枚不是（实际 "
+            + TitleBarSnapHook.SendNonClientForCheck(shell, wmNcHitTest, over).ToInt64() + " / "
+            + TitleBarSnapHook.SendNonClientForCheck(shell, wmNcHitTest, away).ToInt64() + "）");
+
+        // A real click: down shows the pressed plate, up runs the action. Asserting the toggle *and* the plate is
+        // the difference between "the message arrived" and "the reader saw a button work".
+        TitleBarSnapHook.SendNonClientForCheck(shell, wmNcLButtonDown, over);
+        Check(shell.MaximizePressedForCheck,
+            "非客户区按下时最大化按钮是按下的样子（:pressed 在这个点上永远不会触发）");
+        TitleBarSnapHook.SendNonClientForCheck(shell, wmNcLButtonUp, over);
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.WindowState == WindowState.Maximized
+              && !shell.MaximizePressedForCheck
+              && shell.MaximizeGlyphIsRestoreForCheck
+              && shell.MaximizeTipForCheck == HubTexts.Get("RestoreWindow", HubStrings.Language),
+            "那一下点击真的最大化了窗口，按下态收掉、图形与提示也跟着改（实际 " + shell.WindowState + "，提示「"
+            + shell.MaximizeTipForCheck + "」）");
+
+        // Dragged off the plate before letting go: the press was the plate's, the release was not, so nothing
+        // happens — the same rule a real caption button has. The coordinates are re-measured because maximizing
+        // moved every one of them.
+        shell.SetWindowStateForCheck(WindowState.Normal);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        if (ScreenCentreOf(plate, shell) is { } overAgain && ScreenCentreOf(close, shell) is { } awayAgain)
+        {
+            TitleBarSnapHook.SendNonClientForCheck(shell, wmNcLButtonDown, overAgain);
+            TitleBarSnapHook.SendNonClientForCheck(shell, wmNcMouseMove, awayAgain);
+            TitleBarSnapHook.SendNonClientForCheck(shell, wmNcLButtonUp, awayAgain);
+            Dispatcher.UIThread.RunJobs();
+            Check(shell.WindowState == WindowState.Normal && !shell.MaximizePressedForCheck,
+                "按住后把指针拖离按钮再松手：什么都不发生，状态不变、按下态也收掉（实际 "
+                + shell.WindowState + "）");
+        }
+
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+    }
+
+    /// <summary>The screen point at the centre of a control, or null when the window is not on screen yet (nothing
+    /// headless has screen coordinates to give).</summary>
+    private static PixelPoint? ScreenCentreOf(Visual control, MainWindow shell)
+        => control.TranslatePoint(new Point(control.Bounds.Width / 2, control.Bounds.Height / 2), shell)
+           is { } centre
+            ? shell.PointToScreen(centre)
+            : null;
+
+    /// <summary>Where a synthesized press on the bar lands: its own centre, expressed in the window's coordinates,
+    /// which is the space the event's <c>rootVisualPosition</c> is read in. Fixed rather than followed from the
+    /// real cursor, because every arm of the press protocol under test either ignores the position (the toggle) or
+    /// measures a delta from it (the drag threshold).</summary>
+    private static Point BarPressPoint(Border dragArea, MainWindow shell)
+        => dragArea.TranslatePoint(new Point(dragArea.Bounds.Width / 2, dragArea.Bounds.Height / 2), shell) ?? default;
+
+    /// <summary>
+    /// Raises a real press on the title bar's drag layer. A real event rather than a call to the handler, so what
+    /// is exercised is the wiring — and a stub pointer is enough because the toggle arm deliberately reads nothing
+    /// from it (see <c>MainWindow.OnTitleBarPressed</c>). Only ever used with <paramref name="clickCount"/> 1 or 2,
+    /// and never followed by a move: the move arm that acts on a drag enters the platform's own move loop.
+    /// </summary>
+    private static void PressTitleBar(Border dragArea, MainWindow shell, int clickCount)
+        => dragArea.RaiseEvent(new PointerPressedEventArgs(
+            dragArea, CheckPointer, shell, BarPressPoint(dragArea, shell), 0,
+            new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed),
+            KeyModifiers.None, clickCount));
+
+    /// <summary>
+    /// The pointer a synthesized press carries. Avalonia's <see cref="IPointer"/> cannot be implemented from
+    /// outside its assembly — its metadata carries a member no user code can satisfy, so a stub will not compile —
+    /// which is why this is the framework's own concrete <see cref="Pointer"/>. Nothing under test reads it; the
+    /// event's constructor is what demands one.
+    /// </summary>
+    private static readonly Pointer CheckPointer = new(0, PointerType.Mouse, isPrimary: true);
+
     /// <summary>Whether two DIP rects describe the same place, allowing the sub-DIP rounding every layout pass is
     /// entitled to spend.</summary>
     private static bool SameRect(Rect first, Rect second, double tolerance = 0.5)

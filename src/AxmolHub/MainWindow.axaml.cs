@@ -83,6 +83,16 @@ public partial class MainWindow : Window
 
     private string _currentKey = "";
 
+    /// <summary>The press that is armed on the title bar, or null when none is. Holding the whole event rather
+    /// than a point is what lets the move handler hand the platform the press it actually received; and a
+    /// null/non-null test is the whole "is a drag armed" state, which is what a check reads — it cannot drive the
+    /// arm that consumes this, because that one enters the platform's move loop.</summary>
+    private PointerPressedEventArgs? _titleBarPress;
+
+    /// <summary>Where that press landed, in the window's own coordinates — the origin the drag threshold is
+    /// measured from.</summary>
+    private Point _titleBarPressOrigin;
+
     /// <summary>
     /// For the XAML loader and design-time preview (without it Avalonia reports AVLN3001 "not
     /// available via the runtime loader"). Using the default data root is safe: **construction
@@ -991,6 +1001,22 @@ public partial class MainWindow : Window
     internal string MaximizeTipForCheck => ToolTip.GetTip(MaximizeButton) as string ?? "";
     internal string CloseTipForCheck => ToolTip.GetTip(CloseButton) as string ?? "";
     internal bool MaximizeGlyphIsRestoreForCheck => ReferenceEquals(MaximizeGlyph.Data, _restoreGlyph);
+
+    /// <summary>Whether the maximize plate is painted as pressed. The class is written by the Win32 hook rather
+    /// than by a pseudo-class, so reading it back is the only way to tell "the press was seen" from "the press was
+    /// swallowed": the two look identical in the object graph and differ only in these pixels.</summary>
+    internal bool MaximizePressedForCheck => MaximizeButton.Classes.Contains("ncpressed");
+
+    /// <summary>Whether a press is armed on the bar and has not yet become a drag. Exposed because the arming is
+    /// the half of the protocol that cannot be driven to its end in a check (see
+    /// <see cref="TitleBarDragExceeded"/>), so its start is asserted instead.</summary>
+    internal bool TitleBarDragArmedForCheck => _titleBarPress is not null;
+
+    /// <summary>Whether the bar's page title takes pointer input. It must not: the title is a label in the middle
+    /// of the one press surface the window has, and a label that answers hit tests punches a dead hole in it —
+    /// exactly where a reader would double-click to maximize.</summary>
+    internal bool PageTitleHitTestableForCheck => PageTitle.IsHitTestVisible;
+
     private Geometry? _maximizeGlyph;
     private Geometry? _restoreGlyph;
 
@@ -1293,16 +1319,15 @@ public partial class MainWindow : Window
     private void InitializeTitleBar()
     {
         // The whole bar moves the window; the buttons sit above this layer and take their own input first.
-        // BeginMoveDrag rather than the chrome's own hit testing, because the drag layer is an ordinary control
-        // in this window (the app's bar, not a decoration template part).
-        TitleBarDragArea.PointerPressed += (_, e) =>
-        {
-            if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(e);
-        };
+        // BeginMoveDrag is not called here any more, and that is what makes the bar's second click reachable at
+        // all: it enters the platform's own modal move loop, so a press that started one would spend the rest of
+        // the double-click moving the window (see TitleBarDragThreshold).
+        TitleBarDragArea.PointerPressed += OnTitleBarPressed;
+        TitleBarDragArea.PointerMoved += OnTitleBarMoved;
+        TitleBarDragArea.PointerReleased += OnTitleBarReleased;
 
         MinimizeButton.Click += (_, _) => WindowState = WindowState.Minimized;
-        MaximizeButton.Click += (_, _) => WindowState =
-            WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+        MaximizeButton.Click += (_, _) => ToggleMaximized();
         CloseButton.Click += (_, _) => Close();
 
         // Windows 11 Snap Layouts on hover. Ours is a drawn button, so the system has to be told where it is
@@ -1310,7 +1335,11 @@ public partial class MainWindow : Window
         // has never been shown has no Win32 handle to subclass yet — the self-check builds exactly such a window,
         // which is how that was caught. Installing on Opened is the first moment a handle is guaranteed; the call
         // is idempotent, so a window shown twice cannot install twice.
-        Opened += (_, _) => TitleBarSnapHook.Install(this, MaximizeButton);
+        //
+        // The same hook also runs the plate's click: answering HTMAXBUTTON turns that point into a non-client
+        // press, which Avalonia never sees as a click, so the flip is handed to it as the one thing both callers
+        // do (and the glyph and the tooltip follow it through the window's own state change).
+        Opened += (_, _) => TitleBarSnapHook.Install(this, MaximizeButton, ToggleMaximized);
 
         // The system keeps a few pixels of resize frame between the client area and the window's outer edge, and
         // that strip is exactly the gap a caption button leaves at the right end. The platform's own close button
@@ -1330,6 +1359,74 @@ public partial class MainWindow : Window
             if (e.Property == WindowStateProperty) SyncWindowStateChrome();
         };
         SyncWindowStateChrome();
+    }
+
+    /// <summary>
+    /// Flips the window between maximized and normal. One method for all three of its callers — the plate's own
+    /// click, the plate's non-client click (see <see cref="TitleBarSnapHook"/>) and the bar's double-click —
+    /// because the window state is what the glyph and the tooltip follow, and a second copy of the flip would be a
+    /// second place for them to fall out of step.
+    /// </summary>
+    private void ToggleMaximized()
+        => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    /// <summary>
+    /// Whether a press on the bar means "maximize or restore" instead of "start moving the window". Pure, and
+    /// internal, so the self-check can drive every click count: a mouse cannot be scripted, and this arm is
+    /// exactly the one that used to fall through to the drag.
+    /// </summary>
+    internal static bool TitleBarPressToggles(int clickCount) => clickCount >= 2;
+
+    /// <summary>How far the pointer has to travel from the press before the bar starts moving the window, in DIPs:
+    /// the system's own caption threshold (<c>SM_CXDRAG</c>/<c>SM_CYDRAG</c> default to 4). It is not a
+    /// preference — a platform move loop is modal, so beginning one on the press would swallow the second click of
+    /// a double-click before anything could recognise it.</summary>
+    private const double TitleBarDragThreshold = 4;
+
+    /// <summary>The same decision for the other half of a press: has the pointer moved far enough to be a drag
+    /// rather than a click. Pure for the same reason, and a check must never drive the arm that acts on it — that
+    /// one calls <c>BeginMoveDrag</c> and would sit in the platform's move loop until a mouse moved.</summary>
+    internal static bool TitleBarDragExceeded(Point origin, Point current)
+        => Math.Abs(current.X - origin.X) >= TitleBarDragThreshold
+           || Math.Abs(current.Y - origin.Y) >= TitleBarDragThreshold;
+
+    private void OnTitleBarPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.Properties.IsLeftButtonPressed) return;
+
+        // The second click of a double-click maximizes or restores, and it is decided before anything reads the
+        // pointer: a toggle has no business asking the input pipeline where the cursor is, and keeping it that way
+        // is what lets the self-check raise this press with a pointer of its own.
+        if (TitleBarPressToggles(e.ClickCount))
+        {
+            _titleBarPress = null;
+            e.Pointer.Capture(null);
+            ToggleMaximized();
+            return;
+        }
+
+        _titleBarPressOrigin = e.GetPosition(this);
+        _titleBarPress = e;
+        e.Pointer.Capture(TitleBarDragArea);
+    }
+
+    private void OnTitleBarMoved(object? sender, PointerEventArgs e)
+    {
+        if (_titleBarPress is not { } press) return;
+        if (!TitleBarDragExceeded(_titleBarPressOrigin, e.GetPosition(this))) return;
+
+        // Let go of the press before handing the platform its move loop: that loop runs until the button comes up
+        // and nothing after this line in the handler may be relied on, so the state has to be settled first.
+        _titleBarPress = null;
+        e.Pointer.Capture(null);
+        BeginMoveDrag(press);
+    }
+
+    private void OnTitleBarReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_titleBarPress is null) return;
+        _titleBarPress = null;
+        e.Pointer.Capture(null);
     }
 
     /// <summary>Moves the caption strip out to the window's real right edge (see <c>InitializeTitleBar</c>). The

@@ -222,6 +222,12 @@
     <Style Selector="Button.window-control.nchover">
       <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonHover}" />
     </Style>
+    <!-- And its pressed plate, for the same reason and from the same hook: :pressed cannot fire on a point the
+         system hands to the window as a non-client button. Same brush as the rule below so the plate darkens like
+         the two beside it. -->
+    <Style Selector="Button.window-control.ncpressed">
+      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonPressed}" />
+    </Style>
     <Style Selector="Button.window-control:pressed">
       <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonPressed}" />
     </Style>
@@ -480,8 +486,12 @@
           <Path Classes="stroked" Data="{StaticResource Hub.Icon.Panel}"
                 Width="12" Height="12" Stretch="Uniform" />
         </Button>
+        <!-- Not hit-test visible on purpose: the bar is one press surface. Avalonia hit-tests drawn geometry, so
+             an ordinary label here would swallow every press that landed on the title — a hole in the middle of
+             the one region that drags the window and answers a double-click. -->
         <TextBlock x:Name="PageTitle" Grid.Column="1"
                    FontSize="13" Margin="8,0,0,0" MaxWidth="420"
+                   IsHitTestVisible="False"
                    TextTrimming="CharacterEllipsis" />
         <!-- The right column's two buttons, in the order the reader meets them: lift the pane over the whole
              window, then open or shut the column. They are the pane header's own two controls, moved up here
