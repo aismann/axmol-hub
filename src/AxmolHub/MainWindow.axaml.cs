@@ -693,8 +693,11 @@ public partial class MainWindow : Window
         if (!visible)
         {
             // Nothing left to act on and nothing left to read: the popover goes with its own anchor rather
-            // than staying open over an empty list.
+            // than staying open over an empty list — and its rows go with it, because a closed popover still
+            // holding rows for transfers nobody queued is the same report of the past, just unseen.
             QueuePopup.IsOpen = false;
+            QueueRows.Children.Clear();
+            _queueRowViews.Clear();
         }
         else if (QueuePopup.IsOpen)
         {
