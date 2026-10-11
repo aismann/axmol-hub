@@ -5167,6 +5167,21 @@ public partial class ShellCheckWindow : Window
                   && !agentPrompt.Contains("1kiss", StringComparison.OrdinalIgnoreCase),
                 "Agent 提示词写明「验证过才报结果、输出被截断就落文件再读」，并写清 git 读命令免批、写命令必弹卡且不许绕进脚本，且不含引擎专属命令名");
 
+            // Every cell above reads the prompt with `Contains`, so a sentence that appears twice passes them all:
+            // the prose still reads correctly, the model just pays for the same rule on every turn of every session.
+            // The duplication happened for real here — one set_workspace sentence shipped twice — and nothing noticed,
+            // so the guard is over the shape of the text rather than its content: one sentence, once, per mode.
+            var duplicateSentences = new[] { ChatModes.Ask, ChatModes.Plan, ChatModes.Agent }
+                .SelectMany(mode => ChatWorkspace.ChatModePrompt.For(mode)
+                    .Split(". ", StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                    .GroupBy(sentence => sentence, StringComparer.Ordinal)
+                    .Where(group => group.Count() > 1)
+                    .Select(group => group.Key))
+                .ToList();
+            Check(duplicateSentences.Count == 0,
+                "三档模式提示里没有任何句子原样重复两遍（实际重复 " + duplicateSentences.Count + " 条："
+                + string.Join(" / ", duplicateSentences.Select(s => s.Length > 48 ? s[..48] + "…" : s)) + "）");
+
             // Only this process can prove the encoding case: Hub is a windowed app with no console, and setting
             // a console's output codepage is what PowerShell does when told to — it throws where there is no
             // console to set. A CJK line that comes back whole here is the transcript not turning Chinese into
