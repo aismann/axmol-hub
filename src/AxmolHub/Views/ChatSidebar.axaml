@@ -103,6 +103,14 @@
     <Style Selector="Button.group-new:pointerover Path">
       <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
+    <!-- The one line a workspace with no sessions shows under its header. Quieter than a session row and the same
+         size as the header above it, so it reads as that group's state rather than as a third label or as a row
+         nobody can click. It is NOT hover-gated: the reveal-on-hover rule is about controls, and a state you cannot
+         see is the failure this line exists to fix. -->
+    <Style Selector="TextBlock.session-empty">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+      <Setter Property="FontSize" Value="11" />
+    </Style>
   </UserControl.Styles>
 
   <DockPanel>

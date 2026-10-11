@@ -1553,6 +1553,79 @@ if (args.Contains("--check-ai-sessions"))
     catch (OperationCanceledException) { cancelled = true; }
     if (!cancelled) throw new Exception("Cancellation was not propagated.");
     Console.WriteLine("PASS: ChatPipeline propagates cancellation.");
+
+    // The workspace registry is what keeps a session-less workspace on screen, so the list it stores has to be
+    // one entry per *place* rather than one per spelling, and it has to survive being read back by a process that
+    // rebuilt every store from disk.
+    var workspaceBase = Path.Combine(root, "registry-fixtures");
+    var wsOne = Path.Combine(workspaceBase, "ws-one");
+    var wsTwo = Path.Combine(workspaceBase, "ws-two");
+    var registry = new WorkspaceStore(root);
+    if (!registry.Add(wsOne) || !registry.Add(wsTwo)) throw new Exception("A designated workspace was not accepted.");
+    if (registry.Add(wsOne + Path.DirectorySeparatorChar))
+        throw new Exception("Two spellings of one directory became two workspaces.");
+    if (registry.Add("   ") || registry.Add(null)) throw new Exception("A blank path was recorded as a workspace.");
+    if (registry.Roots.Count != 2) throw new Exception($"The registry holds {registry.Roots.Count} entries, expected 2.");
+    if (!string.Equals(registry.Roots[0], wsOne, StringComparison.Ordinal))
+        throw new Exception($"Re-adding a workspace rewrote its spelling as 「{registry.Roots[0]}」.");
+    if (!registry.Contains(wsOne) || !registry.Contains(Path.Combine(workspaceBase, "ws-one", "..", "ws-one")))
+        throw new Exception("A workspace on the list does not resolve through the canonical key.");
+    Console.WriteLine("PASS: WorkspaceStore records a workspace once per place, in the spelling the user gave.");
+
+    // Order is the promise the sidebar keeps: session-derived groups come first, and registry-only ones follow in
+    // the order they were named, so a suite (or a person) that added two workspaces sees them the same way twice.
+    if (registry.Remove(wsTwo) != true || registry.Remove(wsTwo)) throw new Exception("Removing a workspace was not reported once.");
+    if (registry.Roots.Count != 1 || !string.Equals(registry.Roots[0], wsOne, StringComparison.Ordinal))
+        throw new Exception("Removing one workspace took or renamed another.");
+    registry.Add(wsTwo);
+    registry.Replace(wsOne, Path.Combine(workspaceBase, "ws-moved"));
+    if (registry.Roots.Count != 2
+        || !string.Equals(registry.Roots[0], Path.Combine(workspaceBase, "ws-moved"), StringComparison.Ordinal)
+        || !string.Equals(registry.Roots[1], wsTwo, StringComparison.Ordinal))
+        throw new Exception($"Re-pathing a workspace left the list as 「{string.Join(" | ", registry.Roots)}」.");
+    registry.Replace(Path.Combine(workspaceBase, "never-registered"), Path.Combine(workspaceBase, "ws-three"));
+    if (registry.Roots.Count != 3 || !string.Equals(registry.Roots[2], Path.Combine(workspaceBase, "ws-three"), StringComparison.Ordinal))
+        throw new Exception("Re-pathing a workspace its sessions were only holding up did not register the destination.");
+    Console.WriteLine("PASS: WorkspaceStore keeps its slot on a re-path and registers the destination of an unlisted one.");
+
+    // The restart proof: the group has to come back for a directory no session names anymore, which is exactly the
+    // state the registry exists for. A second store instance reads the same file a fresh window would.
+    var reopened = new WorkspaceStore(root);
+    if (reopened.Roots.Count != 3 || !reopened.Contains(Path.Combine(workspaceBase, "ws-moved")))
+        throw new Exception($"A reopened registry reads 「{string.Join(" | ", reopened.Roots)}」.");
+    // A directory that is not on disk is still a workspace the user named — the repair entry point lives on the
+    // group this list produces, so dropping the entry would delete the only way to fix the path.
+    var gone = Path.Combine(workspaceBase, "moved-away");
+    reopened.Add(gone);
+    if (!new WorkspaceStore(root).Contains(gone)) throw new Exception("A workspace whose directory vanished was not remembered.");
+    reopened.Clear();
+    if (reopened.Roots.Count > 0 || new WorkspaceStore(root).Roots.Count > 0)
+        throw new Exception("Clearing the registry left entries on disk.");
+    Console.WriteLine("PASS: WorkspaceStore round-trips through disk and keeps a workspace whose directory is gone.");
+
+    // A damaged registry reads as an empty one rather than taking the chat section down: the sessions still
+    // describe their own directories, so the list rebuilds from what is on screen.
+    var registryPath = Path.Combine(root, "ai", "workspaces.json");
+    File.WriteAllText(registryPath, "{ this is not json");
+    if (new WorkspaceStore(root).Roots.Count != 0) throw new Exception("A damaged registry did not fall back to empty.");
+    File.WriteAllText(registryPath, """{"Roots":["a","","  ","a","b"]}""");
+    var handEdited = new WorkspaceStore(root).Roots;
+    if (handEdited.Count != 2 || !handEdited.Contains("b"))
+        throw new Exception($"A hand-edited registry read as 「{string.Join(" | ", handEdited)}」, expected one 'a' and 'b'.");
+    Console.WriteLine("PASS: WorkspaceStore normalizes a damaged or hand-edited file instead of throwing.");
+    File.Delete(registryPath);
+
+    // The one-time migration: the directories existing sessions already name become the registry, but only while
+    // the file is absent. A backfill that re-ran on every start would resurrect a workspace somebody removed,
+    // because an empty draft that left the list still names that directory on disk.
+    var seeding = new WorkspaceStore(root);
+    if (!seeding.SeedFrom([wsOne, wsTwo + Path.DirectorySeparatorChar, wsOne, null, "  "]) || seeding.Roots.Count != 2)
+        throw new Exception("The first migration did not adopt the directories the sessions were already working in.");
+    var afterMigration = new WorkspaceStore(root);
+    if (afterMigration.SeedFrom([Path.Combine(workspaceBase, "ws-four")]) || afterMigration.Roots.Count != 2)
+        throw new Exception("A second seed re-ran the migration over a registry that already exists.");
+    Console.WriteLine("PASS: WorkspaceStore migrates once, from the absence of its file.");
+    File.Delete(registryPath);
     return;
 }
 if (args.Contains("--check-ai-memory"))

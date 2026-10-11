@@ -843,6 +843,14 @@ public static class HubTexts
         ["EditWorkspacePath"] = ("编辑路径…", "Edit path…"),
         ["EditWorkspacePathTitle"] = ("这个工作区的新路径", "New path for this workspace"),
         ["WorkspaceActions"] = ("工作区操作", "Workspace actions"),
+        // A workspace outlives the sessions in it: the group stays listed with this one line under it, because a
+        // place the user named that quietly left the sidebar reads as a button that did nothing.
+        ["NoWorkspaceSessions"] = ("暂无会话", "No sessions yet"),
+        ["RemoveWorkspace"] = ("移除工作区", "Remove workspace"),
+        ["WorkspaceRemovedFormat"] = ("「{0}」已从列表移除，对话记录一条都没删",
+            "Removed “{0}” from the list; no conversation was deleted"),
+        // The re-path of a workspace with no sessions left: nothing moved, so the sentence must not count anything.
+        ["WorkspacePathUpdatedFormat"] = ("「{0}」现在指向：{1}", "“{0}” now points at: {1}"),
 
         ["WorkspaceMovedFormat"] = ("「{0}」的 {1} 个对话已改用：{2}",
             "{1} conversations in “{0}” now work in: {2}"),

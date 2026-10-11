@@ -34,6 +34,11 @@ namespace AxmolHub;
 /// chats about one project are one job, and a sidebar that splits them across "today" and "older" shows a
 /// pile of messages instead of the work. Sessions with no directory land in one plain-chats bucket at the
 /// bottom, and put-away sessions in an archived bucket below that.</para>
+///
+/// <para>A group is a place somebody named, not a count of the chats inside it. A workspace that runs out of
+/// sessions keeps its header and says so in one muted line, because the ＋ that starts the next chat and the ⋯ that
+/// repairs a moved directory both live on that header — hiding the group would hide the only ways back. An empty
+/// session is the other half of the same rule: it is not a conversation, so it no longer buys itself a row.</para>
 /// </summary>
 public partial class ChatSidebar : UserControl
 {
@@ -141,13 +146,16 @@ public partial class ChatSidebar : UserControl
     /// can be acted on: <see cref="SessionGroupKey.Recent"/>, <see cref="SessionGroupKey.Workspaces"/> and
     /// <see cref="SessionGroupKey.Archived"/> are buckets of many directories, of none, or a heading over other
     /// groups, so they get no path to edit. <c>Depth</c> is how far the header and its rows sit in from the edge.
+    /// <c>Registered</c> says the group exists because somebody named the directory, not because a session is in it —
+    /// which is the difference between an empty bucket that means 「暂无会话」 and one that means nothing to show.
     /// </summary>
     private sealed record SessionBucket(
         string Key,
         string Label,
         string? WorkspaceRoot,
         ConversationSummary[] Sessions,
-        int Depth = 0);
+        int Depth = 0,
+        bool Registered = false);
 
     private void RefreshConversationList()
     {
@@ -166,7 +174,7 @@ public partial class ChatSidebar : UserControl
         // the store's own — pinned rows stay at the front, then most recently updated — and grouping a list that
         // is already sorted keeps that order without sorting twice. A pinned session pulls its own workspace to
         // the front of the heading, which is all pinning can mean now there is no separate list for it.
-        var workspaces = WorkspaceBuckets(live);
+        var workspaces = WorkspaceBuckets(live, query);
         ConversationList.Children.Add(BuildGroupHeader(new SessionBucket(
             SessionGroupKey.Workspaces, HubStrings.Get("GroupWorkspaces"), null, [])));
         if (workspaces.Count > 0)
@@ -187,12 +195,21 @@ public partial class ChatSidebar : UserControl
 
         void AddGroup(SessionBucket bucket, string? openId)
         {
-            if (bucket.Sessions.Length == 0) return;
+            // A workspace the user named keeps its group with nothing in it; every other bucket is a reading of the
+            // sessions that fill it, and an empty reading has nothing to show.
+            if (bucket.Sessions.Length == 0 && !bucket.Registered) return;
             ConversationList.Children.Add(BuildGroupHeader(bucket));
             // Collapsed means the rows are not built at all. The list is destroyed on every repaint anyway, so
             // hiding them with IsVisible would leave their height in the scroll extent and a folded sidebar that
-            // still scrolls like an open one — and every accessor that counts rows would be counting a lie.
+            // still scrolls like an open one — and every accessor that counts rows would be counting a lie. The
+            // placeholder goes with them for the same reason: a folded group shows neither.
             if (IsGroupCollapsed(bucket.Key)) return;
+            if (bucket.Sessions.Length == 0)
+            {
+                ConversationList.Children.Add(BuildEmptyGroupNotice(bucket));
+                return;
+            }
+
             foreach (var summary in bucket.Sessions)
             {
                 ConversationList.Children.Add(BuildSessionRow(summary, openId,
@@ -200,7 +217,11 @@ public partial class ChatSidebar : UserControl
             }
         }
 
-        if (live.Length == 0 && archived.Length == 0)
+        // Nothing anywhere to look at: no group is painted, and no workspace section is folded away hiding one.
+        // Every group already says what it holds, so this sentence must not appear beside one — and a fold is not
+        // the same as emptiness, which is why the workspace list is part of the test and not only the two session
+        // lists (a group exists here only with a session in it or a designation behind it).
+        if (live.Length == 0 && archived.Length == 0 && workspaces.Count == 0)
         {
             ConversationList.Children.Add(new TextBlock
             {
@@ -227,10 +248,19 @@ public partial class ChatSidebar : UserControl
     /// group is placed by its most recent session rather than by an alphabet that nobody chose. Two spellings of
     /// one directory are one bucket (<see cref="WorkspacePaths.CanonicalRoot"/>), which is the whole reason the
     /// key is a key and not the path itself.
+    ///
+    /// <para>A designated workspace with no sessions left joins the list after every group that has work in it,
+    /// newest designation first: it cannot be placed by recency (nothing has happened there) and it must never
+    /// outrank a directory that is busy. Search leaves them out entirely — the query asks which <i>conversations</i>
+    /// match, and a group with no conversations can never answer it.</para>
     /// </summary>
-    private static List<SessionBucket> WorkspaceBuckets(IEnumerable<ConversationSummary> live)
+    private List<SessionBucket> WorkspaceBuckets(ConversationSummary[] live, string query)
     {
-        var buckets = new List<SessionBucket>();
+        // The order the groups are painted in, and where each one's members are. Collected in one pass and read
+        // back in the second, so a group's <i>reason for existing</i> (a session named the directory, or somebody
+        // designated it) is a separate fact from the members it happens to have — conflating them is how a
+        // designation with no sessions behind it reaches for a bucket that was never filled.
+        var order = new List<(string Key, string Label, string? Root, bool Registered)>();
         var byKey = new Dictionary<string, List<ConversationSummary>>(StringComparer.Ordinal);
         foreach (var summary in live.Where(s => !string.IsNullOrWhiteSpace(s.WorkspaceRoot)))
         {
@@ -239,14 +269,40 @@ public partial class ChatSidebar : UserControl
             if (!byKey.TryGetValue(key, out var members))
             {
                 members = byKey[key] = [];
-                buckets.Add(new SessionBucket(key, SessionGroupKey.LabelFor(summary.WorkspaceRoot),
-                    summary.WorkspaceRoot, [], Depth: 1));
+                order.Add((key, SessionGroupKey.LabelFor(summary.WorkspaceRoot), summary.WorkspaceRoot, false));
             }
+
             members.Add(summary);
         }
 
-        return [.. buckets.Select(bucket => bucket with { Sessions = [.. byKey[bucket.Key]] })];
+        if (query.Length == 0)
+        {
+            foreach (var root in Enumerable.Reverse(_chat.Workspaces))
+            {
+                var key = SessionGroupKey.Workspace(root);
+                if (key is null || byKey.ContainsKey(key)) continue;
+                order.Add((key, SessionGroupKey.LabelFor(root), root, Registered: true));
+            }
+        }
+
+        return [.. order.Select(entry => new SessionBucket(entry.Key, entry.Label, entry.Root,
+            byKey.TryGetValue(entry.Key, out var members) ? [.. members] : [], Depth: 1, entry.Registered))];
     }
+
+    /// <summary>
+    /// The single line a workspace with no sessions shows under its header. A text block rather than a row, because
+    /// it is the group's state and not something to open: the list's counters read rows, menus and titles off the
+    /// elements that carry them, and an empty group has to say so without any of them learning a new meaning.
+    /// </summary>
+    private static TextBlock BuildEmptyGroupNotice(SessionBucket bucket) => new()
+    {
+        Text = HubStrings.Get("NoWorkspaceSessions"),
+        Classes = { "session-empty" },
+        TextWrapping = TextWrapping.Wrap,
+        // A row's title starts at its header's indent plus the session button's own 10 of padding, so the notice
+        // lines up with the text it stands in for rather than with the fold arrow beside it.
+        Margin = new Thickness(bucket.Depth * 12 + 10, 1, 16, 3),
+    };
 
     /// <summary>
     /// A group's own line: the fold on the left, then ＋ and ⋯ on the right — creating is the more common act of
@@ -412,6 +468,11 @@ public partial class ChatSidebar : UserControl
     /// What a group offers. Only a workspace has actions of its own: it is the one bucket that names a place, so
     /// it is the one bucket whose place can be wrong. 全部恢复 is the archived group's, because putting months
     /// away should be undoable in one click rather than one hundred.
+    ///
+    /// <para>归档 and 移除 are each other's opposite, so a group gets one of them: putting away a workspace with
+    /// nothing in it would confirm 「它的 0 个对话」, and removing one that has sessions would be a lie — the group is
+    /// re-derived from those sessions on the next repaint either way, so the entry that keeps it on screen is not
+    /// what is holding it up.</para>
     /// </summary>
     private List<MenuItem> GroupMenuItems(SessionBucket bucket)
     {
@@ -438,14 +499,38 @@ public partial class ChatSidebar : UserControl
         };
         items.Add(edit);
 
-        var archive = new MenuItem { Header = HubStrings.Get("ArchiveWorkspace") };
-        archive.Click += async (_, _) =>
+        if (bucket.Sessions.Length > 0)
+        {
+            var archive = new MenuItem { Header = HubStrings.Get("ArchiveWorkspace") };
+            archive.Click += async (_, _) =>
+            {
+                CloseGroupMenu();
+                await ArchiveWorkspaceAsync(bucket);
+            };
+            items.Add(archive);
+            return items;
+        }
+
+        var remove = new MenuItem { Header = HubStrings.Get("RemoveWorkspace") };
+        remove.Click += (_, _) =>
         {
             CloseGroupMenu();
-            await ArchiveWorkspaceAsync(bucket);
+            ForgetWorkspace(bucket, root);
         };
-        items.Add(archive);
+        items.Add(remove);
         return items;
+    }
+
+    /// <summary>
+    /// Takes a finished-with workspace off the list. No confirmation: the one line it deletes is the designation,
+    /// every conversation keeps its record, and pressing ＋ on that directory again (or pointing any session at it)
+    /// brings the group straight back — which is the undo a dialog would only be in the way of.
+    /// </summary>
+    private void ForgetWorkspace(SessionBucket bucket, string root)
+    {
+        if (!_chat.ForgetWorkspace(root)) return;
+        StatusReporter?.Invoke(string.Format(CultureInfo.CurrentCulture,
+            HubStrings.Get("WorkspaceRemovedFormat"), bucket.Label));
     }
 
     /// <summary>Menus opened from a group header are the only ones this section shows, so one field is enough to
@@ -470,8 +555,14 @@ public partial class ChatSidebar : UserControl
             ReportWorkspaceRejection(refusal, typed);
             return;
         }
-        StatusReporter?.Invoke(string.Format(CultureInfo.CurrentCulture, HubStrings.Get("WorkspaceMovedFormat"),
-            SessionGroupKey.LabelFor(typed), moved, typed));
+
+        // A workspace with no sessions left has no conversations to count, so the strip says what changed instead
+        // of reporting zero of them: the group's own path is what the person just corrected.
+        StatusReporter?.Invoke(moved > 0
+            ? string.Format(CultureInfo.CurrentCulture, HubStrings.Get("WorkspaceMovedFormat"),
+                SessionGroupKey.LabelFor(typed), moved, typed)
+            : string.Format(CultureInfo.CurrentCulture, HubStrings.Get("WorkspacePathUpdatedFormat"),
+                SessionGroupKey.LabelFor(currentRoot), typed));
     }
 
     private async System.Threading.Tasks.Task ArchiveWorkspaceAsync(SessionBucket bucket)
@@ -1039,11 +1130,7 @@ public partial class ChatSidebar : UserControl
     /// what "pinned stays at the front of its own group" is a claim about, and no count can show it.</summary>
     internal string[] GroupRowIdsForCheck(string key)
     {
-        var header = ConversationList.Children
-            .OfType<Grid>()
-            .LastOrDefault(grid => grid.Classes.Contains("group-row")
-                                    && grid.Children.OfType<ToggleButton>().Any(toggle =>
-                                        string.Equals(toggle.Tag?.ToString(), key, StringComparison.Ordinal)));
+        var header = FindGroupHeader(key);
         if (header is null) return [];
         var start = ConversationList.Children.IndexOf(header);
         var ids = new List<string>();
@@ -1055,6 +1142,69 @@ public partial class ChatSidebar : UserControl
         }
 
         return [.. ids];
+    }
+
+    private Grid? FindGroupHeader(string key) => ConversationList
+        .Children
+        .OfType<Grid>()
+        .LastOrDefault(grid => grid.Classes.Contains("group-row")
+                               && grid.Children.OfType<ToggleButton>().Any(toggle =>
+                                   string.Equals(toggle.Tag?.ToString(), key, StringComparison.Ordinal)));
+
+    /// <summary>
+    /// The text of a group's 「暂无会话」 line, or empty when the group shows rows instead. Both halves matter: an
+    /// empty workspace that says nothing is the bug, and a group that has sessions but wears the notice anyway is the
+    /// same bug read from the other side. Read as text rather than as a flag, so a placeholder that landed under the
+    /// wrong header cannot answer for the one being asserted on.
+    /// </summary>
+    internal string GroupPlaceholderForCheck(string key) => GroupNotice(key)?.Text ?? "";
+
+    /// <summary>
+    /// A picture of one group's notice as it is actually drawn, or <c>null</c> when that group has none to
+    /// photograph. The object graph proves the sentence is in the tree; only a frame proves the style resolved and
+    /// the ink landed where somebody can read it — a tertiary brush that failed to resolve paints text in the colour
+    /// of the plate behind it and passes every property check.
+    /// </summary>
+    internal FrameStats? CaptureGroupNoticeForCheck(string key, string path)
+    {
+        var notice = GroupNotice(key);
+        return notice is null ? null : SmokeCapture.Capture(notice, path);
+    }
+
+    private TextBlock? GroupNotice(string key)
+    {
+        var header = FindGroupHeader(key);
+        if (header is null) return null;
+        for (var i = ConversationList.Children.IndexOf(header) + 1;
+             i < ConversationList.Children.Count && ConversationList.Children[i] is not Grid; i++)
+        {
+            if (ConversationList.Children[i] is TextBlock notice && notice.Classes.Contains("session-empty"))
+                return notice;
+        }
+
+        return null;
+    }
+
+    /// <summary>The whole-list notice's text, or empty when there is none. One group's placeholder and the sidebar's
+    /// own "nothing here" sentence are different statements, and an assertion has to be able to prove only one of
+    /// them is on screen at a time.</summary>
+    internal string EmptyListNoticeForCheck => ConversationList.Children
+        .OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("muted"))?.Text ?? "";
+
+    /// <summary>
+    /// Clicks 移除工作区 in a group's ⋯ and answers whether the group left the list. Both halves, because a menu item
+    /// that closes its flyout and forgets to act is the failure being guarded against — and the group has to go with
+    /// its placeholder, not stay behind as an empty header.
+    /// </summary>
+    internal bool RemoveWorkspaceFromMenuForCheck(string key)
+    {
+        var item = GroupMenuButtons(key)
+            .SelectMany(button => (button.Tag as MenuFlyout)?.Items.OfType<MenuItem>() ?? [])
+            .FirstOrDefault(candidate => string.Equals(candidate.Header?.ToString(),
+                HubStrings.Get("RemoveWorkspace"), StringComparison.Ordinal));
+        if (item is null) return false;
+        item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        return !GroupHeaderTagsForCheck().Contains(key);
     }
 
     /// <summary>

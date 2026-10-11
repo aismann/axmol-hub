@@ -30,6 +30,7 @@ public sealed class ChatWorkspace : IDisposable
     private readonly ProviderStore _providers;
     private readonly CredentialStore _credentials;
     private readonly ConversationRegistry _sessions;
+    private readonly WorkspaceStore _workspaces;
     private readonly ModelListStore _modelLists;
     private readonly ISecretStore? _secrets;
     private readonly string _dataRoot;
@@ -79,6 +80,11 @@ public sealed class ChatWorkspace : IDisposable
     {
         _dataRoot = dataRoot;
         _sessions = new ConversationRegistry(new ConversationStore(dataRoot));
+        // Which directories are workspaces is state of this data root, so it is loaded beside the sessions that
+        // work in them. Adopting the roots the existing sessions name happens once, and only while the registry
+        // file does not exist — see WorkspaceStore.SeedFrom for why a backfill may not re-run on every start.
+        _workspaces = new WorkspaceStore(dataRoot);
+        _workspaces.SeedFrom(_sessions.List().Select(summary => summary.WorkspaceRoot));
 
         // The secret store is platform-specific, and where a platform has no backend it is deliberately left
         // unimplemented rather than given a plaintext fallback. A failure here must not take the whole app down —
@@ -153,14 +159,13 @@ public sealed class ChatWorkspace : IDisposable
     public bool SupportsReasoningEffort
         => SelectedChatModel is { } choice && ModelCatalog.SupportsReasoningEffort(choice.Provider, choice.ModelName);
 
-    /// <summary>Whether a session earns a row. A plain new chat is the composer's blank state rather than a
-    /// conversation, so it waits for its first message — a session that only exists because someone clicked ＋ is
-    /// not history. A draft pointed at a directory is the exception, because the ＋ that made it was a workspace
-    /// ＋: the directory is the thing that was asked for, and a group that stayed invisible until the user typed
-    /// something read as a button that did nothing. A streaming reply has its question stored by then, so no
-    /// session is ever hidden while it is working.</summary>
-    private static bool IsListed(ConversationSummary summary)
-        => summary.MessageCount > 0 || !string.IsNullOrWhiteSpace(summary.WorkspaceRoot);
+    /// <summary>Whether a session earned a row: it has to hold a message. What a ＋ leaves behind is the composer's
+    /// blank state rather than a conversation, and it used to buy its group a place on screen by wearing a row nobody
+    /// had asked for. The group is on screen now because the directory was designated
+    /// (<see cref="ActiveWorkspaceRoot"/> and <see cref="Workspaces"/>), which is a fact about the workspace and not a
+    /// claim that anything has been said. A streaming reply has its question stored by then, so no session is ever
+    /// hidden while it is working.</summary>
+    private static bool IsListed(ConversationSummary summary) => summary.MessageCount > 0;
 
     /// <summary>The history the sidebar lists: every <see cref="IsListed"/> session still being looked at.
     /// Archived sessions are the other half: they leave this list and come back through
@@ -170,11 +175,15 @@ public sealed class ChatWorkspace : IDisposable
 
     /// <summary>The sessions the user put away, newest first. A separate list rather than a flag on the one above
     /// because the sidebar shows them in a group of their own, and something with no way back on screen is
-    /// indistinguishable from something deleted — which this is deliberately not. The same listing rule applies
-    /// here, so putting a workspace's only draft away leaves a row to bring back rather than a group that
-    /// vanished with nothing left to click.</summary>
+    /// indistinguishable from something deleted — which this is deliberately not.
+    ///
+    /// <para>The listing rule above deliberately does <b>not</b> apply here. It keeps "nothing yet" out of
+    /// <i>history</i>; this list is the way back, and the only way a session with nothing in it reaches it is
+    /// <see cref="ArchiveWorkspace"/> — where that draft is the whole record that the workspace was put away. Apply
+    /// the rule here and putting a workspace's only draft away leaves an empty group with nothing to restore.</para>
+    /// </summary>
     public IReadOnlyList<ConversationSummary> ArchivedConversations
-        => [.. _sessions.List().Where(summary => IsListed(summary) && summary.Archived)];
+        => [.. _sessions.List().Where(summary => summary.Archived)];
 
     public bool SelectMode(string mode)
     {
@@ -585,6 +594,38 @@ public sealed class ChatWorkspace : IDisposable
     /// sandbox is a fact about one job, not a preference.</summary>
     public string? ActiveWorkspaceRoot => _active is { } session ? WorkspaceRootFor(session.Id) : _selectedWorkspaceRoot;
 
+    /// <summary>
+    /// The directories the user has designated as workspaces, oldest first — the list the sidebar hangs a group on.
+    /// It is kept apart from the sessions that work in those directories on purpose: a group is a place somebody
+    /// named, and it outlives the last chat that used it. An empty one shows a 「暂无会话」 line instead of leaving
+    /// with its sessions, which is also what leaves 编辑路径 on screen to repair a directory that moved.
+    /// </summary>
+    public IReadOnlyList<string> Workspaces => _workspaces.Roots;
+
+    /// <summary>
+    /// Takes a directory off the workspace list, which is the only way a group leaves the sidebar. Nothing else is
+    /// touched — no session, no transcript — and the group comes back as soon as a session is pointed there again or
+    /// ＋ is pressed under it. That reversibility is why it asks for no confirmation.</summary>
+    public bool ForgetWorkspace(string root)
+    {
+        if (!_workspaces.Remove(root)) return false;
+        Changed?.Invoke();
+        return true;
+    }
+
+    /// <summary>Self-check cleanup: the suite registers fixture directories by the handful and has to be able to
+    /// hand the next section the empty list it asserts on.</summary>
+    internal void ForgetAllWorkspacesForCheck() => _workspaces.Clear();
+
+    /// <summary>
+    /// Records a directory as a workspace. Every door a session gets a working directory through ends up here — the
+    /// picker, the composer's chip, <c>set_workspace</c> from the model, a fork, a whole group re-pathed — so the
+    /// registry cannot fall behind the sessions it describes. A blank path designates nothing, and removing an entry
+    /// is never a side effect of one of these: only <see cref="ForgetWorkspace"/> does that, because only a person
+    /// deciding the workspace is finished with should be able to.
+    /// </summary>
+    private void RegisterWorkspace(string? root) => _workspaces.Add(root);
+
     /// <summary>Points the session on screen at a directory, or records the pick for the next one when there is
     /// none. Null clears it, which puts every file and command tool back to refusing.</summary>
     /// <returns>Null when the directory was accepted, otherwise why it was not. A verdict rather than a sentence
@@ -606,7 +647,10 @@ public sealed class ChatWorkspace : IDisposable
         if (_active is { } session) SetWorkspaceRoot(session.Id, full);
         else
         {
+            // A folder picked in the chip while nothing is on screen is a designation, not just a pending value: it
+            // names the workspace the next session will work in, and the group the user asked for is that directory.
             _selectedWorkspaceRoot = full;
+            RegisterWorkspace(full);
             Changed?.Invoke();
         }
 
@@ -645,6 +689,9 @@ public sealed class ChatWorkspace : IDisposable
     {
         var normalized = string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
         if (!_sessions.TryUpdate(conversationId, opened => opened.WorkspaceRoot = normalized)) return false;
+        // The session took the directory, so the directory is now a workspace. Clearing one (null) never takes a
+        // workspace away: other sessions may still work there, and only ForgetWorkspace decides a place is finished.
+        RegisterWorkspace(normalized);
         Changed?.Invoke();
         return true;
     }
@@ -653,7 +700,13 @@ public sealed class ChatWorkspace : IDisposable
     {
         await ApplyOnUiAsync(() =>
         {
-            if (_sessions.TryUpdate(conversationId, opened => opened.WorkspaceRoot = path)) Changed?.Invoke();
+            if (_sessions.TryUpdate(conversationId, opened => opened.WorkspaceRoot = path))
+            {
+                // This door bypasses SetWorkspaceRoot, so it designates for itself: a directory the assistant was
+                // told to work in is a place the user approved on a card.
+                RegisterWorkspace(path);
+                Changed?.Invoke();
+            }
         }).ConfigureAwait(false);
         Audit(conversationId, $"Workspace root: {path}");
         return $"Workspace set to {path}. File and command tools are confined to it.";
@@ -2215,6 +2268,10 @@ public sealed class ChatWorkspace : IDisposable
     /// can see just because ＋ was pressed somewhere else. An unclaimed draft is fair game for any group, which is
     /// what keeps repeated clicks from stacking up sessions that hold nothing. An archived session is never handed
     /// back here, however empty it is.
+    ///
+    /// <para>This is also the only way back to a claimed draft: it holds no message, so it is not
+    /// <see cref="IsListed"/> and no row leads to it. Pressing ＋ under that group is what hands the same blank
+    /// session over again — which is the point of matching on the directory rather than handing out a new one.</para>
     /// </summary>
     private ConversationSummary? FindEmptyDraft(string? workspaceRoot)
     {
@@ -2482,12 +2539,13 @@ public sealed class ChatWorkspace : IDisposable
 
     /// <summary>
     /// Archives or restores every session that works in one directory, and answers how many it actually changed.
-    /// The workspace has no record of its own to mark, so putting one away means putting its sessions away — and
-    /// when the last of them goes, the group is gone with them, because a group is what its sessions make it.
-    /// A workspace holding only its starting draft is put away by the same act rather than a special case: that
-    /// draft is the group, and a ⋯ that answered with nothing for the one workspace the user just added would be
-    /// a menu item that only looks broken. Restoring works the same way from the archived list: the directory the
-    /// sessions still name is the group.
+    /// Putting a workspace away has never meant marking the workspace — it means putting its sessions away, and the
+    /// group is what those sessions (or, now, the registry entry) make it. A workspace holding only its starting
+    /// draft is put away by the same act rather than a special case: that draft is everything the group holds, and a
+    /// ⋯ that answered with nothing for the one workspace the user just added would be a menu item that only looks
+    /// broken. Restoring works the same way back from the archived list — and since the designation outlives the
+    /// sessions, the group does not have to come back to exist: it stays listed and reads 「暂无会话」 until the
+    /// draft is restored into it.
     /// </summary>
     public int ArchiveWorkspace(string? workspaceRoot, bool archived)
     {
@@ -2557,7 +2615,11 @@ public sealed class ChatWorkspace : IDisposable
         // the next session would start somewhere the user has just stopped pointing at.
         if (SessionGroupKey.Workspace(_selectedWorkspaceRoot) == key) _selectedWorkspaceRoot = full;
 
-        if (moved > 0) Changed?.Invoke();
+        // The registry entry moves with the group rather than being re-derived from the sessions: a workspace that
+        // has no sessions left still has a path the person in front of the screen just corrected, and it has to
+        // repaint for that.
+        var renamed = _workspaces.Replace(fromRoot, full);
+        if (moved > 0 || renamed) Changed?.Invoke();
         return (moved, null);
     }
 
@@ -2641,8 +2703,11 @@ public sealed class ChatWorkspace : IDisposable
         return baseTitle + " (" + (highest + 1) + ")";
     }
 
-    /// <summary>Drops every conversation that never received a message. Starting a new session writes an
-    /// empty one immediately, so without this the sidebar slowly fills with abandoned "new chat" rows.</summary>
+    /// <summary>Drops every conversation that never received a message. Starting a new session writes an empty one
+    /// immediately, so without this the store slowly fills with drafts nobody meant to keep. They stopped filling the
+    /// sidebar as well — an empty session is not <see cref="IsListed"/> — but the record still has to go, and a
+    /// workspace it used to anchor does not go with it: that lives in <see cref="WorkspaceStore"/>, which is exactly
+    /// what the leftover draft could never be trusted to hold.</summary>
     public int PruneEmptyConversations()
     {
         var emptyIds = _sessions.List()
@@ -3158,7 +3223,10 @@ public sealed class ChatWorkspace : IDisposable
     private void PersistPreferences(HubPreferences preferences)
     {
         // Written through the shell's store rather than a copy this class keeps: the settings file has one owner,
-        // and a second writer would be a second version of the truth about what the user agreed to.
+        // and a second writer would be a second version of the truth about what the user agreed to. It stays the
+        // only owner, which is also why the workspace registry is not a preference: which directories are
+        // workspaces is state of this data root (<see cref="WorkspaceStore"/>), and hub-settings.json is shared
+        // across roots — a list kept there would follow the settings file to a different project.
         PreferencesPersist?.Invoke(preferences);
     }
 

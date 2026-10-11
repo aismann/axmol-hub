@@ -1302,13 +1302,15 @@ public partial class ShellCheckWindow : Window
 
         // Group ordering is what this asserts, so the list must be emptied first: a session left over from
         // the assistant group is itself a group, and it would answer on behalf of "the order is wrong",
-        // keeping the first assertion forever blind to the problem.
+        // keeping the first assertion forever blind to the problem. The registry goes with it — the directories
+        // those fixtures pointed their sessions at are workspaces now, and they outlive the sessions deleted above.
         foreach (var leftover in chat.Conversations.Select(summary => summary.Id).ToArray())
         {
             chat.DeleteConversation(leftover);
         }
         chat.RestoreArchivedSessions();
         chat.PruneEmptyConversations();
+        chat.ForgetAllWorkspacesForCheck();
         sidebar.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -1326,6 +1328,13 @@ public partial class ShellCheckWindow : Window
               && chat.ActiveConversation?.Id == priorWorkspace.Id
               && chat.WorkspaceRootFor(priorWorkspace.Id) == System.IO.Path.GetFullPath(workspaceBase),
             "拒绝 Hub 数据目录不会打开会话或改动当前工作目录");
+        // The refusal goes all the way: a directory Hub will not let anybody work in must not land on the workspace
+        // list either, or it would show as a group whose ＋ can never be used.
+        Check(!chat.Workspaces.Any(known => SessionGroupKey.Workspace(known) == SessionGroupKey.Workspace(scratchRoot)),
+            "拒绝一个受保护目录也不会把它记成工作区（实际登记：" + string.Join(" / ", chat.Workspaces) + "）");
+        // workspaceBase is only the folder holding these fixtures. The session that named it is about to go, so it
+        // is forgotten here rather than left to answer for every group count below.
+        chat.ForgetWorkspace(workspaceBase);
         chat.DeleteConversation(priorWorkspace.Id);
         chat.PruneEmptyConversations();
         sidebar.Reload();
@@ -1345,25 +1354,48 @@ public partial class ShellCheckWindow : Window
             "从根节点选择现有目录后打开的空会话绑定到该工作区（实际目录 "
             + (createdWorkspace is null ? "（没有建出来）" : chat.WorkspaceRootFor(createdWorkspace.Id) ?? "（无目录）")
             + "）");
-        // The ＋ <em>was</em> the request: "make this folder a workspace". A group that only shows up once the user
-        // types something makes that button look dead, so the draft alone has to hold the header up — and it has
-        // to hold it up after a restart as well, which is what reading the store back off disk proves. An empty
-        // draft with no directory stays unlisted, so this is the workspace case specifically, not a licence for
-        // the sidebar to fill up with abandoned chats.
+        // The ＋ <em>was</em> the request: "make this folder a workspace". What answers it now is the group itself —
+        // a header that stays on screen with one line saying 「暂无会话」 — and not a row for a conversation nobody
+        // has started. The draft still exists and still belongs to that directory, which is what lets the ＋ hand the
+        // very same one back instead of stacking a second blank session.
         sidebar.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         var draftOnlyTags = sidebar.GroupHeaderTagsForCheck();
+        var draftedAgain = sidebar.NewSessionFromGroupForCheck(keyA);
         Check(draftOnlyTags.Contains(keyA)
-              && sidebar.GroupRowIdsForCheck(keyA).SequenceEqual([createdWorkspace?.Id ?? ""])
+              && sidebar.GroupRowIdsForCheck(keyA).Length == 0
+              && sidebar.SessionRowCountForCheck == 0
+              && sidebar.GroupPlaceholderForCheck(keyA) == HubStrings.Get("NoWorkspaceSessions")
               && new ConversationStore(shell.Workspace.Store.Root).List()
                   .Any(summary => summary.Id == createdWorkspace?.Id && summary.MessageCount == 0
-                                  && SessionGroupKey.Workspace(summary.WorkspaceRoot) == keyA),
-            "只有一条空草稿的工作区当场成组，重开列表后仍在（实际分组："
-            + string.Join(" / ", draftOnlyTags) + "）");
+                                  && SessionGroupKey.Workspace(summary.WorkspaceRoot) == keyA)
+              && draftedAgain == createdWorkspace?.Id,
+            "＋ 建的空草稿不占会话行，但它的工作区当场成组并显一行「暂无会话」，再点 ＋ 拿回的还是同一条（实际分组："
+            + string.Join(" / ", draftOnlyTags) + "，＋ 返回 " + RootOf(draftedAgain) + "）");
         if (createdWorkspace is not null) chat.DeleteConversation(createdWorkspace.Id);
         chat.PruneEmptyConversations();
         sidebar.Reload();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        // The state this whole change exists for: the workspace ran out of sessions and did not take its entry
+        // points with it. No session names the directory any more, so anything left on screen comes from the
+        // registry and nothing else.
+        var lastSessionGone = sidebar.GroupHeaderTagsForCheck();
+        Check(lastSessionGone.Contains(keyA)
+              && sidebar.GroupPlaceholderForCheck(keyA) == HubStrings.Get("NoWorkspaceSessions")
+              && sidebar.SessionRowCountForCheck == 0
+              && !new ConversationStore(shell.Workspace.Store.Root).List()
+                  .Any(summary => SessionGroupKey.Workspace(summary.WorkspaceRoot) == keyA),
+            "删掉工作区里唯一那条会话后分组不消失，只留一行「暂无会话」（实际分组："
+            + string.Join(" / ", lastSessionGone) + "）");
+        // And it survives the process: a restarted Hub reads the designation off disk, not off the sessions.
+        using var reopenedRegistry = new ChatWorkspace(shell.Workspace.Store.Root);
+        Check(reopenedRegistry.Workspaces.Any(known => SessionGroupKey.Workspace(known) == keyA)
+              && !reopenedRegistry.Conversations.Any(summary =>
+                  SessionGroupKey.Workspace(summary.WorkspaceRoot) == keyA),
+            "换一个 ChatWorkspace 重开同一数据根，没有会话的工作区照样登记在册（实际登记："
+            + string.Join(" / ", reopenedRegistry.Workspaces) + "）");
 
         Conversation Seeded(string? root, string title)
         {
@@ -1502,8 +1534,10 @@ public partial class ShellCheckWindow : Window
             "归档一条对话后它离开实时列表与计数（实际 " + sidebar.ConversationCount + "/" + liveBefore + " 项）");
         Check(sidebar.GroupHeaderTagsForCheck().Contains(SessionGroupKey.Archived)
               && sidebar.GroupCollapsedForCheck(SessionGroupKey.Archived)
-              && !sidebar.GroupHeaderTagsForCheck().Contains(keyB),
-            "归档分组排在末尾并默认折起；该目录下的会话都被归档后，其目录分组消失，Workspace 根节点保留");
+              && sidebar.GroupHeaderTagsForCheck().Contains(keyB)
+              && sidebar.GroupPlaceholderForCheck(keyB) == HubStrings.Get("NoWorkspaceSessions")
+              && sidebar.GroupRowIdsForCheck(keyB).Length == 0,
+            "归档分组排在末尾并默认折起；该目录下的会话都被归档后，目录分组仍在，只剩一行「暂无会话」，Workspace 根节点保留");
         Check(sidebar.ToggleGroupForCheck(SessionGroupKey.Archived)
               && sidebar.GroupOfForCheck(bOne.Id) == SessionGroupKey.Archived,
             "展开归档分组能看到被归档的那条对话");
@@ -1519,16 +1553,19 @@ public partial class ShellCheckWindow : Window
 
         // ── Archive: a whole workspace ──
         Check(sidebar.ArchiveWorkspaceForCheck(workspaceA, archived: true) == 2
-              && !sidebar.GroupHeaderTagsForCheck().Contains(keyA)
+              && sidebar.GroupHeaderTagsForCheck().Contains(keyA)
+              && sidebar.GroupPlaceholderForCheck(keyA) == HubStrings.Get("NoWorkspaceSessions")
               && sidebar.ConversationCount == liveBefore - 2,
-            "归档工作区连带归档它的两个对话，该分组随之消失（实际剩余 " + sidebar.ConversationCount + " 项）");
+            "归档工作区连带归档它的两个对话，分组不收掉，改显一行「暂无会话」（实际剩余 "
+            + sidebar.ConversationCount + " 项）");
         Check(sidebar.GroupMenuTitlesForCheck(SessionGroupKey.Archived)
                   .Contains(HubStrings.Get("RestoreAllArchived")),
             "归档分组提供一次全部恢复，而不是逐条点击");
         Check(sidebar.RestoreAllArchivedFromMenuForCheck(SessionGroupKey.Archived)
               && sidebar.GroupHeaderTagsForCheck().Contains(keyA)
+              && sidebar.GroupPlaceholderForCheck(keyA).Length == 0
               && sidebar.ConversationCount == 5,
-            "全部恢复把整组对话带回原来的工作区分组（实际 " + sidebar.ConversationCount + " 项）");
+            "全部恢复把整组对话带回原来的工作区分组，占位行让位给它们（实际 " + sidebar.ConversationCount + " 项）");
 
         // ── Edit path: the whole group is re-pointed ──
         var refusal = sidebar.RepointWorkspaceForCheck(movedAway, Full("nowhere-at-all"));
@@ -1636,13 +1673,14 @@ public partial class ShellCheckWindow : Window
         // ＋ has its own style class, so it is neither mistaken for the group's third menu item (that comes
         // from reading the ⋯'s Tag) nor mixed into the actions-menu count — the row count expects a menu on
         // every row, and counting one too many or too few is a false pass.
-        // Nine, not eight: the ninth is fromGone, the still-empty draft the last ＋ made under a directory that no
-        // longer exists. It holds a row because a workspace draft does now, which is the whole point of the group
-        // it sits in.
+        // Eight, not nine: the ninth used to be fromGone, the still-empty draft the last ＋ made under a directory
+        // that no longer exists. A draft with nothing in it is no longer a row anywhere — the group it belongs to is
+        // on screen because the directory is designated, and that is where its header's ＋ hands the draft back.
         Check(sidebar.SessionMenuCount == sidebar.SessionRowCountForCheck
-              && sidebar.SessionRowCountForCheck == 9
-              && sidebar.GroupMenuTitlesForCheck(keyA).Length == 2,
-            "分组上的 ＋ 不计入会话行的操作菜单数，也不算成分组的菜单项（实际菜单 "
+              && sidebar.SessionRowCountForCheck == 8
+              && sidebar.GroupMenuTitlesForCheck(keyA).Length == 2
+              && sidebar.GroupPlaceholderForCheck(keyMoved).Length == 0,
+            "分组上的 ＋ 不计入会话行的操作菜单数，也不算成分组的菜单项；有会话的分组不带占位行（实际菜单 "
             + sidebar.SessionMenuCount + " / 行 " + sidebar.SessionRowCountForCheck + "）");
 
         // ── A workspace is a place, not a side effect of the draft that announced it ──
@@ -1681,23 +1719,46 @@ public partial class ShellCheckWindow : Window
         var afterPlain = sidebar.GroupHeaderTagsForCheck();
         Check(plainDraft.Length > 0 && plainDraft != draftC && plainDraft != draftD
               && chat.WorkspaceRootFor(plainDraft) is null
-              && sidebar.GroupRowIdsForCheck(keyC).Contains(draftC)
-              && sidebar.GroupRowIdsForCheck(keyD).Contains(draftD)
-              && afterPlain.Contains(keyC) && afterPlain.Contains(keyD),
-            "「对话 ＋」另起一条无目录草稿，两个工作区分组和它们的草稿都不被挪走（实际目录 "
+              && afterPlain.Contains(keyC) && afterPlain.Contains(keyD)
+              && sidebar.GroupRowIdsForCheck(keyC).Length == 0
+              && sidebar.GroupRowIdsForCheck(keyD).Length == 0
+              && sidebar.GroupPlaceholderForCheck(keyC) == HubStrings.Get("NoWorkspaceSessions")
+              && sidebar.GroupPlaceholderForCheck(keyD) == HubStrings.Get("NoWorkspaceSessions")
+              && chat.WorkspaceRootFor(draftC) == System.IO.Path.GetFullPath(workspaceC)
+              && chat.WorkspaceRootFor(draftD) == System.IO.Path.GetFullPath(workspaceD),
+            "「对话 ＋」另起一条无目录草稿，两个工作区分组各自带着「暂无会话」留在原地，草稿也还认自己的目录（实际目录 "
             + RootOf(plainDraft) + "）");
 
-        // ⋯ on a group whose only session is a draft has to answer too: a menu item that does nothing for the one
-        // workspace the user just added reads as a broken button. The draft is the group, so putting it away is
-        // putting the group away — and it comes back through the same archived list as any other session.
+        // ⋯ on a group whose only session is a draft has to answer too. The draft no longer makes a row, so what the
+        // group holds is the designation — and putting the workspace away still puts that draft in 已归档, where it
+        // is the one record that says the group was not simply removed. The header stays, because the place is still
+        // named, and it reads 「暂无会话」 until the draft comes back.
         Check(sidebar.ArchiveWorkspaceForCheck(workspaceC, archived: true) == 1
-              && !sidebar.GroupHeaderTagsForCheck().Contains(keyC)
+              && sidebar.GroupHeaderTagsForCheck().Contains(keyC)
+              && sidebar.GroupPlaceholderForCheck(keyC) == HubStrings.Get("NoWorkspaceSessions")
               && sidebar.GroupHeaderTagsForCheck().Contains(SessionGroupKey.Archived),
-            "只有一条空草稿的工作区也能整组归档（实际分组："
+            "只有一条空草稿的工作区也能整组归档：分组留在原地显「暂无会话」，草稿进「已归档」可逐条恢复（实际分组："
             + string.Join(" / ", sidebar.GroupHeaderTagsForCheck()) + "）");
         Check(sidebar.RestoreAllArchivedFromMenuForCheck(SessionGroupKey.Archived)
-              && sidebar.GroupHeaderTagsForCheck().Contains(keyC),
-            "全部恢复把撑起分组的那条草稿带回来，分组随之回来");
+              && sidebar.GroupHeaderTagsForCheck().Contains(keyC)
+              && sidebar.GroupPlaceholderForCheck(keyC) == HubStrings.Get("NoWorkspaceSessions")
+              && chat.WorkspaceRootFor(draftC) == System.IO.Path.GetFullPath(workspaceC),
+            "全部恢复把那条草稿带回它自己的分组：分组本来就没走，草稿一条消息都没有，占位行也照旧（实际目录 "
+            + RootOf(draftC) + "）");
+
+        // 已归档 is the way back, so the rule that keeps "nothing yet" out of history deliberately does not reach
+        // it: a draft with no directory and no message still takes a row here once put away. Apply the live rule
+        // here instead and the session is archived invisibly — recoverable only by someone who knows the id.
+        if (sidebar.GroupCollapsedForCheck(SessionGroupKey.Archived)) sidebar.ToggleGroupForCheck(SessionGroupKey.Archived);
+        chat.SetArchived(plainDraft, true);
+        sidebar.Reload();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(chat.ArchivedConversations.Any(summary => summary.Id == plainDraft)
+              && sidebar.GroupRowIdsForCheck(SessionGroupKey.Archived).Contains(plainDraft),
+            "没有目录也没有消息的草稿归档后仍在「已归档」里占一行，看得见才恢复得了（实际归档行："
+            + string.Join(" / ", sidebar.GroupRowIdsForCheck(SessionGroupKey.Archived)) + "）");
+        chat.SetArchived(plainDraft, false);
         // A fixture that could not be created leaves an empty id behind; deleting one would throw and take the
         // assertions after it down with it.
         void DropDraft(string id)
@@ -1710,6 +1771,55 @@ public partial class ShellCheckWindow : Window
         DropDraft(plainDraft);
         chat.PruneEmptyConversations();
         sidebar.Reload();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
+        // ws-c and ws-d are registered groups with nothing in them now, which makes them the state two rules have to
+        // hold for: a search answers which <i>conversations</i> match, so an empty place is not a result and must not
+        // be painted; and a fold takes a group's content with it, placeholder included.
+        sidebar.SearchForCheck("没有这个标题");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(!sidebar.GroupHeaderTagsForCheck().Contains(keyC)
+              && !sidebar.GroupHeaderTagsForCheck().Contains(keyD)
+              && sidebar.GroupPlaceholderForCheck(keyC).Length == 0
+              && sidebar.EmptyListNoticeForCheck == HubStrings.Get("NoSearchResults"),
+            "搜索时空分组不出现，也不带占位行：过滤回答的是会话，不是目录（实际分组："
+            + string.Join(" / ", sidebar.GroupHeaderTagsForCheck()) + "）");
+        sidebar.SearchForCheck("");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(sidebar.GroupHeaderTagsForCheck().Contains(keyC)
+              && sidebar.GroupPlaceholderForCheck(keyC) == HubStrings.Get("NoWorkspaceSessions")
+              && sidebar.ToggleGroupForCheck(keyC)
+              && sidebar.GroupPlaceholderForCheck(keyC).Length == 0,
+            "折起一个没有会话的工作区，占位行也一起收掉（实际分组："
+            + string.Join(" / ", sidebar.GroupHeaderTagsForCheck()) + "）");
+        Check(sidebar.ToggleGroupForCheck(keyC)
+              && sidebar.GroupPlaceholderForCheck(keyC) == HubStrings.Get("NoWorkspaceSessions"),
+            "再点开，占位行回到原来的分组标题下面");
+
+        // And it has to be legible, not merely present: an 11px line in the same ink as the plate behind it answers
+        // every property check above while showing nothing on screen, so this one is put to the renderer.
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var noticeShot = System.IO.Path.Combine(ScratchDirectory.Resolve("workspace-empty"), "notice.png");
+        var noticeStats = sidebar.CaptureGroupNoticeForCheck(keyC, noticeShot);
+        Check(noticeStats is not null && System.IO.File.Exists(noticeShot) && !noticeStats.IsBlank(),
+            "「暂无会话」真的画出来了，不是只在对象图里存在（帧 " + (noticeStats?.Width ?? -1) + "x"
+            + (noticeStats?.Height ?? -1) + "，distinct=" + (noticeStats?.DistinctColors ?? -1) + "）");
+
+        // Removing an empty workspace is the one act that makes a group leave, and it deletes nothing but the
+        // designation: every conversation on disk is still there, including the ones that were working in the group
+        // that just went. This is the moment to prove it — the history is still full here.
+        var recordsBeforeRemoval = new ConversationStore(shell.Workspace.Store.Root).List().Count;
+        Check(recordsBeforeRemoval > 0
+              && sidebar.RemoveWorkspaceFromMenuForCheck(keyD)
+              && !sidebar.GroupHeaderTagsForCheck().Contains(keyD)
+              && sidebar.GroupPlaceholderForCheck(keyD).Length == 0
+              && new ConversationStore(shell.Workspace.Store.Root).List().Count == recordsBeforeRemoval,
+            "从分组 ⋯ 里移除工作区：分组连同占位行一起消失，会话记录一条都没删（实际 " + recordsBeforeRemoval
+            + " 条仍在，分组：" + string.Join(" / ", sidebar.GroupHeaderTagsForCheck()) + "）");
 
         foreach (var id in chat.Conversations.Select(summary => summary.Id).ToArray())
         {
@@ -1718,10 +1828,29 @@ public partial class ShellCheckWindow : Window
         chat.RestoreArchivedSessions();
         chat.PruneEmptyConversations();
         sidebar.Reload();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        // Emptying the history is the case the registry exists for: every designated workspace is still on the list,
+        // each with its one line, and the sidebar's own 「还没有对话。」 stays out of the way because a group already
+        // says what it holds. ws-d was removed above and stays removed through every repaint since.
+        var emptiedTags = sidebar.GroupHeaderTagsForCheck();
+        Check(sidebar.ConversationCount == 0
+              && sidebar.SessionRowCountForCheck == 0
+              && emptiedTags.Contains(keyA) && emptiedTags.Contains(keyB) && emptiedTags.Contains(keyC)
+              && !emptiedTags.Contains(keyD)
+              && sidebar.GroupPlaceholderForCheck(keyA) == HubStrings.Get("NoWorkspaceSessions")
+              && sidebar.EmptyListNoticeForCheck.Length == 0,
+            "自检清理：所有会话删除后每个登记过的工作区都还在，各自带一行「暂无会话」，被移除的那个不回来（实际分组："
+            + string.Join(" / ", emptiedTags) + "）");
+        chat.ForgetAllWorkspacesForCheck();
+        sidebar.Reload();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
         Check(sidebar.ConversationCount == 0
               && sidebar.GroupHeaderTagsForCheck().SequenceEqual([SessionGroupKey.Workspaces])
-              && sidebar.SessionRowCountForCheck == 0,
-            "自检清理：所有会话删除后保留空的 Workspace 根节点");
+              && sidebar.SessionRowCountForCheck == 0
+              && sidebar.EmptyListNoticeForCheck == HubStrings.Get("NoConversations"),
+            "自检清理：工作区全部移除后只剩空的 Workspace 根节点，全局「还没有对话。」重新出现");
     }
 
     /// <summary>
