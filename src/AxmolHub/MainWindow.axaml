@@ -270,6 +270,55 @@
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
     </Style>
 
+    <!-- The download slot when it is asking for a press rather than reporting one. It takes the accent plate
+         because what it offers is the app's own primary action; the queue's reading stays in the quiet strip
+         ink above. Declared after Button.strip:pointerover on purpose — Avalonia resolves the later rule, so
+         hovering an accent slot must not fall back to the transparent plate. -->
+    <Style Selector="Button.strip.accent">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextOnAccent}" />
+      <Setter Property="Background" Value="{DynamicResource Hub.Accent}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.AccentBorder}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="Button.strip.accent:pointerover">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextOnAccent}" />
+      <Setter Property="Background" Value="{DynamicResource Hub.AccentBorder}" />
+    </Style>
+
+    <!-- The queue's popover: same furniture as the assistant's context popover (it hangs off a strip slot and
+         holds a list), on the popup surface rather than the alt surface, because it floats over the page. -->
+    <Style Selector="Border.queue-popover">
+      <Setter Property="Background" Value="{DynamicResource Hub.PopupSurface}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Padding" Value="16,14" />
+      <Setter Property="Width" Value="400" />
+    </Style>
+    <Style Selector="TextBlock.queue-title">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
+    <Style Selector="TextBlock.queue-row-title">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+    <!-- The measurement line: bytes and rate, or a percentage, or an em-dash. Tertiary ink because the row
+         above already says what is being fetched. -->
+    <Style Selector="TextBlock.queue-row-measure">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+    </Style>
+    <Style Selector="TextBlock.queue-row-error">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
     <!-- The viewer's prev/next. Visible at rest, in tertiary ink, brightening on hover: navigation that only
          appears on hover is a dead end in a surface whose whole job is being looked at, which is the same
          exemption the approval card has and for the same reason. -->
@@ -546,9 +595,11 @@
               ClipToBounds="True">
         <DockPanel>
 
-          <!-- Bottom: the brand/host text block opens the settings/appearance popup menu; the gear
-               beside it is unchanged — an independent shortcut straight to the settings page, with
-               the update dot riding on it as before. -->
+          <!-- Bottom: the brand/host text block opens the settings/appearance popup menu; the gear beside it
+               is unchanged — an independent shortcut straight to the settings page. It used to carry a red
+               update dot, and the dot is gone: an update now announces itself where every other download
+               does, in the strip's queue slot, and a dot that only said "go look in Settings" was the same
+               fact told twice, worse. -->
           <StackPanel DockPanel.Dock="Bottom">
             <Border BorderBrush="{DynamicResource Hub.Border}"
                     BorderThickness="0,1,0,0"
@@ -563,17 +614,11 @@
                                FontSize="11" Margin="0,5,0,0" />
                   </StackPanel>
                 </Button>
-                <Grid Grid.Column="1" VerticalAlignment="Center">
-                  <Button x:Name="SettingsButton" Classes="gear">
-                    <Path Classes="icon" Data="{StaticResource Hub.Icon.Settings}"
-                          Width="17" Height="17" Stretch="Uniform" />
-                  </Button>
-                  <Ellipse x:Name="SettingsUpdateDot"
-                           Width="8" Height="8" IsVisible="False"
-                           Fill="{DynamicResource Hub.NotificationDot}"
-                           HorizontalAlignment="Right" VerticalAlignment="Top"
-                           Margin="0,1,1,0" IsHitTestVisible="False" />
-                </Grid>
+                <Button x:Name="SettingsButton" Grid.Column="1" Classes="gear"
+                        VerticalAlignment="Center">
+                  <Path Classes="icon" Data="{StaticResource Hub.Icon.Settings}"
+                        Width="17" Height="17" Stretch="Uniform" />
+                </Button>
               </Grid>
             </Border>
           </StackPanel>
@@ -671,7 +716,7 @@
 
       <!-- Slim status strip. -->
       <Grid x:Name="StatusStrip" Grid.Row="1" Height="28" Margin="18,0,18,0"
-            ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto">
+            ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto">
         <Ellipse Grid.Column="0" Width="6" Height="6"
                  Fill="{DynamicResource Hub.Success}"
                  VerticalAlignment="Center" />
@@ -695,19 +740,31 @@
           <TextBlock x:Name="RepoIndicatorText" TextTrimming="CharacterEllipsis"
                      VerticalAlignment="Center" />
         </Button>
+        <!-- The download queue's one line. It stays dark unless something is moving, failed and unread, or
+             waiting on a decision, because the strip's job is what needs acting on and nothing else — a
+             progress bar for its own sake would be chrome. Pressing it lifts the popover that holds the
+             rows, the measurements and the per-item cancel: the list does not live in the strip, only its
+             count does. Its own Auto column for the same reason as the repository slot above, because a
+             second sentence inside the * column would take trimming room from the operation status. -->
+        <Button x:Name="TransferSlot" Grid.Column="3" Classes="strip"
+                IsVisible="False" Margin="6,0,0,0" MaxWidth="220"
+                VerticalAlignment="Center">
+          <TextBlock x:Name="TransferSlotText" TextTrimming="CharacterEllipsis"
+                     VerticalAlignment="Center" />
+        </Button>
         <!-- Background replies get their own slot rather than overwriting the operation status: a session
              streaming is not a Hub operation, and neither should erase the other. Hidden while nothing is
              answering, so the strip is as bare as it was. It is the only sign of a running reply outside the
              assistant page, where the conversation list — and its per-session dot — is not shown. -->
-        <TextBlock x:Name="ChatRuns" Grid.Column="3"
+        <TextBlock x:Name="ChatRuns" Grid.Column="4"
                    IsVisible="False"
                    Foreground="{DynamicResource Hub.TextSecondary}"
                    FontSize="11" Margin="8,0,0,0"
                    VerticalAlignment="Center" />
         <Button x:Name="CancelButton" Content="{DynamicResource Cancel}"
-                Grid.Column="4" Classes="strip"
+                Grid.Column="5" Classes="strip"
                 IsEnabled="False" Margin="6,0,0,0" />
-        <Button x:Name="LogToggle" Grid.Column="5" Classes="icon-ghost"
+        <Button x:Name="LogToggle" Grid.Column="6" Classes="icon-ghost"
                 Padding="6">
           <Path x:Name="LogToggleChevron" Classes="stroked"
                 Data="{StaticResource Hub.Icon.Chevron}"
@@ -735,6 +792,26 @@
                    AcceptsReturn="True" />
         </Grid>
       </Border>
+
+      <!-- The queue's list, lifted from the strip slot and pointing up at it. It is a Popup rather than a
+           MenuFlyout because Avalonia 12's flyouts host menu items only, and a row here is a title, a
+           measurement and a progress track. Light-dismissed like the assistant's context popover: the list
+           is a reading, and clicking anywhere else is how a person stops reading it.
+           The rows are built in code (MainWindow.RenderTransferRows) from the queue's own items. -->
+      <Popup x:Name="QueuePopup" IsLightDismissEnabled="True">
+        <Border Classes="queue-popover">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Classes="queue-title"
+                       Text="{DynamicResource TransferQueueTitle}" Margin="0,0,0,10" />
+            <!-- Bounded on purpose: the ScrollViewer is the fill child of the DockPanel with a ceiling, so a
+                 long batch scrolls instead of pushing the popover past the window. A StackPanel handed the
+                 list infinite height and the scroll would never engage. -->
+            <ScrollViewer MaxHeight="280">
+              <StackPanel x:Name="QueueRows" Spacing="10" ClipToBounds="True" />
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
+      </Popup>
 
     </Grid>
 

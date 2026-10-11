@@ -17,14 +17,16 @@ namespace AxmolHub;
 /// own. Checking, downloading, and applying are all explicit calls into <see cref="UpdateManager"/>,
 /// and this type is the single place Hub makes them.
 ///
-/// There is deliberately **no modal update prompt**. An available update is surfaced passively: the
-/// shell puts a dot on the Settings nav item (fed by <see cref="Changed"/> / <see cref="Last"/>), and
-/// the check / download / apply all live in the settings page's update card, where download progress
-/// can actually be shown. Two drivers share this service — the silent startup check
-/// (<see cref="CheckAsync"/>) and the settings-page button (also <see cref="CheckAsync"/>, then
-/// <see cref="DownloadAndApplyAsync"/>). With <see cref="AutoDownload"/> on, the download also starts
-/// on its own once a check finds an update; applying stays an explicit restart
-/// (<see cref="ApplyAndRestart"/>).
+/// There is deliberately **no modal update prompt**. An update is surfaced by the same thing that surfaces
+/// every other download: a row in <see cref="TransferQueue"/>, whose slot in the status strip counts it and
+/// whose popover carries the percentage. The settings page keeps what is not progress — the channel, the
+/// auto-download switch, and the version this would move to.
+///
+/// Two drivers share this service: the silent startup check (<see cref="CheckAsync"/>) and the settings-page
+/// button (also <see cref="CheckAsync"/>, then <see cref="DownloadAndApplyAsync"/>). With
+/// <see cref="AutoDownload"/> on, the download starts on its own once a check finds an update; applying stays
+/// an explicit restart (<see cref="ApplyAndRestart"/>), which the strip's slot offers as soon as the bytes
+/// have landed.
 ///
 /// Everything is deliberately fire-and-forget friendly: no call blocks <c>Main</c>, and failures are
 /// swallowed into a result so the UI can decide what to say. A broken update check must never take
@@ -339,9 +341,20 @@ internal sealed class UpdateService
     {
         if (Download == DownloadState.Ready && Last?.Update is { } update)
         {
+            // Verification hook: a self-check that really applied would take the process running the
+            // assertions with it, so the suite installs an observer and reads the decision instead.
+            if (ApplyOverrideForCheck is { } observer)
+            {
+                observer(update);
+                return;
+            }
+
             CreateManager().ApplyUpdatesAndRestart(update.TargetFullRelease);
         }
     }
+
+    /// <summary>Set by <c>--verify-shell</c> to observe a restart decision without making one.</summary>
+    internal Action<UpdateInfo>? ApplyOverrideForCheck { get; set; }
 
     /// <summary>
     /// Puts this update's download on the shared <see cref="TransferQueue"/> rather than on a cancellation

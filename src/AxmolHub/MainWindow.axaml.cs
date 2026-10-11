@@ -74,12 +74,13 @@ public partial class MainWindow : Window
     private const double SidebarCollapseThreshold = 200;
 
     /// <summary>
-    /// The update dot's tooltip content. Installed once and rewritten **in place**: re-assigning
+    /// The download slot's tooltip content. Installed once and rewritten **in place**: re-assigning
     /// <c>ToolTip.Tip</c> closes an open tooltip, and a new value assigned while it is closed does not
-    /// re-open it (the settings page's progress tip hits the same rule). Keeping one TextBlock for the
-    /// window's whole life is what lets the tip stay up while the pointer rests on the dot.
+    /// re-open it (the update dot used this same holder, and the settings page's progress tip still does).
+    /// The slot's tip moves on every progress tick, so a fresh string each time would make the tooltip
+    /// impossible to read while a download runs.
     /// </summary>
-    private readonly TextBlock _updateDotTip = new();
+    private readonly TextBlock _transferSlotTip = new();
 
     private string _currentKey = "";
 
@@ -632,6 +633,310 @@ public partial class MainWindow : Window
     internal bool RepoIndicatorVisibleForCheck => RepoIndicator.IsVisible;
     internal string RepoIndicatorTextForCheck => RepoIndicatorText.Text ?? "";
 
+    // ───────────────────────── The download queue's slot ─────────────────────────
+
+    /// <summary>
+    /// Repaints the strip's download slot, and the popover's rows while that popover is open.
+    ///
+    /// The rows are only rebuilt when the *set* of transfers changes; a progress tick repainting the handful
+    /// of numbers it moved. Re-creating the row controls on every 80 KB report is how a list that works in a
+    /// unit test stutters on a real download.
+    /// </summary>
+    private void UpdateTransferSlot()
+    {
+        // Same construction-window as UpdateRepoIndicator: the queue can report before the strip exists.
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(UpdateTransferSlot);
+            return;
+        }
+
+        if (TransferSlotText is null) return;
+
+        var (visible, label, isAction) = TransferSlotStateFor(
+            TransferQueue.Instance.Items, UpdateService.Instance.Download, UpdateService.Instance.PendingVersion, _restartArmed);
+        if (!isAction)
+        {
+            // Whatever the second press was standing by for is gone, so the word goes back before the next
+            // click can find it still armed on a different state.
+            _restartArmed = false;
+        }
+
+        TransferSlot.IsVisible = visible;
+        TransferSlotText.Text = visible ? label : "";
+        TransferSlot.Classes.Set("accent", isAction);
+        _transferSlotTip.Text = isAction
+            ? UpdateService.Instance.PendingVersion is { } version
+                ? string.Format(HubStrings.Get("UpdateRestartActionTip"), version)
+                : HubStrings.Get("TransferRestartAction")
+            : HubStrings.Get("TransferSlotTip");
+        if (!visible)
+        {
+            // Nothing left to act on and nothing left to read: the popover goes with its own anchor rather
+            // than staying open over an empty list.
+            QueuePopup.IsOpen = false;
+        }
+        else if (QueuePopup.IsOpen)
+        {
+            RenderTransferRows();
+        }
+    }
+
+    /// <summary>
+    /// What the slot says, as a function of the queue and the update's own phase — the shape a check
+    /// asserts on, because every one of these branches otherwise needs a real download to reach.
+    ///
+    /// <para>Two modes, one slot. While transfers are moving (or one failed and went unread) the slot is
+    /// the <b>queue</b>: a count, and a press that lifts the popover. When nothing is moving and the only
+    /// thing left to decide is the update already on disk, the slot <b>is that decision</b> — restarting
+    /// takes one press, not a trip through Settings. Which is the whole point of downloading in the
+    /// background: the user should never have to go looking for the thing that finished.</para>
+    ///
+    /// <para>Silence is the answer while nothing is moving, nothing failed and nothing waits: a strip that
+    /// lit for work already finished would be reporting the past. A failure keeps the slot lit because it
+    /// is still a thing to act on.</para>
+    /// </summary>
+    internal static (bool Visible, string Label, bool IsAction) TransferSlotStateFor(
+        IReadOnlyList<TransferQueue.Item> items, UpdateService.DownloadState download, string? pendingVersion, bool armed)
+    {
+        var active = items.Where(item => item.IsActive).ToList();
+        if (active.Count > 0)
+        {
+            var moving = active.Count(item => item.IsMoving);
+            // The percentage rides only when exactly one transfer is moving. Averaging two of them into one
+            // number would produce a figure that describes neither download, and the row inside the popover
+            // is where each one's own progress belongs.
+            var single = moving == 1 ? active.Single(item => item.IsMoving) : null;
+            return single?.Report.Percent is { } percent
+                ? (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("TransferSlotPercentFormat"), moving, active.Count, percent), false)
+                : (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("TransferSlotFormat"), moving, active.Count), false);
+        }
+
+        // The restart waits on the user, not the other way round: this is the state where the bytes have
+        // landed and only a process swap is missing.
+        if (download == UpdateService.DownloadState.Ready)
+        {
+            return (true, HubStrings.Get(armed ? "TransferRestartArmed" : "TransferRestartAction"), true);
+        }
+
+        var failed = items.Count(item => item.State == TransferQueue.Phase.Failed);
+        return failed > 0
+            ? (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("TransferSlotFailed"), failed), false)
+            : (false, "", false);
+    }
+
+    /// <summary>
+    /// The slot's one press. Queue mode lifts the popover; action mode restarts — unless something is
+    /// still working, in which case the first press only arms the button and says so on its own label.
+    ///
+    /// <para>Restarting is the one thing in this app that cannot be undone from the inside: it replaces the
+    /// process, so a reply mid-stream and a build mid-compile both stop, and the second tap is what stands
+    /// between an accidental click and that. Same shape as a steer waiting for its second tap, for the same
+    /// reason — the consequence is read once, on the button that carries it, not in a dialog.</para>
+    /// </summary>
+    private void OnTransferSlotClicked()
+    {
+        var (visible, _, isAction) = TransferSlotStateFor(
+            TransferQueue.Instance.Items, UpdateService.Instance.Download, UpdateService.Instance.PendingVersion, _restartArmed);
+        if (!visible)
+        {
+            return;
+        }
+
+        if (!isAction)
+        {
+            ToggleQueuePopup();
+            return;
+        }
+
+        var busy = RestartInterruptsWork();
+        if (busy && !_restartArmed)
+        {
+            _restartArmed = true;
+            UpdateTransferSlot();
+            // A button left armed is a button that restarts on the next stray click, minutes later, when
+            // whatever made it busy has long since finished. The word goes away on its own.
+            DispatcherTimer.RunOnce(() =>
+            {
+                if (!_restartArmed) return;
+                _restartArmed = false;
+                UpdateTransferSlot();
+            }, TimeSpan.FromSeconds(10));
+            return;
+        }
+
+        // The arm is spent by the press that used it, even though in the real case the process ends here:
+        // a button left armed is a button that restarts on the next stray click.
+        _restartArmed = false;
+        UpdateService.Instance.ApplyAndRestart();
+    }
+
+    /// <summary>Set while the restart slot is waiting for its confirming second press.</summary>
+    private bool _restartArmed;
+
+    /// <summary>
+    /// What a restart would interrupt. A probe rather than an inline read because the armed second tap is
+    /// a rule worth asserting on its own, and parking a live stream behind it to reach one branch is not a
+    /// fixture anyone could read. The window installs the real answer where it wires the slot.
+    /// </summary>
+    internal Func<bool> RestartInterruptsWork { get; set; } = () => false;
+
+    /// <summary>Set once the user has answered "quit anyway" to running transfers, so the re-issued
+    /// <see cref="Window.Close"/> is not met by the same question.</summary>
+    private bool _quitConfirmed;
+
+    /// <summary>
+    /// Asks about quitting while transfers are moving, and closes on the answer.
+    ///
+    /// <para>The question cannot be awaited from <c>Closing</c> — that handler is synchronous, so this runs
+    /// <c>e.Cancel</c> first and re-issues the close afterwards. <see cref="_quitConfirmed"/> is what keeps
+    /// it a single question rather than a loop, and a dialog dismissed by its own X counts as "stay"
+    /// (<see cref="HubDialogResult.Cancel"/> is deliberately the zero value).</para>
+    ///
+    /// <para>Worth the interruption because a transfer is the one work here that survives the answer either
+    /// way: <c>DownloadManager</c> keeps a <c>.partial</c> and resumes with a Range request, so quitting
+    /// loses the minutes, not the bytes.</para>
+    /// </summary>
+    private async Task ConfirmQuitAsync()
+    {
+        var running = TransferQueue.Instance.ActiveCount;
+        var answer = await HubDialog.ShowAsync(this,
+            HubStrings.Get("QuitDuringDownloadsTitle"),
+            string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("QuitDuringDownloadsBody"), running),
+            HubDialogButtons.OkCancel, danger: true);
+        if (answer != HubDialogResult.Ok)
+        {
+            return;
+        }
+
+        _quitConfirmed = true;
+        Close();
+    }
+
+
+    private void ToggleQueuePopup()
+    {
+        if (QueuePopup.IsOpen)
+        {
+            QueuePopup.IsOpen = false;
+            return;
+        }
+
+        RenderTransferRows();
+        QueuePopup.IsOpen = true;
+    }
+
+    /// <summary>The rows, reconciled against the queue. The list is short and changes rarely, so the
+    /// reconciliation is "same shape → repaint in place, otherwise build it again".</summary>
+    private void RenderTransferRows()
+    {
+        var items = TransferQueue.Instance.Items;
+        if (_queueRowViews.Count != items.Count
+            || items.Where((item, index) => !ReferenceEquals(_queueRowViews[index].Bound, item)).Any())
+        {
+            QueueRows.Children.Clear();
+            _queueRowViews.Clear();
+            foreach (var item in items)
+            {
+                var row = new QueueRowView(item, () => TransferQueue.Instance.Cancel(item.Identity));
+                QueueRows.Children.Add(row.Control);
+                _queueRowViews.Add(row);
+            }
+
+            return;
+        }
+
+        foreach (var view in _queueRowViews)
+        {
+            view.Update();
+        }
+    }
+
+    private readonly List<QueueRowView> _queueRowViews = [];
+
+    /// <summary>One row of the popover: what is being fetched, how far it has come, and the press that
+    /// stops it. Held as controls rather than rebuilt, so a progress tick moves three strings.</summary>
+    private sealed class QueueRowView
+    {
+        private readonly TransferQueue.Item _item;
+        private readonly TextBlock _title = new() { Classes = { "queue-row-title" } };
+        private readonly ProgressBar _bar = new() { Minimum = 0, Maximum = 100, Height = 6 };
+        private readonly TextBlock _measure = new() { Classes = { "queue-row-measure" } };
+        private readonly TextBlock _error = new() { Classes = { "queue-row-error" }, IsVisible = false };
+        private readonly Button _cancel = new()
+        {
+            Classes = { "strip" },
+            Content = HubStrings.Get("Cancel"),
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
+
+        public QueueRowView(TransferQueue.Item item, Action cancel)
+        {
+            _item = item;
+            _cancel.Click += (_, _) => cancel();
+            Control = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                Children =
+                {
+                    new StackPanel { Spacing = 4, Children = { _title, _bar, _measure, _error } },
+                    _cancel,
+                },
+            };
+            Grid.SetColumn(_cancel, 1);
+            Update();
+        }
+
+        public Control Control { get; }
+
+        public TransferQueue.Item Bound => _item;
+
+        public void Update()
+        {
+            _title.Text = _item.Title + " · " + _item.PhaseText;
+            // An unmeasurable phase gets the indeterminate bar rather than a number held at 99: the local
+            // work after the bytes (unzipping, patching) is real work with no percentage in it.
+            _bar.IsIndeterminate = _item.State == TransferQueue.Phase.Applying;
+            _bar.Value = _item.Fill ?? 0;
+            _measure.Text = _item.MeasureText;
+            _error.Text = _item.Error ?? "";
+            _error.IsVisible = _item.Error is { Length: > 0 };
+            // A finished row keeps no cancel: there is nothing left to stop, and a button that answers to
+            // nothing is the thing this shell already refused to do in the version picker.
+            _cancel.IsVisible = _item.IsActive;
+        }
+    }
+
+    internal bool TransferSlotVisibleForCheck => TransferSlot.IsVisible;
+    internal string TransferSlotTextForCheck => TransferSlotText.Text ?? "";
+    internal bool TransferSlotAccentForCheck => TransferSlot.Classes.Contains("accent");
+    internal bool QueuePopupOpenForCheck => QueuePopup.IsOpen;
+    internal int QueueRowCountForCheck => QueueRows.Children.Count;
+    internal void OpenQueuePopupForCheck() => ToggleQueuePopup();
+    internal void CloseQueuePopupForCheck() => QueuePopup.IsOpen = false;
+
+    /// <summary>The restart slot's armed state. Setting it repaints, so a check reads what the user would
+    /// see rather than what the field happens to hold. A test reaches the busy half through
+    /// <see cref="RestartInterruptsWork"/>, not through this.</summary>
+    internal bool RestartArmedForCheck
+    {
+        get => _restartArmed;
+        set
+        {
+            _restartArmed = value;
+            UpdateTransferSlot();
+        }
+    }
+
+    /// <summary>Presses the slot the way the user does, so a check walks the same routing.</summary>
+    internal void ClickTransferSlotForCheck() => TransferSlot.RaiseEvent(
+        new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+
+
     /// <summary>Presses the strip's own button, so a check drives the wiring rather than the shell method the
     /// button happens to end up calling.</summary>
     internal void ClickRepoIndicatorForCheck()
@@ -870,6 +1175,9 @@ public partial class MainWindow : Window
         // The strip's repository slot is composed copy, not a DynamicResource, so a language switch has to be
         // told or the row keeps the previous tongue while everything around it changes.
         UpdateRepoIndicator();
+        // Same for the download slot, and for the rows if the popover happens to be open: every one of those
+        // strings is composed in code from a key.
+        UpdateTransferSlot();
 
         foreach (var page in _pages.Values)
         {
@@ -1207,11 +1515,22 @@ public partial class MainWindow : Window
 
     private void WireChrome()
     {
-        // The update dot reflects UpdateService.Last; both the startup check and the settings-page
-        // check feed it. A check can complete on a background continuation, so marshal before touching
-        // the control. Subscribed once — WireChrome only runs from the constructor.
-        UpdateService.Instance.Changed += () => Dispatcher.UIThread.Post(SyncUpdateBadge);
-        SyncUpdateBadge();
+        // The download slot mirrors the queue. Marshalled because a transfer reports from whatever thread
+        // its transport reports on, and the strip is owned by this one. Subscribed once — WireChrome only
+        // runs from the constructor.
+        TransferQueue.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTransferSlot);
+        // The update's own phase is part of what the slot says — "ready" is the restart — and it moves
+        // without the queue moving: a check that finds nothing new, a cancel, a channel switch.
+        UpdateService.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTransferSlot);
+        QueuePopup.PlacementTarget = TransferSlot;
+        QueuePopup.Placement = PlacementMode.TopEdgeAlignedLeft;
+        // The holder is installed once, for the reason recorded on _transferSlotTip: only its text moves.
+        ToolTip.SetTip(TransferSlot, _transferSlotTip);
+        // What a restart would cut short: a Hub operation, or replies still being written in the
+        // background. Both are the user's work, and neither gets destroyed by one stray click.
+        RestartInterruptsWork = () => _workspace.IsBusy || _chat.RunningCount > 0;
+        TransferSlot.Click += (_, _) => OnTransferSlotClicked();
+        UpdateTransferSlot();
 
         CancelButton.Click += (_, _) => _workspace.Cancel();
 
@@ -1231,47 +1550,29 @@ public partial class MainWindow : Window
         // child processes would be left behind.
         Closing += (_, e) =>
         {
-            if (!_workspace.IsBusy)
+            if (_workspace.IsBusy)
+            {
+                // An exclusive operation is mid-write and must not be left half-done: the close becomes a
+                // cancel and the window stays. Unchanged from before the queue existed.
+                e.Cancel = true;
+                _workspace.Cancel();
+                SetStatus(HubStrings.Get("Cancelling"));
+                return;
+            }
+
+            if (_quitConfirmed || TransferQueue.Instance.ActiveCount == 0 || App.Options.IsAutomation)
             {
                 return;
             }
 
             e.Cancel = true;
-            _workspace.Cancel();
-            SetStatus(HubStrings.Get("Cancelling"));
+            _ = ConfirmQuitAsync();
         };
 
         Closed += (_, _) => _workspace.Dispose();
         Closed += (_, _) => _chat.Dispose();
         Closed += (_, _) => _attention.Dispose();
     }
-
-    private void SyncUpdateBadge()
-    {
-        ShowUpdateBadge(UpdateService.Instance.Last?.Result is UpdateService.CheckResult.UpdateAvailable);
-        // The dot is the only place an update is announced outside the settings page, so it has to say
-        // *which* version — otherwise "there is an update" is all the user gets without going there.
-        _updateDotTip.Text = FormatUpdateBadgeTip(UpdateService.Instance.PendingVersion);
-    }
-
-    /// <summary>
-    /// The update dot's tooltip: the version when one is known, the plain "update available" line when
-    /// it isn't. Pure so the branch can be asserted — a version that never gets appended still reads as
-    /// a finished tooltip.
-    /// </summary>
-    internal static string FormatUpdateBadgeTip(string? version)
-        => version is { Length: > 0 }
-            ? string.Format(HubStrings.Get("UpdateDotTooltipVersion"), version)
-            : HubStrings.Get("UpdateDotTooltip");
-
-    /// <summary>The update dot's tooltip text as it is installed right now, for the shell self-check.</summary>
-    internal string UpdateDotTip => _updateDotTip.Text ?? "";
-
-    /// <summary>
-    /// Shows/hides the update dot on the settings gear. Passive signalling only — no prompt: the
-    /// dot says "there's something new in Settings"; the user goes there to see and act on it.
-    /// </summary>
-    internal void ShowUpdateBadge(bool show) => SettingsUpdateDot.IsVisible = show;
 
     /// <summary>
     /// The conversation sidebar, built against the current chat workspace. It takes the preference store because
@@ -1533,10 +1834,6 @@ public partial class MainWindow : Window
         BrandVersion.Text = "v" + version;
         PreviewBadge.IsVisible = HubReleaseInfo.IsPrereleaseBuild;
         Title = "Axmol Hub " + BrandVersion.Text;
-        // Installed once (see _updateDotTip); only its text moves, and it is rewritten on every
-        // InitializeChrome — which ApplyLanguage calls — so a language switch reaches it too.
-        ToolTip.SetTip(SettingsUpdateDot, _updateDotTip);
-        _updateDotTip.Text = FormatUpdateBadgeTip(UpdateService.Instance.PendingVersion);
 
         // The settings gear is icon-only, so its tooltip is the only place the name "Settings" appears for it.
         // Set here rather than in ApplyLanguage so it is also in place at construction time.

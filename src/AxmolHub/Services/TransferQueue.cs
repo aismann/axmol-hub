@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -132,6 +133,11 @@ internal sealed class TransferQueue
         internal Func<Item, CancellationToken, Task> Work { get; init; } = (_, _) => Task.CompletedTask;
         internal Action<Item>? OnFinished { get; init; }
 
+        /// <summary>Wired when the transfer starts. A measurement is a state change as far as the strip is
+        /// concerned: without this the row would only ever repaint on a phase change, which for a download
+        /// is once at the start and once at the end.</summary>
+        internal Action? OnProgress { get; set; }
+
         public string Title => Subject is { Length: > 0 } value
             ? HubStrings.Get(TitleKey) + " " + value
             : HubStrings.Get(TitleKey);
@@ -156,13 +162,47 @@ internal sealed class TransferQueue
                 progress.Total,
                 progress.BytesPerSecond,
                 progress.Total > 0 ? (int)Math.Clamp(progress.Bytes * 100.0 / progress.Total!.Value, 0, 100) : null);
+            OnProgress?.Invoke();
         }
 
         /// <summary>Percentage-only transports (Velopack). Leaves the byte fields null on purpose.</summary>
-        public void ReportPercent(int percent) => Report = Report with { Percent = percent };
+        public void ReportPercent(int percent)
+        {
+            Report = Report with { Percent = percent };
+            OnProgress?.Invoke();
+        }
 
         /// <summary>The bytes are down and the rest is local work.</summary>
-        public void MarkApplying() => State = Phase.Applying;
+        public void MarkApplying()
+        {
+            State = Phase.Applying;
+            OnProgress?.Invoke();
+        }
+
+        /// <summary>The phase as the row words it. Said here so every surface uses one word for one
+        /// state, the same reason <see cref="UpdateService.PendingVersion"/> is read rather than rebuilt.</summary>
+        public string PhaseText => HubStrings.Get(State switch
+        {
+            Phase.Queued => "TransferQueued",
+            Phase.Transferring => "TransferTransferring",
+            Phase.Applying => "TransferApplying",
+            Phase.Done => "TransferDone",
+            Phase.Cancelled => "TransferCancelled",
+            _ => "TransferFailed",
+        });
+
+        /// <summary>
+        /// What the transport can prove, in words. Bytes for a transport that counts them, a percentage
+        /// for one that only has that (Velopack), and an em-dash for a phase that cannot be measured —
+        /// never a zero, which would read as a download that stopped.
+        /// </summary>
+        public string MeasureText => Report switch
+        {
+            { Bytes: { } bytes } => FormatBytes(bytes) + " / " + FormatBytes(Report.Total)
+                + (Report.BytesPerSecond is { } rate && rate > 0 ? " · " + UpdateService.FormatSpeed(rate) : ""),
+            { Percent: { } percent } => percent + "%",
+            _ => HubStrings.Get("TransferNoMeasure"),
+        };
 
         internal void BeginTransferring() => State = Phase.Transferring;
 
@@ -200,6 +240,12 @@ internal sealed class TransferQueue
 
     public int FailedCount => _items.Count(item => item.State == Phase.Failed);
 
+    /// <summary>Mebibytes to one decimal, the same reading the status line printed before there were rows.
+    /// A null size stays an em-dash: a download whose total the server never said is not a zero-byte one.</summary>
+    internal static string FormatBytes(long? bytes) => bytes is { } value
+        ? string.Create(CultureInfo.InvariantCulture, $"{value / 1048576.0:F1} MB")
+        : HubStrings.Get("TransferNoMeasure");
+
     /// <summary>The item running or waiting under this identity, or null. This is what the engine
     /// version picker asks so a downloading version cannot be picked again.</summary>
     public Item? FindActive(string identity)
@@ -236,14 +282,26 @@ internal sealed class TransferQueue
         return item;
     }
 
-    /// <summary>Asks one transfer to stop. This cancels the token its work runs on; the work then lands
-    /// in <see cref="OperationCanceledException"/> and the item becomes cancelled.</summary>
+    /// <summary>Asks one transfer to stop. For a running transfer this cancels the token its work runs on,
+    /// and the work then lands in <see cref="OperationCanceledException"/>. A transfer still waiting has no
+    /// token to cancel — and settling it here is what keeps "cancel" from meaning "start as soon as a slot
+    /// frees", which is what dropping the request on the floor would turn into.</summary>
     public void Cancel(string identity)
     {
-        if (FindActive(identity) is { } item)
+        if (FindActive(identity) is not { } item)
         {
-            item.CancelAction?.Invoke();
+            return;
         }
+
+        if (item.CancelAction is { } cancel)
+        {
+            cancel();
+            return;
+        }
+
+        item.Abort();
+        Changed?.Invoke();
+        Pump();
     }
 
     /// <summary>Forgets the transfers that ended quietly. A failure stays: it is still something the user
@@ -308,6 +366,7 @@ internal sealed class TransferQueue
             // suite is throwing away — a stuck await is how a self-check turns into a timeout.
             item.CancelAction?.Invoke();
             item.CancelAction = null;
+            item.OnProgress = null;
             item.Running = null;
             item.Complete();
         }
@@ -337,6 +396,7 @@ internal sealed class TransferQueue
     {
         item.Cancellation = new CancellationTokenSource();
         item.CancelAction = () => item.Cancellation?.Cancel();
+        item.OnProgress = () => Changed?.Invoke();
         item.BeginTransferring();
         item.Running = RunAsync(item, item.Cancellation.Token);
         Changed?.Invoke();
@@ -362,6 +422,7 @@ internal sealed class TransferQueue
             item.Cancellation?.Dispose();
             item.Cancellation = null;
             item.CancelAction = null;
+            item.OnProgress = null;
 
             // The caller's completion work (save state, log, surface the failure) runs once the item has
             // settled, so a handler that throws cannot leave the list showing a transfer that is no

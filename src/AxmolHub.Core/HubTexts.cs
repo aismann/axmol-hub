@@ -352,9 +352,6 @@ public static class HubTexts
         ["UpdateUpToDate"] = ("已是最新版本。", "You're up to date."),
         ["UpdateNotInstalled"] = ("当前是开发版或便携版，无法自动更新。", "This is a development or portable copy, so it can't update itself."),
         ["UpdateFailed"] = ("检查更新失败，请稍后重试。", "Couldn't check for updates. Try again later."),
-        // "Update available" does not use a dialog: it lights a red dot on the Settings nav item (see Hub.NotificationDot). The dot's
-        // only job is "go look at Settings"; the version number, the download progress and the actions all live in the update card on that page.
-        ["UpdateDotTooltip"] = ("有可用更新", "Update available"),
         ["UpdateCheckHint"] = ("点「检查更新」查看是否有新版本。", "Click \"Check for updates\" to see if a newer version exists."),
         ["AutoDownloadUpdates"] = ("自动下载更新", "Auto-download updates"),
         ["AllowSpawnSessions"] = ("允许助手派生子会话", "Let the assistant spawn helper sessions"),
@@ -386,8 +383,6 @@ public static class HubTexts
         // starts, "Version x.y.z is available" is pushed out by the progress copy and the user can no longer see which version they are moving to.
         // {0} is the version number, prefixed to the status text.
         ["UpdateVersionPrefix"] = ("新版本 {0} · ", "Version {0} · "),
-        // The red-dot tooltip carries the version. When there is none (nothing checked yet) the UpdateDotTooltip above is still used.
-        ["UpdateDotTooltipVersion"] = ("有可用更新：{0}", "Update available: {0}"),
         ["DownloadAndRestart"] = ("下载并重启", "Download & restart"),
         ["UpdateDownloading"] = ("正在下载更新… {0}%", "Downloading update… {0}%"),
         // Hover tooltip for the progress bar / status line. {0} is an already-formatted rate ("2.4 MB/s"); the unit does not vary with the language.
@@ -410,6 +405,35 @@ public static class HubTexts
         ["TransferHubUpdate"] = ("Axmol Hub", "Axmol Hub"),
         // Said by a row (and by the install button) whose bytes are already on their way.
         ["TransferInFlightSuffix"] = ("正在进行", "In progress"),
+        // ── The strip's download slot and the queue popover ──
+        // The slot is one sentence in a 28px strip, so it counts rather than narrates. The percentage only
+        // appears when a single transfer is moving: averaging two rates into one number would be a figure
+        // that describes neither download.
+        ["TransferSlotFormat"] = ("下载 {0}/{1}", "Downloads {0}/{1}"),
+        ["TransferSlotPercentFormat"] = ("下载 {0}/{1} · {2}%", "Downloads {0}/{1} · {2}%"),
+        ["TransferSlotFailed"] = ("{0} 个下载失败", "{0} download(s) failed"),
+        ["TransferQueueTitle"] = ("下载队列", "Downloads"),
+        ["TransferSlotTip"] = ("查看下载队列", "Show the download queue"),
+        // The slot's action mode: the bytes have landed and only a process swap is missing. The armed form
+        // is the second tap of a restart pressed while something is still working — the word on the button
+        // is the warning, same shape as a steer waiting for its second tap.
+        ["TransferRestartAction"] = ("重启完成更新", "Restart to update"),
+        ["TransferRestartArmed"] = ("再点一次重启", "Tap again to restart"),
+        // The one question the queue is allowed to interrupt with. It names the reason quitting is cheap
+        // here: the bytes already down stay on disk and the next start resumes them.
+        ["QuitDuringDownloadsTitle"] = ("下载还没结束", "Downloads still running"),
+        ["QuitDuringDownloadsBody"] = ("还有 {0} 个下载在跑。现在退出会中断它们，已下载的片段留在磁盘，下次接着传。", "{0} download(s) are still running. Quitting now stops them; the bytes already on disk stay, and the next start resumes."),
+        ["TransferQueued"] = ("等待中", "Queued"),
+        ["TransferTransferring"] = ("下载中", "Downloading"),
+        // The bytes have arrived and the rest is local work — unzipping an engine, patching an update. One
+        // word covers both because the row cannot promise which it is doing.
+        ["TransferApplying"] = ("正在处理", "Applying"),
+        ["TransferDone"] = ("完成", "Done"),
+        ["TransferFailed"] = ("失败", "Failed"),
+        ["TransferCancelled"] = ("已取消", "Cancelled"),
+        // A transfer with no measurable progress still shows this rather than an empty space, so the row
+        // never reads as a stalled number.
+        ["TransferNoMeasure"] = ("—", "—"),
         // Said by every engine operation whose own download has not landed yet: the transfer is replacing the
         // directory the operation is about to read or delete.
         ["EngineBusyTransferring"] = ("这个引擎正在下载，等它结束后再操作。", "This engine is still downloading. Wait for the transfer to finish."),
