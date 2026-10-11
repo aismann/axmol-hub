@@ -28,14 +28,6 @@ namespace AxmolHub;
 /// </summary>
 internal sealed class InspectorPanel : UserControl
 {
-    /// <summary>Raised by the × in the header. The panel does not close itself: whether it collapses or the whole
-    /// column hides is the shell's call, and only the shell knows the page it is on.</summary>
-    public event Action? CloseRequested;
-
-    /// <summary>Raised by the expand arrow in the header. The same division as <see cref="CloseRequested"/>:
-    /// the pane asks, the shell decides whether that means an overlay over the window or nothing on this page.</summary>
-    public event Action? ExpandRequested;
-
     /// <summary>Raised when the repository tab is entered, and by its own ⟳. The panel never reads git itself:
     /// it has no session, no log and no thread to wait on, and a pane that goes and does I/O is a pane a check
     /// cannot drive from a fixture.</summary>
@@ -56,8 +48,7 @@ internal sealed class InspectorPanel : UserControl
     private readonly Button _planTab;
     private readonly Button _changesTab;
     private readonly Button _repoTab;
-    private readonly Button _expandButton;
-    private readonly Path _expandIcon;
+    private readonly Grid _header;
     private readonly ContentControl _planHost;
     private readonly ScrollViewer _changesScroll;
     private readonly StackPanel _changesList;
@@ -77,9 +68,14 @@ internal sealed class InspectorPanel : UserControl
 
         var root = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
 
-        // ── Header: three tabs, and the two ways out. The tabs are the only navigation, so they read as text
-        //    buttons whose selected one carries an underline plate rather than as a chrome-heavy TabControl. ──
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,*,Auto,Auto"), Margin = new Thickness(12, 10, 8, 8) };
+        // ── Header: three tabs, and nothing else. The pane's two controls — lift the pane over the window, and
+        //    shut the column — used to live at this header's right end, which is exactly where they could not be
+        //    reached: the × was unreachable while the pane covered the window, and both were unreachable while
+        //    the column was shut. They are now the title bar's, where they outlive whichever surface is up (see
+        //    MainWindow.axaml). The tabs read as text buttons whose selected one carries an underline plate
+        //    rather than as a chrome-heavy TabControl. ──
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,*"), Margin = new Thickness(12, 10, 8, 8) };
+        _header = header;
         _planTab = TabButton("InspectorTabPlan");
         _changesTab = TabButton("InspectorTabChanges");
         _repoTab = TabButton("InspectorTabRepo");
@@ -99,21 +95,6 @@ internal sealed class InspectorPanel : UserControl
         Grid.SetColumn(_repoTab, 2);
         _repoTab.Margin = new Thickness(6, 0, 0, 0);
         header.Children.Add(_repoTab);
-
-        // The column is clamped to 520 because the chat column has a floor to keep, which is the right room for a
-        // diff and the wrong room for a plan a person has to read end to end. So the pane can be lifted out of the
-        // column and given the window.
-        _expandButton = ActionButton("InspectorExpand", "Hub.Icon.Expand");
-        _expandButton.Name = "InspectorExpandButton";
-        _expandIcon = (Path)_expandButton.Content!;
-        _expandButton.Click += (_, _) => ExpandRequested?.Invoke();
-        Grid.SetColumn(_expandButton, 4);
-        header.Children.Add(_expandButton);
-
-        var close = ActionButton("InspectorClose", "Hub.Icon.Close");
-        close.Click += (_, _) => CloseRequested?.Invoke();
-        Grid.SetColumn(close, 5);
-        header.Children.Add(close);
         root.Children.Add(header);
 
         // ── Body: the three tab surfaces stacked, only one visible. All live in the tree so switching tabs does
@@ -157,40 +138,14 @@ internal sealed class InspectorPanel : UserControl
         return button;
     }
 
-    /// <summary>The header's two glyph buttons. Stroked rather than filled like the picture viewer's row, so the
-    /// × and the expand arrow weigh the same as each other and less than the tabs beside them.</summary>
-    private static Button ActionButton(string textKey, string geometryKey)
-    {
-        var icon = new Path
-        {
-            Width = 13,
-            Height = 13,
-            Stretch = Stretch.Uniform,
-            Fill = Brushes.Transparent,
-            StrokeThickness = 1.7,
-            StrokeLineCap = PenLineCap.Round,
-        };
-        icon.Bind(Path.DataProperty, new DynamicResourceExtension(geometryKey));
-        icon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-
-        var button = new Button { Classes = { "viewer-action" }, Tag = textKey, Content = icon };
-        ToolTip.SetTip(button, HubStrings.Get(textKey));
-        return button;
-    }
-
     /// <summary>Told by the shell which of its two homes the pane is in, because the two are not the same
-    /// reading. The arrow has to point back the way it came once it has been followed, and a plan laid across a
-    /// whole window needs the chat column's line length rather than the window's — a document that runs 1200px
-    /// per line is not faster to read, it is a scan for the end of each sentence. The diff keeps every pixel:
-    /// side-by-side changes are exactly what the room is for.</summary>
+    /// reading. A plan laid across a whole window needs the chat column's line length rather than the window's —
+    /// a document that runs 1200px per line is not faster to read, it is a scan for the end of each sentence. The
+    /// diff keeps every pixel: side-by-side changes are exactly what the room is for. Which of the two surfaces is
+    /// up is the title bar's to say, not this pane's: it draws no control for it (see the constructor).</summary>
     public void SetExpanded(bool expanded)
     {
         _expanded = expanded;
-        var key = expanded ? "InspectorRestore" : "InspectorExpand";
-        _expandIcon.Bind(Path.DataProperty, new DynamicResourceExtension(
-            expanded ? "Hub.Icon.Restore" : "Hub.Icon.Expand"));
-        _expandButton.Tag = key;
-        ToolTip.SetTip(_expandButton, HubStrings.Get(key));
         _planHost.MaxWidth = expanded ? HubMetrics.ColumnMaxWidth : double.PositiveInfinity;
         _planHost.HorizontalAlignment = expanded ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
     }
@@ -668,30 +623,14 @@ internal sealed class InspectorPanel : UserControl
             ? block.Text ?? ""
             : "";
 
-    /// <summary>Presses the header's ×, which is the column's only way out from inside the pane. A check that
-    /// called the shell's own close instead would pass on a pane that never built its header at all — and a
-    /// headerless column is precisely the bug this keeps.</summary>
-    internal void ClickCloseForCheck()
-        => this.GetLogicalDescendants().OfType<Button>()
-            .FirstOrDefault(button => button.Tag as string == "InspectorClose")
-            ?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    /// <summary>How many buttons the header holds. Exactly three, the three tabs: the pane's other two controls
+    /// moved to the title bar, and a check that only ever pressed those would stay green while a second, dead pair
+    /// was still painted in here. Counted off the header itself rather than off the pane, because the body has
+    /// buttons of its own (the repository tab's ⟳) that have nothing to do with this.</summary>
+    internal int HeaderButtonCountForCheck => _header.GetLogicalDescendants().OfType<Button>().Count();
 
     internal bool ExpandedForCheck => _expanded;
-    internal string ExpandButtonTagForCheck => _expandButton.Tag as string ?? "";
     internal double PlanHostMaxWidthForCheck => _planHost.MaxWidth;
-
-    /// <summary>Which arrow is actually painted. The tag says which tooltip is wired; this says whether the
-    /// rebind that swaps the glyph took effect — a swap that reached only the text would leave a button pointing
-    /// the wrong way out of a surface that has just covered the whole window.</summary>
-    internal bool ExpandGlyphIsForCheck(string geometryKey)
-        => Application.Current?.TryGetResource(geometryKey, null, out var value) == true
-           && value is Geometry geometry
-           && ReferenceEquals(_expandIcon.Data, geometry);
-
-    /// <summary>Presses the header's own arrow, so a check drives the wiring rather than the shell method the
-    /// arrow happens to end up calling.</summary>
-    internal void ClickExpandForCheck()
-        => _expandButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
     /// <summary>The file rows, not the children of the list. An empty scope now ends on a sentence and sometimes
     /// a jump, and a count that grew because a helper line was drawn would stop meaning "how many files".</summary>

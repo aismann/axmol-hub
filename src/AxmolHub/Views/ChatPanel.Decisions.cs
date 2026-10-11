@@ -47,18 +47,9 @@ public partial class ChatPanel
     /// it names rather than letting the pane show a newer one under an older title.</summary>
     internal Func<string, int, bool>? OpenInspector { get; set; }
 
-    /// <summary>Set by the shell: how the panel asks the inspector column to hide. The panel builds the pane's
-    /// content but never owns whether the column is up — that is the shell's, gated on the page.</summary>
-    internal Action? CloseInspector { get; set; }
-
-    /// <summary>Set by the shell: how the pane asks the column to cover the whole window, and to go back. The
-    /// same division as <see cref="CloseInspector"/> — the panel knows a tap happened, only the shell knows
-    /// whether that means a wider column, an overlay, or nothing at all on this page.</summary>
-    internal Action? ToggleInspectorExpanded { get; set; }
-
-    /// <summary>Set by the shell: how the panel asks the column to repaint with the transcript it is already
-    /// showing. The panel knows when the transcript moved; only the shell knows whether a column is up at all,
-    /// on which page, and whether the pane is currently covering the window.</summary>
+    /// <summary>Set by the shell: how the panel asks the inspector column to repaint with the transcript it is
+    /// already showing. The panel knows when the transcript moved; only the shell knows whether a column is up at
+    /// all, on which page, and whether the pane is currently covering the window.</summary>
     internal Action? RefreshInspector { get; set; }
 
     /// <summary>Set by the shell: which tab the reader is actually standing on, every time the pane changes it.
@@ -103,8 +94,9 @@ public partial class ChatPanel
         if (_inspector is null)
         {
             _inspector = new InspectorPanel();
-            _inspector.CloseRequested += () => CloseInspector?.Invoke();
-            _inspector.ExpandRequested += () => ToggleInspectorExpanded?.Invoke();
+            // The pane draws no control of its own any more: the two it used to carry — shut the column, lift the
+            // pane over the window — are the title bar's, wired straight to the shell's own methods. What is left
+            // here is the pane's *content* contract.
             // The pane asks; this is where the ask turns into a git read, because the panel has no session, no
             // log and no thread to wait on — and a pane that did its own I/O could not be fed a fixture by a check.
             _inspector.RepoRefreshRequested += RequestRepositoryRead;

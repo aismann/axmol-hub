@@ -10,19 +10,19 @@
 
   <!--
     Copilot-style shell (benchmark: GitHub Copilot Desktop), with the window's own title bar drawn by the app:
-      title bar (32px) = ☰ sidebar drawer at the leading edge / page title / ▯ inspector drawer sitting just
-      before the window controls (title bar itself lives in MainWindow.TitleBar);
+      title bar (32px) = ☰ sidebar drawer at the leading edge / page title / the review column's two controls
+      (⤢ lift the pane over the window, ▯ open or shut the column) / the three caption plates (drawn by
+      MainWindow.TitleBar);
       left = collapsible sidebar (brand mark + "Axmol Hub" + version + four nav items + conversation list as a
       child of the "AI 助手" item + a bottom block whose text part opens the settings/appearance popup menu
       beside the unchanged gear shortcut), with a 5px drag grip on its right edge;
       right = content: page / 28px status strip / log body.
     The sidebar collapses to zero width; the ☰ button in the title bar is then the only way back.
 
-    Both drawers live in the title bar because that is where the platform's own chrome used to be, and neither
-    is repeated anywhere else: the bar is the only place a "show/hide a column" control belongs once the app
-    owns the bar. The brand name is deliberately *not* written up there — it is in the sidebar and in the
-    window Title (the OS's own property, which the taskbar reads); printing it a second time in the bar would
-    be chrome saying "Axmol Hub" twice.
+    All four of the bar's right-hand controls live there because that is where the platform's own chrome used to
+    be, and none of them is repeated anywhere else. The brand name is deliberately *not* written up there — it is
+    in the sidebar and in the window Title (the OS's own property, which the taskbar reads); printing it a second
+    time in the bar would be chrome saying "Axmol Hub" twice.
   -->
 
   <!-- ==================== The platform's own decorations: no title bar ====================
@@ -166,15 +166,18 @@
     </Style>
 
     <!-- ==================== Title bar ====================
-         The two drawer buttons are drawn one step smaller than the log chevron they otherwise share a shape
-         with: they sit in a 32px bar next to the platform's own caption buttons, and a 32px plate there reads
-         as a fourth window control rather than as a drawer. 5px of padding around a 16px glyph keeps the same
-         26px square the rest of the shell uses for a quiet icon button. -->
+         All three of the bar's own buttons — the ☰ drawer, the ▯ drawer, and the ⤢ that lifts the review pane
+         over the window — are drawn one step smaller than the log chevron they otherwise share a shape with: they
+         sit in a 32px bar next to the platform's own caption buttons, and a 32px plate there reads as a fourth
+         window control rather than as a drawer. 3.75px of padding around a 12px glyph keeps the plate at 19.5px,
+         which is 0.75 of the 26px square the rest of the shell uses for a quiet icon button. Padding and glyph
+         size are one size and cannot be changed apart: the self-check asserts the plate is 19.5 and that the two
+         drawers are the same as each other. -->
     <Style Selector="Button.titlebar">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Padding" Value="5" />
-      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="3.75" />
+      <Setter Property="CornerRadius" Value="5" />
       <Setter Property="HorizontalAlignment" Value="Center" />
       <Setter Property="VerticalAlignment" Value="Center" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -434,15 +437,21 @@
     </Style>
   </Window.Styles>
 
-  <!-- Three layers: the shell (sidebar, page, inspector column), above it the inspector's window-wide overlay,
-       and above that the picture viewer. The two overlays are siblings of the whole shell rather than
+  <!-- Three layers: the shell (title bar, sidebar, page, inspector column), above it the inspector's expanded
+       self, and above that the picture viewer. The two overlays are siblings of the whole shell rather than
        column-spanning children of it, so the inspector column coming and going cannot change what they cover —
        and they stay inside this window, which is what keeps them photographable by the shell self-check (a Popup
        would be its own top-level). Nothing in this app sets ZIndex: document order is the entire stacking
        contract, and the order of these three is asserted, because an overlay placed in the wrong slot covers
-       the shell just as well and only loses to the wrong thing. -->
-  <Grid x:Name="ClientRoot">
-  <Grid x:Name="ShellRoot" RowDefinitions="32,*" ColumnDefinitions="Auto,*,Auto">
+       the shell just as well and only loses to the wrong thing. The expanded one is held to the second row, so
+       "everything but the title bar" is a fact about the grid rather than about its paint order. -->
+  <Grid x:Name="ClientRoot" RowDefinitions="32,*">
+  <!-- The shell spans both rows: its own first row *is* the title bar strip, and the row split up here exists so
+       that the expanded inspector can be given everything below that strip. The 32 is the same number the bar's
+       own Height and ExtendClientAreaTitleBarHeightHint carry, and the self-check asserts the measured bar
+       against it — a bar that changed height without this row following it would leave a seam of shell showing
+       under the pane. -->
+  <Grid x:Name="ShellRoot" Grid.Row="0" Grid.RowSpan="2" RowDefinitions="32,*" ColumnDefinitions="Auto,*,Auto">
 
     <!-- ==================== Title bar ====================
          The app's own title bar, reaching both window edges because the platform's chrome no longer occupies
@@ -454,8 +463,9 @@
          positioned here rather than by a template so that the ▯ drawer can sit a fixed gap to their left: the
          caption plate's width is one number, WindowControlPlateWidth, and it is asserted against the pixels.
 
-         Named because the expanded inspector asserts that it covers this, the sidebar and the page — the whole
-         client area and not merely a wide pane. -->
+         Named because the check measures this strip, and because the one surface that used to be allowed to
+         cover it — the expanded inspector — no longer is: the bar is what the reader presses to come back out
+         of that surface. -->
     <Grid x:Name="TitleBar" Grid.Row="0" Grid.ColumnSpan="3"
           Height="32"
           Background="{DynamicResource Hub.TitleBarBackground}">
@@ -465,23 +475,37 @@
            resizing it, and a four-way arrow there promises a resize that will never happen; the plain arrow the
            rest of the window uses is the honest one. -->
       <Border x:Name="TitleBarDragArea" Background="Transparent" />
-      <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto">
+      <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto">
         <Button x:Name="SidebarToggle" Grid.Column="0" Classes="titlebar" Margin="4,0,0,0">
           <Path Classes="stroked" Data="{StaticResource Hub.Icon.Panel}"
-                Width="16" Height="16" Stretch="Uniform" />
+                Width="12" Height="12" Stretch="Uniform" />
         </Button>
         <TextBlock x:Name="PageTitle" Grid.Column="1"
                    FontSize="13" Margin="8,0,0,0" MaxWidth="420"
                    TextTrimming="CharacterEllipsis" />
-        <!-- The inspector column's drawer button, the left toggle's mirror. It belongs to the assistant page
-             rather than to the column: on another page there is nothing to show or hide, and a button that
-             opened a column nobody could see is the bug this bar is here to stop. -->
-        <Button x:Name="InspectorToggle" Grid.Column="3" Classes="titlebar"
+        <!-- The right column's two buttons, in the order the reader meets them: lift the pane over the whole
+             window, then open or shut the column. They are the pane header's own two controls, moved up here
+             where they survive the surface they control — a button inside a column cannot be pressed while the
+             pane covers the window, and one inside the pane cannot be pressed while the pane is shut. The
+             expand one belongs to the column being open (there is nothing to lift otherwise) and the drawer to
+             the page: on another page there is nothing to show or hide, and a button that opened a column
+             nobody could see is the bug this bar is here to stop.
+
+             Two columns rather than one so that the drawer never moves: the star column to their left absorbs
+             the pair appearing and disappearing, which is what keeps the drawer and the three caption plates at
+             the same x in all three states (nothing open, column, lifted) — asserted against the pixels,
+             because a plate that has been painted over keeps its bounds and only loses its face. -->
+        <Button x:Name="InspectorExpandToggle" Grid.Column="3" Classes="titlebar"
                 IsVisible="False" Margin="0,0,4,0">
-          <Path Classes="stroked" Data="{StaticResource Hub.Icon.PanelRight}"
-                Width="16" Height="16" Stretch="Uniform" />
+          <Path Classes="stroked" Data="{StaticResource Hub.Icon.Expand}"
+                Width="12" Height="12" Stretch="Uniform" />
         </Button>
-        <StackPanel x:Name="WindowControls" Grid.Column="4" Orientation="Horizontal">
+        <Button x:Name="InspectorToggle" Grid.Column="4" Classes="titlebar"
+                IsVisible="False" Margin="0,0,4,0">
+          <Path x:Name="InspectorToggleGlyph" Classes="stroked" Data="{StaticResource Hub.Icon.PanelRight}"
+                Width="12" Height="12" Stretch="Uniform" />
+        </Button>
+        <StackPanel x:Name="WindowControls" Grid.Column="5" Orientation="Horizontal">
           <!-- Stretch="None" on all three, with the glyphs authored in the 12x12 box they are drawn in. The
                glyphs above live on a 0-24 grid and are scaled with Uniform; these three are not, because scaling
                a 1-unit stroke by the fit factor is what made the minimize bar render either as a dot or as two
@@ -709,8 +733,13 @@
          A real column rather than an in-page pane because PageHost's margins would keep it from ever reaching
          the window edge, and the right-edge pixel assertion needs something at the edge to measure. The grip
          is the sidebar's vocabulary mirrored: five pixels of hit area, hand-rolled pointer handlers, no
-         GridSplitter anywhere in this app. -->
-    <Grid Grid.Row="0" Grid.RowSpan="2" Grid.Column="2" ColumnDefinitions="5,*" IsVisible="False" x:Name="InspectorColumn">
+         GridSplitter anywhere in this app.
+
+         It starts *below* the title bar, like the sidebar on the other side, and that is load-bearing rather
+         than tidy: while this column was allowed to reach y=0 it painted its own background across the bar's
+         right end, over the drawer button and all three caption plates — which left a reader holding a column
+         they could only get out of through the pane's own ×. -->
+    <Grid Grid.Row="1" Grid.Column="2" ColumnDefinitions="5,*" IsVisible="False" x:Name="InspectorColumn">
       <Border x:Name="InspectorResizeGrip" Grid.Column="0" Background="Transparent"
               Cursor="SizeWestEast" IsVisible="False" />
       <Border x:Name="Inspector" Grid.Column="1" Width="360" ClipToBounds="True"
@@ -723,14 +752,20 @@
   </Grid>
 
   <!-- ==================== The inspector, expanded ====================
-       The same pane the column hosts, lifted over the whole client area: the column is clamped to 520 so the
-       chat column keeps its floor, which is the right room for a diff and the wrong room for a plan read end to
-       end. Only the pane moves here, never the column's Border, so the width a person dragged to is still there
-       when the surface comes back. The same background as the column's own Border, so the pane does not change
-       colour the moment it is lifted: it is the same object, given room, not a different surface. Opaque rather
-       than a scrim, because this is a document being read and not a modal that has interrupted something — and
-       what it covers is still there underneath when it goes. -->
-  <Grid x:Name="InspectorExpandHost" IsVisible="False">
+       The same pane the column hosts, lifted over the shell: the column is clamped to 520 so the chat column
+       keeps its floor, which is the right room for a diff and the wrong room for a plan read end to end. Only the
+       pane moves here, never the column's Border, so the width a person dragged to is still there when the
+       surface comes back. The same background as the column's own Border, so the pane does not change colour the
+       moment it is lifted: it is the same object, given room, not a different surface. Opaque rather than a
+       scrim, because this is a document being read and not a modal that has interrupted something — and what it
+       covers is still there underneath when it goes.
+
+       It is laid out in the second row, so the title bar is not one of the things it covers. That is the whole
+       difference between this being the *widest* reading surface and being a trap: the drawer button that got
+       the reader in here is on that bar, and this is where it turns into the way back out (see the Window's own
+       comment on the two buttons). The picture viewer below is deliberately not built this way — it is modal,
+       its own Escape is enough, and nothing on the bar is what dismisses it. -->
+  <Grid x:Name="InspectorExpandHost" Grid.Row="1" IsVisible="False">
     <Border x:Name="InspectorExpandSurface" Background="{DynamicResource Hub.SurfaceAlt}" ClipToBounds="True">
       <ContentControl x:Name="InspectorExpandContent" />
     </Border>
@@ -739,8 +774,9 @@
   <!-- ==================== Picture viewer ====================
        Fills the window because a capture is only readable at the size the window allows. The margins leave a
        lane for the prev/next buttons and keep the top bar and status strip readable, so opening a picture
-       never feels like losing the window. -->
-  <Grid x:Name="PictureViewerHost" IsVisible="False">
+       never feels like losing the window. It spans both client rows — unlike the expanded inspector it is a
+       modal layer, and the title bar is under it as much as the rest of the shell is. -->
+  <Grid x:Name="PictureViewerHost" Grid.Row="0" Grid.RowSpan="2" IsVisible="False">
     <Border x:Name="PictureViewerScrim" Classes="picture-preview-scrim" />
     <Image x:Name="PictureViewerImage" Stretch="Uniform" Margin="72,44,72,44" />
     <Button x:Name="PicturePrevButton" Classes="picture-nav" HorizontalAlignment="Left"

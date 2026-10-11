@@ -333,11 +333,11 @@ public partial class MainWindow : Window
         };
         // The panel owns the transcript; the window owns the surfaces that reach past it. A picture opens in the
         // window-level viewer (it fills the window, not the chat column), and the plan/diff/repository review
-        // opens in the inspector column beside the page.
+        // opens in the inspector column beside the page. Which of the column's two homes that pane is in, and
+        // whether the column is up at all, is not asked of the panel: both now live on the title bar's own
+        // buttons, which are wired straight to the two methods here (see InitializeInspector).
         panel.ShowPictureViewer = (set, index) => OpenPictureViewer(set, index);
         panel.OpenInspector = (tab, turnIndex) => OpenInspector(tab, turnIndex);
-        panel.CloseInspector = CloseInspector;
-        panel.ToggleInspectorExpanded = ToggleInspectorExpanded;
         panel.RefreshInspector = RefreshInspector;
         // The pane's header tabs are the reader's choice, and this column repaints on a schedule of its own —
         // every transcript move, every repository read that lands. The shell asks for a tab by name on each of
@@ -1444,10 +1444,13 @@ public partial class MainWindow : Window
         // The settings gear is icon-only, so its tooltip is the only place the name "Settings" appears for it.
         // Set here rather than in ApplyLanguage so it is also in place at construction time.
         ToolTip.SetTip(SettingsButton, HubStrings.Get("Settings"));
-        // Same rule for the inspector's drawer button, and this one is in InitializeChrome rather than
-        // InitializeInspector because ApplyLanguage calls this: an icon-only control whose name lives only in a
-        // tooltip has to be rewritten when the language changes.
-        ToolTip.SetTip(InspectorToggle, HubStrings.Get("InspectorToggleTip"));
+        // Same rule for the two buttons at the title bar's right end, and this one is in InitializeChrome rather
+        // than InitializeInspector because ApplyLanguage calls this: an icon-only control whose name lives only in
+        // a tooltip has to be rewritten when the language changes. The drawer's sentence depends on which surface
+        // is up, so that half goes through the sync that owns it rather than being written here — a language
+        // switch while the pane is lifted has to leave it saying "back to the column", not "show or hide".
+        ToolTip.SetTip(InspectorExpandToggle, HubStrings.Get("InspectorExpand"));
+        SyncInspectorDrawerChrome();
 
         // The bottom text block's visible text names the machine, not the menu; the tooltip is where
         // "this opens settings and appearance" is spelled out. Same place for the same reason.

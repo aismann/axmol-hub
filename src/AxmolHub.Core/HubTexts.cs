@@ -657,7 +657,6 @@ public static class HubTexts
         // ── The right-hand inspector ──
         ["InspectorTabPlan"] = ("计划", "Plan"),
         ["InspectorTabChanges"] = ("改动", "Changes"),
-        ["InspectorClose"] = ("关闭面板", "Close panel"),
         ["InspectorChangesEmpty"] = ("这个会话还没改动任何文件", "This session has not touched any file yet"),
         ["InspectorPlanEmpty"] = ("还没有生成计划", "No plan yet"),
         // Four honest ways a diff can be unavailable. Each names why it stopped instead of drawing nothing:

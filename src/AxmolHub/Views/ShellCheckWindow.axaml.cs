@@ -773,15 +773,18 @@ public partial class ShellCheckWindow : Window
                 : "找不到";
         Check(NamedDescendant<Button>(shell, "LogToggle") is { } logToggle && IsSquarePlate(logToggle),
             "日志按钮的悬停底板是正方形（实际 " + PlateOf(shell, "LogToggle") + "）");
-        // The two drawers are the same plate as each other, one step *smaller* than the log chevron: at 32px in a
-        // 32px bar they read as a fourth window control rather than as a drawer.
+        // All three of the bar's own buttons are the same plate as each other and one step *smaller* than the log
+        // chevron: at 32px beside the caption plates they read as a fourth window control rather than as a drawer.
+        // The number is pinned rather than bounded, because it is a ratio — 0.75 of the 26px plate the rest of the
+        // shell uses for a quiet icon button — and a plate that quietly drifted back to 26 would still satisfy any
+        // "smaller than the bar" bound while undoing the change.
         var sidebarPlate = shell.TitlebarTogglePlateForCheck("SidebarToggle");
         var inspectorPlate = shell.TitlebarTogglePlateForCheck("InspectorToggle");
         Check(Math.Abs(sidebarPlate.Width - sidebarPlate.Height) <= 1.5
               && Math.Abs(inspectorPlate.Width - inspectorPlate.Height) <= 1.5
-              && sidebarPlate.Width is > 0 and <= 30
+              && Math.Abs(sidebarPlate.Width - 19.5) <= 0.5
               && Math.Abs(sidebarPlate.Width - inspectorPlate.Width) <= 1.5,
-            "两枚抽屉按钮底板同为正方形且比日志按钮小一圈（☰ " + Fmt(sidebarPlate.Width) + "×"
+            "三枚标题栏按钮的底板同为正方形，且是 26 的 0.75 倍（☰ " + Fmt(sidebarPlate.Width) + "×"
             + Fmt(sidebarPlate.Height) + "，▯ " + Fmt(inspectorPlate.Width) + "×"
             + Fmt(inspectorPlate.Height) + "）");
 
@@ -3357,12 +3360,12 @@ public partial class ShellCheckWindow : Window
         Check(restoredPane?.PlanNoticeForCheck == HubStrings.Get("InspectorPlanEmpty"),
             "这一会话没有计划时那一列说「还没有生成计划」，而不是什么都不说（实际「"
             + (restoredPane?.PlanNoticeForCheck ?? "(没有面板)") + "」）");
-        restoredPane?.ClickCloseForCheck();
+        restored.ClickInspectorToggleForCheck();
         restored.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(!restored.InspectorVisibleForCheck
               && new PreferencesStore(PreferencesPathFor(restoreRoot)).Load().InspectorOpen == false,
-            "点那一列自己的 ×：列真的让位给聊天，设置里也记成关着，而不是下次启动又回来");
+            "点标题栏那枚抽屉按钮：列真的让位给聊天，设置里也记成关着，而不是下次启动又回来");
         restored.Close();
 
         // ── the header tabs, pressed by a reader rather than by the shell ──
@@ -3426,34 +3429,66 @@ public partial class ShellCheckWindow : Window
         panel.Reload();
         Dispatcher.UIThread.RunJobs();
 
-        // ── the top bar's drawer button ──
+        // ── the title bar's two right-hand buttons ──
         // The column's way in and out has to exist whether or not a pane does, which is the difference between a
         // drawer and the dead end a restored column used to be. It belongs to the assistant page rather than to
-        // the column: on another page there is nothing for it to show.
+        // the column: on another page there is nothing for it to show — and nothing for the arrow beside it to
+        // lift, which is the other half of that rule.
         shell.OpenInspector("plan", -1);
         shell.NavigateTo("Projects");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(!shell.InspectorToggleVisibleForCheck,
-            "审阅面板的开关只在助手页出现：别的页上没有可开可关的东西，摆在那儿就是一句假话");
+        Check(!shell.InspectorToggleVisibleForCheck && !shell.InspectorExpandToggleVisibleForCheck,
+            "审阅面板的两枚按钮都只在助手页出现：别的页上没有可开可关的东西，也没有可撑开的东西");
         shell.NavigateTo("Assistant");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.InspectorToggleVisibleForCheck && shell.InspectorVisibleForCheck
+        Check(shell.InspectorToggleVisibleForCheck && shell.InspectorExpandToggleVisibleForCheck
+              && shell.InspectorVisibleForCheck
               && shell.InspectorToggleTipForCheck == HubTexts.Get("InspectorToggleTip", HubStrings.Language)
               && shell.InspectorToggleTipForCheck.Length > 0,
-            "回到助手页它又在了，而这枚只有图标的按钮确实带着文案表里那句提示（实际「"
+            "回到助手页两枚又在了，而抽屉那枚只有图标，确实带着文案表里那句提示（实际「"
             + shell.InspectorToggleTipForCheck + "」）");
+
+        var renderDir = ScratchDirectory.Resolve("assistant-render");
+        var clientSize = shell.ClientBoundsForCheck.Size;
+        var barHeight = shell.TitleBarBoundsForCheck.Height;
+        var openDrawer = shell.InspectorToggleBoundsForCheck;
+        var openPlates = shell.WindowControlsBoundsForCheck;
+        var (expandGap, expandBeforeDrawer) = shell.InspectorExpandMeetsDrawerForCheck;
+        var openShot = System.IO.Path.Combine(renderDir, "caption-column.png");
+        SmokeCapture.Capture(shell, openShot);
+        Check(expandBeforeDrawer && expandGap is >= 0 and <= 24
+              && Math.Abs(shell.InspectorExpandToggleBoundsForCheck.Width - openDrawer.Width) <= 1.5,
+            "撑开那枚停在抽屉左边一小段距离，两块底板一样大（间距 " + Fmt(expandGap) + "，箭头 "
+            + Fmt(shell.InspectorExpandToggleBoundsForCheck.Width) + "、抽屉 " + Fmt(openDrawer.Width) + "）");
+
         shell.InspectorPaneForCheck?.ClickChangesTabForCheck();
         shell.ClickInspectorToggleForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(!shell.InspectorVisibleForCheck && !shell.InspectorGripVisibleForCheck
-              && !shell.InspectorExpandedForCheck && !shell.InspectorOverlayVisibleForCheck,
-            "一按收起：那一列连同它自己的拖拽手柄一起让位给聊天，不会留下一个浮着的展开态（列 "
+              && !shell.InspectorExpandedForCheck && !shell.InspectorOverlayVisibleForCheck
+              && !shell.InspectorExpandToggleVisibleForCheck,
+            "一按收起：那一列连同它自己的拖拽手柄一起让位给聊天，靠它撑开的那枚也跟着收掉（列 "
             + shell.InspectorVisibleForCheck + "、手柄 " + shell.InspectorGripVisibleForCheck
-            + "、展开 " + shell.InspectorExpandedForCheck + "、覆盖层 "
-            + shell.InspectorOverlayVisibleForCheck + "）");
+            + "、撑开 " + shell.InspectorExpandedForCheck + "、覆盖层 "
+            + shell.InspectorOverlayVisibleForCheck + "、撑开按钮 "
+            + shell.InspectorExpandToggleVisibleForCheck + "）");
+
+        // Nothing may move the drawer or the three caption plates, and nothing may paint over them. Bounds cannot
+        // say either: while the column was allowed to reach the bar it covered all four plates and every one of
+        // their rectangles stayed exactly where it was, so this photographs the bar and compares the pixels the
+        // drawer and the plates are drawn in.
+        var shutShot = System.IO.Path.Combine(renderDir, "caption-shut.png");
+        SmokeCapture.Capture(shell, shutShot);
+        var drawerStrip = new Rect(openDrawer.X, 0, clientSize.Width - openDrawer.X, barHeight);
+        Check(SameRect(shell.InspectorToggleBoundsForCheck, openDrawer)
+              && SameRect(shell.WindowControlsBoundsForCheck, openPlates)
+              && SameRegion(shutShot, openShot, drawerStrip, clientSize),
+            "收起前后抽屉与三个窗口按钮一寸没挪，而且都还在像素上——没有谁把标题栏右端盖成一块背景板（抽屉 "
+            + Fmt(openDrawer.X) + "，窗口按钮 " + Fmt(openPlates.X) + "）");
+
         shell.ClickInspectorToggleForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -3463,14 +3498,15 @@ public partial class ShellCheckWindow : Window
             "再按展开：回到读者上次停的那一页，而不是从头塞给他一个计划（外壳记的是「"
             + shell.InspectorTabForCheck + "」）");
         var (drawerWidth, drawerHeight) = shell.InspectorTogglePlateForCheck;
-        var drawerBounds = shell.InspectorToggleBoundsForCheck;
         var barBounds = shell.TitleBarBoundsForCheck;
         var (drawerGap, drawerBeforeControls) = shell.InspectorToggleMeetsWindowControlsForCheck;
         Check(Math.Abs(drawerWidth - drawerHeight) <= 1.5
               && Math.Abs(barBounds.Height - 32) <= 0.5
               && drawerBeforeControls && drawerGap is >= 0 and <= 24
-              && FitsItsSquareSlot("Hub.Icon.PanelRight"),
-            "开关的悬停底板是正方形、标题栏还是那 32 高、按钮停在窗口按钮左侧一小段距离，图标在 24 网格上包围盒正方且居中（底板 "
+              && FitsItsSquareSlot("Hub.Icon.PanelRight")
+              && FitsItsSquareSlot("Hub.Icon.Expand")
+              && FitsItsSquareSlot("Hub.Icon.Restore"),
+            "抽屉的悬停底板是正方形、标题栏还是那 32 高、它停在窗口按钮左侧一小段距离，它和撑开那枚用到的三张图标在 24 网格上包围盒正方且居中（底板 "
             + Fmt(drawerWidth) + "×" + Fmt(drawerHeight) + "，栏高 " + Fmt(barBounds.Height)
             + "，与窗口按钮间距 " + Fmt(drawerGap) + "）");
         shell.CloseInspector();
@@ -3483,7 +3519,7 @@ public partial class ShellCheckWindow : Window
         shell.SetInspectorWidthForCheck(480);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        shell.InspectorPaneForCheck?.ClickExpandForCheck();
+        shell.ClickInspectorExpandToggleForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         var overlay = shell.InspectorOverlayBoundsForCheck;
@@ -3493,21 +3529,33 @@ public partial class ShellCheckWindow : Window
               && shell.InspectorOverlayOrderForCheck
               && !shell.InspectorVisibleForCheck
               && overlay.Contains(shell.SidebarBoundsForCheck)
-              && overlay.Contains(shell.TitleBarBoundsForCheck)
               && overlay.Contains(shell.PageBoundsForCheck)
+              && !overlay.Intersects(shell.TitleBarBoundsForCheck)
               && overlay.Width >= client.Width - 1
-              && overlay.Height >= client.Height - 1,
-            "撑开审阅面板：整片客户区被盖住，侧栏、顶栏、聊天列都在它下面，而右边那一列自己让了位（覆盖 "
-            + Fmt(overlay.Width) + "×" + Fmt(overlay.Height) + "，客户区 "
+              && overlay.Height >= client.Height - barHeight - 1,
+            "撑开审阅面板：侧栏和聊天列都在它下面，标题栏却一点没被盖上——面板从栏下面开始，回程那枚按钮就长在那儿（覆盖 "
+            + Fmt(overlay.Width) + "×" + Fmt(overlay.Height) + " @ y=" + Fmt(overlay.Y) + "，客户区 "
             + Fmt(client.Width) + "×" + Fmt(client.Height) + "）");
         var expandedPane = shell.InspectorPaneForCheck;
         Check(expandedPane is not null
               && expandedPane.ExpandedForCheck
-              && expandedPane.ExpandButtonTagForCheck == "InspectorRestore"
-              && expandedPane.ExpandGlyphIsForCheck("Hub.Icon.Restore")
+              && expandedPane.HeaderButtonCountForCheck == 3
               && expandedPane.PlanHostMaxWidthForCheck == 820,
-            "撑开后箭头真的换成朝内的那一枚、文字也说「还原」，计划页收到聊天列的行长而不是铺满整屏（正文列宽上限 "
-            + Fmt(expandedPane?.PlanHostMaxWidthForCheck ?? 0) + "）");
+            "撑开后计划页收到聊天列的行长而不是铺满整屏，面板自己的头上也只剩三个页签（正文列宽上限 "
+            + Fmt(expandedPane?.PlanHostMaxWidthForCheck ?? 0) + "，头上按钮 "
+            + (expandedPane?.HeaderButtonCountForCheck ?? -1) + " 枚）");
+        var liftedShot = System.IO.Path.Combine(renderDir, "caption-lifted.png");
+        SmokeCapture.Capture(shell, liftedShot);
+        var plateStrip = new Rect(openPlates.X, 0, clientSize.Width - openPlates.X, barHeight);
+        Check(!shell.InspectorExpandToggleVisibleForCheck
+              && shell.InspectorToggleVisibleForCheck
+              && shell.InspectorDrawerGlyphIsForCheck("Hub.Icon.Restore")
+              && shell.InspectorToggleTipForCheck == HubTexts.Get("InspectorRestore", HubStrings.Language)
+              && SameRect(shell.InspectorToggleBoundsForCheck, openDrawer)
+              && SameRect(shell.WindowControlsBoundsForCheck, openPlates)
+              && SameRegion(liftedShot, openShot, plateStrip, clientSize),
+            "撑开后抽屉那条槽位换成了朝内的箭头、话也说「还原」，而它和三个窗口按钮都还在原来的 x 上、仍在像素上（提示「"
+            + shell.InspectorToggleTipForCheck + "」）");
         shell.PressInspectorKeyForCheck(Key.Escape);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -3515,25 +3563,26 @@ public partial class ShellCheckWindow : Window
               && !shell.InspectorOverlayVisibleForCheck
               && shell.InspectorVisibleForCheck
               && shell.InspectorWidthForCheck == 480
-              && shell.InspectorPaneForCheck?.ExpandButtonTagForCheck == "InspectorExpand"
-              && shell.InspectorPaneForCheck?.ExpandGlyphIsForCheck("Hub.Icon.Expand") == true
+              && shell.InspectorExpandToggleVisibleForCheck
+              && shell.InspectorDrawerGlyphIsForCheck("Hub.Icon.PanelRight")
+              && shell.InspectorToggleTipForCheck == HubTexts.Get("InspectorToggleTip", HubStrings.Language)
               && shell.InspectorPaneForCheck?.PlanTabVisibleForCheck == true,
-            "Esc 把面板收回右边那一列：箭头翻回朝外，列宽还是撑开前拖到的 480，计划页也还在（实际 "
+            "Esc 把面板收回右边那一列：抽屉换回面板图标、话也说「显示或隐藏」，撑开那枚又回来了，列宽还是撑开前拖到的 480，计划页也还在（实际 "
             + Fmt(shell.InspectorWidthForCheck) + "）");
 
         // The two ways out that are not the arrow: leaving the page it belongs to, and closing it. Either one
-        // leaving a full-screen pane behind would cover a page that cannot produce one.
-        shell.InspectorPaneForCheck?.ClickExpandForCheck();
+        // leaving a lifted pane behind would cover a page that cannot produce one.
+        shell.ClickInspectorExpandToggleForCheck();
         shell.NavigateTo("Settings");
         Check(!shell.InspectorExpandedForCheck && !shell.InspectorOverlayVisibleForCheck,
-            "离开助手页时展开状态一起没有：不会留下一整屏盖住别的页面");
+            "离开助手页时撑开状态一起没有：不会留下一整片盖住别的页面");
         shell.NavigateTo("Assistant");
         shell.OpenInspector("plan", -1);
-        shell.InspectorPaneForCheck?.ClickExpandForCheck();
+        shell.ClickInspectorExpandToggleForCheck();
         shell.CloseInspector();
         Check(!shell.InspectorExpandedForCheck && !shell.InspectorOverlayVisibleForCheck
               && !shell.InspectorVisibleForCheck,
-            "关掉审阅面板时展开状态一起没有，而不是留下一整屏没有列可回的面板");
+            "关掉审阅面板时撑开状态一起没有，而不是留下一整片没有列可回的面板");
 
         // ── the inspector content, fed a fixture snapshot directly ──
         var inspector = new InspectorPanel();
@@ -7277,6 +7326,78 @@ public partial class ShellCheckWindow : Window
     /// <c>titleBarHeight</c> pixels are the app's title bar, whose ☰ drawer is *supposed* to sit in the collapsed
     /// sidebar's place, so a strip taken from row 0 would report the drawer as the overflow this guards against.
     /// </summary>
+    /// <summary>Whether two DIP rects describe the same place, allowing the sub-DIP rounding every layout pass is
+    /// entitled to spend.</summary>
+    private static bool SameRect(Rect first, Rect second, double tolerance = 0.5)
+        => Math.Abs(first.X - second.X) <= tolerance
+           && Math.Abs(first.Y - second.Y) <= tolerance
+           && Math.Abs(first.Width - second.Width) <= tolerance
+           && Math.Abs(first.Height - second.Height) <= tolerance;
+
+    /// <summary>
+    /// Whether two captures of the same window are the same picture over one region.
+    ///
+    /// Bounds cannot answer the question this is for. A plate a sibling has painted over keeps its own rectangle
+    /// exactly where it was, so every accessor stays green while the reader cannot see the button at all — which is
+    /// what the review column did to the title bar's right end for as long as it was allowed to reach y=0. The two
+    /// captures have to differ somewhere (that is what makes them two states), so the comparison is cut down to the
+    /// strip being claimed: the drawer and the three caption plates must look identical whether the column is up,
+    /// shut, or lifted over the shell.
+    /// </summary>
+    private static bool SameRegion(string first, string second, Rect region, Size client, byte tolerance = 2)
+        => SamePixels(RegionPixels(first, region, client), RegionPixels(second, region, client), tolerance);
+
+    /// <summary>One region of a capture as BGRA bytes. The region is given in the client's own DIP coordinates and
+    /// scaled here rather than assumed to be 1:1, so a capture that ever comes back at physical size still lands on
+    /// the same pixels instead of on a quarter of them.</summary>
+    private static byte[] RegionPixels(string png, Rect region, Size client)
+    {
+        using var bitmap = new Bitmap(png);
+        var size = bitmap.PixelSize;
+        if (client.Width <= 0 || client.Height <= 0 || size.Width == 0 || size.Height == 0) return [];
+
+        var scaleX = size.Width / client.Width;
+        var scaleY = size.Height / client.Height;
+        var left = Math.Clamp((int)Math.Floor(region.X * scaleX), 0, size.Width - 1);
+        var right = Math.Clamp((int)Math.Ceiling(region.Right * scaleX), left + 1, size.Width);
+        var top = Math.Clamp((int)Math.Floor(region.Y * scaleY), 0, size.Height - 1);
+        var bottom = Math.Clamp((int)Math.Ceiling(region.Bottom * scaleY), top + 1, size.Height);
+
+        using var staging = new WriteableBitmap(size, bitmap.Dpi, PixelFormat.Bgra8888, AlphaFormat.Premul);
+        using var framebuffer = staging.Lock();
+        bitmap.CopyPixels(framebuffer);
+
+        var rowBytes = framebuffer.RowBytes;
+        var all = new byte[rowBytes * size.Height];
+        Marshal.Copy(framebuffer.Address, all, 0, all.Length);
+
+        var region4 = new byte[(right - left) * 4 * (bottom - top)];
+        var at = 0;
+        for (var y = top; y < bottom; y++)
+        {
+            for (var x = left; x < right; x++)
+            {
+                var offset = (y * rowBytes) + (x * 4);
+                region4[at++] = all[offset];
+                region4[at++] = all[offset + 1];
+                region4[at++] = all[offset + 2];
+                region4[at++] = all[offset + 3];
+            }
+        }
+        return region4;
+    }
+
+    /// <summary>Byte for byte, within the tolerance antialiasing is allowed to spend on a glyph's edge.</summary>
+    private static bool SamePixels(byte[] first, byte[] second, byte tolerance)
+    {
+        if (first.Length == 0 || first.Length != second.Length) return false;
+        for (var i = 0; i < first.Length; i++)
+        {
+            if (Math.Abs(first[i] - second[i]) > tolerance) return false;
+        }
+        return true;
+    }
+
     private static bool LeftStripIsClear(string png, int stripWidth, double titleBarHeight)
     {
         using var bitmap = new Bitmap(png);

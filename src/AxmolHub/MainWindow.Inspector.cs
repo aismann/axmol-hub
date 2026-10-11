@@ -47,11 +47,18 @@ public partial class MainWindow
     /// on the current page — the inspector belongs to the assistant, and follows it off-screen.</summary>
     private bool _inspectorOpen;
 
-    /// <summary>Whether the pane is currently lifted out of the column and over the whole client area. Transient
-    /// by design and deliberately not persisted: it is a way of reading one document, not a statement about how
-    /// the person wants the app laid out tomorrow, and a restored window that opens on a full-screen plan with
-    /// no chat in sight is a window that has to be escaped out of before anything can be said.</summary>
+    /// <summary>Whether the pane is lifted over the shell. Transient by design and deliberately not persisted: it
+    /// is a way of reading one document, not a statement about how the person wants the app laid out tomorrow, and
+    /// a restored window that opens on a full-screen plan with no chat in sight is a window that has to be escaped
+    /// out of before anything can be said.</summary>
     private bool _inspectorExpanded;
+
+    /// <summary>The drawer button's two faces. Read once in <see cref="InitializeInspector"/> rather than bound per
+    /// state: the swap is driven from code (see <see cref="SyncInspectorDrawerChrome"/>), and the pair has to come
+    /// from the same dictionary the glyph in MainWindow.axaml came from or the two states would be drawn at
+    /// different scales.</summary>
+    private Geometry? _drawerGlyph;
+    private Geometry? _drawerRestoreGlyph;
 
     /// <summary>Wires the inspector grip and applies the persisted width/open state. Called once from the
     /// constructor after <c>InitializeComponent</c>, beside <see cref="InitializeSidebar"/>.</summary>
@@ -60,6 +67,12 @@ public partial class MainWindow
         InspectorResizeGrip.PointerPressed += OnInspectorGripPressed;
         InspectorResizeGrip.PointerMoved += OnInspectorGripMoved;
         InspectorResizeGrip.PointerReleased += OnInspectorGripReleased;
+
+        // The drawer's two glyphs, resolved once from this window's resources: the button is repainted on every
+        // open, close and lift, and a lookup per repaint would be three dictionary walks to answer a question whose
+        // answer never changes. They are the 0-24 grid icons, drawn Uniform in a 16px slot like the ☰ beside them.
+        _drawerGlyph = this.FindResource("Hub.Icon.PanelRight") as Geometry;
+        _drawerRestoreGlyph = this.FindResource("Hub.Icon.Restore") as Geometry;
 
         Inspector.Width = InspectorClamp(_preferences.InspectorWidth > 0
             ? _preferences.InspectorWidth
@@ -74,9 +87,13 @@ public partial class MainWindow
         RepoIndicator.Click += (_, _) => OnRepoIndicatorClicked();
         UpdateRepoIndicator();
 
-        // The top bar's drawer button, the sidebar toggle's mirror: it is the column's way in and out that does
-        // not depend on the pane being built, which is the difference between a drawer and a dead end.
+        // The title bar's two right-hand buttons. The drawer is the column's way in and out that does not depend on
+        // the pane being built, which is the difference between a drawer and a dead end; the arrow beside it is the
+        // same pane's "give me the window" control, which used to be drawn inside the pane itself — where it was
+        // reachable only while there was a column to draw it in, and where the reader could not press it while the
+        // pane was up. Both are wired here, and the glyph each one swaps between is resolved just below.
         InspectorToggle.Click += (_, _) => ToggleInspectorColumn();
+        InspectorExpandToggle.Click += (_, _) => ToggleInspectorExpanded();
 
         // Esc on the window's own tunnel, registered here rather than after the picture viewer's and ordered by
         // an explicit guard instead: which overlay is up is a fact this handler can read, while handler order is
@@ -174,23 +191,49 @@ public partial class MainWindow
     }
 
     /// <summary>Applies the three gates at once: the inspector shows only on the assistant page, only while
-    /// open, and only while it is not covering the window from the overlay — where the column would hand the same
-    /// pane to two hosts at once. The grip rides with the column, so there is never a floating handle beside a
-    /// hidden pane.</summary>
+    /// open, and only while it is not lifted out of the column — where the column would hand the same pane to two
+    /// hosts at once. The grip rides with the column, so there is never a floating handle beside a hidden pane.
+    ///
+    /// This is also the one place the title bar's two right-hand buttons are told what they are. The arrow shows
+    /// exactly when there is a column to lift (so it is absent both when the column is shut and when the pane has
+    /// already covered the shell), and the drawer is the column's mirror image: while the pane is lifted there is
+    /// no column to shut, so the same button becomes the way back down (see
+    /// <see cref="SyncInspectorDrawerChrome"/>).</summary>
     private void SetInspectorColumnVisible()
     {
         var show = _inspectorOpen && _currentKey == "Assistant" && !_inspectorExpanded;
         // The one rule the column may not break: a column on screen has a pane in it. Every way of getting here
         // except an explicit <see cref="OpenInspector"/> — a restored open flag, a page navigation, coming back
-        // out of the overlay — used to be able to show the chrome with nothing inside, and the header, the tabs
-        // and the × that closes it all live *in* the pane, so what was on screen was a strip nobody could shut.
+        // out of the lifted state — used to be able to show the chrome with nothing inside, and the header and the
+        // tabs all live *in* the pane, so what was on screen was an empty strip at the window's edge.
         if (show) EnsureInspectorPane();
         InspectorColumn.IsVisible = show;
         InspectorResizeGrip.IsVisible = show;
-        // The drawer button belongs to the page, not to the column: while the pane is lifted into the overlay the
-        // column is legitimately empty, and a button that flipped off there would leave the person no way back
-        // except Esc.
+        // The drawer button belongs to the page, not to the column: while the pane is lifted the column is
+        // legitimately empty, and a button that flipped off there would leave the person no way back to the column
+        // at all. On another page there is nothing for it to show or hide, and nothing to lift either.
         InspectorToggle.IsVisible = _currentKey == "Assistant";
+        InspectorExpandToggle.IsVisible = show;
+        SyncInspectorDrawerChrome();
+    }
+
+    /// <summary>
+    /// Gives the drawer button the face and the sentence that match what pressing it would do now. In the column it
+    /// opens and shuts the column; in the lifted state there is no column on screen to shut, so it is the way back
+    /// down — the same slot, the same plate, a different meaning, which is why this is one button and not two.
+    /// Nothing here is remembered: both readings come from <c>_inspectorExpanded</c>, which is the same field the
+    /// shell consults to decide which surface the pane is in.
+    ///
+    /// Called from <see cref="SetInspectorColumnVisible"/> on every state change and from <c>InitializeChrome</c>,
+    /// which is what a language switch re-runs — an icon-only control whose name lives only in a tooltip has to
+    /// have that tooltip rewritten, and it has to be rewritten to the *current* state's sentence rather than to
+    /// the column's.
+    /// </summary>
+    private void SyncInspectorDrawerChrome()
+    {
+        var lifted = _inspectorExpanded;
+        if ((lifted ? _drawerRestoreGlyph : _drawerGlyph) is { } glyph) InspectorToggleGlyph.Data = glyph;
+        ToolTip.SetTip(InspectorToggle, HubStrings.Get(lifted ? "InspectorRestore" : "InspectorToggleTip"));
     }
 
     /// <summary>Builds the pane if nothing has yet, through the same door <see cref="OpenInspector"/> uses, and
@@ -207,7 +250,7 @@ public partial class MainWindow
     }
 
     /// <summary>Called from <see cref="NavigateTo"/>: the inspector follows the assistant page on and off, and
-    /// so does its expanded state — an overlay that outlives the page it belongs to would be a pane with no
+    /// so does its lifted state — a pane that outlived the page it belongs to would be a surface with no
     /// conversation behind it, covering the settings page.</summary>
     private void SyncInspectorForPage()
     {
@@ -215,6 +258,9 @@ public partial class MainWindow
         SetInspectorColumnVisible();
     }
 
+    /// <summary>Lifts the pane over the shell, or brings it back down. The title bar's arrow and the drawer it
+    /// becomes while the pane is up both land here, so "which one is showing" never has to be known by the
+    /// buttons.</summary>
     internal void ToggleInspectorExpanded()
     {
         if (_inspectorExpanded) RestoreInspector();
@@ -232,10 +278,11 @@ public partial class MainWindow
         SetInspectorColumnVisible();
     }
 
-    /// <summary>Puts the pane back in the column. Idempotent, because three callers can race to it — the header
-    /// arrow, Esc, and leaving the assistant page — and none of them should have to know what the others did.
-    /// The column's own width is never touched by any of this, which is what makes the dragged width survive the
-    /// round trip without anything having to remember it.</summary>
+    /// <summary>Puts the pane back in the column. Idempotent, because three callers can race to it — the title
+    /// bar's arrow (or the drawer standing in for it while the pane is up), Esc, and leaving the assistant page —
+    /// and none of them should have to know what the others did. The column's own width is never touched by any of
+    /// this, which is what makes the dragged width survive the round trip without anything having to remember
+    /// it.</summary>
     internal void RestoreInspector()
     {
         if (!_inspectorExpanded) return;
@@ -298,10 +345,43 @@ public partial class MainWindow
         => (InspectorToggle.Bounds.Width, InspectorToggle.Bounds.Height);
     internal Rect InspectorToggleBoundsForCheck => InClient(InspectorToggle);
 
+    /// <summary>The arrow beside the drawer: shown only while there is a column to lift. Read by name and by rect,
+    /// because "it is there" and "it is to the left of the drawer" are two different claims and the second one is
+    /// what the layout is for.</summary>
+    internal bool InspectorExpandToggleVisibleForCheck => InspectorExpandToggle.IsVisible;
+    internal Rect InspectorExpandToggleBoundsForCheck => InClient(InspectorExpandToggle);
+
+    /// <summary>The gap between the arrow and the drawer, and whether the arrow really is the left one of the pair.
+    /// Mirrors <see cref="InspectorToggleMeetsWindowControlsForCheck"/>: the two plates are the same size and sit
+    /// one small margin apart, so the pair reads as one group of two rather than as two unrelated buttons.</summary>
+    internal (double Gap, bool Before) InspectorExpandMeetsDrawerForCheck
+    {
+        get
+        {
+            var expand = InClient(InspectorExpandToggle);
+            var drawer = InClient(InspectorToggle);
+            return (drawer.X - expand.Right, expand.Right <= drawer.X + 0.5);
+        }
+    }
+
+    /// <summary>Whether the drawer is painted with the given glyph. The rect says where the button is; this says
+    /// which of its two faces is on it, which is the half of "the drawer became the way back" that a tooltip
+    /// assertion cannot see. Compared by reference against the resource, so a glyph that merely looks similar —
+    /// the two share a diagonal and differ by which end the arrowhead is on — does not pass.</summary>
+    internal bool InspectorDrawerGlyphIsForCheck(string geometryKey)
+        => Application.Current?.TryGetResource(geometryKey, null, out var value) == true
+           && value is Geometry geometry
+           && ReferenceEquals(InspectorToggleGlyph.Data, geometry);
+
     /// <summary>Presses the title bar's own button, so a cell drives the wiring instead of calling
     /// <see cref="ToggleInspectorColumn"/> and proving nothing.</summary>
     internal void ClickInspectorToggleForCheck()
         => InspectorToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+    /// <summary>The same for the arrow: the lift has to be reachable from the bar the reader actually presses,
+    /// which is the whole point of moving it out of the pane.</summary>
+    internal void ClickInspectorExpandToggleForCheck()
+        => InspectorExpandToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
     /// <summary>Writes the width the grip writes, so a check can start from a width that is not the default and
     /// tell "the column kept what you dragged it to" from "both numbers happen to be 360".</summary>
