@@ -121,10 +121,14 @@ internal sealed class TransferQueue
         /// completion work has run. A download no longer blocks the UI, but a caller that genuinely
         /// needs "is it installed yet" (the deep-link path, the version picker) still awaits this, so
         /// moving onto the queue does not quietly change what <c>await</c> means.
+        ///
+        /// <para>Replaced rather than reused by <see cref="ResetForRetry"/>: a task is single-shot, so a
+        /// retried transfer still holding the first attempt's completed task would let an awaiting caller
+        /// read "the download is running" as "it is installed" the instant it re-asked.</para>
         /// </summary>
         public Task Completion => _completion.Task;
 
-        private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal CancellationTokenSource? Cancellation { get; set; }
         internal Action? CancelAction { get; set; }
@@ -223,6 +227,21 @@ internal sealed class TransferQueue
             State = Phase.Failed;
         }
 
+        /// <summary>
+        /// Puts a failed transfer back at the front of the gate, as the same row: same identity, same work
+        /// delegate, same place in the list the user is looking at. The work runs again from the top — which
+        /// is honest for both transports here, since <see cref="DownloadManager"/> resumes from the
+        /// <c>.partial</c> it already wrote and an unzipped package lands in a fresh staging directory.
+        /// </summary>
+        internal void ResetForRetry()
+        {
+            State = Phase.Queued;
+            Error = null;
+            Fault = null;
+            Report = Progress.Unknown;
+            _completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
         internal void Complete() => _completion.TrySetResult();
     }
 
@@ -256,7 +275,8 @@ internal sealed class TransferQueue
     /// running: the caller's answer there is "nothing to do", not an exception, because the duplicate is
     /// a normal click once the picker is out of the way (a deep link, or two clicks in one frame).
     /// Finished rows are dropped first, so the list is about this batch rather than every download since
-    /// launch — failures excepted, which <see cref="ClearFinished"/> keeps on purpose.
+    /// launch. A failure keeps its row for exactly one reason — <see cref="Retry"/> needs it — except the
+    /// failure of this same identity, which is being tried again and would otherwise read as two.
     /// </summary>
     public Item? Enqueue(
         string identity,
@@ -271,6 +291,18 @@ internal sealed class TransferQueue
         }
 
         ClearFinished();
+
+        // A fresh attempt takes the failed row's place instead of standing next to it. Without this the
+        // list grows a second row for the same download every time a failed engine install is re-asked from
+        // the version picker, and the strip then says "2 downloads failed" about one version.
+        for (var index = _items.Count - 1; index >= 0; index--)
+        {
+            if (_items[index].Identity == identity && _items[index].State == Phase.Failed)
+            {
+                _items.RemoveAt(index);
+            }
+        }
+
         var item = new Item(identity, titleKey, subject)
         {
             Work = work,
@@ -302,6 +334,40 @@ internal sealed class TransferQueue
         item.Abort();
         Changed?.Invoke();
         Pump();
+    }
+
+    /// <summary>
+    /// Runs a failed transfer again, as the same row. It takes the item rather than an identity because the
+    /// row offering the press already holds the one it means, and an identity would have to answer "which
+    /// of the rows with this identity" — a question that only exists once a superseded failure lingers.
+    /// </summary>
+    public void Retry(Item item)
+    {
+        if (item.State != Phase.Failed)
+        {
+            return;
+        }
+
+        item.ResetForRetry();
+        Changed?.Invoke();
+        Pump();
+    }
+
+    /// <summary>
+    /// Forgets one settled transfer. A failure the user has read and declined to retry is no longer a thing
+    /// the strip may light for, and it has to be removable for that reason: with retry as the only exit, the
+    /// slot would go on reporting a download nobody wants any more until the app closed. Only settled work,
+    /// because dropping a running transfer would leave it writing into a staging directory no row tracks.
+    /// </summary>
+    public void Dismiss(Item item)
+    {
+        if (item.IsActive || !_items.Remove(item))
+        {
+            return;
+        }
+
+        Items = _items.ToArray();
+        Changed?.Invoke();
     }
 
     /// <summary>Forgets the transfers that ended quietly. A failure stays: it is still something the user
