@@ -265,7 +265,7 @@ internal sealed class UpdateService
         // is then left with nothing but a restart.
         if (AutoDownload)
         {
-            StartPendingAutoDownload();
+            StartPendingDownload();
         }
 
         return outcome;
@@ -299,10 +299,12 @@ internal sealed class UpdateService
 
     /// <summary>
     /// Starts a background download if an update is known and nothing is in flight yet. Called after a
-    /// check when <see cref="AutoDownload"/> is on, and when the user switches the setting on with an
-    /// update already pending.
+    /// check when <see cref="AutoDownload"/> is on, when the user switches the setting on with an update
+    /// already pending, and from the strip's download action — which is the same request made on purpose.
+    /// It never applies by itself: the transfer ends in <see cref="DownloadState.Ready"/> and the restart
+    /// stays the user's press, because replacing the process is not something a download should decide.
     /// </summary>
-    public void StartPendingAutoDownload()
+    public void StartPendingDownload()
     {
         if (Download == DownloadState.None && Last is { Result: CheckResult.UpdateAvailable, Update: { } update })
         {

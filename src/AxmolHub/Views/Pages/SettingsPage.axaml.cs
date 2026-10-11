@@ -874,7 +874,7 @@ public partial class SettingsPage : UserControl
         UpdateService.Instance.AutoDownload = value;
         if (value)
         {
-            UpdateService.Instance.StartPendingAutoDownload();
+            UpdateService.Instance.StartPendingDownload();
         }
     }
 

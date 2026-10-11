@@ -405,6 +405,11 @@ public static class HubTexts
         ["TransferHubUpdate"] = ("Axmol Hub", "Axmol Hub"),
         // Said by a row (and by the install button) whose bytes are already on their way.
         ["TransferInFlightSuffix"] = ("正在进行", "In progress"),
+        // The slot's other action mode: an update is known, auto-download is off, and nobody has fetched it.
+        // The tip says what the press does and what it deliberately does not — with auto-download off there
+        // was no way to ask at all, and the only place to ask used to be the settings page.
+        ["TransferDownloadAction"] = ("下载更新", "Download update"),
+        ["TransferDownloadSlotTip"] = ("发现新版本 {0}，下载完由你决定何时重启。", "Version {0} is available. Download it, then choose when to restart."),
         // ── The strip's download slot and the queue popover ──
         // The slot is one sentence in a 28px strip, so it counts rather than narrates. The percentage only
         // appears when a single transfer is moving: averaging two rates into one number would be a figure

@@ -636,6 +636,19 @@ public partial class MainWindow : Window
     // ───────────────────────── The download queue's slot ─────────────────────────
 
     /// <summary>
+    /// Whether the strip may offer a download: the user turned auto-download off, so nothing is coming by
+    /// itself, and a newer version is known and not already on disk. With the setting on the transfer has
+    /// already started, and the queue mode is what the slot has to say instead.
+    /// </summary>
+    private static bool CanStartDownload()
+    {
+        var service = UpdateService.Instance;
+        return !service.AutoDownload
+               && service.Download == UpdateService.DownloadState.None
+               && service.Last is { Result: UpdateService.CheckResult.UpdateAvailable };
+    }
+
+    /// <summary>
     /// Repaints the strip's download slot, and the popover's rows while that popover is open.
     ///
     /// The rows are only rebuilt when the *set* of transfers changes; a progress tick repainting the handful
@@ -653,8 +666,9 @@ public partial class MainWindow : Window
 
         if (TransferSlotText is null) return;
 
+        var service = UpdateService.Instance;
         var (visible, label, action) = TransferSlotStateFor(
-            TransferQueue.Instance.Items, UpdateService.Instance.Download, _restartArmed);
+            TransferQueue.Instance.Items, service.Download, CanStartDownload(), _restartArmed);
         if (action != TransferSlotAction.Restart)
         {
             // Whatever the second press was standing by for is gone, so the word goes back before the next
@@ -665,13 +679,15 @@ public partial class MainWindow : Window
         TransferSlot.IsVisible = visible;
         TransferSlotText.Text = visible ? label : "";
         // Emphasis belongs to a slot that *is* a decision, not to one that only shows a list.
-        var isAction = action is TransferSlotAction.Restart or TransferSlotAction.Download;
-        TransferSlot.Classes.Set("accent", isAction);
+        TransferSlot.Classes.Set("accent", action is TransferSlotAction.Restart or TransferSlotAction.Download);
         _transferSlotTip.Text = action switch
         {
-            TransferSlotAction.Restart => UpdateService.Instance.PendingVersion is { } version
-                ? string.Format(HubStrings.Get("UpdateRestartActionTip"), version)
+            TransferSlotAction.Restart => service.PendingVersion is { } readyVersion
+                ? string.Format(HubStrings.Get("UpdateRestartActionTip"), readyVersion)
                 : HubStrings.Get("TransferRestartAction"),
+            TransferSlotAction.Download => service.PendingVersion is { } newVersion
+                ? string.Format(HubStrings.Get("TransferDownloadSlotTip"), newVersion)
+                : HubStrings.Get("TransferSlotTip"),
             _ => HubStrings.Get("TransferSlotTip"),
         };
         if (!visible)
@@ -717,7 +733,7 @@ public partial class MainWindow : Window
     /// is still a thing to act on.</para>
     /// </summary>
     internal static (bool Visible, string Label, TransferSlotAction Action) TransferSlotStateFor(
-        IReadOnlyList<TransferQueue.Item> items, UpdateService.DownloadState download, bool armed)
+        IReadOnlyList<TransferQueue.Item> items, UpdateService.DownloadState download, bool canStartDownload, bool armed)
     {
         var active = items.Where(item => item.IsActive).ToList();
         if (active.Count > 0)
@@ -742,10 +758,21 @@ public partial class MainWindow : Window
         }
 
         var failed = items.Count(item => item.State == TransferQueue.Phase.Failed);
-        return failed > 0
-            ? (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("TransferSlotFailed"), failed), TransferSlotAction.OpenQueue)
-            : (false, "", TransferSlotAction.None);
+        if (failed > 0)
+        {
+            return (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("TransferSlotFailed"), failed), TransferSlotAction.OpenQueue);
+        }
+
+        // Nothing is moving and nothing waits on a decision, but an update is sitting there unread. With
+        // auto-download off nobody would ever fetch it, and the only place to ask was inside the settings
+        // page — so the slot asks, in the one sentence the strip is allowed to spend.
+        if (canStartDownload)
+        {
+            return (true, HubStrings.Get("TransferDownloadAction"), TransferSlotAction.Download);
+        }
+
+        return (false, "", TransferSlotAction.None);
     }
 
     /// <summary>
@@ -761,13 +788,18 @@ public partial class MainWindow : Window
     private void OnTransferSlotClicked()
     {
         var (_, _, action) = TransferSlotStateFor(
-            TransferQueue.Instance.Items, UpdateService.Instance.Download, _restartArmed);
+            TransferQueue.Instance.Items, UpdateService.Instance.Download, CanStartDownload(), _restartArmed);
         switch (action)
         {
             case TransferSlotAction.None:
                 return;
             case TransferSlotAction.OpenQueue:
                 ToggleQueuePopup();
+                return;
+            case TransferSlotAction.Download:
+                // Fetch it, and stop there. The transfer ends in Ready and the slot then becomes the
+                // restart, so the process swap stays behind a press the user meant.
+                UpdateService.Instance.StartPendingDownload();
                 return;
         }
 
