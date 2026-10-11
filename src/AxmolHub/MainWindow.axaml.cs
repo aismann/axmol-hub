@@ -843,7 +843,11 @@ public partial class MainWindow : Window
             _queueRowViews.Clear();
             foreach (var item in items)
             {
-                var row = new QueueRowView(item, () => TransferQueue.Instance.Cancel(item.Identity));
+                var row = new QueueRowView(
+                    item,
+                    () => TransferQueue.Instance.Cancel(item.Identity),
+                    () => TransferQueue.Instance.Retry(item),
+                    () => TransferQueue.Instance.Dismiss(item));
                 QueueRows.Children.Add(row.Control);
                 _queueRowViews.Add(row);
             }
@@ -860,7 +864,8 @@ public partial class MainWindow : Window
     private readonly List<QueueRowView> _queueRowViews = [];
 
     /// <summary>One row of the popover: what is being fetched, how far it has come, and the press that
-    /// stops it. Held as controls rather than rebuilt, so a progress tick moves three strings.</summary>
+    /// answers it — stop it while it runs, run it again once it failed, and forget it when neither is
+    /// wanted. Held as controls rather than rebuilt, so a progress tick moves three strings.</summary>
     private sealed class QueueRowView
     {
         private readonly TransferQueue.Item _item;
@@ -868,33 +873,51 @@ public partial class MainWindow : Window
         private readonly ProgressBar _bar = new() { Minimum = 0, Maximum = 100, Height = 6 };
         private readonly TextBlock _measure = new() { Classes = { "queue-row-measure" } };
         private readonly TextBlock _error = new() { Classes = { "queue-row-error" }, IsVisible = false };
-        private readonly Button _cancel = new()
+        private readonly Button _cancel = StripButton();
+        private readonly Button _retry = StripButton();
+        private readonly Button _dismiss = StripButton();
+        private readonly StackPanel _actions = new()
         {
-            Classes = { "strip" },
-            Content = HubStrings.Get("Cancel"),
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 8,
             VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
         };
 
-        public QueueRowView(TransferQueue.Item item, Action cancel)
+        public QueueRowView(TransferQueue.Item item, Action cancel, Action retry, Action dismiss)
         {
             _item = item;
             _cancel.Click += (_, _) => cancel();
+            _retry.Click += (_, _) => retry();
+            _dismiss.Click += (_, _) => dismiss();
+            _actions.Children.Add(_cancel);
+            _actions.Children.Add(_retry);
+            _actions.Children.Add(_dismiss);
             Control = new Grid
             {
                 ColumnDefinitions = new ColumnDefinitions("*,Auto"),
                 Children =
                 {
                     new StackPanel { Spacing = 4, Children = { _title, _bar, _measure, _error } },
-                    _cancel,
+                    _actions,
                 },
             };
-            Grid.SetColumn(_cancel, 1);
+            Grid.SetColumn(_actions, 1);
             Update();
         }
 
         public Control Control { get; }
 
         public TransferQueue.Item Bound => _item;
+
+        /// <summary>The row's buttons, in the order they appear. A check presses these rather than calling
+        /// the queue method behind them, so broken wiring stays detectable.</summary>
+        public IReadOnlyList<Button> ActionButtons => [_cancel, _retry, _dismiss];
+
+        /// <summary>The words on the row's visible buttons. This is the affordance read directly, not a phase
+        /// inferred from a percentage.</summary>
+        public string ActionsForCheck => string.Join("+", ActionButtons
+            .Where(button => button.IsVisible)
+            .Select(button => button.Content as string ?? "?"));
 
         public void Update()
         {
@@ -906,10 +929,23 @@ public partial class MainWindow : Window
             _measure.Text = _item.MeasureText;
             _error.Text = _item.Error ?? "";
             _error.IsVisible = _item.Error is { Length: > 0 };
+            // Re-read on every repaint, not once at construction: these are the shell's own buttons, and the
+            // row that survived a language switch would otherwise keep saying 取消 in an English client.
+            _cancel.Content = HubStrings.Get("Cancel");
+            _retry.Content = HubStrings.Get("TransferRetry");
+            _dismiss.Content = HubStrings.Get("TransferDismiss");
             // A finished row keeps no cancel: there is nothing left to stop, and a button that answers to
             // nothing is the thing this shell already refused to do in the version picker.
             _cancel.IsVisible = _item.IsActive;
+            _retry.IsVisible = _item.State == TransferQueue.Phase.Failed;
+            _dismiss.IsVisible = _item.State == TransferQueue.Phase.Failed;
         }
+
+        private static Button StripButton() => new()
+        {
+            Classes = { "strip" },
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
     }
 
     internal bool TransferSlotVisibleForCheck => TransferSlot.IsVisible;
@@ -917,6 +953,31 @@ public partial class MainWindow : Window
     internal bool TransferSlotAccentForCheck => TransferSlot.Classes.Contains("accent");
     internal bool QueuePopupOpenForCheck => QueuePopup.IsOpen;
     internal int QueueRowCountForCheck => QueueRows.Children.Count;
+
+    /// <summary>The words on each row's visible buttons, rows in order: a running row says 取消, a failed one
+    /// says 重试+忽略. Read straight off the affordance, because the phase would pass while the button behind
+    /// it is missing or mis-wired.</summary>
+    internal string QueueRowActionsForCheck
+        => string.Join(" / ", _queueRowViews.Select(view => view.ActionsForCheck));
+
+    /// <summary>Presses one row's button by its word, through the button rather than the queue method it
+    /// ends up calling. False when the row does not offer that word right now — which is itself the answer a
+    /// check wants about a failed row that stopped being retryable.</summary>
+    internal bool ClickQueueRowActionForCheck(string identity, string text)
+    {
+        var button = _queueRowViews
+            .FirstOrDefault(view => view.Bound.Identity == identity)?
+            .ActionButtons
+            .FirstOrDefault(candidate => candidate.IsVisible
+                                         && string.Equals(candidate.Content as string, text, StringComparison.Ordinal));
+        if (button is null)
+        {
+            return false;
+        }
+
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        return true;
+    }
 
     /// <summary>The slot and the popover as visuals, for a frame capture. The popover needs this rather
     /// than a region of the window's frame because a Popup presents in its own PopupRoot — it is a

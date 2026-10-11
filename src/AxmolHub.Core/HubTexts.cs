@@ -419,6 +419,10 @@ public static class HubTexts
         // is the warning, same shape as a steer waiting for its second tap.
         ["TransferRestartAction"] = ("重启完成更新", "Restart to update"),
         ["TransferRestartArmed"] = ("再点一次重启", "Tap again to restart"),
+        // A failed row is the only settled state with an answer still left to give, and it gets both: try
+        // that transfer again, or say you have read it so the strip can go quiet about it.
+        ["TransferRetry"] = ("重试", "Retry"),
+        ["TransferDismiss"] = ("忽略", "Dismiss"),
         // The one question the queue is allowed to interrupt with, and it says only what the press does:
         // stopping the transfers. That the bytes already down survive is a property of DownloadManager's
         // .partial + Range transport, not something the app acts on by itself — a restart empties the list
