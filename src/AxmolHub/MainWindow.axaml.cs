@@ -796,9 +796,10 @@ public partial class MainWindow : Window
     /// it a single question rather than a loop, and a dialog dismissed by its own X counts as "stay"
     /// (<see cref="HubDialogResult.Cancel"/> is deliberately the zero value).</para>
     ///
-    /// <para>Worth the interruption because a transfer is the one work here that survives the answer either
-    /// way: <c>DownloadManager</c> keeps a <c>.partial</c> and resumes with a Range request, so quitting
-    /// loses the minutes, not the bytes.</para>
+    /// <para>Worth asking because quitting is not destructive to the bytes: <c>DownloadManager</c> keeps a
+    /// <c>.partial</c>, and a later install of the same package picks up with a Range request. Nothing
+    /// re-enqueues by itself — a restart empties the list — so the question says only what the press does.
+    /// Promising a continuation the app would not carry out is how a copy line becomes a bug report.</para>
     /// </summary>
     private async Task ConfirmQuitAsync()
     {

@@ -419,10 +419,12 @@ public static class HubTexts
         // is the warning, same shape as a steer waiting for its second tap.
         ["TransferRestartAction"] = ("重启完成更新", "Restart to update"),
         ["TransferRestartArmed"] = ("再点一次重启", "Tap again to restart"),
-        // The one question the queue is allowed to interrupt with. It names the reason quitting is cheap
-        // here: the bytes already down stay on disk and the next start resumes them.
+        // The one question the queue is allowed to interrupt with, and it says only what the press does:
+        // stopping the transfers. That the bytes already down survive is a property of DownloadManager's
+        // .partial + Range transport, not something the app acts on by itself — a restart empties the list
+        // and the next install is what picks the bytes back up — so the dialog does not hint at one.
         ["QuitDuringDownloadsTitle"] = ("下载还没结束", "Downloads still running"),
-        ["QuitDuringDownloadsBody"] = ("还有 {0} 个下载在跑。现在退出会中断它们，已下载的片段留在磁盘，下次接着传。", "{0} download(s) are still running. Quitting now stops them; the bytes already on disk stay, and the next start resumes."),
+        ["QuitDuringDownloadsBody"] = ("还有 {0} 个下载在跑。现在退出会中断它们。", "{0} download(s) are still running. Quitting now stops them."),
         ["TransferQueued"] = ("等待中", "Queued"),
         ["TransferTransferring"] = ("下载中", "Downloading"),
         // The bytes have arrived and the rest is local work — unzipping an engine, patching an update. One
