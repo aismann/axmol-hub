@@ -1723,29 +1723,29 @@ if (args.Contains("--check-ai-memory"))
     Directory.CreateDirectory(projectDir);
     Directory.CreateDirectory(dataRoot);
 
-    if (MemoryStore.RootFor(MemoryScope.Project, projectDir, dataRoot) != Path.Combine(projectDir, ".agents", "memory"))
+    if (MemoryStore.RootFor(MemoryScope.Workspace, projectDir, dataRoot) != Path.Combine(projectDir, ".agents", "memory"))
         throw new Exception("Project memory does not live in .agents/memory inside the workspace.");
     if (MemoryStore.RootFor(MemoryScope.Global, null, dataRoot) != Path.Combine(dataRoot, "ai", "memory"))
         throw new Exception("Global memory does not live beside the other ai/ state.");
-    if (MemoryStore.RootFor(MemoryScope.Project, null, dataRoot) is not null)
+    if (MemoryStore.RootFor(MemoryScope.Workspace, null, dataRoot) is not null)
         throw new Exception("Project memory invented a root without a workspace.");
     // One index name in two roots: what separates the project's shared MEMORY.md from Hub's own global one is the
     // directory, not the filename — so a rule that keyed on the name would be a rule about nothing.
-    if (MemoryStore.IndexFileName(MemoryScope.Project) != MemoryStore.IndexFile
+    if (MemoryStore.IndexFileName(MemoryScope.Workspace) != MemoryStore.IndexFile
         || MemoryStore.IndexFileName(MemoryScope.Global) != MemoryStore.IndexFile)
         throw new Exception("The two scopes do not share the one index name the layout depends on.");
 
     // A repository may already keep its own memory, written by the agents the person runs in it. Hub joins that
     // file rather than replacing it: everything outside Hub's two markers comes back byte for byte.
-    var projectRoot = MemoryStore.RootFor(MemoryScope.Project, projectDir, dataRoot)!;
+    var projectRoot = MemoryStore.RootFor(MemoryScope.Workspace, projectDir, dataRoot)!;
     Directory.CreateDirectory(projectRoot);
     var sharedIndex = Path.Combine(projectRoot, MemoryStore.IndexFile);
     const string peerText = "# WorkBuddy 项目长期笔记\n\n## 定位与决策\n- 这一行不属于 Hub，Hub 只能在自己那一段里改。\n";
     File.WriteAllText(sharedIndex, peerText);
 
-    var first = MemoryStore.Write(projectRoot, MemoryScope.Project, "build-conventions.md",
+    var first = MemoryStore.Write(projectRoot, MemoryScope.Workspace, "build-conventions.md",
         "构建约定", "本工程用 Ninja 而不是 MSBuild", "project", "构建走 1k/1kiss.ps1，不要直接调 msbuild。", append: false);
-    var second = MemoryStore.Write(projectRoot, MemoryScope.Project, "shading-rules.md",
+    var second = MemoryStore.Write(projectRoot, MemoryScope.Workspace, "shading-rules.md",
         "着色器规则", "axslcc 输出的 SPIR-V 必须过一遍 spirv-val", "decision", "着色器改完必须重编。", append: false);
     if (!first.Written || !second.Written) throw new Exception($"A topic write was refused: {first.Message} {second.Message}");
 
@@ -1768,7 +1768,7 @@ if (args.Contains("--check-ai-memory"))
     if (!injected.Contains("WorkBuddy") || injected.Contains(MemoryStore.BlockBegin))
         throw new Exception("The injected head kept Hub's own block and dropped the peer's prose — the reverse of "
                             + $"what a shared index should give:{Environment.NewLine}{injected}");
-    var wholeIndex = MemoryStore.ReadText(projectRoot, MemoryScope.Project, MemoryStore.IndexFile);
+    var wholeIndex = MemoryStore.ReadText(projectRoot, MemoryScope.Workspace, MemoryStore.IndexFile);
     if (wholeIndex is null || !wholeIndex.Contains(MemoryStore.BlockBegin) || !wholeIndex.Contains("WorkBuddy"))
         throw new Exception("memory_read of the shared index did not return the whole file — both Hub's block "
                             + "and the peer's prose have to be there, or a model asking for the index gets a slice.");
@@ -1782,17 +1782,17 @@ if (args.Contains("--check-ai-memory"))
     var derivedBoth = MemoryStore.DerivedIndexSection(projectRoot);
     if (!derivedBoth.Contains("[Editor 立场](topics/editor-stance.md)") || !derivedBoth.Contains("短期不作官方开源项目"))
         throw new Exception($"A peer's topic did not reach the derived table:{Environment.NewLine}{derivedBoth}");
-    if (MemoryStore.ReadText(projectRoot, MemoryScope.Project, "build-conventions.md") is not { } body
+    if (MemoryStore.ReadText(projectRoot, MemoryScope.Workspace, "build-conventions.md") is not { } body
         || !body.Contains("1kiss.ps1") || body.Contains("---"))
         throw new Exception("Reading a topic did not return its body alone.");
 
     // Append keeps one file with both facts; replace leaves only the new one.
-    MemoryStore.Write(projectRoot, MemoryScope.Project, "build-conventions.md", "", "", "", "补充：构建目录是 build-hub。", append: true);
-    var appended = MemoryStore.ReadText(projectRoot, MemoryScope.Project, "build-conventions.md")!;
+    MemoryStore.Write(projectRoot, MemoryScope.Workspace, "build-conventions.md", "", "", "", "补充：构建目录是 build-hub。", append: true);
+    var appended = MemoryStore.ReadText(projectRoot, MemoryScope.Workspace, "build-conventions.md")!;
     if (!appended.Contains("1kiss.ps1") || !appended.Contains("build-hub"))
         throw new Exception("Appending replaced the topic instead of adding to it.");
-    MemoryStore.Write(projectRoot, MemoryScope.Project, "build-conventions.md", "", "", "", "只剩这一条。", append: false);
-    var replaced = MemoryStore.ReadText(projectRoot, MemoryScope.Project, "build-conventions.md")!;
+    MemoryStore.Write(projectRoot, MemoryScope.Workspace, "build-conventions.md", "", "", "", "只剩这一条。", append: false);
+    var replaced = MemoryStore.ReadText(projectRoot, MemoryScope.Workspace, "build-conventions.md")!;
     if (replaced.Contains("1kiss.ps1") || !replaced.Contains("只剩这一条"))
         throw new Exception("A replace left the old body behind.");
 
@@ -1801,7 +1801,7 @@ if (args.Contains("--check-ai-memory"))
                  "../evil.md", "MEMORY.md", "AXHUB.md", "INDEX.md", "AGENTS.md", "agents.md",
                  "Build.md", "no-extension", "a--b.md", "-lead.md", "C:\\evil.md", "",
              })
-        if (MemoryStore.Write(projectRoot, MemoryScope.Project, bad, "t", "d", "note", "内容", append: false).Written)
+        if (MemoryStore.Write(projectRoot, MemoryScope.Workspace, bad, "t", "d", "note", "内容", append: false).Written)
             throw new Exception($"'{bad}' was accepted as a memory topic name.");
     // `agents.md` is the one with teeth: the all-lowercase rule already rejects `AGENTS.md`, so the only spelling
     // that would have been accepted as a topic is the lowercase one, and it is refused by name. Not because a
@@ -1809,9 +1809,9 @@ if (args.Contains("--check-ai-memory"))
     // because an index line that reads "AGENTS.md" would be presented to the model as the charter it is not.
     if (File.Exists(Path.Combine(projectRoot, "topics", "agents.md")))
         throw new Exception("A refused topic name still reached the disk.");
-    if (MemoryStore.Write(projectRoot, MemoryScope.Project, "ok.md", "t", "d", "note", "   ", append: false).Written)
+    if (MemoryStore.Write(projectRoot, MemoryScope.Workspace, "ok.md", "t", "d", "note", "   ", append: false).Written)
         throw new Exception("An empty memory write was accepted.");
-    if (MemoryStore.Write(null, MemoryScope.Project, "ok.md", "t", "d", "note", "内容", append: false).Written)
+    if (MemoryStore.Write(null, MemoryScope.Workspace, "ok.md", "t", "d", "note", "内容", append: false).Written)
         throw new Exception("A project memory write succeeded with no workspace.");
     if (!MemoryStore.Write(MemoryStore.RootFor(MemoryScope.Global, null, dataRoot), MemoryScope.Global, "user-prefers-chinese.md",
             "语言偏好", "回复用中文", "user", "用户要求中文回复。", append: false).Written)
@@ -1823,7 +1823,7 @@ if (args.Contains("--check-ai-memory"))
     // fit has to be counted rather than silently dropped, or the model cannot know to ask for it.
     var manyRoot = Path.Combine(memoryRoot, "many");
     for (var index = 0; index < 60; index++)
-        MemoryStore.Write(manyRoot, MemoryScope.Project, $"topic-{index:D2}.md", $"标题 {index:D2}",
+        MemoryStore.Write(manyRoot, MemoryScope.Workspace, $"topic-{index:D2}.md", $"标题 {index:D2}",
             new string('描', 40), "note", "内容", append: false);
     var many = MemoryStore.Index(manyRoot);
     if (many.Count != 60) throw new Exception($"Only {many.Count} of 60 topics reached the index.");
@@ -1923,7 +1923,7 @@ if (args.Contains("--check-ai-memory"))
     var legacyPath = Path.Combine(legacyRoot, legacyName);
     File.WriteAllText(legacyPath,
         MemoryStore.IndexHeaderComment + "\n\n# 项目记忆索引\n\n- [旧条目](topics/old.md) — 旧\n");
-    MemoryStore.Write(legacyRoot, MemoryScope.Project, "old.md", "旧条目", "旧描述", "note", "内容", append: false);
+    MemoryStore.Write(legacyRoot, MemoryScope.Workspace, "old.md", "旧条目", "旧描述", "note", "内容", append: false);
     if (File.Exists(legacyPath))
         throw new Exception("The first write did not retire the legacy index name.");
     if (!File.Exists(Path.Combine(legacyRoot, MemoryStore.IndexFile)))
@@ -1937,7 +1937,7 @@ if (args.Contains("--check-ai-memory"))
     Directory.CreateDirectory(humanRoot);
     const string humanLegacy = "# 另一个工具写的 AXHUB.md\n\n这一行不属于 Hub，不能被删。\n";
     File.WriteAllText(Path.Combine(humanRoot, legacyName), humanLegacy);
-    MemoryStore.Write(humanRoot, MemoryScope.Project, "a-topic.md", "标题", "描述", "note", "内容", append: false);
+    MemoryStore.Write(humanRoot, MemoryScope.Workspace, "a-topic.md", "标题", "描述", "note", "内容", append: false);
     if (File.ReadAllText(Path.Combine(humanRoot, legacyName)) != humanLegacy)
         throw new Exception("Hub deleted a file with the retired name that it had not generated.");
 
@@ -1955,7 +1955,7 @@ if (args.Contains("--check-ai-memory"))
     var strayPath = Path.Combine(strayRoot, MemoryStore.IndexFile);
     const string strayText = "# 别的工具的索引\n\n" + MemoryStore.BlockBegin + "\n- 没有收尾的一段\n";
     File.WriteAllText(strayPath, strayText);
-    var stray = MemoryStore.Write(strayRoot, MemoryScope.Project, "stray-topic.md", "标题", "描述", "note", "内容", append: false);
+    var stray = MemoryStore.Write(strayRoot, MemoryScope.Workspace, "stray-topic.md", "标题", "描述", "note", "内容", append: false);
     if (!stray.Written) throw new Exception("A topic write failed because the shared index was wedged.");
     if (File.ReadAllText(strayPath) != strayText)
         throw new Exception("Hub edited a shared index whose markers did not pair.");
@@ -3555,14 +3555,33 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception("Appending to a memory topic did not keep what was there.");
     if (!tools.MemoryRead("project", "MEMORY.md").Contains("构建约定"))
         throw new Exception("The shared project index was not readable through the tool.");
+    // One directory, two spellings. `project` stays accepted because sessions on disk carry it inside their stored
+    // arguments, and both have to name the same file: a body reading the scope differently from the gate would send
+    // workspace notes to global memory while the card said it was a note.
+    if (!tools.MemoryWrite("workspace", "build-rules.md", "构建用 MSBuild。", "构建约定", "改构建前先看", "note", "replace")
+            .Contains("Saved topics/build-rules.md")
+        || tools.MemoryRead("project", "build-rules.md") != "构建用 MSBuild。"
+        || tools.MemoryRead("WORKSPACE", "build-rules.md") != "构建用 MSBuild。")
+        throw new Exception("The workspace and project spellings of the scope did not name the same memory.");
     if (!tools.MemoryWrite("global", "prefers-chinese.md", "回复用中文。", "语言偏好", "always", "user").Contains("Saved"))
         throw new Exception("A global memory write was refused with no workspace bound.");
-    if (!tools.MemoryRead("neither", "x.md").Contains("neither project nor global")
+    if (!tools.MemoryRead("neither", "x.md").Contains("neither workspace nor global")
         || !tools.MemoryWrite("project", "../evil.md", "x").Contains("not a memory topic name")
         || !tools.MemoryWrite("project", "agents.md", "x").Contains("not a memory topic name")
         || !homeless.MemoryWrite("project", "x.md", "内容").Contains("no workspace directory", StringComparison.Ordinal))
         throw new Exception("The memory tools accepted a bad scope, a charter name, a traversing name or a missing workspace.");
     Console.WriteLine("PASS: the memory tools write both scopes, append, and refuse a bad name or scope.");
+
+    // The scope spelling list is one function now, read by the gate and by the body. Its table is asserted here
+    // because the pair above can pass while one reader still falls back the other way — an unrecognised scope has
+    // to answer null and let each caller keep its own refusal, not silently pick a side.
+    if (MemoryScopes.Of("workspace") != MemoryScope.Workspace || MemoryScopes.Of("project") != MemoryScope.Workspace
+        || MemoryScopes.Of("PROJECT") != MemoryScope.Workspace || MemoryScopes.Of(" global ") != MemoryScope.Global
+        || MemoryScopes.Of(null) is not null || MemoryScopes.Of("team") is not null)
+        throw new Exception("The scope spelling list is not one table: workspace/project alias, global, and "
+                            + "everything else unrecognised.");
+    Console.WriteLine("PASS: one scope reading — workspace with project as its permanent alias, global, and null for "
+                      + "anything else, which is what lets the gate ask while the body refuses.");
 
     // ── Read-only look-around: the same sandbox, but through no shell and needing no approval ──
     // search_text / list_directory / find_files exist so that looking around costs the model nothing. Without

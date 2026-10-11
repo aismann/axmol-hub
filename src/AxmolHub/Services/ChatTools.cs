@@ -75,9 +75,13 @@ internal static class ChatTools
         // "spawn_session" is spelled out for the same reason: a new session spends money on nobody's click.
         "capture_screen" => ToolRisk.SystemCommand,
         "spawn_session" => ToolRisk.SystemCommand,
-        "memory_write" => ScopeOf(argumentsJson) == MemoryScope.Global
-            ? ToolRisk.WorkspaceWrite
-            : ToolRisk.AssistantNote,
+        // The one tier no mode ever asks for, which is exactly why the reading of the scope has to fail closed:
+        // a scope this cannot name is not a workspace note, it is a write whose destination is unknown, and an
+        // unknown destination asks a person. Comparing against Workspace rather than Global is what keeps that
+        // true for a call whose arguments do not parse at all.
+        "memory_write" => ScopeOf(argumentsJson) == MemoryScope.Workspace
+            ? ToolRisk.AssistantNote
+            : ToolRisk.WorkspaceWrite,
         _ => ToolRisk.SystemCommand,
     };
 
@@ -129,20 +133,23 @@ internal static class ChatTools
         }
     }
 
-    private static MemoryScope ScopeOf(string? argumentsJson)
+    /// <summary>The scope a stored call names, read through Core's one spelling list — the same reading the tool
+    /// body uses, so a call cannot be tiered against one directory and then executed into another. An unreadable
+    /// scope is null, which the table turns into the tier that asks a person rather than a silent write.</summary>
+    private static MemoryScope? ScopeOf(string? argumentsJson)
     {
-        if (string.IsNullOrWhiteSpace(argumentsJson)) return MemoryScope.Global;
+        if (string.IsNullOrWhiteSpace(argumentsJson)) return null;
         try
         {
             using var document = JsonDocument.Parse(argumentsJson);
-            return document.RootElement.TryGetProperty("scope", out var value)
-                   && string.Equals(value.GetString(), "project", StringComparison.OrdinalIgnoreCase)
-                ? MemoryScope.Project
-                : MemoryScope.Global;
+            if (!document.RootElement.TryGetProperty("scope", out var value)
+                || value.ValueKind != JsonValueKind.String)
+                return null;
+            return MemoryScopes.Of(value.GetString());
         }
         catch (JsonException)
         {
-            return MemoryScope.Global;
+            return null;
         }
     }
 
@@ -171,7 +178,9 @@ internal static class ChatTools
                     project.BuildStatus,
                 }))),
                 Options("get_projects",
-                    "List registered Hub projects with their directory, engine version and build target.")),
+                    "List the Axmol game projects registered in Hub — each one is a workspace with a locked engine "
+                    + "version and a build target. A workspace is any directory, so being a project only adds those "
+                    + "attributes.")),
             AIFunctionFactory.Create(
                 (Func<string>)(() => JsonSerializer.Serialize(snapshot.Engines)),
                 Options("get_engines", "List installed Axmol engine versions and channels.")),

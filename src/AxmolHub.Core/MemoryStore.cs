@@ -2,11 +2,47 @@ using System.Text;
 
 namespace AxmolHub.Core;
 
-/// <summary>Whose memory this is: one project, or the user across projects.</summary>
+/// <summary>
+/// Whose memory this is: the directory this session works in, or the user across directories.
+///
+/// <para>The one is called <b>Workspace</b> rather than Project because in Hub a project is not a different kind
+/// of place — an Axmol game project is a workspace with extra attributes (registered, engine locked, buildable).
+/// Memory lives in the directory, whoever named it, and a scope named "project" made the model read this tool as
+/// though it wrote into the game project's own records.</para>
+/// </summary>
 public enum MemoryScope
 {
-    Project,
+    Workspace,
     Global,
+}
+
+/// <summary>
+/// Reads the <c>scope</c> argument a memory call carries — in one place, because two readers disagreed.
+///
+/// <para>The approval gate and the tool body used to match the literal <c>"project"</c> each on their own, with
+/// opposite fallbacks: an unreadable scope fell to <c>Global</c> in the gate (the tier that asks) and to the
+/// workspace in the body (the tier that never asks). A scope decides where bytes go, and the gate decides whether
+/// the call may run at all, so both have to be one reading of one spelling list.</para>
+///
+/// <para>Unrecognised is null, which lets each caller keep its own honest answer: the body refuses the call in
+/// words, the gate falls back to the tier that asks a person. Neither one guesses.</para>
+/// </summary>
+public static class MemoryScopes
+{
+    /// <summary>The canonical spelling, and the alias. <c>"project"</c> is not a transition to be deleted later:
+    /// sessions on disk carry it inside their stored tool arguments, and a call re-tiered from that JSON has to
+    /// land on the tier it landed on when it was written.</summary>
+    public static MemoryScope? Of(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "global" => MemoryScope.Global,
+        "workspace" or "project" => MemoryScope.Workspace,
+        _ => null,
+    };
+
+    /// <summary>The sentence a model is offered for the parameter. The alias is named out loud because a model
+    /// carrying the old tool table in from another session would otherwise read a refusal as a broken tool.</summary>
+    public const string Description = "workspace (this directory) or global (this user, across directories). "
+        + "A project is one kind of workspace here, so \"project\" means the same as workspace.";
 }
 
 /// <summary>One topic file as its frontmatter describes it.</summary>
@@ -615,7 +651,7 @@ public static class MemoryStore
 
     /// <summary>The sentence a tool answers with when the scope has nowhere to live. Public because the tool
     /// bodies in <see cref="WorkspaceTools"/> report it, and a refusal has to reach the model verbatim.</summary>
-    public static string NoRootMessage(MemoryScope scope) => scope == MemoryScope.Project
+    public static string NoRootMessage(MemoryScope scope) => scope == MemoryScope.Workspace
         ? WorkspacePaths.ResultFor(WorkspacePathVerdict.NoWorkspace, "")
         : "Global memory is unavailable because Hub has no data root. Do not retry; tell the user.";
 

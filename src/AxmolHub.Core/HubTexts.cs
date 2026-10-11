@@ -628,7 +628,7 @@ public static class HubTexts
         // "Always allow" renamed to its consequence, twice over: the bare word promised more than the grant did, and
         // the grant now reaches past this session, so the line has to say where it lands and how to take it back.
         ["ApprovalAllowAlwaysForTool"] = ("以后都不问 {0}", "Stop asking about {0}"),
-        ["ApprovalAllowAlwaysTip"] = ("记进「设置 → 工具权限」的信任清单，随时可以撤销；对越出工程沙箱的操作无效",
+        ["ApprovalAllowAlwaysTip"] = ("记进「设置 → 工具权限」的信任清单，随时可以撤销；对越出工作目录的操作无效",
             "Remembered in Settings → Tool permission, where it can be revoked. Has no effect on anything that "
             + "reaches past the workspace."),
         ["ChatPlanReviewTitle"] = ("审阅计划", "Review plan"),
@@ -773,7 +773,7 @@ public static class HubTexts
         ["ToolApprovalAskHint"] = ("除只读查询外，每个操作都先问一次，包括跑命令",
             "Everything except a read asks first, commands included"),
         ["ToolApprovalAuto"] = ("自动审批", "Auto-approve"),
-        ["ToolApprovalAutoHint"] = ("工程内的写入和工程目录里的命令直接执行；抓屏、派生子会话、换工作目录仍要问",
+        ["ToolApprovalAutoHint"] = ("工作目录里的写入和命令直接执行；抓屏、派生子会话、换工作目录仍要问",
             "Writes and commands inside the workspace run on their own; the screen, a child session and a new "
             + "working directory still ask"),
         ["ToolApprovalFull"] = ("完全访问", "Full access"),
@@ -784,7 +784,7 @@ public static class HubTexts
         // The app-wide trust list: what a card's "always allow" writes, seen where it can be taken back. The hint
         // carries the one caveat a list of verbs cannot — a grant never covers what leaves the workspace.
         ["TrustedToolsTitle"] = ("以后都不问的工具", "Tools it stops asking about"),
-        ["TrustedToolsHint"] = ("在审批卡上点过「以后都不问」的工具，本机每个会话都不再问；越出工程沙箱的操作不受这条信任影响。",
+        ["TrustedToolsHint"] = ("在审批卡上点过「以后都不问」的工具，本机每个会话都不再问；越出工作目录的操作不受这条信任影响。",
             "Tools clicked on an approval card stop asking in every session on this machine. Nothing that reaches "
             + "past the workspace is covered by a grant."),
         ["TrustedToolsNone"] = ("还没有信任过任何工具。", "Nothing is trusted yet."),

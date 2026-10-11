@@ -252,9 +252,11 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     }
 
     [Description("Set the directory this session's file and command tools are confined to. Nothing outside it can "
-                 + "be read, written or run in.")]
+                 + "be read, written or run in. Any folder works: it does not have to be a git repository, and it "
+                 + "does not have to be a project registered in Hub — those are attributes of a workspace, not "
+                 + "requirements for one.")]
     public async Task<string> SetWorkspace(
-        [Description("Absolute path of the directory to work in, for example D:\\dev\\my-game")] string path)
+        [Description("Absolute path of the directory to work in, for example D:\\dev\\my-app")] string path)
     {
         if (string.IsNullOrWhiteSpace(path))
             return "Refused: set_workspace needs the absolute path of a directory. Do not retry it empty.";
@@ -397,12 +399,12 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
 
     [Description("Read one assistant memory file: a topic, or the index that lists the topics.")]
     public string MemoryRead(
-        [Description("project (this workspace) or global (the user, across projects).")] string scope,
+        [Description(MemoryScopes.Description)] string scope,
         [Description("File name, for example build-conventions.md, or the index name shown in the memory section "
                      + "of the system prompt.")]
         string name)
     {
-        if (!TryParseScope(scope, out var memoryScope)) return BadScope(scope);
+        if (MemoryScopes.Of(scope) is not { } memoryScope) return BadScope(scope);
         var root = MemoryStore.RootFor(memoryScope, context.WorkspaceRoot, context.DataRoot);
         if (root is null) return MemoryStore.NoRootMessage(memoryScope);
 
@@ -414,7 +416,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     [Description("Save something worth remembering in a later session. Write the fact, not a summary of the "
                  + "conversation.")]
     public string MemoryWrite(
-        [Description("project (this workspace) or global (the user, across projects).")] string scope,
+        [Description(MemoryScopes.Description)] string scope,
         [Description("Topic file name in kebab-case with a .md suffix, for example build-conventions.md.")]
         string name,
         [Description("What should be remembered.")] string content,
@@ -423,7 +425,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         [Description("user, project, feedback, decision, reference or note.")] string type = "note",
         [Description("replace (the default) or append to what is already there.")] string mode = "replace")
     {
-        if (!TryParseScope(scope, out var memoryScope)) return BadScope(scope);
+        if (MemoryScopes.Of(scope) is not { } memoryScope) return BadScope(scope);
         if (!string.Equals(mode, "replace", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(mode, "append", StringComparison.OrdinalIgnoreCase))
             return $"Refused: mode '{mode}' is neither replace nor append. Do not retry another spelling.";
@@ -439,7 +441,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         if (!result.Written) return result.Message;
 
         context.Log?.Write($"Assistant memory ({memoryScope}): {result.Path}");
-        return fresh && memoryScope == MemoryScope.Project
+        return fresh && memoryScope == MemoryScope.Workspace
             ? result.Message + $" Created {WorkspacePaths.MemoryDirectory}/ in the workspace; tell the user once "
                                + "that committing it is their choice."
             : result.Message;
@@ -992,26 +994,9 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             : text[..MaxSearchLineCharacters] + "…";
     }
 
-    private static bool TryParseScope(string? value, out MemoryScope scope)
-    {
-        if (string.Equals(value, "project", StringComparison.OrdinalIgnoreCase))
-        {
-            scope = MemoryScope.Project;
-            return true;
-        }
-
-        if (string.Equals(value, "global", StringComparison.OrdinalIgnoreCase))
-        {
-            scope = MemoryScope.Global;
-            return true;
-        }
-
-        scope = MemoryScope.Project;
-        return false;
-    }
-
     private static string BadScope(string? value)
-        => $"Refused: scope '{value}' is neither project nor global. Do not retry another spelling.";
+        => $"Refused: scope '{value}' is neither workspace nor global (a project is one kind of workspace, so the "
+           + "word project also names it). Do not retry another spelling.";
 
     private static string Refusal(WorkspacePathVerdict verdict, string relative, string asked)
         => WorkspacePaths.ResultFor(verdict, relative.Length > 0 ? relative : asked);
