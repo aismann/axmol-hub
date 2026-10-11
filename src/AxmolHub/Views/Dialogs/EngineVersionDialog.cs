@@ -10,8 +10,9 @@ using AxmolHub.Core;
 namespace AxmolHub;
 
 /// <summary>
-/// The "choose engine version" dialog. Pure code-built, same approach as
-/// <see cref="BuildTargetDialog"/> (both are one-off small windows, not worth a dedicated .axaml).
+/// The engine install picker: it chooses which version the 安装 button then downloads. Pure code-built,
+/// same approach as <see cref="BuildTargetDialog"/> (both are one-off small windows, not worth a
+/// dedicated .axaml).
 ///
 /// It exists because: previously the engines-page button installed the latest LTS in the manifest
 /// directly, leaving no entry point for older versions. And "each project locks its own engine
@@ -32,24 +33,53 @@ public sealed class EngineVersionDialog : Window
     private readonly Button _install;
     private readonly string _downloadSource;
 
-    public EngineRelease? Selected => _versions.SelectedItem as EngineRelease;
+    /// <summary>Whether this version's download is already running. Asked of the queue by the caller,
+    /// because the queue is what knows; the dialog only shows the answer.</summary>
+    private readonly Func<EngineRelease, bool> _isInFlight;
 
-    private EngineVersionDialog(IReadOnlyList<EngineRelease> releases, string? preferredVersion, bool fromRemoteIndex, string downloadSource)
+    public EngineRelease? Selected => (_versions.SelectedItem as Row)?.Release;
+
+    /// <summary>
+    /// One list entry. The row is <see cref="EngineRelease.ToString"/> plus, when that version is already
+    /// arriving, the in-flight word: a row that still offers 安装 for a version that is downloading is a
+    /// button that does nothing, and "nothing happened" is the worst answer a click can give.
+    /// </summary>
+    private sealed class Row(EngineRelease release, Func<EngineRelease, bool> isInFlight)
+    {
+        public EngineRelease Release { get; } = release;
+
+        private readonly Func<EngineRelease, bool> _isInFlight = isInFlight;
+
+        public bool InFlight => _isInFlight(Release);
+
+        public override string ToString() => InFlight
+            ? Release + " · " + HubStrings.Get("TransferInFlightSuffix")
+            : Release.ToString()!;
+    }
+
+    private EngineVersionDialog(
+        IReadOnlyList<EngineRelease> releases,
+        string? preferredVersion,
+        bool fromRemoteIndex,
+        string downloadSource,
+        Func<EngineRelease, bool> isInFlight)
     {
         _downloadSource = downloadSource;
-        Title = HubStrings.Get("ChooseEngineVersion");
+        _isInFlight = isInFlight;
+        Title = HubStrings.Get("InstallEngineTitle");
         Width = 520;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
+        // No title line in here on purpose: this is a window with a title bar of its own, and the bar
+        // already says it. A second copy at 18px inside the panel is the same sentence twice.
         var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = HubStrings.Get("ChooseEngineVersion"), FontSize = 18 });
         panel.Children.Add(new TextBlock
         {
             Text = HubStrings.Get("EngineVersionHint"),
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 0),
+            Margin = new Thickness(0),
         });
         // Tell the user honestly where this list comes from. Falling back isn't a fault, but "where
         // the list comes from" must be visible — otherwise "there are 6 versions" and "only the
@@ -76,12 +106,13 @@ public sealed class EngineVersionDialog : Window
 
         Content = new Border { Child = panel, Padding = new Thickness(24) };
 
-        _versions.ItemsSource = releases;
+        var rows = releases.Select(release => new Row(release, isInFlight)).ToArray();
+        _versions.ItemsSource = rows;
         // Pre-select: the version the caller specified, otherwise the newest in the manifest. Fall
         // back to the first item if not found — pre-selecting none would make the "continue" button
         // fail for no reason.
-        var preferred = preferredVersion is null ? null : releases.FirstOrDefault(release => release.Version == preferredVersion);
-        _versions.SelectedItem = preferred ?? releases.FirstOrDefault();
+        var preferred = preferredVersion is null ? null : rows.FirstOrDefault(row => row.Release.Version == preferredVersion);
+        _versions.SelectedItem = preferred ?? rows.FirstOrDefault();
         _versions.SelectionChanged += (_, _) => Refresh();
         Refresh();
     }
@@ -97,7 +128,12 @@ public sealed class EngineVersionDialog : Window
             return;
         }
 
-        _install.IsEnabled = true;
+        var inFlight = _isInFlight(release);
+        // A version that is already arriving cannot be installed again, and the button says so in its own
+        // label rather than sitting there greyed and unexplained: a disabled control takes its tooltip with
+        // it, so the reason would be unreadable exactly when it is needed.
+        _install.IsEnabled = !inFlight;
+        _install.Content = HubStrings.Get(inFlight ? "TransferInFlightSuffix" : "InstallSelected");
         _detail.Text = string.Join("\n", new[]
         {
             HubStrings.Get("Channel") + "：" + release.Channel,
@@ -105,7 +141,9 @@ public sealed class EngineVersionDialog : Window
             // slow network the difference between GitHub and a mirror is the whole experience.
             HubStrings.Get("DownloadSource") + "：" + HubStrings.Get(DownloadSources.TextKey(_downloadSource)),
             HubStrings.Get("DownloadSize") + "：" + Size(release.Package.DownloadBytes),
-            HubStrings.Get(release.Installed ? "Installed" : "Missing"),
+            // "Not installed" is true while it is arriving and useless: the fact worth printing is that
+            // it is on its way.
+            inFlight ? HubStrings.Get("TransferInFlightSuffix") : HubStrings.Get(release.Installed ? "Installed" : "Missing"),
         });
 
         // Versions with unverified recipes are still installable — the engine itself is
@@ -120,11 +158,12 @@ public sealed class EngineVersionDialog : Window
         : string.Create(CultureInfo.InvariantCulture, $"{value / (1024d * 1024):0.00} MB");
 
     public static async Task<EngineRelease?> PickAsync(Window? owner, EngineReleases catalog, string? preferredVersion,
-        string downloadSource = DownloadSources.GitHubId)
+        string downloadSource = DownloadSources.GitHubId, Func<EngineRelease, bool>? isInFlight = null)
     {
         var releases = catalog.All();
         if (releases.Count == 0) return null;
-        var dialog = new EngineVersionDialog(releases, preferredVersion, catalog.UsingRemoteIndex, downloadSource);
+        var dialog = new EngineVersionDialog(releases, preferredVersion, catalog.UsingRemoteIndex, downloadSource,
+            isInFlight ?? (_ => false));
         var result = owner is null
             ? await dialog.ShowDialog<HubDialogResult>(null!)
             : await dialog.ShowDialog<HubDialogResult>(owner);
