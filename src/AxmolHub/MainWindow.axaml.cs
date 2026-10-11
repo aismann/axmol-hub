@@ -129,6 +129,7 @@ public partial class MainWindow : Window
 
         InitializeComponent();
         InitializeSidebar();
+        InitializeTitleBar();
         InitializeInspector();
         InitializePictureViewer();
         InitializeChrome();
@@ -959,8 +960,84 @@ public partial class MainWindow : Window
     internal void ClickAssistantNewForCheck()
         => AssistantNewButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
-    /// <summary>The top-bar title text as shown, for the shell self-check.</summary>
+    /// <summary>The title bar's title text as shown, for the shell self-check.</summary>
     internal string PageTitleText => PageTitle.Text ?? "";
+
+    // ── Title bar, for the shell self-check ──
+    /// <summary>The app draws its own title bar, so a self-check has to be able to read back that the client
+    /// area really was extended (a box that is 32px tall over a 32px native caption strip would look identical
+    /// in a screenshot and be wrong by one row).</summary>
+    internal bool ClientAreaExtendedForCheck => ExtendClientAreaToDecorationsHint;
+    /// <summary>Whether the Snap Layouts hit test really subclassed this window. False on a non-Windows host and
+    /// also false if the platform handle was not a Win32 one, so it distinguishes "not this platform" from "the
+    /// hook silently declined" — which no screenshot can.</summary>
+    internal bool SnapHookInstalledForCheck => TitleBarSnapHook.InstalledForCheck;
+    /// <summary><c>BorderOnly</c>, not the <c>Full</c> default: only <c>Full</c> makes Avalonia draw a title bar
+    /// over the client area (Window.ComputeDecorationParts gates the TitleBar part on it), and that title bar
+    /// wrote the window title straight over this app's own bar. BorderOnly keeps the shadow, the border and the
+    /// resize grips, which this app does not draw itself. Whether the drawn decorations are really gone can only
+    /// be seen in a shown window (the self-check never shows this one), so this pin exists to keep the property
+    /// that selects the behaviour from drifting back to the default.</summary>
+    internal WindowDecorations WindowDecorationsForCheck => WindowDecorations;
+    internal double TitleBarHeightForCheck => TitleBar.Bounds.Height;
+    internal double TitleBarHintForCheck => ExtendClientAreaTitleBarHeightHint;
+    /// <summary>The platform's own caption-strip height. On Windows the three plates are centred in it, so a bar
+    /// that disagrees makes the glyphs sit off the bar's centre line.</summary>
+    internal double WindowDecorationTopForCheck => WindowDecorationMargin.Top;
+    internal Thickness WindowDecorationMarginForCheck => WindowDecorationMargin;
+    internal Thickness OffScreenMarginForCheck => OffScreenMargin;
+    internal Rect WindowControlsBoundsForCheck => InClient(WindowControls);
+    internal double MinimizeButtonHeightForCheck => MinimizeButton.Bounds.Height;
+    internal string MaximizeTipForCheck => ToolTip.GetTip(MaximizeButton) as string ?? "";
+    internal string CloseTipForCheck => ToolTip.GetTip(CloseButton) as string ?? "";
+    internal bool MaximizeGlyphIsRestoreForCheck => ReferenceEquals(MaximizeGlyph.Data, _restoreGlyph);
+    private Geometry? _maximizeGlyph;
+    private Geometry? _restoreGlyph;
+
+    /// <summary>One of the title bar's two drawer plates, measured in the bar. Read by name so the check can
+    /// compare the pair without this file exporting a member per button.</summary>
+    internal (double Width, double Height) TitlebarTogglePlateForCheck(string name)
+        => this.FindControl<Button>(name) is { } button
+            ? (button.Bounds.Width, button.Bounds.Height)
+            : default;
+
+    /// <summary>Writes the window state the way the platform would, so the check can prove the maximise plate
+    /// follows it. A check window is never actually maximised by the user, so the property is the only lever —
+    /// and it is the same one the platform sets, which is what <c>SyncWindowStateChrome</c> listens to.</summary>
+    internal void SetWindowStateForCheck(WindowState state) => WindowState = state;
+
+    /// <summary>The bar carries no product name: the title block in the sidebar and the window's Title property
+    /// (which the taskbar reads) are where "Axmol Hub" lives. A second copy up here is the chrome this change
+    /// removed, so it is asserted rather than merely deleted.</summary>
+    internal string TitleBarTextForCheck => string.Join("|", TitleBar.GetVisualDescendants()
+        .OfType<TextBlock>()
+        .Select(text => text.Text ?? "")
+        .Where(text => text.Length > 0));
+
+    /// <summary>Whether the ☰ drawer is the leading control of the bar: nothing interactive may sit left of it,
+    /// or "the first position in the title bar" is no longer true.</summary>
+    internal bool SidebarToggleIsLeftmostForCheck
+    {
+        get
+        {
+            var toggle = InClient(SidebarToggle).X;
+            return !TitleBar.GetVisualDescendants()
+                .OfType<Button>()
+                .Any(button => button != SidebarToggle && button.IsVisible && InClient(button).X < toggle - 0.5);
+        }
+    }
+
+    /// <summary>Whether the ▯ drawer ends where the window controls begin: its right edge must sit to the left of
+    /// the caption plates' left edge, and close enough that it reads as "just before minimize".</summary>
+    internal (double Gap, bool Before) InspectorToggleMeetsWindowControlsForCheck
+    {
+        get
+        {
+            var toggle = InClient(InspectorToggle);
+            var plates = InClient(WindowControls);
+            return (plates.X - toggle.Right, toggle.Right <= plates.X + 0.5);
+        }
+    }
 
     // ── Sidebar collapse, for the shell self-check ──
     internal bool SidebarExpandedForCheck => IsSidebarExpanded;
@@ -970,11 +1047,47 @@ public partial class MainWindow : Window
     internal void ToggleSidebarForCheck()
         => SidebarToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
-    /// <summary>The title block (sidebar top), for the shell self-check. The block is deliberately text
-    /// only: <c>BrandHeaderHasNoIconForCheck</c> is false (i.e. an icon came back) when the header's
-    /// visual subtree contains any image-bearing shape, which is the regression this guards.</summary>
-    internal bool BrandHeaderHasNoIconForCheck => !BrandHeader.GetVisualDescendants().Any(
-        descendant => descendant is Avalonia.Controls.Shapes.Shape or Avalonia.Controls.Image);
+    /// <summary>The title block (sidebar top), for the shell self-check. <c>BrandHeaderHasLogoForCheck</c> is what
+    /// keeps the brand mark from quietly disappearing again: it reads the image's own source and geometry rather
+    /// than trusting that the element exists, and it requires the image to sit *before* the title text, which is
+    /// what "the logo precedes the name" means.</summary>
+    internal bool BrandHeaderHasLogoForCheck
+    {
+        get
+        {
+            var logo = InClient(BrandLogo);
+            var title = InClient(BrandTitle);
+            return BrandLogo.Source is not null
+                   && BrandLogo.Stretch == Stretch.Uniform
+                   && BrandLogo.Bounds.Width > 1
+                   && Math.Abs(BrandLogo.Bounds.Width - BrandLogo.Bounds.Height) <= 1
+                   && logo.Right <= title.X + 0.5;
+        }
+    }
+
+    /// <summary>Why <see cref="BrandHeaderHasLogoForCheck"/> said no: the resolved source (or a marker for the
+    /// state it is in), and the mark's own box. A bare bool cannot tell "the resource key is missing" from "the
+    /// image has no size", and those are two different bugs.</summary>
+    internal string BrandLogoReportForCheck
+    {
+        get
+        {
+            var source = BrandLogo.Source switch
+            {
+                null => "null",
+                Avalonia.Media.Imaging.Bitmap bitmap => "bitmap " + bitmap.PixelSize,
+                DrawingImage drawing => "drawing image (" + drawing.Drawing + ")",
+                var other => other.GetType().Name,
+            };
+            var appHas = Application.Current?.TryGetResource("Hub.Image.Brand", null, out var value) == true
+                ? value?.GetType().Name ?? "null"
+                : "missing";
+            return $"source={source}, app-resource={appHas}, "
+                   + $"size={BrandLogo.Bounds.Width:0.#}x{BrandLogo.Bounds.Height:0.#}, "
+                   + $"stretch={BrandLogo.Stretch}, "
+                   + $"left-of-title={InClient(BrandLogo).Right <= InClient(BrandTitle).X + 0.5}";
+        }
+    }
 
     internal int BrandHeaderLinesForCheck
         => new[] { BrandTitle.Text, BrandVersion.Text }.Count(text => text is { Length: > 0 });
@@ -1167,6 +1280,76 @@ public partial class MainWindow : Window
     }
 
     private bool IsSidebarExpanded => Sidebar.Width > 1;
+
+    /// <summary>
+    /// Wires the app's own title bar: dragging the window by its background, and the three window controls.
+    ///
+    /// The bar is the app's because <c>ExtendClientAreaToDecorationsHint</c> hands the platform's chrome to the
+    /// client area — see the comment in MainWindow.axaml. The three controls are therefore not decorative: each
+    /// one has to ask the same object the platform asked, so nothing here goes around <see cref="Window"/>.
+    /// Close goes through <see cref="Window.Close()"/> rather than tearing anything down directly, which is what
+    /// keeps the running-operation guard in <c>Closing</c> the *only* way out.
+    /// </summary>
+    private void InitializeTitleBar()
+    {
+        // The whole bar moves the window; the buttons sit above this layer and take their own input first.
+        // BeginMoveDrag rather than the chrome's own hit testing, because the drag layer is an ordinary control
+        // in this window (the app's bar, not a decoration template part).
+        TitleBarDragArea.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(e);
+        };
+
+        MinimizeButton.Click += (_, _) => WindowState = WindowState.Minimized;
+        MaximizeButton.Click += (_, _) => WindowState =
+            WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+        CloseButton.Click += (_, _) => Close();
+
+        // Windows 11 Snap Layouts on hover. Ours is a drawn button, so the system has to be told where it is
+        // (see TitleBarSnapHook). It cannot be installed here: this runs from the constructor, and a window that
+        // has never been shown has no Win32 handle to subclass yet — the self-check builds exactly such a window,
+        // which is how that was caught. Installing on Opened is the first moment a handle is guaranteed; the call
+        // is idempotent, so a window shown twice cannot install twice.
+        Opened += (_, _) => TitleBarSnapHook.Install(this, MaximizeButton);
+
+        // The system keeps a few pixels of resize frame between the client area and the window's outer edge, and
+        // that strip is exactly the gap a caption button leaves at the right end. The platform's own close button
+        // is centred on the outer edge, so the app's has to reach it: the control strip is extended right by the
+        // measured frame width. A negative margin rather than a wider plate, because the plate's own size is what
+        // the 46x32 platform proportion is about - only its origin moves.
+        SetCaptionStripInset();
+
+        // The maximize plate's glyph and tooltip both say what the *next* click does, so they are rewritten
+        // from the real state rather than from anything remembered here. Both glyphs are resolved once, from
+        // this window's own resources, because these are looked up on every window-state change - and they must
+        // be the 12x12 caption glyphs, not the 0-24 grid icons of the same name, which are drawn scaled.
+        _maximizeGlyph = this.FindResource("Hub.Icon.CaptionMaximize") as Geometry;
+        _restoreGlyph = this.FindResource("Hub.Icon.CaptionRestore") as Geometry;
+        PropertyChanged += (_, e) =>
+        {
+            if (e.Property == WindowStateProperty) SyncWindowStateChrome();
+        };
+        SyncWindowStateChrome();
+    }
+
+    /// <summary>Moves the caption strip out to the window's real right edge (see <c>InitializeTitleBar</c>). The
+    /// frame width comes from Win32 in physical pixels, so it is converted through the render scaling; on a
+    /// non-Windows host, or where the frame is not a Win32 one, it is zero and nothing moves.</summary>
+    private void SetCaptionStripInset()
+    {
+        var frame = TitleBarSnapHook.ResizeFrameWidth;
+        if (frame <= 0) return;
+
+        var scaling = RenderScaling <= 0 ? 1 : RenderScaling;
+        WindowControls.Margin = new Thickness(0, 0, -(frame / scaling), 0);
+    }
+
+    private void SyncWindowStateChrome()
+    {
+        var maximized = WindowState == WindowState.Maximized;
+        if ((maximized ? _restoreGlyph : _maximizeGlyph) is { } glyph) MaximizeGlyph.Data = glyph;
+        ToolTip.SetTip(MaximizeButton, HubStrings.Get(maximized ? "RestoreWindow" : "MaximizeWindow"));
+    }
 
     private void SetSidebarExpanded(bool expanded)
     {

@@ -1017,6 +1017,13 @@ public static class HubTexts
 
         // The Copilot-style redesign: sidebar collapse, the empty-state greeting and suggestion chips, the model-changed notification.
         ["SidebarToggleTip"] = ("显示或隐藏导航栏", "Show or hide the navigation bar"),
+        // The app draws its own title bar, so the three window controls are ours to name (they are icon-only,
+        // so the tooltip is the only place their name appears). The platform convention's order and icons are
+        // kept verbatim, including the Chinese forms Windows itself uses.
+        ["MinimizeWindow"] = ("最小化", "Minimize"),
+        ["MaximizeWindow"] = ("最大化", "Maximize"),
+        ["RestoreWindow"] = ("向下还原", "Restore"),
+        ["CloseWindow"] = ("关闭", "Close"),
         ["BottomMenuTip"] = ("设置与外观", "Settings and appearance"),
         ["SearchConversationsTip"] = ("搜索对话", "Search conversations"),
         ["NewConversationTip"] = ("新建对话", "New conversation"),

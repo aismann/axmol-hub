@@ -86,6 +86,33 @@
       <SolidColorBrush x:Key="Hub.CheckBoxBorder" Color="#4B4B4B" />
       <SolidColorBrush x:Key="Hub.CheckMark" Color="#FFFFFF" />
 
+      <!-- ==================== Brand mark ====================
+           The app icon's own gradient, for the sidebar title block's mark (Hub.Image.Brand). Deliberately not
+           Hub.Accent: the brand is a fixed identity that must not move when a theme or an accent changes, and
+           on a light background the source icon's violet end needs one step less saturation to sit on white.
+           Hub.BrandCore is the pale core disc; the sparkle is cut out of it by even-odd, so this is the ink
+           that shows through the cutout. -->
+      <LinearGradientBrush x:Key="Hub.BrandGradient" StartPoint="0%,0%" EndPoint="100%,100%">
+        <GradientStop Offset="0" Color="#A845D8" />
+        <GradientStop Offset="0.5" Color="#6470EE" />
+        <GradientStop Offset="1" Color="#3EC8F5" />
+      </LinearGradientBrush>
+      <SolidColorBrush x:Key="Hub.BrandCore" Color="#9FE8FF" />
+
+      <!-- ==================== Title bar ====================
+           The window's own title bar (this app draws it: ExtendClientAreaToDecorationsHint). It takes
+           Hub.Background rather than a surface of its own, because the bar has no content of its own to sit
+           above — it is the same plane as the page, separated by the one hairline. One subtle hairline
+           rather than Hub.Border, so the bar reads as the window's edge and not as a toolbar. -->
+      <SolidColorBrush x:Key="Hub.TitleBarBackground" Color="#1E1E1E" />
+      <SolidColorBrush x:Key="Hub.TitleBarBorder" Color="#353535" />
+      <!-- The three caption plates. Hover/pressed follow the platform convention (a plain neutral wash) and the
+           close plate is the one exception it always is: nothing else may turn red, and this must. -->
+      <SolidColorBrush x:Key="Hub.WindowButtonHover" Color="#343434" />
+      <SolidColorBrush x:Key="Hub.WindowButtonPressed" Color="#4A4A4A" />
+      <SolidColorBrush x:Key="Hub.WindowButtonCloseHover" Color="#C42B1C" />
+      <SolidColorBrush x:Key="Hub.WindowButtonCloseForeground" Color="#FFFFFF" />
+
     </ResourceDictionary>
 
     <ResourceDictionary x:Key="Light">
@@ -155,6 +182,24 @@
       <SolidColorBrush x:Key="Hub.CheckBoxFill" Color="#FFFFFF" />
       <SolidColorBrush x:Key="Hub.CheckBoxBorder" Color="#B9BAC4" />
       <SolidColorBrush x:Key="Hub.CheckMark" Color="#FFFFFF" />
+
+      <!-- Light counterparts; see the Dark dictionary's note for what each one is for. The brand gradient is
+           one stop less saturated at its violet end so the mark keeps its contrast on a white sidebar. -->
+      <LinearGradientBrush x:Key="Hub.BrandGradient" StartPoint="0%,0%" EndPoint="100%,100%">
+        <GradientStop Offset="0" Color="#9530C6" />
+        <GradientStop Offset="0.5" Color="#4E5CDD" />
+        <GradientStop Offset="1" Color="#1FA8D8" />
+      </LinearGradientBrush>
+      <SolidColorBrush x:Key="Hub.BrandCore" Color="#1B8FC4" />
+
+      <!-- The title bar is white here rather than Hub.Background: on light, the page's plane is a near-white
+           with no card under the bar, and a bar one step *above* the page is what the platform does. -->
+      <SolidColorBrush x:Key="Hub.TitleBarBackground" Color="#FFFFFF" />
+      <SolidColorBrush x:Key="Hub.TitleBarBorder" Color="#E4E5EA" />
+      <SolidColorBrush x:Key="Hub.WindowButtonHover" Color="#E8E9EE" />
+      <SolidColorBrush x:Key="Hub.WindowButtonPressed" Color="#D8D9E0" />
+      <SolidColorBrush x:Key="Hub.WindowButtonCloseHover" Color="#C42B1C" />
+      <SolidColorBrush x:Key="Hub.WindowButtonCloseForeground" Color="#FFFFFF" />
 
     </ResourceDictionary>
 

@@ -288,7 +288,7 @@ public partial class MainWindow
     internal bool InspectorVisibleForCheck => InspectorColumn.IsVisible;
     internal double InspectorWidthForCheck => Inspector.Width;
 
-    /// <summary>The top bar's drawer button, as a check drives and reads it. Its tooltip is asserted rather than
+    /// <summary>The title bar's drawer button, as a check drives and reads it. Its tooltip is asserted rather than
     /// assumed because the button carries no text of its own: if that one string is not wired, the control has no
     /// name anywhere on the screen.</summary>
     internal bool InspectorToggleVisibleForCheck => InspectorToggle.IsVisible;
@@ -298,7 +298,7 @@ public partial class MainWindow
         => (InspectorToggle.Bounds.Width, InspectorToggle.Bounds.Height);
     internal Rect InspectorToggleBoundsForCheck => InClient(InspectorToggle);
 
-    /// <summary>Presses the top bar's own button, so a cell drives the wiring instead of calling
+    /// <summary>Presses the title bar's own button, so a cell drives the wiring instead of calling
     /// <see cref="ToggleInspectorColumn"/> and proving nothing.</summary>
     internal void ClickInspectorToggleForCheck()
         => InspectorToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -329,7 +329,7 @@ public partial class MainWindow
 
     internal Rect InspectorOverlayBoundsForCheck => InClient(InspectorExpandSurface);
     internal Rect SidebarBoundsForCheck => InClient(Sidebar);
-    internal Rect TopBarBoundsForCheck => InClient(TopBar);
+    internal Rect TitleBarBoundsForCheck => InClient(TitleBar);
     internal Rect PageBoundsForCheck => InClient(PageHost);
     internal Rect ClientBoundsForCheck => InClient(ClientRoot);
     internal string InspectorPlanMarkdownForCheck

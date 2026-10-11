@@ -699,13 +699,68 @@ public partial class ShellCheckWindow : Window
             "点击 ☰ 后侧栏宽度收为 0 且拖拽手柄隐藏");
         var collapsedShot = System.IO.Path.Combine(ScratchDirectory.Resolve("assistant-render"), "collapsed.png");
         SmokeCapture.Capture(shell, collapsedShot);
-        Check(LeftStripIsClear(collapsedShot, 14),
-            "侧栏收起后左缘没有图标溢出穿帮");
+        Check(LeftStripIsClear(collapsedShot, 14, shell.TitleBarHeightForCheck),
+            "侧栏收起后左缘（标题栏以下）没有图标溢出穿帮");
         shell.ToggleSidebarForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(shell.SidebarExpandedForCheck && shell.SidebarWidthForCheck >= 240,
             "再次点击 ☰ 后侧栏恢复原宽度");
+
+        // ── The app's own title bar ──
+        // The window used to wear the platform's title bar and its drawers sat in a 42px bar below it. Both
+        // drawers now live in the bar the app draws. What makes that bar the only one is WindowDecorations being
+        // BorderOnly: at the Full default, Avalonia draws a title bar of its own over the client area and wrote
+        // the window title across this bar's left end. That overlay only exists in a *shown* window, so this
+        // pins the property and a real-window screenshot (tmp/capture_printwindow.ps1) proves the pixels.
+        Check(shell.ClientAreaExtendedForCheck
+              && shell.WindowDecorationsForCheck == WindowDecorations.BorderOnly
+              && Math.Abs(shell.TitleBarHeightForCheck - shell.TitleBarHintForCheck) <= 0.5,
+            "客户区扩展进装饰、装饰取 BorderOnly（不再叠一层平台标题栏），标题栏高度与传给平台的高度一致（实际 "
+            + shell.ClientAreaExtendedForCheck + "、" + shell.WindowDecorationsForCheck + "、"
+            + Fmt(shell.TitleBarHeightForCheck) + " / " + Fmt(shell.TitleBarHintForCheck) + "）");
+        var barRect = shell.TitleBarBoundsForCheck;
+        var clientRect = shell.ClientBoundsForCheck;
+        Check(Math.Abs(barRect.Y) <= 0.5 && Math.Abs(barRect.Height - 32) <= 0.5
+              && Math.Abs(barRect.X) <= 0.5 && Math.Abs(barRect.Right - clientRect.Right) <= 0.5,
+            "标题栏占据客户区最顶端、贴住窗口两缘且高 32（实际 " + Fmt(barRect.Width) + "×" + Fmt(barRect.Height)
+            + " @ " + Fmt(barRect.X) + "," + Fmt(barRect.Y) + "）");
+        Check(shell.SidebarToggleIsLeftmostForCheck,
+            "☰ 抽屉按钮是标题栏里最靠左的可交互控件");
+        // The bar carries no product name: the sidebar title block and the window's own Title property are where
+        // "Axmol Hub" lives, and a second copy up here is exactly the chrome the owner removed.
+        Check(!shell.TitleBarTextForCheck.Contains("Axmol Hub", StringComparison.Ordinal),
+            "标题栏里没有重复的品牌名（实际标题栏文字「" + shell.TitleBarTextForCheck + "」）");
+        // The three plates are real controls in the bar. DWM answers minimised/maximised for the platform's own
+        // buttons and not for a hand-rolled one, so the heights are measured rather than assumed.
+        // The three plates are real controls in the bar, and they are meant to reach the window's *outer* edge -
+        // they are extended by the platform's resize-frame width, because that is the strip the system's own
+        // close button is centred on. So the strip legitimately passes the client area's right edge; what must
+        // hold is that it is not short of it, and that it stays a caption strip (one plate per control).
+        var plates = shell.WindowControlsBoundsForCheck;
+        Check(shell.MinimizeButtonHeightForCheck >= 28 && shell.MinimizeButtonHeightForCheck <= 48
+              && Math.Abs(plates.Y) <= 0.5 && plates.Right >= clientRect.Right - 0.5,
+            "自绘的三枚窗口按钮留在标题栏顶端、并且一直铺到窗口右外缘（不再在客户区右缘前留一条边，高度 "
+            + Fmt(shell.MinimizeButtonHeightForCheck) + "，区 " + Fmt(plates.Width) + "×" + Fmt(plates.Height)
+            + "，右缘超出客户区 " + Fmt(plates.Right - clientRect.Right) + "）");
+        // The maximise plate says what the *next* click does, and the close plate is always "close" — icon-only
+        // controls, so the tooltip is the only place their name appears.
+        Check(shell.MaximizeTipForCheck == HubTexts.Get("MaximizeWindow", HubStrings.Language)
+              && shell.CloseTipForCheck == HubTexts.Get("CloseWindow", HubStrings.Language),
+            "最大化 / 关闭按钮的提示随当前窗口状态正确（实际「" + shell.MaximizeTipForCheck + "」/「"
+            + shell.CloseTipForCheck + "」）");
+        shell.SetWindowStateForCheck(WindowState.Maximized);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.MaximizeTipForCheck == HubTexts.Get("RestoreWindow", HubStrings.Language)
+              && shell.MaximizeGlyphIsRestoreForCheck,
+            "已最大化时那枚按钮改说「还原」并换成还原图形（实际提示「" + shell.MaximizeTipForCheck + "」）");
+        shell.SetWindowStateForCheck(WindowState.Normal);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.MaximizeTipForCheck == HubTexts.Get("MaximizeWindow", HubStrings.Language)
+              && !shell.MaximizeGlyphIsRestoreForCheck,
+            "还原后那枚按钮改回「最大化」并换回方框图形");
 
         // The ghost icon buttons hover as a square around their glyph. They sit in fixed-height rows, so
         // a stretching default makes the plate a tall rectangle; the remaining slack below is the icon's
@@ -716,17 +771,26 @@ public partial class ShellCheckWindow : Window
             => NamedDescendant<Button>(shell, name) is { } button
                 ? $"{button.Bounds.Width:0.#}×{button.Bounds.Height:0.#}"
                 : "找不到";
-        Check(NamedDescendant<Button>(shell, "SidebarToggle") is { } sidebarToggle
-              && NamedDescendant<Button>(shell, "LogToggle") is { } logToggle
-              && IsSquarePlate(sidebarToggle) && IsSquarePlate(logToggle),
-            "☰ 折叠按钮与日志按钮的悬停底板是正方形（实际 "
-            + PlateOf(shell, "SidebarToggle") + " / " + PlateOf(shell, "LogToggle") + "）");
+        Check(NamedDescendant<Button>(shell, "LogToggle") is { } logToggle && IsSquarePlate(logToggle),
+            "日志按钮的悬停底板是正方形（实际 " + PlateOf(shell, "LogToggle") + "）");
+        // The two drawers are the same plate as each other, one step *smaller* than the log chevron: at 32px in a
+        // 32px bar they read as a fourth window control rather than as a drawer.
+        var sidebarPlate = shell.TitlebarTogglePlateForCheck("SidebarToggle");
+        var inspectorPlate = shell.TitlebarTogglePlateForCheck("InspectorToggle");
+        Check(Math.Abs(sidebarPlate.Width - sidebarPlate.Height) <= 1.5
+              && Math.Abs(inspectorPlate.Width - inspectorPlate.Height) <= 1.5
+              && sidebarPlate.Width is > 0 and <= 30
+              && Math.Abs(sidebarPlate.Width - inspectorPlate.Width) <= 1.5,
+            "两枚抽屉按钮底板同为正方形且比日志按钮小一圈（☰ " + Fmt(sidebarPlate.Width) + "×"
+            + Fmt(sidebarPlate.Height) + "，▯ " + Fmt(inspectorPlate.Width) + "×"
+            + Fmt(inspectorPlate.Height) + "）");
 
-        // The title block is two text lines plus the release-channel label; an icon tile is still not part of
-        // the brand. The Preview label must agree with the build marker and retain its semantic theme tokens.
-        Check(shell.BrandHeaderHasNoIconForCheck && shell.BrandHeaderLinesForCheck == 2,
-            "标题块是两行文字、没有图标方块（实际图标 " + shell.BrandHeaderHasNoIconForCheck
-            + "、文字行 " + shell.BrandHeaderLinesForCheck + "）");
+        // The title block is a mark followed by two text lines, plus the release-channel label: the version line
+        // stays (it is the only place the app still names its version in its own UI). The Preview label must agree
+        // with the build marker and retain its semantic theme tokens.
+        Check(shell.BrandHeaderHasLogoForCheck && shell.BrandHeaderLinesForCheck == 2,
+            "标题块是「品牌图形 + 两行文字」（实际图形 " + shell.BrandHeaderHasLogoForCheck
+            + "、文字行 " + shell.BrandHeaderLinesForCheck + "；" + shell.BrandLogoReportForCheck + "）");
         Check(shell.BrandTitleTextForCheck == "Axmol Hub" && shell.BrandVersionTextForCheck.StartsWith("v"),
             "标题块文字是 「Axmol Hub」+ 版本号（实际「" + shell.BrandTitleTextForCheck + "」/「"
             + shell.BrandVersionTextForCheck + "」）");
@@ -3400,13 +3464,15 @@ public partial class ShellCheckWindow : Window
             + shell.InspectorTabForCheck + "」）");
         var (drawerWidth, drawerHeight) = shell.InspectorTogglePlateForCheck;
         var drawerBounds = shell.InspectorToggleBoundsForCheck;
-        var barBounds = shell.TopBarBoundsForCheck;
+        var barBounds = shell.TitleBarBoundsForCheck;
+        var (drawerGap, drawerBeforeControls) = shell.InspectorToggleMeetsWindowControlsForCheck;
         Check(Math.Abs(drawerWidth - drawerHeight) <= 1.5
-              && Math.Abs(barBounds.Height - 42) <= 0.5
-              && drawerBounds.Width > 0 && drawerBounds.Right <= barBounds.Right + 0.5
+              && Math.Abs(barBounds.Height - 32) <= 0.5
+              && drawerBeforeControls && drawerGap is >= 0 and <= 24
               && FitsItsSquareSlot("Hub.Icon.PanelRight"),
-            "开关的悬停底板是正方形、顶栏还是那 42 高、按钮没有越过右缘，图标在 24 网格上包围盒正方且居中（底板 "
-            + Fmt(drawerWidth) + "×" + Fmt(drawerHeight) + "，栏高 " + Fmt(barBounds.Height) + "）");
+            "开关的悬停底板是正方形、标题栏还是那 32 高、按钮停在窗口按钮左侧一小段距离，图标在 24 网格上包围盒正方且居中（底板 "
+            + Fmt(drawerWidth) + "×" + Fmt(drawerHeight) + "，栏高 " + Fmt(barBounds.Height)
+            + "，与窗口按钮间距 " + Fmt(drawerGap) + "）");
         shell.CloseInspector();
         Dispatcher.UIThread.RunJobs();
 
@@ -3427,7 +3493,7 @@ public partial class ShellCheckWindow : Window
               && shell.InspectorOverlayOrderForCheck
               && !shell.InspectorVisibleForCheck
               && overlay.Contains(shell.SidebarBoundsForCheck)
-              && overlay.Contains(shell.TopBarBoundsForCheck)
+              && overlay.Contains(shell.TitleBarBoundsForCheck)
               && overlay.Contains(shell.PageBoundsForCheck)
               && overlay.Width >= client.Width - 1
               && overlay.Height >= client.Height - 1,
@@ -7206,8 +7272,12 @@ public partial class ShellCheckWindow : Window
     /// uniform color — the window background. When the sidebar collapsed to width 0 its children used to
     /// overflow visibly (Avalonia does not clip by default), so an icon tile at the top and the gear at the
     /// bottom "peeked through"; this is the pixel-level guard for that.
+    ///
+    /// <paramref name="titleBarHeight"/> is where the sampling starts, and it is not optional: the top
+    /// <c>titleBarHeight</c> pixels are the app's title bar, whose ☰ drawer is *supposed* to sit in the collapsed
+    /// sidebar's place, so a strip taken from row 0 would report the drawer as the overflow this guards against.
     /// </summary>
-    private static bool LeftStripIsClear(string png, int stripWidth)
+    private static bool LeftStripIsClear(string png, int stripWidth, double titleBarHeight)
     {
         using var bitmap = new Bitmap(png);
         var size = bitmap.PixelSize;
@@ -7220,8 +7290,11 @@ public partial class ShellCheckWindow : Window
         var pixels = new byte[framebuffer.RowBytes * size.Height];
         Marshal.Copy(framebuffer.Address, pixels, 0, pixels.Length);
 
-        // Reference color: the strip at mid-height, a couple of pixels in (definitely background).
-        var midY = size.Height / 2;
+        // Reference color: the strip below the title bar, a couple of pixels in (definitely background). The
+        // strip itself is compared from the same place the sample starts, so the two can never disagree about
+        // which surface they are describing.
+        var first = Math.Max(0, (int)Math.Ceiling(titleBarHeight / 4.0) * 4);
+        var midY = Math.Clamp(first + (size.Height - first) / 2, first, size.Height - 1);
         var refOffset = (midY * framebuffer.RowBytes) + (2 * 4);
         var refB = pixels[refOffset];
         var refG = pixels[refOffset + 1];
@@ -7229,7 +7302,7 @@ public partial class ShellCheckWindow : Window
 
         // Sample the strip every few rows; antialiased icons would differ by far more than this tolerance.
         const byte tolerance = 10;
-        for (var y = 0; y < size.Height; y += 4)
+        for (var y = first; y < size.Height; y += 4)
         {
             for (var x = 0; x < stripWidth; x++)
             {

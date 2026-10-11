@@ -54,6 +54,13 @@ internal static class SmokeRunner
                 Dispatcher.UIThread.RunJobs();
 
                 var stats = SmokeCapture.Capture(window, imagePath);
+                // The one thing a still frame cannot show: whether the Win32 subclass that delivers Windows 11
+                // Snap Layouts really went on. It can only be installed once the window is shown, so the smoke
+                // run - which does show it - is the place to report it.
+                if (window is MainWindow shell)
+                {
+                    Console.WriteLine("SNAPHOOK installed=" + shell.SnapHookInstalledForCheck);
+                }
                 Finish(
                     stats.IsBlank() ? 1 : 0,
                     (stats.IsBlank() ? "FAIL  " : "OK    ")

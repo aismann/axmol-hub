@@ -3,16 +3,56 @@
         x:Class="AxmolHub.MainWindow"
         Title="Axmol Hub"
         Width="1280" Height="880" MinWidth="900" MinHeight="640"
+        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaTitleBarHeightHint="32"
+        WindowDecorations="BorderOnly"
         WindowStartupLocation="CenterScreen">
 
   <!--
-    Copilot-style shell (benchmark: GitHub Copilot Desktop):
-      left = collapsible sidebar (slim brand + four nav items + conversation list as a child of the
-      "AI 助手" item + a bottom block whose text part opens the settings/appearance popup menu beside
-      the unchanged gear shortcut), with a 5px drag grip on its right edge;
-      right = content: 42px top bar (☰ toggle + page title) / page / 28px status strip / log body.
-    The sidebar collapses to zero width; the ☰ button in the top bar is then the only way back.
+    Copilot-style shell (benchmark: GitHub Copilot Desktop), with the window's own title bar drawn by the app:
+      title bar (32px) = ☰ sidebar drawer at the leading edge / page title / ▯ inspector drawer sitting just
+      before the window controls (title bar itself lives in MainWindow.TitleBar);
+      left = collapsible sidebar (brand mark + "Axmol Hub" + version + four nav items + conversation list as a
+      child of the "AI 助手" item + a bottom block whose text part opens the settings/appearance popup menu
+      beside the unchanged gear shortcut), with a 5px drag grip on its right edge;
+      right = content: page / 28px status strip / log body.
+    The sidebar collapses to zero width; the ☰ button in the title bar is then the only way back.
+
+    Both drawers live in the title bar because that is where the platform's own chrome used to be, and neither
+    is repeated anywhere else: the bar is the only place a "show/hide a column" control belongs once the app
+    owns the bar. The brand name is deliberately *not* written up there — it is in the sidebar and in the
+    window Title (the OS's own property, which the taskbar reads); printing it a second time in the bar would
+    be chrome saying "Axmol Hub" twice.
   -->
+
+  <!-- ==================== The platform's own decorations: no title bar ====================
+       Extending the client area into the decorations makes the platform draw decorations over the client area,
+       and at WindowDecorations.Full that includes a title bar - which wrote the window title straight over the
+       app's own bar's left end ("Axmol Hub v0.9.3" on top of the ☰ and the page title).
+
+       Avalonia 12.1.3's rule (Window.ComputeDecorationParts) is: the TitleBar part is drawn only when
+       WindowDecorations == Full; Shadow, Border and ResizeGrips come from the platform's own request. So
+       BorderOnly keeps the shadow, the border and the resize grips - the parts the app does not draw itself -
+       and drops exactly the one part that collided with the app's bar.
+
+       This is what the shell self-check cannot see: a window only gets its drawn decorations once it is shown,
+       and the self-check builds MainWindow without showing it. Its verification therefore has to be a real
+       window screenshot (tmp/capture_printwindow.ps1). An assertion can only pin the property that selects the
+       behaviour, which is what ShellCheckWindow does. -->
+
+  <Window.Resources>
+    <!-- The maximized-state glyph for the middle plate. It lives here rather than in HubIcons because, like the
+         other two caption glyphs, it is authored in the 12x12 box it is drawn in and used unstretched - see the
+         comment on the WindowControls stack. Code swaps the middle plate between this and the square. -->
+    <!-- The middle plate's two glyphs, authored in the 12x12 box they are drawn in and used unstretched - see
+         the comment on the WindowControls stack. Both are 1.25x the close plate's 7-unit square (an 8.75-unit
+         square here), because a square reads smaller than an X at the same measurement. Code swaps between them
+         on every window-state change, and it resolves them from *these* keys: the 0-24 grid resources in HubIcons
+         are for icons scaled with Uniform, and assigning one of those here silently replaced this glyph with a
+         bigger, off-centre square. -->
+    <StreamGeometry x:Key="Hub.Icon.CaptionMaximize">M1.6 1.6H10.4V10.4H1.6Z</StreamGeometry>
+    <StreamGeometry x:Key="Hub.Icon.CaptionRestore">M4.2 4.2H10.4V10.4H4.2Z M1.6 8.3V1.6H8.3</StreamGeometry>
+  </Window.Resources>
 
   <Window.Styles>
     <!-- Nav items (kept from the previous shell). -->
@@ -99,9 +139,9 @@
       <Setter Property="Fill" Value="{DynamicResource Hub.TextTertiary}" />
     </Style>
 
-    <!-- Ghost icon buttons: the top-bar ☰ toggle and the status-strip log chevron. Both sit in a
-         fixed-height row, so without the centering they stretch to that row's height and the hover
-         plate becomes a tall rectangle around a square icon. -->
+    <!-- Ghost icon buttons: the status-strip log chevron and (with Button.titlebar's tighter plate) the two
+         title-bar drawers. Both sit in a fixed-height row, so without the centering they stretch to that row's
+         height and the hover plate becomes a tall rectangle around a square icon. -->
     <Style Selector="Button.icon-ghost">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
@@ -123,6 +163,89 @@
     </Style>
     <Style Selector="Button.icon-ghost:pointerover Path.stroked">
       <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
+
+    <!-- ==================== Title bar ====================
+         The two drawer buttons are drawn one step smaller than the log chevron they otherwise share a shape
+         with: they sit in a 32px bar next to the platform's own caption buttons, and a 32px plate there reads
+         as a fourth window control rather than as a drawer. 5px of padding around a 16px glyph keeps the same
+         26px square the rest of the shell uses for a quiet icon button. -->
+    <Style Selector="Button.titlebar">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="5" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.titlebar:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    </Style>
+    <Style Selector="Button.titlebar Path.stroked">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextSecondary}" />
+      <Setter Property="StrokeThickness" Value="1.6" />
+      <Setter Property="StrokeLineCap" Value="Round" />
+      <Setter Property="StrokeJoin" Value="Round" />
+    </Style>
+    <Style Selector="Button.titlebar:pointerover Path.stroked">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
+
+    <!-- The three window controls, drawn by this app because the title bar is the app's (see the Window
+         comment). They keep the platform's own proportions - 46x32 plates, flush to the window's top-right
+         corner, square corners - so the bar reads as a title bar and not as an app toolbar. The close plate is
+         the one that turns red, which is the only place in this shell that colour is allowed to mean
+         "destructive". -->
+    <Style Selector="Button.window-control">
+      <Setter Property="Width" Value="46" />
+      <Setter Property="Height" Value="32" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="HorizontalAlignment" Value="Right" />
+      <Setter Property="VerticalAlignment" Value="Top" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.window-control:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonHover}" />
+    </Style>
+    <!-- The maximize plate's own hover, driven from the non-client mouse messages rather than from
+         :pointerover: the Snap Layouts hit test above makes that point non-client, so the client hover never
+         fires there (see TitleBarSnapHook). Same brush as the rule above, so the three plates read identically. -->
+    <Style Selector="Button.window-control.nchover">
+      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonHover}" />
+    </Style>
+    <Style Selector="Button.window-control:pressed">
+      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonPressed}" />
+    </Style>
+    <Style Selector="Button.window-control Path.glyph">
+      <Setter Property="Fill" Value="Transparent" />
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextSecondary}" />
+      <Setter Property="StrokeThickness" Value="1" />
+      <Setter Property="StrokeLineCap" Value="Round" />
+      <Setter Property="StrokeJoin" Value="Round" />
+    </Style>
+    <Style Selector="Button.window-control:pointerover Path.glyph">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
+    <Style Selector="Button.window-control.close:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonCloseHover}" />
+    </Style>
+    <Style Selector="Button.window-control.close:pressed">
+      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonCloseHover}" />
+    </Style>
+    <Style Selector="Button.window-control.close Path.glyph">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextSecondary}" />
+    </Style>
+    <Style Selector="Button.window-control.close:pointerover Path.glyph">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.WindowButtonCloseForeground}" />
+    </Style>
+    <Style Selector="Button.window-control.close:pressed Path.glyph">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.WindowButtonCloseForeground}" />
     </Style>
 
     <!-- Small quiet buttons in the status strip. -->
@@ -319,15 +442,73 @@
        contract, and the order of these three is asserted, because an overlay placed in the wrong slot covers
        the shell just as well and only loses to the wrong thing. -->
   <Grid x:Name="ClientRoot">
-  <Grid x:Name="ShellRoot" ColumnDefinitions="Auto,*,Auto">
+  <Grid x:Name="ShellRoot" RowDefinitions="32,*" ColumnDefinitions="Auto,*,Auto">
+
+    <!-- ==================== Title bar ====================
+         The app's own title bar, reaching both window edges because the platform's chrome no longer occupies
+         them (see the Window comment). It spans all three shell columns on purpose: the two drawers flank the
+         whole window, not the column each one controls — the left one is the first thing on the bar and the
+         right one is the last thing before the caption buttons.
+
+         The three window controls are real buttons wired in code (MainWindow.InitializeTitleBar). They are
+         positioned here rather than by a template so that the ▯ drawer can sit a fixed gap to their left: the
+         caption plate's width is one number, WindowControlPlateWidth, and it is asserted against the pixels.
+
+         Named because the expanded inspector asserts that it covers this, the sidebar and the page — the whole
+         client area and not merely a wide pane. -->
+    <Grid x:Name="TitleBar" Grid.Row="0" Grid.ColumnSpan="3"
+          Height="32"
+          Background="{DynamicResource Hub.TitleBarBackground}">
+      <!-- The whole bar drags the window: one transparent layer across it, with the controls above taking their
+           own input first. PointerPressed is handled in code (WindowBase.BeginMoveDrag).
+           No Cursor is set on purpose. The tempting value is SizeAll, but this bar moves the window rather than
+           resizing it, and a four-way arrow there promises a resize that will never happen; the plain arrow the
+           rest of the window uses is the honest one. -->
+      <Border x:Name="TitleBarDragArea" Background="Transparent" />
+      <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto">
+        <Button x:Name="SidebarToggle" Grid.Column="0" Classes="titlebar" Margin="4,0,0,0">
+          <Path Classes="stroked" Data="{StaticResource Hub.Icon.Panel}"
+                Width="16" Height="16" Stretch="Uniform" />
+        </Button>
+        <TextBlock x:Name="PageTitle" Grid.Column="1"
+                   FontSize="13" Margin="8,0,0,0" MaxWidth="420"
+                   TextTrimming="CharacterEllipsis" />
+        <!-- The inspector column's drawer button, the left toggle's mirror. It belongs to the assistant page
+             rather than to the column: on another page there is nothing to show or hide, and a button that
+             opened a column nobody could see is the bug this bar is here to stop. -->
+        <Button x:Name="InspectorToggle" Grid.Column="3" Classes="titlebar"
+                IsVisible="False" Margin="0,0,4,0">
+          <Path Classes="stroked" Data="{StaticResource Hub.Icon.PanelRight}"
+                Width="16" Height="16" Stretch="Uniform" />
+        </Button>
+        <StackPanel x:Name="WindowControls" Grid.Column="4" Orientation="Horizontal">
+          <!-- Stretch="None" on all three, with the glyphs authored in the 12x12 box they are drawn in. The
+               glyphs above live on a 0-24 grid and are scaled with Uniform; these three are not, because scaling
+               a 1-unit stroke by the fit factor is what made the minimize bar render either as a dot or as two
+               lines. At 1:1 both the size and the 1-DIP stroke are exactly what the geometry says. -->
+          <Button x:Name="MinimizeButton" Classes="window-control" ToolTip.Tip="{DynamicResource MinimizeWindow}">
+            <Path Classes="glyph" Data="M1.5 6H10.5"
+                  Width="12" Height="12" Stretch="None" />
+          </Button>
+          <Button x:Name="MaximizeButton" Classes="window-control" ToolTip.Tip="{DynamicResource MaximizeWindow}">
+            <Path x:Name="MaximizeGlyph" Classes="glyph" Data="{StaticResource Hub.Icon.CaptionMaximize}"
+                  Width="12" Height="12" Stretch="None" />
+          </Button>
+          <Button x:Name="CloseButton" Classes="window-control close" ToolTip.Tip="{DynamicResource CloseWindow}">
+            <Path Classes="glyph" Data="M2 2L10 10 M10 2L2 10"
+                  Width="12" Height="12" Stretch="None" />
+          </Button>
+        </StackPanel>
+      </Grid>
+    </Grid>
 
     <!-- ==================== Sidebar ==================== -->
-    <Grid Grid.Column="0" ColumnDefinitions="*,5">
+    <Grid Grid.Row="1" Grid.Column="0" ColumnDefinitions="*,5">
       <Border x:Name="Sidebar" Grid.Column="0"
               Background="{DynamicResource Hub.SurfaceAlt}"
               BorderBrush="{DynamicResource Hub.BorderSubtle}"
               BorderThickness="0,0,1,0"
-              Padding="14,20,12,18" Width="300"
+              Padding="14,12,12,18" Width="300"
               ClipToBounds="True">
         <DockPanel>
 
@@ -364,9 +545,14 @@
           </StackPanel>
 
           <StackPanel DockPanel.Dock="Top">
-            <!-- Slim brand: two compact text lines, with a compact release-channel marker beside the title. -->
+            <!-- The brand block: the app's own mark, the product name, the release-channel marker, and the
+                 version line under them. The mark is the one gradient in this app (Hub.Image.Brand); the title
+                 text stays flat ink so the two never read as competing marks. -->
             <StackPanel x:Name="BrandHeader" Margin="2,0,0,16" VerticalAlignment="Center">
               <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+                <Image x:Name="BrandLogo" Source="{StaticResource Hub.Image.Brand}"
+                       Width="18" Height="18" Stretch="Uniform"
+                       VerticalAlignment="Center" />
                 <TextBlock x:Name="BrandTitle" Text="Axmol Hub" FontSize="14" FontWeight="SemiBold" />
                 <Border x:Name="PreviewBadge" IsVisible="False"
                         Background="{DynamicResource Hub.PreviewBadgeBackground}"
@@ -444,34 +630,13 @@
     </Grid>
 
     <!-- ==================== Content ==================== -->
-    <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto,Auto">
+    <Grid Grid.Row="1" Grid.Column="1" RowDefinitions="*,Auto,Auto">
 
-      <!-- Top bar: the sidebar's way in and out, the current page title, and the inspector's way in and out.
-           Named because the expanded inspector asserts that it covers this, the sidebar and the page — the whole
-           client area and not merely a wide pane. -->
-      <Grid x:Name="TopBar" Grid.Row="0" Height="42" Margin="18,2,18,0"
-            ColumnDefinitions="Auto,*,Auto">
-        <Button x:Name="SidebarToggle" Grid.Column="0" Classes="icon-ghost">
-          <Path Classes="stroked" Data="{StaticResource Hub.Icon.Panel}"
-                Width="18" Height="18" Stretch="Uniform" />
-        </Button>
-        <TextBlock x:Name="PageTitle" Grid.Column="1"
-                   FontSize="14" Margin="10,0,0,0"
-                   TextTrimming="CharacterEllipsis" />
-        <!-- The inspector column's drawer button, the left toggle's mirror. It belongs to the assistant page
-           rather than to the column: on another page there is nothing to show or hide, and a button that opened
-           a column nobody could see is the bug this row is here to stop. -->
-        <Button x:Name="InspectorToggle" Grid.Column="2" Classes="icon-ghost" IsVisible="False">
-          <Path Classes="stroked" Data="{StaticResource Hub.Icon.PanelRight}"
-                Width="18" Height="18" Stretch="Uniform" />
-        </Button>
-      </Grid>
-
-      <ContentControl x:Name="PageHost" Grid.Row="1"
+      <ContentControl x:Name="PageHost" Grid.Row="0"
                       Margin="24,14,24,0" />
 
       <!-- Slim status strip. -->
-      <Grid x:Name="StatusStrip" Grid.Row="2" Height="28" Margin="18,0,18,0"
+      <Grid x:Name="StatusStrip" Grid.Row="1" Height="28" Margin="18,0,18,0"
             ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto">
         <Ellipse Grid.Column="0" Width="6" Height="6"
                  Fill="{DynamicResource Hub.Success}"
@@ -518,7 +683,7 @@
       </Grid>
 
       <!-- Log body, shown by the strip chevron or auto-expanded on failure. -->
-      <Border x:Name="LogBody" Grid.Row="3" IsVisible="False"
+      <Border x:Name="LogBody" Grid.Row="2" IsVisible="False"
               Margin="18,6,18,10"
               BorderBrush="{DynamicResource Hub.Border}"
               BorderThickness="1" CornerRadius="6"
@@ -545,7 +710,7 @@
          the window edge, and the right-edge pixel assertion needs something at the edge to measure. The grip
          is the sidebar's vocabulary mirrored: five pixels of hit area, hand-rolled pointer handlers, no
          GridSplitter anywhere in this app. -->
-    <Grid Grid.Column="2" ColumnDefinitions="5,*" IsVisible="False" x:Name="InspectorColumn">
+    <Grid Grid.Row="0" Grid.RowSpan="2" Grid.Column="2" ColumnDefinitions="5,*" IsVisible="False" x:Name="InspectorColumn">
       <Border x:Name="InspectorResizeGrip" Grid.Column="0" Background="Transparent"
               Cursor="SizeWestEast" IsVisible="False" />
       <Border x:Name="Inspector" Grid.Column="1" Width="360" ClipToBounds="True"
