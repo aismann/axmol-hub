@@ -653,9 +653,9 @@ public partial class MainWindow : Window
 
         if (TransferSlotText is null) return;
 
-        var (visible, label, isAction) = TransferSlotStateFor(
-            TransferQueue.Instance.Items, UpdateService.Instance.Download, UpdateService.Instance.PendingVersion, _restartArmed);
-        if (!isAction)
+        var (visible, label, action) = TransferSlotStateFor(
+            TransferQueue.Instance.Items, UpdateService.Instance.Download, _restartArmed);
+        if (action != TransferSlotAction.Restart)
         {
             // Whatever the second press was standing by for is gone, so the word goes back before the next
             // click can find it still armed on a different state.
@@ -664,12 +664,16 @@ public partial class MainWindow : Window
 
         TransferSlot.IsVisible = visible;
         TransferSlotText.Text = visible ? label : "";
+        // Emphasis belongs to a slot that *is* a decision, not to one that only shows a list.
+        var isAction = action is TransferSlotAction.Restart or TransferSlotAction.Download;
         TransferSlot.Classes.Set("accent", isAction);
-        _transferSlotTip.Text = isAction
-            ? UpdateService.Instance.PendingVersion is { } version
+        _transferSlotTip.Text = action switch
+        {
+            TransferSlotAction.Restart => UpdateService.Instance.PendingVersion is { } version
                 ? string.Format(HubStrings.Get("UpdateRestartActionTip"), version)
-                : HubStrings.Get("TransferRestartAction")
-            : HubStrings.Get("TransferSlotTip");
+                : HubStrings.Get("TransferRestartAction"),
+            _ => HubStrings.Get("TransferSlotTip"),
+        };
         if (!visible)
         {
             // Nothing left to act on and nothing left to read: the popover goes with its own anchor rather
@@ -680,6 +684,22 @@ public partial class MainWindow : Window
         {
             RenderTransferRows();
         }
+    }
+
+    /// <summary>
+    /// What a press on the slot does. Named rather than flagged because the slot answers more than one kind
+    /// of question, and a bool could only ever tell "show me the list" apart from everything else.
+    /// </summary>
+    internal enum TransferSlotAction
+    {
+        /// <summary>Nothing to act on, so nothing is shown.</summary>
+        None,
+        /// <summary>Transfers are moving, or one failed and still unread: lift the popover.</summary>
+        OpenQueue,
+        /// <summary>The update is on disk: apply it and restart.</summary>
+        Restart,
+        /// <summary>An update waits and nobody has asked for it yet: start the download.</summary>
+        Download,
     }
 
     /// <summary>
@@ -696,8 +716,8 @@ public partial class MainWindow : Window
     /// lit for work already finished would be reporting the past. A failure keeps the slot lit because it
     /// is still a thing to act on.</para>
     /// </summary>
-    internal static (bool Visible, string Label, bool IsAction) TransferSlotStateFor(
-        IReadOnlyList<TransferQueue.Item> items, UpdateService.DownloadState download, string? pendingVersion, bool armed)
+    internal static (bool Visible, string Label, TransferSlotAction Action) TransferSlotStateFor(
+        IReadOnlyList<TransferQueue.Item> items, UpdateService.DownloadState download, bool armed)
     {
         var active = items.Where(item => item.IsActive).ToList();
         if (active.Count > 0)
@@ -709,28 +729,29 @@ public partial class MainWindow : Window
             var single = moving == 1 ? active.Single(item => item.IsMoving) : null;
             return single?.Report.Percent is { } percent
                 ? (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("TransferSlotPercentFormat"), moving, active.Count, percent), false)
+                    HubStrings.Get("TransferSlotPercentFormat"), moving, active.Count, percent), TransferSlotAction.OpenQueue)
                 : (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("TransferSlotFormat"), moving, active.Count), false);
+                    HubStrings.Get("TransferSlotFormat"), moving, active.Count), TransferSlotAction.OpenQueue);
         }
 
         // The restart waits on the user, not the other way round: this is the state where the bytes have
         // landed and only a process swap is missing.
         if (download == UpdateService.DownloadState.Ready)
         {
-            return (true, HubStrings.Get(armed ? "TransferRestartArmed" : "TransferRestartAction"), true);
+            return (true, HubStrings.Get(armed ? "TransferRestartArmed" : "TransferRestartAction"), TransferSlotAction.Restart);
         }
 
         var failed = items.Count(item => item.State == TransferQueue.Phase.Failed);
         return failed > 0
             ? (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("TransferSlotFailed"), failed), false)
-            : (false, "", false);
+                HubStrings.Get("TransferSlotFailed"), failed), TransferSlotAction.OpenQueue)
+            : (false, "", TransferSlotAction.None);
     }
 
     /// <summary>
-    /// The slot's one press. Queue mode lifts the popover; action mode restarts — unless something is
-    /// still working, in which case the first press only arms the button and says so on its own label.
+    /// The slot's one press. The queue lifts the popover; a download or a restart is what the slot itself
+    /// does — unless a restart interrupts work still running, in which case the first press only arms the
+    /// button and says so on its own label.
     ///
     /// <para>Restarting is the one thing in this app that cannot be undone from the inside: it replaces the
     /// process, so a reply mid-stream and a build mid-compile both stop, and the second tap is what stands
@@ -739,17 +760,15 @@ public partial class MainWindow : Window
     /// </summary>
     private void OnTransferSlotClicked()
     {
-        var (visible, _, isAction) = TransferSlotStateFor(
-            TransferQueue.Instance.Items, UpdateService.Instance.Download, UpdateService.Instance.PendingVersion, _restartArmed);
-        if (!visible)
+        var (_, _, action) = TransferSlotStateFor(
+            TransferQueue.Instance.Items, UpdateService.Instance.Download, _restartArmed);
+        switch (action)
         {
-            return;
-        }
-
-        if (!isAction)
-        {
-            ToggleQueuePopup();
-            return;
+            case TransferSlotAction.None:
+                return;
+            case TransferSlotAction.OpenQueue:
+                ToggleQueuePopup();
+                return;
         }
 
         var busy = RestartInterruptsWork();

@@ -10278,8 +10278,8 @@ public partial class ShellCheckWindow : Window
 
         var twoMoving = new[] { Moving("9.9.9"), Moving("9.9.8"), Waiting("9.9.7") };
         var twoMovingState = MainWindow.TransferSlotStateFor(
-            twoMoving, UpdateService.DownloadState.None, null, armed: false);
-        Check(twoMovingState.Visible && !twoMovingState.IsAction
+            twoMoving, UpdateService.DownloadState.None, armed: false);
+        Check(twoMovingState.Visible && twoMovingState.Action == MainWindow.TransferSlotAction.OpenQueue
               && twoMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubTexts.Get("TransferSlotFormat", HubStrings.Language), 2, 3),
             "两路在跑、第三路等待时槽说 下载 2/3，并且它不是一个动作（实际 " + twoMovingState.Label + "）");
@@ -10288,7 +10288,7 @@ public partial class ShellCheckWindow : Window
         // percentage is the honest aggregate, and with two the count stands alone.
         var oneMoving = new[] { Moving("9.9.9", percent: 37) };
         var oneMovingState = MainWindow.TransferSlotStateFor(
-            oneMoving, UpdateService.DownloadState.None, null, armed: false);
+            oneMoving, UpdateService.DownloadState.None, armed: false);
         Check(oneMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubTexts.Get("TransferSlotPercentFormat", HubStrings.Language), 1, 1, 37),
             "只有一路在跑时槽带上它自己的百分比（实际 " + oneMovingState.Label + "）");
@@ -10298,26 +10298,26 @@ public partial class ShellCheckWindow : Window
         var failedWhileMoving = new[] { Waiting("9.9.9"), Moving("9.9.8") };
         failedWhileMoving[0].Fail("fixture: the mirror answered 503");
         var mixedState = MainWindow.TransferSlotStateFor(
-            failedWhileMoving, UpdateService.DownloadState.None, null, armed: false);
-        Check(mixedState.Visible && !mixedState.IsAction
+            failedWhileMoving, UpdateService.DownloadState.None, armed: false);
+        Check(mixedState.Visible && mixedState.Action != MainWindow.TransferSlotAction.Restart
               && mixedState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubTexts.Get("TransferSlotFormat", HubStrings.Language), 1, 1),
             "还有路在跑时，失败的那条不抢标签（实际 " + mixedState.Label + "）");
 
         var allFailed = new[] { Waiting("9.9.9") };
         allFailed[0].Fail("fixture: digest mismatch");
-        Check(MainWindow.TransferSlotStateFor(allFailed, UpdateService.DownloadState.None, null, armed: false).Visible,
+        Check(MainWindow.TransferSlotStateFor(allFailed, UpdateService.DownloadState.None, armed: false).Visible,
             "没有下载在跑、只留下一次失败时槽仍然亮着");
         Check(!MainWindow.TransferSlotStateFor(
-                  Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.None, null, armed: false).Visible,
+                  Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.None, armed: false).Visible,
             "队列空且没有待更新时槽保持沉默");
 
         // The action mode: the bytes have landed and only a process swap is missing.
         var restartState = MainWindow.TransferSlotStateFor(
-            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.Ready, "9.9.9", armed: false);
+            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.Ready, armed: false);
         var armedState = MainWindow.TransferSlotStateFor(
-            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.Ready, "9.9.9", armed: true);
-        Check(restartState.Visible && restartState.IsAction
+            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.Ready, armed: true);
+        Check(restartState.Visible && restartState.Action == MainWindow.TransferSlotAction.Restart
               && restartState.Label == HubTexts.Get("TransferRestartAction", HubStrings.Language)
               && armedState.Label == HubTexts.Get("TransferRestartArmed", HubStrings.Language)
               && armedState.Label != restartState.Label,
