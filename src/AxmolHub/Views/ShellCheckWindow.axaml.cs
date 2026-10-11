@@ -6061,7 +6061,7 @@ public partial class ShellCheckWindow : Window
         // A threshold test owns its threshold. This provider declares no window, and the fallback for an
         // undescribed model is a hosted-sized number now rather than the 2023 default of 8192 — so the fixture
         // states the small window it is testing against instead of inheriting whatever the fallback happens to
-        // be this release. Five tool results are nowhere near half of 128k, and nothing would compact.
+        // be this release. Five tool results are nowhere near half of a hosted-sized window, and nothing would compact.
         var fixtureProvider = chat.Providers.FirstOrDefault(candidate => candidate.Id == providerId);
         var savedWindow = fixtureProvider?.MaxContextTokens;
         if (fixtureProvider is not null) fixtureProvider.MaxContextTokens = 8192;
@@ -6318,9 +6318,10 @@ public partial class ShellCheckWindow : Window
     ///
     /// Three independent pieces of evidence, each harder to fake than the last. The first lives in the
     /// <strong>outbound request</strong> — without the usage requirement the final chunk never arrives, and only
-    /// reading the request body can prove this. The second is "measured beats estimated": the fixture reports
-    /// 48000 while this session's own character-based estimate is only tens, and the ring reads the 48000. The
-    /// third is the cap: a single reading may shift the scale by at most 4×, otherwise a gateway reporting
+    /// reading the request body can prove this. The second is "measured beats estimated": the fixture reports more
+    /// than twice the room the corrected window leaves, while this session's own character-based estimate is only
+    /// tens, and the ring reads the report.
+    /// The third is the cap: a single reading may shift the scale by at most 4×, otherwise a gateway reporting
     /// nonsense could squeeze the window into a sliver. The negative fixture stays — a session that never
     /// reports usage must keep using the estimate rather than reading out a 0.
     /// </summary>
@@ -6367,10 +6368,16 @@ public partial class ShellCheckWindow : Window
                 + string.Join("、", quietUsage.Categories.Select(category => category.Kind)) + "）");
 
             // Phase 2: the same app path with a report on the end of the stream.
+            // The reading is stated against the window rather than as a literal: this fixture has to stay the
+            // hard case — a report twice the size of the room the 4× correction leaves — for whatever fallback
+            // the release happens to ship.
+            var (assumedTokens, assumedReserve, _) = chat.ContextWindowFor(provider.Id, model);
+            var overfullReading = 2 * (assumedTokens * ContextReport.UncalibratedPermille
+                                       / ContextReport.MaximumDriftPermille - assumedReserve);
             sent.Clear();
             chat.ClientOverride = (_, _) =>
             {
-                var client = new ScriptedChatClient(["实测回答"], usage: [(48_000, 600, 400, 0)]);
+                var client = new ScriptedChatClient(["实测回答"], usage: [(overfullReading, 600, 400, 0)]);
                 sent.Add(client);
                 return client;
             };
@@ -6390,8 +6397,8 @@ public partial class ShellCheckWindow : Window
                   && wire.Contains("include_usage", StringComparison.Ordinal),
                 "发出去的请求确实向网关要了用量报告，没有这个字段就没有最后那个 chunk（补丁 "
                 + wire[..Math.Min(160, wire.Length)] + "）");
-            Check(report?.LastInputTokens == 48_000 && report.LastReasoningTokens == 400
-                  && report.LastUsageModelId == model && used >= 48_000,
+            Check(report?.LastInputTokens == overfullReading && report.LastReasoningTokens == 400
+                  && report.LastUsageModelId == model && used >= overfullReading,
                 "模型报的输入成了读数的下限，估算只补它之后新写的那几轮（实测 " + used + "）");
             Check(report?.ContextEstimateDriftPermille == ContextReport.MaximumDriftPermille
                   && budget == ContextBudget.FallbackTokens * ContextReport.UncalibratedPermille
@@ -6411,7 +6418,7 @@ public partial class ShellCheckWindow : Window
             Check(tip.StartsWith(HubStrings.Get("ChatContextReportedFormat").Split("{0}")[0], StringComparison.Ordinal)
                   && !tip.StartsWith(HubStrings.Get("ChatContextEstimateFormat").Split("{0}")[0], StringComparison.Ordinal),
                 "有过实测的会话不再自称「预计」：圆环的提示换成了「上次请求实测」那条文案（实际「" + tip + "」）");
-            Check(ring.IsMeasured && ring.MeasuredInputTokens == 48_000 && ring.Estimated < ring.Used
+            Check(ring.IsMeasured && ring.MeasuredInputTokens == overfullReading && ring.Estimated < ring.Used
                   && ring.Categories.Sum(category => category.Tokens) == ring.Estimated,
                 "实测与估算各留一份，明细相加等于估算本身：两者的差就是这条会话今天学到的东西（实测 "
                 + ring.Used + "，估算 " + ring.Estimated + "）");

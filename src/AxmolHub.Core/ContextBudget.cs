@@ -63,10 +63,11 @@ public readonly record struct ContextWindow(int Tokens, int OutputReserve, Capab
 /// </summary>
 public static class ContextBudget
 {
-    /// <summary>The window assumed for a hosted model nobody described. Deliberately not generous and
-    /// deliberately not 8192: it is the median of what current hosted models publish, and it is corrected from
-    /// below by every successful request and exactly by the first refusal that names a real limit.</summary>
-    public const int FallbackTokens = 128_000;
+    /// <summary>The window assumed for a hosted model nobody described. Deliberately not generous and deliberately
+    /// not 8192: hosted models publish between 128k and 1M, so an assumed number is more often under the real
+    /// window than over it. When it is over, the first refusal that names a limit corrects it exactly; every
+    /// successful request still calibrates it from below through the drift ratio.</summary>
+    public const int FallbackTokens = 256_000;
 
     /// <summary>Never reserve less than this for the answer, however small the window: a 512-token "answer
     /// budget" is a model that cannot finish a sentence.</summary>
