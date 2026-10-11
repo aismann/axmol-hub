@@ -10087,21 +10087,6 @@ public partial class ShellCheckWindow : Window
               && SettingsPage.ComposeUpdateStatus(plainLine, "") == plainLine,
             "更新状态行在下载/就绪/失败各阶段都带上版本号，没有版本时原样输出（实际 " + downloadingLine + "）");
 
-        // The dot is the only place an update is announced outside the settings page, so it has to say
-        // which version — "there is an update" alone sends the user hunting through Settings.
-        var badgeTip = MainWindow.FormatUpdateBadgeTip("9.9.9");
-        var badgeFallback = HubStrings.Get("UpdateDotTooltip");
-        Check(badgeTip.Contains("9.9.9", StringComparison.Ordinal)
-              && badgeTip != badgeFallback
-              && MainWindow.FormatUpdateBadgeTip(null) == badgeFallback
-              && MainWindow.FormatUpdateBadgeTip("") == badgeFallback,
-            "更新红点提示带版本号，未知版本时退回「有可用更新」（实际 " + badgeTip + "）");
-
-        // Both readers must spell out the **same** version: they are two consumers of UpdateService, and
-        // a dot that keeps the old copy while the card moves on is invisible from either side alone.
-        Check(shell.UpdateDotTip == MainWindow.FormatUpdateBadgeTip(UpdateService.Instance.PendingVersion),
-            "红点提示与设置页读的是同一份待更新版本（实际 " + shell.UpdateDotTip + "）");
-
         // The phases themselves, rendered for real and read off the controls. A real check needs GitHub,
         // and a real download **replaces the process** the moment it ends, so the downloading and
         // "restart to finish" states are otherwise unreachable here — and a version that goes missing in
@@ -10133,7 +10118,7 @@ public partial class ShellCheckWindow : Window
             "下载完成提示重启时仍然带着版本号（状态行 " + readyText + " / 重启按钮提示 " + settings.RestartActionTip + "）");
 
         // And the card must come back down: a scripted update left behind would leak into every render
-        // check that follows (the shell's dot included).
+        // check that follows (the shell's download slot included).
         UpdateService.Instance.ClearForCheck();
         settings.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -10141,6 +10126,163 @@ public partial class ShellCheckWindow : Window
               && settings.UpdateStatusText == HubTexts.Get("UpdateCheckHint", HubStrings.Language)
               && settings.RestartActionTip.Length == 0,
             "清掉脚本更新后卡片回到未检查的初始态（状态行 " + settings.UpdateStatusText + "）");
+
+        // --- 5.1b The download queue's own surface ---
+        // The queue's contract with the shell, read off the shell. The label matrix goes through the pure
+        // function rather than a live transfer because the branches are about *counting*, and counting can
+        // be asserted without parking three real downloads behind it. What then runs live is the one thing
+        // a pure function cannot prove: that the slot, the popover and the strip's geometry really move.
+        Check(!shell.TransferSlotVisibleForCheck,
+            "没有下载在跑时状态条的下载槽是暗的");
+
+        static TransferQueue.Item Moving(string version, int? percent = null, long? bytes = null)
+        {
+            var item = new TransferQueue.Item($"engine:install:{version}", "TransferEnginePackage", version);
+            item.BeginTransferring();
+            if (percent is { } p) item.ReportPercent(p);
+            if (bytes is { } b) item.ReportBytes(new DownloadProgress(b, b * 2, 2_400_000));
+            return item;
+        }
+
+        static TransferQueue.Item Waiting(string version)
+            => new($"engine:install:{version}", "TransferEnginePackage", version);
+
+        var twoMoving = new[] { Moving("9.9.9"), Moving("9.9.8"), Waiting("9.9.7") };
+        var twoMovingState = MainWindow.TransferSlotStateFor(
+            twoMoving, UpdateService.DownloadState.None, null, armed: false);
+        Check(twoMovingState.Visible && !twoMovingState.IsAction
+              && twoMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                  HubTexts.Get("TransferSlotFormat", HubStrings.Language), 2, 3),
+            "两路在跑、第三路等待时槽说 下载 2/3，并且它不是一个动作（实际 " + twoMovingState.Label + "）");
+
+        // One number per download, never an average of two: with a single transfer moving its own
+        // percentage is the honest aggregate, and with two the count stands alone.
+        var oneMoving = new[] { Moving("9.9.9", percent: 37) };
+        var oneMovingState = MainWindow.TransferSlotStateFor(
+            oneMoving, UpdateService.DownloadState.None, null, armed: false);
+        Check(oneMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                  HubTexts.Get("TransferSlotPercentFormat", HubStrings.Language), 1, 1, 37),
+            "只有一路在跑时槽带上它自己的百分比（实际 " + oneMovingState.Label + "）");
+
+        // A failure does not steal the label while something is still moving: the count is the live fact,
+        // and the failed row is inside the popover where it can be read next to the one still running.
+        var failedWhileMoving = new[] { Waiting("9.9.9"), Moving("9.9.8") };
+        failedWhileMoving[0].Fail("fixture: the mirror answered 503");
+        var mixedState = MainWindow.TransferSlotStateFor(
+            failedWhileMoving, UpdateService.DownloadState.None, null, armed: false);
+        Check(mixedState.Visible && !mixedState.IsAction
+              && mixedState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                  HubTexts.Get("TransferSlotFormat", HubStrings.Language), 1, 1),
+            "还有路在跑时，失败的那条不抢标签（实际 " + mixedState.Label + "）");
+
+        var allFailed = new[] { Waiting("9.9.9") };
+        allFailed[0].Fail("fixture: digest mismatch");
+        Check(MainWindow.TransferSlotStateFor(allFailed, UpdateService.DownloadState.None, null, armed: false).Visible,
+            "没有下载在跑、只留下一次失败时槽仍然亮着");
+        Check(!MainWindow.TransferSlotStateFor(
+                  Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.None, null, armed: false).Visible,
+            "队列空且没有待更新时槽保持沉默");
+
+        // The action mode: the bytes have landed and only a process swap is missing.
+        var restartState = MainWindow.TransferSlotStateFor(
+            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.Ready, "9.9.9", armed: false);
+        var armedState = MainWindow.TransferSlotStateFor(
+            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.Ready, "9.9.9", armed: true);
+        Check(restartState.Visible && restartState.IsAction
+              && restartState.Label == HubTexts.Get("TransferRestartAction", HubStrings.Language)
+              && armedState.Label == HubTexts.Get("TransferRestartArmed", HubStrings.Language)
+              && armedState.Label != restartState.Label,
+            "下载就绪时槽就是重启动作，忙时第一下只把它变成再点一次（" + restartState.Label + " / " + armedState.Label + "）");
+
+        // And live, on the real strip: one scripted transfer that never ends.
+        TransferQueue.Instance.EnqueueForCheck("engine:install:9.9.6", "TransferEnginePackage", "9.9.6");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var platesBefore = shell.WindowControlsBoundsForCheck;
+        Check(shell.TransferSlotVisibleForCheck
+              && shell.TransferSlotTextForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                  HubTexts.Get("TransferSlotFormat", HubStrings.Language), 1, 1),
+            "脚本下载在跑时状态条真的亮着并写着 下载 1/1（实际 " + shell.TransferSlotTextForCheck + "）");
+
+        shell.OpenQueuePopupForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.QueuePopupOpenForCheck && shell.QueueRowCountForCheck == 1,
+            "点下载槽弹出队列面板，跑着的那一项有一行（实际 " + shell.QueueRowCountForCheck + " 行）");
+        Check(!shell.TransferSlotAccentForCheck,
+            "队列模式的槽不加强调底板，强调留给只剩一个动作的时候");
+        Check(shell.StatusStripHeightForCheck <= 28.5
+              && SameRect(shell.WindowControlsBoundsForCheck, platesBefore),
+            "面板展开时状态条仍是那 28 高，三枚窗口按钮一格没动");
+        shell.CloseQueuePopupForCheck();
+        Dispatcher.UIThread.RunJobs();
+
+        // Three scripted transfers, so two hold the slots and one waits. Cancelling the waiting one has to
+        // end it: a cancel that only reaches a running transfer would leave this one queued, and the moment
+        // a slot freed it would start downloading something the user already said no to.
+        TransferQueue.Instance.EnqueueForCheck("engine:install:9.9.5", "TransferEnginePackage", "9.9.5");
+        TransferQueue.Instance.EnqueueForCheck("engine:install:9.9.4", "TransferEnginePackage", "9.9.4");
+        var waiting = TransferQueue.Instance.EnqueueForCheck("engine:install:9.9.3", "TransferEnginePackage", "9.9.3")
+            ?? throw new InvalidOperationException("fixture: the third transfer was refused, so nothing is waiting");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(TransferQueue.Instance.Items.Count(item => item.IsMoving) == 2
+              && waiting is { State: TransferQueue.Phase.Queued },
+            "第三路下载停在等待，闸只有两路（实际在跑 "
+            + TransferQueue.Instance.Items.Count(item => item.IsMoving) + " 路）");
+        TransferQueue.Instance.Cancel("engine:install:9.9.3");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(waiting.State == TransferQueue.Phase.Cancelled,
+            "取消一个还在等待的下载，它就此结束，不会等空位补上（实际 " + waiting.State + "）");
+        TransferQueue.Instance.ClearForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        // The scripted transfer has to go before the restart can be read: while anything is moving the slot
+        // is the queue, and that is the rule the two states are distinguished by.
+        TransferQueue.Instance.ClearForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(!shell.TransferSlotVisibleForCheck,
+            "脚本下载结束后槽自己熄灭，不留下一个报过去的行");
+
+        // The restart press must never reach the updater here: that would replace the process running the
+        // assertions. The observer is the decision, recorded instead of executed.
+        var applied = "";
+        UpdateService.Instance.ApplyOverrideForCheck = update => applied = update.TargetFullRelease.Version.ToString();
+        UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Ready);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.TransferSlotVisibleForCheck && shell.TransferSlotAccentForCheck
+              && shell.TransferSlotTextForCheck == HubTexts.Get("TransferRestartAction", HubStrings.Language),
+            "更新就绪且没有在跑时，槽真的变成了重启动作（实际 " + shell.TransferSlotTextForCheck + "）");
+
+        // Busy: the first press arms, and nothing is applied yet.
+        shell.RestartInterruptsWork = () => true;
+        shell.ClickTransferSlotForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.RestartArmedForCheck && applied.Length == 0
+              && shell.TransferSlotTextForCheck == HubTexts.Get("TransferRestartArmed", HubStrings.Language),
+            "有活在跑时第一下只把槽变成再点一次，不重启（实际 " + shell.TransferSlotTextForCheck + "）");
+        shell.ClickTransferSlotForCheck();
+        Check(applied == "9.9.9", "第二下才真的走重启，并且带上那个版本（实际 " + applied + "）");
+
+        // Idle: one press is the whole action, no confirmation in the way.
+        shell.RestartInterruptsWork = () => false;
+        applied = "";
+        shell.ClickTransferSlotForCheck();
+        Check(applied == "9.9.9" && !shell.RestartArmedForCheck,
+            "没有在跑的东西时重启一下就走，不要求第二下（实际 " + applied + "）");
+        UpdateService.Instance.ApplyOverrideForCheck = null;
+
+        // Everything scripted goes back down, or every render check after this inherits a lit strip.
+        TransferQueue.Instance.ClearForCheck();
+        UpdateService.Instance.ClearForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(!shell.TransferSlotVisibleForCheck && !shell.QueuePopupOpenForCheck,
+            "清掉脚本队列与脚本更新后下载槽熄灭、面板收起");
 
         // --- 5.2 Really switch the language once ---
         // The shell-side probe uses a nav item that is still a RadioButton (NavToolchains): it is built at
@@ -10344,11 +10486,10 @@ public partial class ShellCheckWindow : Window
     }
 
     /// <summary>
-    /// A navigation item's text. Its <c>Content</c> is a panel laying out "icon [+ badge]" plus the
-    /// label — a StackPanel for most items, a Grid for the Settings item (which carries a trailing
-    /// update dot). <c>Content.ToString()</c> would return a type name and turn the assertion into an
-    /// always-true/always-false decoration, so the label is read from the panel's TextBlock children
-    /// (the shared <see cref="Panel"/> base covers both StackPanel and Grid).
+    /// A navigation item's text. Its <c>Content</c> is a panel laying out "icon + label" — a StackPanel
+    /// for most items, a Grid for the Settings item. <c>Content.ToString()</c> would return a type name
+    /// and turn the assertion into an always-true/always-false decoration, so the label is read from the
+    /// panel's TextBlock children (the shared <see cref="Panel"/> base covers both StackPanel and Grid).
     /// </summary>
     private static string NavLabel(RadioButton button) => button.Content is Panel panel
         ? string.Join("", panel.Children.OfType<TextBlock>().Select(text => text.Text))
