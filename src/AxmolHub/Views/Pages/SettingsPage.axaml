@@ -218,8 +218,9 @@
           </StackPanel>
 
           <!-- Off by default? No: with it on, finding an update is enough and the only thing left is a
-               restart, which is the whole point of a background updater. Unchecking it hands the
-               download back to the "Download & restart" button. -->
+               restart, which is the whole point of a background updater. Turning it off does not stop the
+               update being fetched — it hands the decision to a press on the strip's download slot, which
+               is where the transfer then reports. -->
           <CheckBox x:Name="AutoDownloadCheck" Content="{DynamicResource AutoDownloadUpdates}" />
 
           <Grid ColumnDefinitions="*,Auto">

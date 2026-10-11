@@ -22,11 +22,12 @@ namespace AxmolHub;
 /// whose popover carries the percentage. The settings page keeps what is not progress — the channel, the
 /// auto-download switch, and the version this would move to.
 ///
-/// Two drivers share this service: the silent startup check (<see cref="CheckAsync"/>) and the settings-page
-/// button (also <see cref="CheckAsync"/>, then <see cref="DownloadAndApplyAsync"/>). With
-/// <see cref="AutoDownload"/> on, the download starts on its own once a check finds an update; applying stays
-/// an explicit restart (<see cref="ApplyAndRestart"/>), which the strip's slot offers as soon as the bytes
-/// have landed.
+/// Two drivers share this service: the silent startup check (<see cref="CheckAsync"/>) and the settings
+/// page's 「检查更新」 button (also <see cref="CheckAsync"/>). With <see cref="AutoDownload"/> on, finding an
+/// update is enough and the fetch starts by itself; with it off the strip's slot offers the download, which is
+/// the only way to ask for it. Either way the transfer ends in <see cref="DownloadState.Ready"/>: applying is
+/// never automatic, because it replaces the process, so it stays the explicit press
+/// (<see cref="ApplyAndRestart"/>) the slot offers — with a second tap when something is still running.
 ///
 /// Everything is deliberately fire-and-forget friendly: no call blocks <c>Main</c>, and failures are
 /// swallowed into a result so the UI can decide what to say. A broken update check must never take
@@ -106,9 +107,6 @@ internal sealed class UpdateService
             _updateChannel = normalized;
             Last = null;
             Download = DownloadState.None;
-            DownloadPercent = 0;
-            DownloadBytesPerSecond = 0;
-            DownloadError = null;
             Changed?.Invoke();
         }
     }
@@ -118,28 +116,16 @@ internal sealed class UpdateService
     {
         /// <summary>Nothing downloaded — either not started, or the last attempt was cancelled / failed.</summary>
         None,
-        /// <summary>Downloading right now; <see cref="DownloadPercent"/> is meaningful.</summary>
+        /// <summary>Downloading right now; the percentage lives on the queue's row, not here.</summary>
         Downloading,
         /// <summary>Downloaded and waiting for a restart to apply.</summary>
         Ready,
     }
 
-    /// <summary>The download phase of the update found by <see cref="Last"/>.</summary>
+    /// <summary>The download phase of the update found by <see cref="Last"/>. Only the phase, never a
+    /// percentage: the row in <see cref="TransferQueue"/> is what measures the transfer, and this is what
+    /// decides whether the strip's slot may offer a restart.</summary>
     public DownloadState Download { get; private set; }
-
-    /// <summary>0-100 while <see cref="Download"/> is <see cref="DownloadState.Downloading"/>.</summary>
-    public int DownloadPercent { get; private set; }
-
-    /// <summary>
-    /// Smoothed transfer rate in bytes/second for the progress tooltip; 0 while unknown, while nothing is
-    /// downloading, and during the post-transfer phase of a delta update (where Velopack patches locally
-    /// rather than transferring anything).
-    /// </summary>
-    public double DownloadBytesPerSecond { get; private set; }
-
-    /// <summary>The last download failure message, or null. The caller that started the download owns
-    /// showing it; a background download just leaves it set (and the user can retry).</summary>
-    public string? DownloadError { get; private set; }
 
     /// <summary>True when the app was installed by Velopack — i.e. whether self-update applies at all.
     /// Drives whether the auto-download switch is offered.</summary>
@@ -234,10 +220,6 @@ internal sealed class UpdateService
     /// </summary>
     public async Task<CheckOutcome> CheckAsync()
     {
-        // A fresh check re-renders the card from scratch, so a stale "download failed" line must not
-        // outlive it — when auto-download is on, the check itself is the retry.
-        DownloadError = null;
-
         CheckOutcome outcome;
         if (!CanUpdate())
         {
@@ -272,28 +254,25 @@ internal sealed class UpdateService
     }
 
     /// <summary>
-    /// Verification hook (<c>--verify-shell</c>): installs a pending update **without** a network check,
-    /// so the settings card's phases can be rendered and read back. Those phases are otherwise
-    /// unreachable in a self-check — a real check needs GitHub, and a real download replaces the process
-    /// the moment it finishes.
+    /// Verification hook (<c>--verify-shell</c>): installs a pending update **without** a network check, at
+    /// the download phase asked for, so the surfaces that read this service can be rendered and read back.
+    /// Those phases are otherwise unreachable in a self-check — a real check needs GitHub, and a real
+    /// download replaces the process the moment it finishes. A percentage is not part of it: that belongs to
+    /// the queue's row, which the suite drives through <see cref="TransferQueue"/> instead.
     /// </summary>
-    internal void SetPendingForCheck(UpdateInfo update, DownloadState download = DownloadState.None, int percent = 0)
+    internal void SetPendingForCheck(UpdateInfo update, DownloadState download = DownloadState.None)
     {
         Last = new CheckOutcome(CheckResult.UpdateAvailable, update);
         Download = download;
-        DownloadPercent = percent;
-        DownloadError = null;
         Changed?.Invoke();
     }
 
     /// <summary>Undoes <see cref="SetPendingForCheck"/> so a scripted update can't leak into the
-    /// render checks that follow (the badge is driven by <see cref="Last"/> too).</summary>
+    /// render checks that follow (both the card's line and the strip's slot read <see cref="Last"/>).</summary>
     internal void ClearForCheck()
     {
         Last = null;
         Download = DownloadState.None;
-        DownloadPercent = 0;
-        DownloadError = null;
         Changed?.Invoke();
     }
 
@@ -367,9 +346,6 @@ internal sealed class UpdateService
         TransferQueue.Instance.Enqueue(_transferIdentity, "TransferHubUpdate", version, async (item, token) =>
         {
             Download = DownloadState.Downloading;
-            DownloadPercent = 0;
-            DownloadBytesPerSecond = 0;
-            DownloadError = null;
             Changed?.Invoke();
 
             var manager = CreateManager();
@@ -384,12 +360,12 @@ internal sealed class UpdateService
             var clock = Stopwatch.StartNew();
             long sampledBytes = 0;
             var sampledMs = 0L;
+            var smoothedRate = 0.0;
             const long sampleWindowMs = 500;
             const double smoothing = 0.4; // weight of the newest sample, so the number settles instead of flickering
 
             await manager.DownloadUpdatesAsync(update, percent =>
             {
-                DownloadPercent = percent;
                 item.ReportPercent(percent);
 
                 var elapsedMs = clock.ElapsedMilliseconds;
@@ -400,7 +376,7 @@ internal sealed class UpdateService
                     // download rate left to report, so don't keep showing a stale one. The row says the
                     // same thing — the work is local now, and unmeasurable — and its tooltip loses the
                     // size too, because the bytes it estimated are no longer the bytes being moved.
-                    DownloadBytesPerSecond = 0;
+                    smoothedRate = 0;
                     item.ReportEstimate(null, null);
                     item.MarkApplying();
                 }
@@ -408,18 +384,17 @@ internal sealed class UpdateService
                 {
                     var bytes = (long)(totalBytes * (percent / (double)transferPercent));
                     var instant = (bytes - sampledBytes) * 1000.0 / window;
-                    DownloadBytesPerSecond = DownloadBytesPerSecond <= 0
+                    smoothedRate = smoothedRate <= 0
                         ? instant
-                        : DownloadBytesPerSecond * (1 - smoothing) + instant * smoothing;
+                        : smoothedRate * (1 - smoothing) + instant * smoothing;
                     sampledBytes = bytes;
                     sampledMs = elapsedMs;
-                    item.ReportEstimate(totalBytes, DownloadBytesPerSecond);
+                    item.ReportEstimate(totalBytes, smoothedRate);
                 }
 
                 Changed?.Invoke();
             }, token);
 
-            DownloadPercent = 100;
             Download = DownloadState.Ready;
             Changed?.Invoke();
         }, onFinished: FinishDownload);
@@ -433,17 +408,12 @@ internal sealed class UpdateService
     /// </summary>
     private void FinishDownload(TransferQueue.Item item)
     {
-        DownloadBytesPerSecond = 0;
         switch (item.State)
         {
             case TransferQueue.Phase.Failed:
-                Download = DownloadState.None;
-                DownloadPercent = 0;
-                DownloadError = item.Error;
-                break;
             case TransferQueue.Phase.Cancelled:
+                // The row keeps the message and the retry; this service only gives up the restart action.
                 Download = DownloadState.None;
-                DownloadPercent = 0;
                 break;
         }
 

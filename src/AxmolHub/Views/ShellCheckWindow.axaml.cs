@@ -10225,7 +10225,7 @@ public partial class ShellCheckWindow : Window
 
         // The transfer moving is nobody's business on this page any more: the line must not change, and no
         // second progress bar may exist here to disagree with the row in the popover.
-        UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Downloading, 42);
+        UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Downloading);
         settings.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(settings.UpdateStatusText == foundLine && settings.ProgressBarCount == 0,

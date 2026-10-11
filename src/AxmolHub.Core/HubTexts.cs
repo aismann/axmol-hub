@@ -379,21 +379,11 @@ public static class HubTexts
             + "a search of its own; that kind of search runs inside the service, and no approval card can stop one "
             + "mid-reply."),
         ["UpdateReady"] = ("发现新版本 {0}。", "Version {0} is available."),
-        // The status line of all three states — downloading / ready / download failed — has to carry the version number: once a download
-        // starts, "Version x.y.z is available" is pushed out by the progress copy and the user can no longer see which version they are moving to.
-        // {0} is the version number, prefixed to the status text.
-        ["UpdateVersionPrefix"] = ("新版本 {0} · ", "Version {0} · "),
-        ["DownloadAndRestart"] = ("下载并重启", "Download & restart"),
-        ["UpdateDownloading"] = ("正在下载更新… {0}%", "Downloading update… {0}%"),
-        // Hover tooltip for the progress bar / status line. {0} is an already-formatted rate ("2.4 MB/s"); the unit does not vary with the language.
-        ["UpdateDownloadSpeed"] = ("下载速度：{0}", "Download speed: {0}"),
-        ["UpdateReadyToRestart"] = ("更新已就绪，重启完成更新。", "Update ready — restart to finish."),
-        // The two action buttons' tooltips name the version too: the status line says "ready", the button says "which version is being installed".
-        ["UpdateDownloadActionTip"] = ("下载 {0} 并重启", "Download {0} and restart"),
+        // The version the restart will install rides on the strip slot's tooltip: the label there counts, so
+        // this is where the number has to be said. The download itself is a queue row now, and the settings
+        // card keeps only the line above — which therefore stays true through every phase and no longer needs
+        // a prefix composed per phase.
         ["UpdateRestartActionTip"] = ("重启并安装 {0}", "Restart and install {0}"),
-        ["RestartNow"] = ("立即重启", "Restart now"),
-        // Deliberately without {0}: what gets appended after it is the raw exception text, which may contain braces, and string.Format would throw a FormatException.
-        ["UpdateDownloadFailed"] = ("更新下载失败：", "Couldn't download the update: "),
         // ── Download queue ──
         // A queue row names the thing it is fetching, and the version rides behind that name **unformatted**:
         // a version number is not a localized word, and a format key would print a bare "{0}" on the one path

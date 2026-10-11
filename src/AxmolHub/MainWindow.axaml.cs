@@ -723,10 +723,11 @@ public partial class MainWindow : Window
     /// asserts on, because every one of these branches otherwise needs a real download to reach.
     ///
     /// <para>Two modes, one slot. While transfers are moving (or one failed and went unread) the slot is
-    /// the <b>queue</b>: a count, and a press that lifts the popover. When nothing is moving and the only
-    /// thing left to decide is the update already on disk, the slot <b>is that decision</b> — restarting
-    /// takes one press, not a trip through Settings. Which is the whole point of downloading in the
-    /// background: the user should never have to go looking for the thing that finished.</para>
+    /// the <b>queue</b>: a count, and a press that lifts the popover. When nothing is moving, the slot is
+    /// the <b>decision itself</b> — the update on disk waits for a restart, or the update nobody has
+    /// fetched yet waits for a download, and either takes one press rather than a trip through Settings.
+    /// Which is the whole point of downloading in the background: the user should never have to go looking
+    /// for the thing that finished.</para>
     ///
     /// <para>Silence is the answer while nothing is moving, nothing failed and nothing waits: a strip that
     /// lit for work already finished would be reporting the past. A failure keeps the slot lit because it
