@@ -916,6 +916,12 @@ public partial class MainWindow : Window
     internal bool TransferSlotAccentForCheck => TransferSlot.Classes.Contains("accent");
     internal bool QueuePopupOpenForCheck => QueuePopup.IsOpen;
     internal int QueueRowCountForCheck => QueueRows.Children.Count;
+
+    /// <summary>The slot and the popover as visuals, for a frame capture. The popover needs this rather
+    /// than a region of the window's frame because a Popup presents in its own PopupRoot — it is a
+    /// top-level visual, and not part of the window's pixels.</summary>
+    internal Visual TransferSlotForCheck => TransferSlot;
+    internal Visual? QueuePopoverForCheck => QueuePopup.Child;
     internal void OpenQueuePopupForCheck() => ToggleQueuePopup();
     internal void CloseQueuePopupForCheck() => QueuePopup.IsOpen = false;
 

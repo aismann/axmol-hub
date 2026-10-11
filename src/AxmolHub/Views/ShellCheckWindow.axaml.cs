@@ -10209,6 +10209,14 @@ public partial class ShellCheckWindow : Window
         Dispatcher.UIThread.RunJobs();
         Check(shell.QueuePopupOpenForCheck && shell.QueueRowCountForCheck == 1,
             "点下载槽弹出队列面板，跑着的那一项有一行（实际 " + shell.QueueRowCountForCheck + " 行）");
+        // The frame, not just the tree: a Popup that opens with nothing in it passes every object-graph
+        // check above, and it is exactly the failure the reader would see. It has to be captured as its own
+        // visual because a popup presents in its own PopupRoot, outside the window's pixels.
+        var popoverShot = System.IO.Path.Combine(ScratchDirectory.Resolve("queue-popover"), "rows.png");
+        var popoverStats = SmokeCapture.Capture(shell.QueuePopoverForCheck!, popoverShot);
+        Check(System.IO.File.Exists(popoverShot) && !popoverStats.IsBlank(),
+            "队列面板真的画出了内容（" + popoverStats.Width + "x" + popoverStats.Height
+            + "，distinct=" + popoverStats.DistinctColors + "）");
         Check(!shell.TransferSlotAccentForCheck,
             "队列模式的槽不加强调底板，强调留给只剩一个动作的时候");
         Check(shell.StatusStripHeightForCheck <= 28.5
@@ -10256,6 +10264,14 @@ public partial class ShellCheckWindow : Window
         Check(shell.TransferSlotVisibleForCheck && shell.TransferSlotAccentForCheck
               && shell.TransferSlotTextForCheck == HubTexts.Get("TransferRestartAction", HubStrings.Language),
             "更新就绪且没有在跑时，槽真的变成了重启动作（实际 " + shell.TransferSlotTextForCheck + "）");
+        // More than a flat plate: the accent rectangle alone is one or two colours, so the count is what
+        // says the word is on it. This is the one press the whole queue exists to hand the user, and a
+        // strip that painted it invisible would look finished.
+        var slotShot = System.IO.Path.Combine(ScratchDirectory.Resolve("queue-slot"), "restart.png");
+        var slotStats = SmokeCapture.Capture(shell.TransferSlotForCheck, slotShot);
+        Check(!slotStats.IsBlank() && slotStats.DistinctColors > 2,
+            "重启槽画得出来：强调底板与文字都在帧里（" + slotStats.Width + "x" + slotStats.Height
+            + "，distinct=" + slotStats.DistinctColors + "）");
 
         // Busy: the first press arms, and nothing is applied yet.
         shell.RestartInterruptsWork = () => true;
