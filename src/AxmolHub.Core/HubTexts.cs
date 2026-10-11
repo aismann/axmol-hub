@@ -540,6 +540,7 @@ public static class HubTexts
         ["ViewReferral"] = ("了解详情", "Learn more"),
         ["ChatFailed"] = ("助手请求失败：", "Assistant request failed: "),
         ["ChatConnectionFailed"] = ("连接模型服务失败：", "Could not connect to the model provider: "),
+        ["ChatRateLimited"] = ("模型服务在限流，稍后再试：", "The model provider is rate-limiting requests, try again shortly: "),
         ["ChatTimedOut"] = ("模型请求超时，请检查网络或服务状态后重试。", "The model request timed out. Check your connection or the provider status and try again."),
         ["ChatNoResponse"] = ("模型没有返回内容，请重试或检查模型配置。", "The model returned no content. Try again or check the model configuration."),
         ["ChatCancelled"] = ("已停止。", "Stopped."),

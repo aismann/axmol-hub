@@ -936,6 +936,17 @@ public partial class ShellCheckWindow : Window
         await panel.SendForCheckAsync("连接失败问题");
         Check(panel.LastNoticeTextForCheck?.StartsWith(HubStrings.Get("ChatConnectionFailed"), StringComparison.Ordinal) == true,
             "网络连接异常在流结束重绘后仍显示连接失败提示");
+
+        // The exact shape the client model hands back when the pipeline's retries run out, measured from
+        // --check-ai-providers rather than imagined. A limit is not a broken assistant: the generic sentence sends
+        // a person to settings and credentials that are fine, while the answer here is to wait a moment.
+        shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient([],
+            exception: new InvalidOperationException(
+                "HTTP 429 (rate_limit_error: rate_limit_exceeded)\n\nRate limit reached. Slow down."));
+        await panel.SendForCheckAsync("限流问题");
+        Check(panel.LastNoticeTextForCheck?.StartsWith(HubStrings.Get("ChatRateLimited"), StringComparison.Ordinal) == true
+              && panel.LastNoticeTextForCheck!.Contains("429", StringComparison.Ordinal),
+            "模型服务限流时说「在限流，稍后再试」并带上服务方的原话，而不是通用请求失败");
         shell.Chat.DeleteConversation(failureCheckConversation.Id);
         shell.Chat.OpenConversation(opsConversation.Id);
         opsConversation = shell.Chat.ActiveConversation!;

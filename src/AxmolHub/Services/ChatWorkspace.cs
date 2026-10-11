@@ -3987,6 +3987,15 @@ public sealed class ChatWorkspace : IDisposable
         {
             return (RunResult.Failed, "ChatConnectionFailed", true, ex.Message);
         }
+        catch (Exception ex) when (ChatPipeline.RateLimited(ex.Message))
+        {
+            // Not a recovery case: the pipeline already spent its retries on this request, and a rate limit that
+            // outlives them is answered by waiting, not by sending again. Kept apart from the sentence below
+            // because "assistant request failed" points a person at settings and credentials that are fine.
+            Audit(run.ConversationId,
+                "Rate limited: the provider refused with a limit after the pipeline's retries");
+            return (RunResult.Failed, "ChatRateLimited", true, ex.Message);
+        }
         catch (Exception ex) when (mayRecover && ContextOverflow.IsContextOverflow(ex.Message))
         {
             // The provider has just stated the size of its window in the one message where it has to be honest.

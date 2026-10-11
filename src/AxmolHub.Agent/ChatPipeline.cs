@@ -306,6 +306,23 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
            && (message.Contains("stream_options", StringComparison.OrdinalIgnoreCase)
                || message.Contains("include_usage", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>Whether a failure is the provider saying "not now" rather than "not like that".
+    ///
+    /// <para>Narrow on purpose, in both directions. <see cref="ChatClientFactory.MaxRetries"/> retries already
+    /// happened inside the pipeline by the time a message like this reaches a caller, so what is left is to say so
+    /// — and the generic failure sentence sends a person to settings and credentials that are fine when the answer
+    /// is to wait. "429" alone is not a needle because request ids contain digits; a billing exhaustion that no
+    /// amount of waiting fixes ("quota") is not one either, because calling that a limit would be a lie about the
+    /// fix.</para></summary>
+    public static bool RateLimited(string? message)
+        => message is { Length: > 0 }
+           && (message.Contains("HTTP 429", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("429 Too Many Requests", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("too many requests", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("rate_limit", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("ratelimit", StringComparison.OrdinalIgnoreCase));
+
     /// <summary>
     /// What the tool declarations of one request cost, in tokens. A function's name, its description and its
     /// JSON schema all go on the wire of <b>every</b> later request as long as the mode offers that tool, so

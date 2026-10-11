@@ -270,6 +270,30 @@ if (args.Contains("--check-ai-providers"))
                       + "and the provider's words come back as "
                       + exhausted[..Math.Min(96, exhausted.Length)].Replace('\n', '·').Replace("\r", "") + ".");
 
+    // Which failures are a rate limit, judged on the words providers actually use, and which must stay plain. The
+    // rule fails twice over if it is loose in either direction: a 429 that reads as a generic failure points a
+    // person at credentials and settings that are fine, and anything else that reads as a limit tells them to wait
+    // for a problem no waiting fixes.
+    foreach (var limited in new[]
+             {
+                 "HTTP 429 (rate_limit_error: rate_limit_exceeded)\n\nRate limit reached.",
+                 "429 Too Many Requests",
+                 "{\"error\":{\"message\":\"Requests to the Chat Completions API have exceeded your allocated rate limit.\"}}",
+             })
+        if (!ChatPipeline.RateLimited(limited))
+            throw new Exception($"A provider's rate limit was not recognised: {limited}");
+    foreach (var notLimited in new[]
+             {
+                 "Incorrect API key provided",
+                 "This model's maximum context length is 8192 tokens.",
+                 "HTTP 500 (server_error)",
+                 "chatcmpl-429ab8c1",
+             })
+        if (ChatPipeline.RateLimited(notLimited))
+            throw new Exception($"A failure that is not a rate limit was labelled one: {notLimited}");
+    Console.WriteLine("PASS: a rate limit is named by the provider's own words, while a bad key, an overflow, a "
+                      + "server error and a bare id full of digits stay plain failures.");
+
 
     // ProviderStore keeps keys out of JSON; CredentialStore owns the key and rehydrates it from the
     // secret store. The split is the whole point: a provider is a declaration, an account is a secret.
