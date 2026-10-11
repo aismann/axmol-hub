@@ -1205,8 +1205,7 @@
               Background="{DynamicResource Hub.SurfaceAlt}" CornerRadius="14"
               HorizontalAlignment="Stretch" MaxWidth="820" ClipToBounds="True"
               Margin="0,6,0,0" Padding="14,12,12,10">
-        <Grid>
-          <Grid x:Name="ComposerContent" RowDefinitions="Auto,Auto,Auto">
+        <Grid x:Name="ComposerContent" RowDefinitions="Auto,Auto,Auto">
           <TextBox x:Name="InputBox" Grid.Row="0" AcceptsReturn="True" MinHeight="48" MaxHeight="160"
                    TextWrapping="Wrap" PlaceholderText="{DynamicResource InputPlaceholder}"
                    PlaceholderForeground="{DynamicResource Hub.TextTertiary}"
@@ -1273,7 +1272,6 @@
               </Button>
               <Button x:Name="SendButton" Classes="send" VerticalAlignment="Center" />
             </StackPanel>
-          </Grid>
           </Grid>
         </Grid>
       </Border>
