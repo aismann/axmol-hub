@@ -308,7 +308,7 @@ internal sealed class UpdateService
     {
         if (Download == DownloadState.None && Last is { Result: CheckResult.UpdateAvailable, Update: { } update })
         {
-            StartDownload(update, applyWhenDone: false);
+            StartDownload(update);
         }
     }
 
@@ -319,22 +319,6 @@ internal sealed class UpdateService
         {
             TransferQueue.Instance.Cancel(identity);
         }
-    }
-
-    /// <summary>
-    /// Downloads the pending update and then applies it, restarting the app. Asked by the settings page's
-    /// "Download &amp; restart" button. It returns as soon as the transfer is queued: the download now lives
-    /// on the queue's row, and when it ends the process is replaced by the updater, so there is nothing
-    /// left here to await.
-    /// </summary>
-    public Task DownloadAndApplyAsync()
-    {
-        if (Last is { Result: CheckResult.UpdateAvailable, Update: { } update })
-        {
-            StartDownload(update, applyWhenDone: true);
-        }
-
-        return Task.CompletedTask;
     }
 
     /// <summary>Applies the already-downloaded update and restarts (the "Restart now" button, shown
@@ -371,8 +355,12 @@ internal sealed class UpdateService
     ///
     /// <para>Progress arrives on the download thread (Velopack throttles it); every handler here and on the
     /// shell marshals itself, same as before.</para>
+    ///
+    /// <para>It downloads and stops. Nothing in this app applies an update by itself any more: applying
+    /// replaces the process, so it stays behind the one press on the strip's slot — which is what
+    /// <see cref="ApplyAndRestart"/> is for, and why it takes a second tap while other work is running.</para>
     /// </summary>
-    private void StartDownload(UpdateInfo update, bool applyWhenDone)
+    private void StartDownload(UpdateInfo update)
     {
         var version = update.TargetFullRelease.Version.ToString();
         _transferIdentity = $"hub:update:{version}";
@@ -432,15 +420,6 @@ internal sealed class UpdateService
             }, token);
 
             DownloadPercent = 100;
-            if (applyWhenDone)
-            {
-                // Terminates this process; the updater relaunches the app after installing. Nothing below
-                // this line runs, and the row never gets to settle — which is the honest picture: the app
-                // it was a row in is gone.
-                manager.ApplyUpdatesAndRestart(update.TargetFullRelease);
-                return;
-            }
-
             Download = DownloadState.Ready;
             Changed?.Invoke();
         }, onFinished: FinishDownload);

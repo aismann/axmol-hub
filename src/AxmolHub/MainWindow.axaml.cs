@@ -1016,6 +1016,10 @@ public partial class MainWindow : Window
     internal bool TransferSlotVisibleForCheck => TransferSlot.IsVisible;
     internal string TransferSlotTextForCheck => TransferSlotText.Text ?? "";
     internal bool TransferSlotAccentForCheck => TransferSlot.Classes.Contains("accent");
+
+    /// <summary>What the slot's tooltip says. The version number lives here, not in the label, so a check on
+    /// "the user can still tell which update this is" has to read the tip rather than the words on the strip.</summary>
+    internal string TransferSlotTipForCheck => _transferSlotTip.Text ?? "";
     internal bool QueuePopupOpenForCheck => QueuePopup.IsOpen;
     internal int QueueRowCountForCheck => QueueRows.Children.Count;
 

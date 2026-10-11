@@ -62,22 +62,6 @@ public partial class SettingsPage : UserControl
     /// (hooked while on screen only).</summary>
     private bool _updateHooked;
 
-    /// <summary>
-    /// The progress area's tooltip content. It stays the **same instance** for the page's whole life and
-    /// is installed as the tip exactly once (see <see cref="SetDownloadTooltip"/>): that is what lets the
-    /// tooltip remain open while the pointer rests in the progress area.
-    /// </summary>
-    private readonly TextBlock _speedTip = new();
-
-    /// <summary>
-    /// The two update action buttons' tooltip content. Stable instances installed once and rewritten in
-    /// place, for the same reason as <see cref="_speedTip"/>: re-assigning <c>ToolTip.Tip</c> closes an
-    /// open tooltip. They name the version the button will install — the status line says "ready", the
-    /// button is where the user decides, and that is where the number has to be.
-    /// </summary>
-    private readonly TextBlock _downloadTip = new();
-    private readonly TextBlock _restartTip = new();
-
     /// <summary>For the XAML loader and design-time preview (missing it raises AVLN3001).</summary>
     public SettingsPage()
     {
@@ -133,23 +117,15 @@ public partial class SettingsPage : UserControl
         SelectVisualStudioButton.Click += async (_, _) => await SelectEditorAsync(visualStudio: true);
         SelectCodeButton.Click += async (_, _) => await SelectEditorAsync(visualStudio: false);
         CheckForUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync();
-        DownloadUpdateButton.Click += async (_, _) => await DownloadUpdateAsync();
-        CancelUpdateButton.Click += (_, _) => UpdateService.Instance.CancelDownload();
-        RestartUpdateButton.Click += (_, _) => UpdateService.Instance.ApplyAndRestart();
         AutoDownloadCheck.IsCheckedChanged += (_, _) => OnAutoDownloadChanged();
         SpawnCheck.IsCheckedChanged += (_, _) => OnSpawnChanged();
         WebFetchCheck.IsCheckedChanged += (_, _) => OnWebFetchChanged();
         WireProviders();
 
-        // Installed exactly once, on purpose — see SetDownloadTooltip for why re-assigning ToolTip.Tip
-        // per progress tick is what used to make the tooltip impossible to keep on screen.
-        ToolTip.SetTip(UpdateProgressHost, _speedTip);
-        ToolTip.SetTip(DownloadUpdateButton, _downloadTip);
-        ToolTip.SetTip(RestartUpdateButton, _restartTip);
-
-        // The update card is a *view* of the shared UpdateService, so a check or a background download
-        // started elsewhere (the shell's startup check) shows up here live. Hooked while the page is on
-        // screen only: a cached page that has been navigated away shouldn't keep rendering.
+        // The update card is a *view* of the shared UpdateService, so a check started elsewhere (the shell's
+        // startup check) shows up here live. The download itself is no longer this page's to report — that is
+        // the strip's queue slot — so what is rendered is the check result and nothing else. Hooked while the
+        // page is on screen only: a cached page that has been navigated away shouldn't keep rendering.
         AttachedToVisualTree += (_, _) => HookUpdateService();
         DetachedFromVisualTree += (_, _) => UnhookUpdateService();
 
@@ -929,33 +905,16 @@ public partial class SettingsPage : UserControl
     }
 
     /// <summary>
-    /// The tooltip of an update action button: the copy named by <paramref name="key"/>, filled in with
-    /// the version it will install. Empty while no version is known — a tip that says "download and
-    /// restart" without saying what is worse than no tip at all.
-    /// </summary>
-    internal static string ComposeActionTip(string key, string? version)
-        => version is { Length: > 0 } ? string.Format(HubStrings.Get(key), version) : "";
-
-    /// <summary>
-    /// Prefixes an update status line with the version being installed, so the number survives past the
-    /// "found" moment: <see cref="RenderUpdateState"/> swaps the whole line for download progress, then
-    /// for the restart hint, and neither of those carries a version of its own — before this, the version
-    /// disappeared the instant the download started (and with auto-download on, that is immediately).
+    /// Renders the card from <see cref="UpdateService"/>: the check result — the status line, and whether the
+    /// check button is offered. Called when the page is shown, on <see cref="UpdateService.Changed"/>, and
+    /// after a manual check, so a check started elsewhere (the shell's startup check) shows up here too and
+    /// the line re-localizes on a language switch.
     ///
-    /// Pure and separate from the rendering so the rule can be asserted: a dropped version still reads
-    /// like a perfectly good status line, which is the "invisible failure" shape.
-    /// </summary>
-    internal static string ComposeUpdateStatus(string status, string? version)
-        => version is { Length: > 0 }
-            ? string.Format(HubStrings.Get("UpdateVersionPrefix"), version) + status
-            : status;
-
-    /// <summary>
-    /// Renders the card from <see cref="UpdateService"/>: the download phase first (progress bar, cancel
-    /// / restart), then the check result (status text, which button is offered). Called when the page is
-    /// shown, on <see cref="UpdateService.Changed"/>, and after a manual check — so a check or a
-    /// background download started elsewhere shows up here too, and the status line re-localizes on a
-    /// language switch.
+    /// <para>What is deliberately <b>not</b> on this card any more: the download's progress, its cancel, and
+    /// the restart. Those live on one surface now — the strip's queue slot and its popover — because this page
+    /// can be navigated away from while the bytes are moving, and an update whose end nobody can see is an
+    /// update nobody can restart. The result line keeps naming the version for that same reason: it is the one
+    /// thing this page owns, and it stays true while the transfer runs somewhere else.</para>
     /// </summary>
     private void RenderUpdateState()
     {
@@ -966,91 +925,21 @@ public partial class SettingsPage : UserControl
         }
 
         var service = UpdateService.Instance;
-        var pendingVersion = service.PendingVersion;
-
-        // Both action buttons name the version all the time — not only in the phase that shows them —
-        // because a tip read off a stale render would still be on screen after the state moved on.
-        _downloadTip.Text = ComposeActionTip("UpdateDownloadActionTip", pendingVersion);
-        _restartTip.Text = ComposeActionTip("UpdateRestartActionTip", pendingVersion);
-
-        // Only the host is toggled: it carries the padding that makes the progress area hoverable, so
-        // hiding the bar alone would leave an invisible strip still able to show a tooltip.
-        UpdateProgressHost.IsVisible = false;
-        CheckForUpdatesButton.IsVisible = false;
-        DownloadUpdateButton.IsVisible = false;
-        RestartUpdateButton.IsVisible = false;
-        CancelUpdateButton.IsVisible = false;
-
-        if (service.Download == UpdateService.DownloadState.Downloading)
-        {
-            SetStatusLineError(false);
-            UpdateProgress.Value = service.DownloadPercent;
-            UpdateProgressHost.IsVisible = true;
-            CancelUpdateButton.IsVisible = true;
-            UpdateStatusLine.Text = ComposeUpdateStatus(
-                string.Format(HubStrings.Get("UpdateDownloading"), service.DownloadPercent), pendingVersion);
-            SetDownloadTooltip(string.Format(
-                HubStrings.Get("UpdateDownloadSpeed"), UpdateService.FormatSpeed(service.DownloadBytesPerSecond)));
-            return;
-        }
-
-        if (service.Download == UpdateService.DownloadState.Ready)
-        {
-            SetStatusLineError(false);
-            UpdateProgress.Value = 100;
-            UpdateProgressHost.IsVisible = true;
-            RestartUpdateButton.IsVisible = true;
-            var readyLine = ComposeUpdateStatus(HubStrings.Get("UpdateReadyToRestart"), pendingVersion);
-            UpdateStatusLine.Text = readyLine;
-            // The bar stays on screen once the download is done, so its tooltip needs copy that is still
-            // true — otherwise hovering it would keep repeating a speed that no longer means anything.
-            // It carries the version too: this is the line the user reads while deciding to restart.
-            SetDownloadTooltip(readyLine);
-            return;
-        }
-
-        // A failed download is reported right here instead of in a dialog: the whole update flow is
-        // deliberately modal-free, and this card is where the user is already looking. The retry is the
-        // "Download & restart" button (and any new check, which clears the error).
-        if (service.DownloadError is { } error)
-        {
-            SetStatusLineError(true);
-            UpdateStatusLine.Text = ComposeUpdateStatus(HubStrings.Get("UpdateDownloadFailed") + error, pendingVersion);
-            DownloadUpdateButton.IsVisible = true;
-            return;
-        }
-
-        SetStatusLineError(false);
 
         var last = service.Last;
         UpdateStatusLine.Text = last?.Result switch
         {
-            UpdateService.CheckResult.UpdateAvailable => string.Format(HubStrings.Get("UpdateReady"), pendingVersion),
+            UpdateService.CheckResult.UpdateAvailable => string.Format(HubStrings.Get("UpdateReady"), service.PendingVersion),
             UpdateService.CheckResult.UpToDate => HubStrings.Get("UpdateUpToDate"),
             UpdateService.CheckResult.NotInstalled => HubStrings.Get("UpdateNotInstalled"),
             UpdateService.CheckResult.Failed => HubStrings.Get("UpdateFailed"),
             _ => HubStrings.Get("UpdateCheckHint"),
         };
 
-        if (last?.Result is UpdateService.CheckResult.UpdateAvailable)
-        {
-            DownloadUpdateButton.IsVisible = true;
-        }
-        else
-        {
-            CheckForUpdatesButton.IsVisible = true;
-        }
-    }
-
-    /// <summary>
-    /// Switches the status line between the muted look and the danger ink by swapping style classes —
-    /// not an inline <c>Foreground</c> — so the token re-resolves on a theme switch. Never both at once:
-    /// they set the same property and whichever style is declared later would silently win.
-    /// </summary>
-    private void SetStatusLineError(bool error)
-    {
-        UpdateStatusLine.Classes.Set("muted", !error);
-        UpdateStatusLine.Classes.Set("danger", error);
+        // The check button steps aside when there is already something to act on: offering another 检查更新
+        // under the line that says what the last check found would repeat the question it answered. Fetching
+        // that version is the strip's press, reachable from whatever page is on screen.
+        CheckForUpdatesButton.IsVisible = last?.Result is not UpdateService.CheckResult.UpdateAvailable;
     }
 
     /// <summary>
@@ -1068,30 +957,6 @@ public partial class SettingsPage : UserControl
         ProviderStatusLine.Classes.Set("danger", error);
         ProviderStatusLine.IsVisible = text.Length > 0;
     }
-
-    /// <summary>
-    /// Sets the text of the progress area's tooltip.
-    ///
-    /// It writes into the <see cref="_speedTip"/> TextBlock that was attached as the tip **once** in the
-    /// constructor, rather than re-assigning <c>ToolTip.Tip</c> on every progress tick. That is not
-    /// tidiness — it is the whole reason the tooltip can stay on screen:
-    ///
-    /// Avalonia's ToolTipService closes an open tooltip when the Tip value changes to **null**, and a new
-    /// value assigned while the tooltip is closed does **not** re-open it (its TipChanged handler only
-    /// acts while <c>IsOpen</c> is true). Resetting the tip to null on every render therefore killed the
-    /// tooltip after the first tick, and the pointer had to leave the control and come back before it
-    /// would show again — which is exactly the "it won't stay put" behaviour. Passing a stable tip object
-    /// keeps <c>TipProperty</c> unchanged, so nothing ever closes it: the tooltip stays up for as long as
-    /// the pointer rests in the progress area, and the text still updates live.
-    /// </summary>
-    private void SetDownloadTooltip(string text) => _speedTip.Text = text;
-
-    /// <summary>
-    /// The "Download &amp; restart" button. Reaching the line after the await means the download failed or
-    /// was cancelled (success replaces this process); either way the card renders the outcome by itself,
-    /// through <see cref="UpdateService.Changed"/> — the update flow puts up **no dialog at all**.
-    /// </summary>
-    private async Task DownloadUpdateAsync() => await UpdateService.Instance.DownloadAndApplyAsync();
 
     // ───────────────────────── Model providers ─────────────────────────
     //
@@ -2370,17 +2235,13 @@ public partial class SettingsPage : UserControl
     // ── Verification hooks for the update card (used by --verify-shell) ──
 
     /// <summary>The update card's status line **as rendered**. Read back rather than recomputed: what the
-    /// user sees is this control's text, and every phase of the update is a different render of it.</summary>
+    /// user sees is this control's text, and the check result is only one of the strings it can hold.</summary>
     internal string UpdateStatusText => UpdateStatusLine.Text ?? "";
 
-    /// <summary>The "Download &amp; restart" button's tooltip — it has to name the version it will install.</summary>
-    internal string DownloadActionTip => _downloadTip.Text ?? "";
-
-    /// <summary>The "Restart now" button's tooltip, shown only once an update is downloaded and waiting.</summary>
-    internal string RestartActionTip => _restartTip.Text ?? "";
-
-    /// <summary>Whether the "Restart now" button is the action being offered (i.e. the download finished).</summary>
-    internal bool RestartButtonVisible => RestartUpdateButton.IsVisible;
+    /// <summary>Progress bars this page can still draw. The update card is meant to hold none: its download
+    /// moved to the strip's queue, and a bar left here would be a second surface reporting one transfer —
+    /// the shape of the bug this round was about.</summary>
+    internal int ProgressBarCount => this.GetVisualDescendants().OfType<ProgressBar>().Count();
 
     // ── Verification hooks for the provider card (used by --verify-shell) ──
 

@@ -10204,22 +10204,10 @@ public partial class ShellCheckWindow : Window
               && UpdateService.FormatSpeed(3.5 * 1024 * 1024) == "3.5 MB/s",
             "下载速率文案按 B/KB/MB 分档，未知速率显示占位符，且与界面语言无关");
 
-        // The version has to survive into the downloading / ready / failed phases, not just the "found"
-        // one: those lines are assembled by hand, so a version that never gets prepended still reads
-        // like a finished status line — assert the composed text, not "the service knows a version".
-        var downloadingLine = SettingsPage.ComposeUpdateStatus(
-            string.Format(HubStrings.Get("UpdateDownloading"), 42), "9.9.9");
-        var plainLine = string.Format(HubStrings.Get("UpdateDownloading"), 42);
-        Check(downloadingLine.Contains("9.9.9", StringComparison.Ordinal)
-              && downloadingLine.EndsWith(plainLine, StringComparison.Ordinal)
-              && SettingsPage.ComposeUpdateStatus(plainLine, null) == plainLine
-              && SettingsPage.ComposeUpdateStatus(plainLine, "") == plainLine,
-            "更新状态行在下载/就绪/失败各阶段都带上版本号，没有版本时原样输出（实际 " + downloadingLine + "）");
-
-        // The phases themselves, rendered for real and read off the controls. A real check needs GitHub,
-        // and a real download **replaces the process** the moment it ends, so the downloading and
-        // "restart to finish" states are otherwise unreachable here — and a version that goes missing in
-        // one of them is invisible: the line still reads like a status.
+        // The version has to survive past the "found" moment. The card no longer renders the download's
+        // phases — the strip's slot and the popover's rows do — so the rule is now the simpler one it was
+        // always serving: the number stays where the user read it, and the restart tip names what it will
+        // install. Assert the rendered text, not "the service knows a version".
         var pendingAsset = new VelopackAsset
         {
             FileName = "Axmol.Hub-9.9.9-win-x64-full.nupkg",
@@ -10228,33 +10216,38 @@ public partial class ShellCheckWindow : Window
         };
         var pendingUpdate = new UpdateInfo(pendingAsset, false);
 
+        UpdateService.Instance.SetPendingForCheck(pendingUpdate);
+        settings.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var foundLine = settings.UpdateStatusText;
+        Check(foundLine == string.Format(HubTexts.Get("UpdateReady", HubStrings.Language), "9.9.9"),
+            "检测到新版本时卡片的状态行说出版本号（实际 " + foundLine + "）");
+
+        // The transfer moving is nobody's business on this page any more: the line must not change, and no
+        // second progress bar may exist here to disagree with the row in the popover.
         UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Downloading, 42);
         settings.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        var downloadingText = settings.UpdateStatusText;
-        Check(downloadingText.Contains("9.9.9", StringComparison.Ordinal)
-              && downloadingText.Contains("42", StringComparison.Ordinal),
-            "下载中的状态行真的渲染出版本号与进度（实际 " + downloadingText + "）");
+        Check(settings.UpdateStatusText == foundLine && settings.ProgressBarCount == 0,
+            "下载进行中卡片既不加进度条也不换掉那行版本号（页面内进度条 " + settings.ProgressBarCount + " 个）");
 
         UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Ready);
         settings.UpdateLayout();
+        shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        var readyText = settings.UpdateStatusText;
-        Check(settings.RestartButtonVisible
-              && readyText.Contains("9.9.9", StringComparison.Ordinal)
-              && settings.RestartActionTip.Contains("9.9.9", StringComparison.Ordinal)
-              && settings.DownloadActionTip.Contains("9.9.9", StringComparison.Ordinal),
-            "下载完成提示重启时仍然带着版本号（状态行 " + readyText + " / 重启按钮提示 " + settings.RestartActionTip + "）");
+        Check(settings.UpdateStatusText == foundLine
+              && shell.TransferSlotTipForCheck.Contains("9.9.9", StringComparison.Ordinal),
+            "更新就绪后版本号仍在卡片上，并且进了槽位的重启提示（提示 " + shell.TransferSlotTipForCheck + "）");
 
         // And the card must come back down: a scripted update left behind would leak into every render
         // check that follows (the shell's download slot included).
         UpdateService.Instance.ClearForCheck();
         settings.UpdateLayout();
+        shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(!settings.RestartButtonVisible
-              && settings.UpdateStatusText == HubTexts.Get("UpdateCheckHint", HubStrings.Language)
-              && settings.RestartActionTip.Length == 0,
-            "清掉脚本更新后卡片回到未检查的初始态（状态行 " + settings.UpdateStatusText + "）");
+        Check(settings.UpdateStatusText == HubTexts.Get("UpdateCheckHint", HubStrings.Language)
+              && shell.TransferSlotTipForCheck == HubTexts.Get("TransferSlotTip", HubStrings.Language),
+            "清掉脚本更新后卡片与槽位都回到未检查的初始态（状态行 " + settings.UpdateStatusText + "）");
 
         // --- 5.1b The download queue's own surface ---
         // The queue's contract with the shell, read off the shell. The label matrix goes through the pure
