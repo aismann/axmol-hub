@@ -33,6 +33,11 @@ Rules that follow from this:
 - **Surfaces must clip.** Zero-width / collapsed containers need `ClipToBounds`; overflowing children
   painting through is a bug, not a style. Put scrollable lists in a bounded (DockPanel fill / Grid
   row) slot — a StackPanel hands out infinite height and breaks scrolling.
+- **Ask above the box, never over it.** A pending approval, a plan review and a steer draft are questions, and a
+  question does not get to cover the input: each one owns a row *above* the composer, newest nearest the box.
+  Nothing may paint over `ComposerContent` or grey it out — text half-typed when a question arrives is text the
+  person expects to still be there. Focus moves to a card only while the box is empty, and Escape pressed inside
+  a text box is never the answer to the card above it.
 - **Reveal on hover, not on first paint.** Per-message actions, session ⋯ menus, secondary buttons
   stay quiet until hovered.
 - **Match the established shell**: slim sidebar with the conversation list under the AI assistant nav

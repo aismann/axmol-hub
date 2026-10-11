@@ -4699,7 +4699,7 @@ public partial class ShellCheckWindow : Window
                   && planCardText.Contains("Reviewed plan", StringComparison.Ordinal)
                   && planBodiesSuppressed
                   && !planBodyInk,
-                "打开会话后仍计入待审批会话数字；计划以一张紧凑卡片真实显示、标题上卡，正文不再铺进转录，决定仍在输入区（待后台 "
+                "打开会话后仍计入待审批会话数字；计划以一张紧凑卡片真实显示、标题上卡，正文不再铺进转录，决定摆在输入框上方（待后台 "
                 + chat.PendingBackgroundApprovalCount(approvedSession.Id) + "，卡面「" + planCardText + "」，"
                 + "转录里的正文 " + planBodyInk + "）");
             shell.CloseInspector();
@@ -4910,9 +4910,17 @@ public partial class ShellCheckWindow : Window
             await WaitForIdleAsync(chat);
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
+            // The card takes the keyboard when nothing is being written, which is the case where the letters on it
+            // are worth more than a caret. The arrival after this one has a draft in the box and must not.
+            Check(panel.PendingPlanApprovalCardsForCheck == 1 && panel.DecisionHostFocusedForCheck,
+                "空着输入框时计划卡到达就拿到键盘，A / B 不必先点一下卡片才有效");
             panel.ClickPlanChoiceForCheck("ChatPlanRevise");
             panel.SetPlanFeedbackForCheck("换个思路再来一版");
             panel.ClickPlanContinueForCheck();
+            // A draft typed while the revision is being thought about: the second plan lands on top of it, and this
+            // is the state the report was about — a card arriving must not clear the box or move the caret.
+            const string draftUnderPlan = "计划还等着，我先把这句写完";
+            panel.SetInputForCheck(draftUnderPlan);
             await WaitForIdleAsync(chat);
             panel.Reload();
             shell.UpdateLayout();
@@ -4922,6 +4930,23 @@ public partial class ShellCheckWindow : Window
                   && panel.PlanCardTextsForCheck[1].Contains("Second draft", StringComparison.Ordinal),
                 "两份计划是两张卡，各自的标题就是自己那份的标题（实际 "
                 + string.Join(" / ", panel.PlanCardTextsForCheck) + "）");
+            // The other half of the arrival above: a plan that turns up while a sentence is being written leaves the
+            // keyboard where it was. Nothing here needs the caret to answer — the card is a row above the box, not a
+            // cover over it.
+            Check(panel.InputTextForCheck == draftUnderPlan && !panel.DecisionHostFocusedForCheck,
+                "框里正写着字时新计划到达，不抢键盘也不清空那半句（框里「" + panel.InputTextForCheck + "」）");
+            // Enter is now an ordinary thing to do with a draft while a plan waits, and the honest answer is a
+            // refusal the person can read — not a silent no-op, and above all not an emptied box. This is the path
+            // the old layout could never reach, because the box was disabled under the card.
+            panel.PressComposerKeyForCheck(Key.Enter);
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.InputTextForCheck == draftUnderPlan
+                  && panel.NoticeVisibleForCheck
+                  && panel.LastNoticeTextForCheck == HubStrings.Get("ChatPlanAwaitingApproval")
+                  && panel.PendingPlanApprovalCardsForCheck == 1,
+                "计划待确认时按 Enter 给出可读拒绝、卡片原地不动，而草稿仍留在输入框里（提示「"
+                + (panel.LastNoticeTextForCheck ?? "") + "」，框里「" + panel.InputTextForCheck + "」）");
+            panel.SetInputForCheck("");
             panel.ClickPlanCardForCheck(0);
             Check(shell.InspectorPlanMarkdownForCheck.Contains("The older body", StringComparison.Ordinal),
                 "点旧的那张计划卡，右栏显示的是那一份计划而不是最新的一份（面板里 "
@@ -4986,6 +5011,8 @@ public partial class ShellCheckWindow : Window
         // with a sandbox command, so its card is the pair to the capture card below — one ladder, two answers, and
         // a fixture that only ever shows one of them cannot say which button the gate actually reads.
         var fetchSession = chat.StartConversation();
+        // A write whose preview is long enough to reach the card's own ceiling, for the expanded state below.
+        var longCardSession = chat.StartConversation();
         var readClient = new ApprovalChatClient();
         var parkClient = new ApprovalChatClient();
         var denyClient = new ApprovalChatClient();
@@ -5018,6 +5045,18 @@ public partial class ShellCheckWindow : Window
         {
             ToolName = "web_fetch",
             Arguments = new Dictionary<string, object?> { ["url"] = "https://example.test/manual/build" },
+        };
+        // A create whose body runs past the preview line where the card offers its expand — the state the host's
+        // ceiling is measured in below.
+        var longCardClient = new ApprovalChatClient
+        {
+            Arguments = new Dictionary<string, object?>
+            {
+                ["path"] = "long-note.txt",
+                ["old_string"] = "",
+                ["new_string"] = string.Join("\n",
+                    Enumerable.Range(1, 24).Select(line => $"新增第 {line} 行")),
+            },
         };
         // Two sessions for the endpoint-side search, because the two states a search reports in are different
         // claims: a start that says only "looking" (no query exists yet) and a report that names what it looked
@@ -5082,6 +5121,7 @@ public partial class ShellCheckWindow : Window
                 var id when id == peerSession.Id => peerClient,
                 var id when id == gitWriteSession.Id => gitWriteClient,
                 var id when id == screenSession.Id => screenClient,
+                var id when id == longCardSession.Id => longCardClient,
                 _ => new ScriptedChatClient(["不该被使用"]),
             };
             // A real workspace under the repo's tmp/, with a real file in it: the call the fixture asks for is a
@@ -5120,7 +5160,7 @@ public partial class ShellCheckWindow : Window
             batchClient.Thinking = [batchThinking];
             foreach (var session in new[] { readSession, parkSession, denySession, supersededSession, restartSession,
                     badgeSession, batchSession, autoRunSession, askRunSession, movedSession, grantSession, peerSession,
-                    gitWriteSession, fetchSession, searchSession, searchedSession })
+                    gitWriteSession, fetchSession, searchSession, searchedSession, longCardSession })
                 chat.SetWorkspaceRoot(session.Id, workspace);
 
             // ── what the mode answers are, in priority order ──
@@ -5456,7 +5496,7 @@ public partial class ShellCheckWindow : Window
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
             Check(panel.PendingApprovalCardsForCheck == 0,
-                "「自动审批」下的工作区命令不再盖住输入区弹卡——一条命令一张卡就是用户说的那个「总弹」");
+                "「自动审批」下的工作区命令根本不弹审批卡——一条命令一张卡就是用户说的那个「总弹」");
 
             // The same call, the same sandbox, the strict tier: it still parks. Without this line the cell above
             // could be reporting a gate that stopped working rather than a tier that moved.
@@ -5471,13 +5511,23 @@ public partial class ShellCheckWindow : Window
                 "同一条沙箱内命令在「询问审批」下仍然挂起等决定——免批的是档位，不是闸门（停在 "
                 + askRunSession.Messages.Count + " 条）");
             // Refused rather than left parked: the run has to be off the registry before the next fixture starts,
-            // and a refusal is the answer that does not run a second command on the way out.
-            chat.TryResolveApproval(askRunSession.Id, askedCallId ?? "", approved: false, alwaysAllow: false, out _);
+            // and a refusal is the answer that does not run a second command on the way out. The card is up when it
+            // is refused, and the refusal is the key raised <b>on the card</b> — the positive half of the pair the
+            // composer reads: the same Escape from a caret in the box is not an answer, this one is.
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var escapeOnCardAnswered = panel.PendingApprovalCardsForCheck == 1
+                                       && panel.PressPlanCardKeyForCheck(Key.Escape);
             await WaitForIdleAsync(chat);
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
-            Check(panel.PendingApprovalCardsForCheck == 0 && chat.RunFor(askRunSession.Id) is null,
-                "拒绝那条命令后卡片退出，运行也不再挂在注册表里");
+            Check(escapeOnCardAnswered
+                  && askRunSession.Messages.Any(turn => turn.ToolCallId == askedCallId
+                      && turn.ApprovalState == ChatApprovalStates.Denied)
+                  && panel.PendingApprovalCardsForCheck == 0 && chat.RunFor(askRunSession.Id) is null,
+                "拒绝那条命令后卡片退出，运行也不再挂在注册表里；卡片上的 Esc 就是那一声拒绝（认领 "
+                + escapeOnCardAnswered + "）");
 
             // One response, two calls, and the sandbox moving between them. Narrowing it to a folder it already
             // holds runs free; the command that follows still parks — and the card has to name the directory that
@@ -5837,6 +5887,57 @@ public partial class ShellCheckWindow : Window
                 + (cardStats?.LuminanceVariance.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) ?? "0")
                 + "，写在 " + cardShot + "）");
 
+            // ── The card is above the box, and the box is still a box ──
+            // This is the interruption the report was about: the host used to be declared after ComposerContent in
+            // the same cell, so it painted over the input, greyed the composer out and took the caret with its focus.
+            // Read as arranged rather than as intended — the bottom edge in the frame's own coordinates is the number
+            // that says 「上方」, and the left edge says the card stayed in the same column as the frame.
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var cardPlacement = panel.DecisionHostPlacementForCheck;
+            Check(cardPlacement is { } placed && placed.BottomRelativeToFrame <= 0.5
+                  && Math.Abs(placed.LeftOffsetFromFrame) <= 1.5,
+                "审批卡片排在输入框上方、与输入框同列，不再盖住聊天输入框（下沿相对输入框上边 "
+                + (cardPlacement is { } at
+                    ? at.BottomRelativeToFrame.ToString("F1", CultureInfo.InvariantCulture) + "，左边差 "
+                      + at.LeftOffsetFromFrame.ToString("F1", CultureInfo.InvariantCulture)
+                    : "没有量到") + "）");
+            // A question is not a lock on the answer box: with a call still waiting, the draft is writable and the
+            // send button is live and says what it would do with the sentence.
+            panel.SetInputForCheck("审批还挂着，我先写到一半的那句");
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.ComposerInputEnabledForCheck && panel.InputTextForCheck.Length > 0
+                  && panel.SendButtonEnabledForCheck
+                  && panel.SendButtonTooltipForCheck == HubStrings.Get("Send"),
+                "有待批准调用时输入框仍然可用、发送键仍然可用，卡片不接管输入区（按钮提示「"
+                + panel.SendButtonTooltipForCheck + "」）");
+            // Escape is the key that used to answer the card wherever it was pressed. From a caret it must not: the
+            // sentence being typed owns the key, and the decision is answered by the card's own buttons. Asserted as
+            // a pair with the negative half below (the same key raised on the host does answer it).
+            panel.PressEscapeForCheck();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.PendingApprovalCardsForCheck == 1
+                  && parkSession.Messages.Any(turn => turn.ToolCallId == parkedCallId
+                      && turn.ApprovalState == ChatApprovalStates.Pending)
+                  && panel.InputTextForCheck == "审批还挂着，我先写到一半的那句",
+                "在输入框里按 Esc 不替那条调用作答，正在写的句子一个字没丢（卡片仍在 "
+                + panel.PendingApprovalCardsForCheck + " 张，框里「" + panel.InputTextForCheck + "」）");
+            panel.SetInputForCheck("");
+            // And the frame takes drops again. The gate that refused them existed only because the card covered the
+            // composer; with the card one row above, a capture released on the box belongs to the draft.
+            var dropScratch = ScratchDirectory.Resolve("approval-card-drop");
+            var dropPng = System.IO.Path.Combine(dropScratch, "shot.png");
+            System.IO.File.WriteAllBytes(dropPng, PictureFixture());
+            var dropFile = await shell.StorageProvider.TryGetFileFromPathAsync(dropPng);
+            var dragged = new DataTransfer();
+            if (dropFile is not null) dragged.Add(DataTransferItem.CreateFile(dropFile));
+            panel.RaiseComposerDragOverForCheck(dragged);
+            Check(dropFile is not null && panel.ComposerDragOverForCheck,
+                "卡片摆在上方时往输入框拖截图照样亮环，输入区不再因为一个待批准而封死（实际"
+                + (panel.ComposerDragOverForCheck ? "亮了" : "没亮") + "）");
+            panel.RaiseComposerDragLeaveForCheck();
+
             // Waiting for a person is not stalling: the inactivity deadline is allowed to fire (150ms above) and
             // the decision still has to be answerable afterwards.
             var deadlineFired = await WaitForStaleDeadlineAsync(chat, parkSession.Id);
@@ -6043,6 +6144,34 @@ public partial class ShellCheckWindow : Window
                 "被新消息取代的调用从卡片退回一行记录，按钮不再留着");
             Check(chat.RunFor(supersededSession.Id) is null && chat.RunningCount == 0,
                 "取代挂起调用后不留运行记录（实际 " + chat.RunningCount + " 路）");
+
+            // ── the expanded card keeps its own answers on screen ──
+            // Past twelve preview lines the card offers its own expand, and the host clips at its ceiling. That is
+            // where 拒绝 / 允许 used to vanish behind, which is worse than asking nothing: a question with no visible
+            // answer is a stalled reply. Measured on the arranged card, in the card's own coordinates.
+            chat.SetApprovalMode(longCardSession.Id, ToolApprovalModes.Ask);
+            chat.OpenConversation(longCardSession.Id);
+            chat.TryEnqueueSend(longCardSession.Id, "写一份长说明", null, out _);
+            var longCallId = await WaitForPendingCallAsync(longCardSession);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(longCallId is not null && panel.PendingApprovalCardsForCheck == 1
+                  && panel.ApprovalCardActionsForCheck.Contains("ChatApprovalExpand"),
+                "长改动的审批卡给出展开按钮（按钮 " + string.Join(",", panel.ApprovalCardActionsForCheck) + "）");
+            panel.ExpandApprovalDetailForCheck();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var footerOverflow = panel.ApprovalActionsOverflowForCheck;
+            Check(footerOverflow > double.NegativeInfinity && footerOverflow <= 0.5,
+                "展开长 diff 后拒绝 / 允许仍落在卡片可视范围内，没有被裁掉（超出下沿 "
+                + footerOverflow.ToString("F1", CultureInfo.InvariantCulture) + " 像素）");
+            panel.ClickApprovalActionForCheck("ApprovalDeny");
+            await WaitForIdleAsync(chat);
+            Check(!System.IO.File.Exists(System.IO.Path.Combine(workspace, "long-note.txt"))
+                  && chat.StoredCopyForCheck(longCardSession.Id)?.Messages.Any(turn =>
+                      turn.ToolCallId == longCallId && turn.ApprovalState == ChatApprovalStates.Denied) == true,
+                "拒掉那份长改动：文件没落地，调用留下拒绝记录");
 
             // The record of a pending call outlives the process, so the answer has to be given by a workspace
             // that never saw the stream — which is exactly what a restart leaves behind.
@@ -6348,7 +6477,7 @@ public partial class ShellCheckWindow : Window
             foreach (var id in new[] { readSession.Id, parkSession.Id, denySession.Id, supersededSession.Id,
                     restartSession.Id, badgeSession.Id, batchSession.Id, autoRunSession.Id, askRunSession.Id,
                     movedSession.Id, grantSession.Id, peerSession.Id, gitWriteSession.Id, screenSession.Id,
-                    fetchSession.Id,
+                    fetchSession.Id, longCardSession.Id,
                     searchSession.Id, searchedSession.Id })
                 chat.DeleteConversation(id);
             await WaitForIdleAsync(chat);

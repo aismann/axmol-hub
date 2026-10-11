@@ -14,13 +14,14 @@ using Path = Avalonia.Controls.Shapes.Path;
 namespace AxmolHub;
 
 /// <summary>
-/// The two decisions a parked run can owe, and the one confirmation a running reply can owe — all three asked
-/// in the composer rather than in a transcript row.
+/// The two decisions a parked run can owe, and the one confirmation a running reply can owe — all three asked in
+/// a strip above the composer rather than in a transcript row a person had scrolled away from.
 ///
 /// They live in one partial because they are one idea: something the person must answer before the composer
 /// means what it looks like it means. A pending call and a pending plan share a host (one slot, so two cards
-/// can never stack); a steer confirmation gets its own strip above the frame because it must show the draft
-/// while leaving the box the draft goes back to.
+/// can never stack); a steer confirmation gets its own strip because it must show the draft while leaving the box
+/// the draft goes back to. Both strips sit above the frame and neither takes the input box away: a decision is a
+/// question, and a question has never been a reason to throw away what somebody is writing.
 /// </summary>
 public partial class ChatPanel
 {
@@ -210,7 +211,7 @@ public partial class ChatPanel
             }
         }
 
-        var same = callId == _decisionCallId && planIndex == _decisionPlanIndex && DecisionHost.IsVisible;
+        var same = callId == _decisionCallId && planIndex == _decisionPlanIndex;
         _decisionCallId = callId;
         _decisionPlanIndex = planIndex;
 
@@ -218,7 +219,6 @@ public partial class ChatPanel
         {
             DecisionHost.IsVisible = false;
             DecisionHost.Child = null;
-            ComposerContent.IsEnabled = true;
             return;
         }
 
@@ -233,12 +233,14 @@ public partial class ChatPanel
         }
 
         DecisionHost.IsVisible = true;
-        // One flag, one meaning: the covered content leaves the tab order and hit-testing in a single step.
-        ComposerContent.IsEnabled = false;
-        // A decision that just arrived takes the keyboard, or the letter keys on it are only reachable after
-        // something has been clicked: a key the window itself holds never travels down this panel's route. Only
-        // on arrival — a repaint must not move a caret somebody is using.
-        if (!same && planIndex >= 0) DecisionHost.Focus();
+        // The composer keeps working: the input box is not covered, its draft is not cleared, and Enter still
+        // means what it meant a second ago. A decision is answered by clicking the card, so nothing here needs
+        // the keyboard to make the point.
+        // A decision that just arrived takes the keyboard only when the box is empty, or the letter keys on it are
+        // only reachable after something has been clicked: a key the window itself holds never travels down this
+        // panel's route. Never on top of a draft — taking that focus is the interruption this whole strip exists to
+        // avoid. And never on a repaint, which must not move a caret somebody is using.
+        if (!same && planIndex >= 0 && (InputBox.Text ?? "").Length == 0) DecisionHost.Focus();
     }
 
     /// <summary>Escape on the host answers it the quiet way: a pending call is refused (one Denied result, the
@@ -264,7 +266,10 @@ public partial class ChatPanel
     /// </summary>
     private Control BuildToolApprovalCard(string conversationId, string callId, ChatTurn turn)
     {
-        var card = new StackPanel { Spacing = 8 };
+        // Not a StackPanel: the host clips at its own MaxHeight and the detail block grows past that on expand, so
+        // the middle row has to be the one that gives way. A star row takes whatever the fixed rows leave, which
+        // keeps the answer buttons inside the clip at every height — the footer is the part that must be reachable.
+        var card = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto,Auto") };
 
         var risk = _chat.RiskFor(conversationId, turn.ToolName ?? "", turn.ToolArguments);
         var title = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
@@ -291,10 +296,11 @@ public partial class ChatPanel
                 HubStrings.Get("ChatApprovalWantsFormat"), turn.ToolName ?? ""),
         });
         Grid.SetColumn(title.Children[1], 1);
+        Grid.SetRow(title, 0);
         card.Children.Add(title);
 
-        // The evidence, bounded: the card and the composer share a row, and a 400-line diff would push the
-        // transcript out of the window. Past twelve lines the block says so and offers the rest.
+        // The evidence, bounded: a 400-line diff must not push the transcript out of the window, and the input box
+        // under the card must not be pushed out either. Past twelve lines the block says so and offers the rest.
         var detail = new StackPanel { Spacing = 4 };
         AddApprovalDetail(detail, "ChatApprovalArguments", turn.ToolArguments);
         AddApprovalDetail(detail, "ChatApprovalChangePreview", turn.ApprovalPreview);
@@ -303,9 +309,11 @@ public partial class ChatPanel
             Name = "ApprovalDetailScroll",
             Content = detail,
             MaxHeight = 120,
+            Margin = new Thickness(0, 8, 0, 0),
             ClipToBounds = true,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
+        Grid.SetRow(scroll, 1);
         card.Children.Add(scroll);
 
         var previewLines = (turn.ApprovalPreview ?? "").Split('\n').Length;
@@ -317,14 +325,18 @@ public partial class ChatPanel
                 Classes = { "approval-action", "approval-secondary" },
                 Content = HubStrings.Get("ChatApprovalExpand"),
                 Tag = "ChatApprovalExpand",
+                Margin = new Thickness(0, 8, 0, 0),
                 HorizontalAlignment = HorizontalAlignment.Left,
             };
             expand.Click += (_, _) =>
             {
-                scroll.MaxHeight = expand.IsChecked == true ? 340 : 120;
+                // Unbounded on expand, because the star row is what enforces the ceiling now: asking the scroll for
+                // a number here is how the footer ended up under the clip when the number was larger than the host.
+                scroll.MaxHeight = expand.IsChecked == true ? double.PositiveInfinity : 120;
                 expand.Content = HubStrings.Get(
                     expand.IsChecked == true ? "ChatApprovalCollapse" : "ChatApprovalExpand");
             };
+            Grid.SetRow(expand, 2);
             card.Children.Add(expand);
         }
 
@@ -379,6 +391,7 @@ public partial class ChatPanel
         primary.Children.Add(allow);
         Grid.SetColumn(primary, 1);
         footer.Children.Add(primary);
+        Grid.SetRow(footer, 3);
         card.Children.Add(footer);
 
         return card;
@@ -404,7 +417,7 @@ public partial class ChatPanel
         line.Child = row;
         line.PointerPressed += (_, _) =>
         {
-            ComposerFrame.BringIntoView();
+            DecisionHost.BringIntoView();
             DecisionHost.Focus();
         };
         return line;
@@ -845,6 +858,12 @@ public partial class ChatPanel
                     out var refusalKey))
             {
                 AppendNotice(HubStrings.Get(refusalKey ?? "ChatApprovalGone"), danger: true);
+                // The tap spent nothing, so the sentence goes back on the strip that held it: this is a review, not
+                // a cheque. Reachable because the box stays live under a waiting plan, so a steer can be armed and
+                // then refused by the very plan the strip now shares its space with.
+                _steerDraft = draft;
+                RefreshSteerConfirm();
+                UpdateSendState();
                 return;
             }
             RememberSentText(draft.Text);

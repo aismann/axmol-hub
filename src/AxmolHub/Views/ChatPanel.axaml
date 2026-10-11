@@ -312,11 +312,13 @@
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
     </Style>
 
-    <!-- ── The decision host: a pending call or a pending plan, asked in the composer ──
+    <!-- ── The decision host: a pending call or a pending plan, asked above the input box ──
          Both kinds of decision used to be a card in a transcript row a person had scrolled away from, while
-         the composer sat there offering to send a message as if nothing were owed. The host replaces the
-         composer's own content instead of floating over it, so the input area cannot visibly jump and the
-         send button cannot keep offering itself.
+         the composer sat there offering to send a message as if nothing were owed. The card then took the
+         composer's own cell and painted over it, which turned an approval into a lost draft: text half-typed
+         when the question arrived was covered, greyed out, and its caret went with the focus the card grabbed.
+         It now gets its own row above the frame, the way the steer strip already does — adjacent to the box,
+         not in front of it. Nothing on this page may paint over ComposerContent.
          The same two exemptions the transcript card had carry over, and for the same reasons: never
          hover-gated (an actionable request you cannot see is a reply that appears to have stalled), and the
          refuse button is not red — refusing is an ordinary answer, not a destructive act. The frame is
@@ -327,16 +329,24 @@
          photographs the card before the animation clock has run holding a blank frame. The reveal-by-opacity
          motion precedent lives on the hover-gated message actions, which are the opposite case. -->
     <Style Selector="Border.decision-host">
-      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceAlt}" />
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="{DynamicResource Hub.Radius.Frame}" />
+      <Setter Property="CornerRadius" Value="{DynamicResource Hub.Radius.Card}" />
       <Setter Property="Padding" Value="14,12" />
+      <Setter Property="Margin" Value="0,0,0,6" />
+      <!-- The same bounded 820 column as the frame below it, so a card never reads as a wider band than the box. -->
+      <Setter Property="MaxWidth" Value="820" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
       <Setter Property="ClipToBounds" Value="True" />
+      <!-- Bounded because the row above is the transcript and it must keep its pixels. The card's own detail block
+           scrolls, and it hands its middle row whatever this ceiling leaves, so the answer buttons stay inside the
+           clip at every expansion. See BuildToolApprovalCard. -->
       <Setter Property="MaxHeight" Value="300" />
-      <!-- The host holds the keyboard when it arrives, so a letter key reaches the panel's tunnel handler before
-           anything has been clicked. It is a carrier, not a control: no tab stop, and the adorner is nulled the way
-           every focusable thing in this app nulls it, or the whole card would gain a dashed ring. -->
+      <!-- The host can hold the keyboard, so a letter key reaches the panel's tunnel handler before anything has
+           been clicked — but only when the box is empty, never over a live draft. It is a carrier, not a control:
+           no tab stop, and the adorner is nulled the way every focusable thing in this app nulls it, or the whole
+           card would gain a dashed ring. -->
       <Setter Property="Focusable" Value="True" />
       <Setter Property="IsTabStop" Value="False" />
       <Setter Property="FocusAdorner" Value="{x:Null}" />
@@ -1178,16 +1188,20 @@
       </Button>
     </Grid>
 
-    <!-- Composer: centered to the same column. Row 0 is the steer-confirm strip — a second tap stands between
-         Enter and a steer, because a steer is the routing table's strongest signal and worth reading once before
-         it is said. Nothing is cancelled either way: the sentence waits for the step in flight. Row 2 is the
-         workspace picker's slot — outside the frame on purpose, and collapsed to nothing once the chat has started.
-         Inside the frame, ComposerContent and DecisionHost share one cell: the host is declared second and
-         paints over the content, so covering the composer never moves it. -->
-    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto">
-      <Border x:Name="SteerConfirmHost" Classes="steer-confirm" Grid.Row="0"
+    <!-- Composer: centered to the same column. The rows above the frame are the things owed an answer, oldest on
+         top, so the closest card to the box is the most recent event. Row 0 is the decision host — a pending call
+         or a pending plan; row 1 the steer-confirm strip, where a second tap stands between Enter and a steer,
+         because a steer is the routing table's strongest signal and worth reading once before it is said. Nothing
+         is cancelled either way: the sentence waits for the step in flight. Row 3 is the workspace picker's slot —
+         outside the frame on purpose, and collapsed to nothing once the chat has started.
+         Both strips are siblings of the frame, never children of it: the input box stays live and its draft stays
+         visible while a question is waiting, which is the whole reason they moved. -->
+    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto">
+      <Border x:Name="DecisionHost" Classes="decision-host" Grid.Row="0"
+              IsVisible="False" />
+      <Border x:Name="SteerConfirmHost" Classes="steer-confirm" Grid.Row="1"
               IsVisible="False" MaxWidth="820" />
-      <Border x:Name="ComposerFrame" Classes="composer" Grid.Row="1"
+      <Border x:Name="ComposerFrame" Classes="composer" Grid.Row="2"
               Background="{DynamicResource Hub.SurfaceAlt}" CornerRadius="14"
               HorizontalAlignment="Stretch" MaxWidth="820" ClipToBounds="True"
               Margin="0,6,0,0" Padding="14,12,12,10">
@@ -1261,17 +1275,13 @@
             </StackPanel>
           </Grid>
           </Grid>
-          <!-- The decision host. Declared after ComposerContent so it paints over it, and opaque so the
-               covered input does not ghost through. Its Child is built in code because both kinds of
-               decision are rebuilt from the transcript on every refresh, like everything else on this page. -->
-          <Border x:Name="DecisionHost" Classes="decision-host" IsVisible="False" />
         </Grid>
       </Border>
 
       <!-- The sandbox the file and command tools are confined to, named by the folder itself. It sits outside
            the frame because it is not a per-request setting: the directory is what the session is born into,
            and the row collapses to nothing once the first message has been sent (see RefreshComposerChoices). -->
-      <StackPanel Grid.Row="2" MaxWidth="820" HorizontalAlignment="Stretch" Margin="0,2,0,4">
+      <StackPanel Grid.Row="3" MaxWidth="820" HorizontalAlignment="Stretch" Margin="0,2,0,4">
         <Button x:Name="WorkspaceChip" Classes="workspace-chip">
           <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
             <Path Width="12" Height="12" Stretch="Uniform" Data="{StaticResource Hub.Icon.Folder}"

@@ -357,13 +357,6 @@ public partial class ChatPanel : UserControl
         DragDrop.SetAllowDrop(ComposerFrame, true);
         DragDrop.AddDragOverHandler(ComposerFrame, (_, e) =>
         {
-            // A decision covering the composer is not a drop target: the event still bubbles from the host up
-            // to the frame, so without this gate a capture released over the card would land in the draft.
-            if (DecisionHost.IsVisible)
-            {
-                e.DragEffects = DragDropEffects.None;
-                return;
-            }
             // Both halves matter. `None` is what stops the shell from offering a drop this page cannot use, and
             // the ring is what tells the person *here* before they let go — a target that looks identical to the
             // rest of the window is a target nobody finds.
@@ -376,8 +369,8 @@ public partial class ChatPanel : UserControl
 
         // Escape answers the thing on top, and the order is written in exactly one place per layer: the window
         // closes its picture viewer first, then puts an expanded inspector back in its column (both of those
-        // handlers live in MainWindow, above this one), then a decision covering the composer is answered, then
-        // a steer waiting for its second tap goes back to being a draft, and only then does Escape mean "stop
+        // handlers live in MainWindow, above this one), then a decision on the card above the composer is answered,
+        // then a steer waiting for its second tap goes back to being a draft, and only then does Escape mean "stop
         // the reply". The plan card's letter keys ride the same handler for the same reason. Tunnel, so this runs
         // before the composer's own key handling gets a turn.
         AddHandler(InputElement.KeyDownEvent, (_, e) =>
@@ -386,12 +379,18 @@ public partial class ChatPanel : UserControl
             if (e.Key != Key.Escape) return;
             if (DecisionHost.IsVisible)
             {
-                if (e.Source is TextBox && _decisionPlanIndex >= 0)
+                if (e.Source is TextBox box)
                 {
-                    // Escape leaves the revision line with the sentence still in it; the next Escape answers the
-                    // card. A key that deletes a paragraph is a key pressed by accident.
-                    DecisionHost.Focus();
-                    e.Handled = true;
+                    // A caret in a text box outranks the card. The card sits above the draft rather than in front
+                    // of it precisely so a decision cannot interrupt what is being written, and a key that answers
+                    // the question while the person is mid-sentence is that interruption again. Only the card's own
+                    // revision line turns Escape into "leave this line"; the composer's box falls through to the
+                    // layers under this one, where Escape still stops the reply.
+                    if (box.Name == "PlanFeedbackBox")
+                    {
+                        DecisionHost.Focus();
+                        e.Handled = true;
+                    }
                     return;
                 }
                 DismissDecisionByEscape();
@@ -2895,14 +2894,9 @@ public partial class ChatPanel : UserControl
     private void UpdateSendState()
     {
         SendStateUpdates++;
-        // A decision covering the composer owns the send button: it is disabled with its parent, and repainting
-        // its glyph or tooltip here would fight the cover for the same 34 pixels. The counter still moves —
-        // an assertion counts these updates, and an early return that skipped it would read as a stuck button.
-        if (DecisionHost.IsVisible)
-        {
-            UpdateContextRing();
-            return;
-        }
+        // A decision on the card above does not own this button any more: the run it belongs to is parked, so
+        // IsViewedStreaming is false and the button reads as an ordinary send of whatever is in the box — which is
+        // exactly what pressing it does.
         var streaming = IsViewedStreaming;
         var hasText = (InputBox.Text ?? "").Trim().Length > 0;
         var hasPicture = _pendingPictures.Count > 0;
@@ -3043,29 +3037,34 @@ public partial class ChatPanel : UserControl
             return;
         }
 
+        // Handed over first, cleared after: a refusal has to leave the sentence where it was typed. The decision
+        // card living above the box rather than over it is what makes this reachable — Enter with a draft in the
+        // box is now an ordinary thing to do while a plan waits, and the workspace answers "resolve it first".
+        if (!SendTextAsync(text, context, pictures)) return;
         _contextAttachments.Clear();
         _pendingPictures.Clear();
         RenderContextAttachments();
         InputBox.Text = "";
-        SendTextAsync(text, context, pictures);
     }
 
     /// <summary>Hands the message to the workspace and starts a run for it. The user's own turn is painted from
-    /// the transcript like any other row, so there is no second copy of it here to keep in step.</summary>
-    private void SendTextAsync(string text, string? attachedContext = null, IReadOnlyList<byte[]>? pictures = null)
+    /// the transcript like any other row, so there is no second copy of it here to keep in step. Reports whether
+    /// the message got in, because the caller owns the draft and must not empty the box on a refusal.</summary>
+    private bool SendTextAsync(string text, string? attachedContext = null, IReadOnlyList<byte[]>? pictures = null)
     {
-        if (text.Length == 0 && pictures is not { Count: > 0 }) return;
+        if (text.Length == 0 && pictures is not { Count: > 0 }) return false;
         if (_chat.ActiveConversation is null) _chat.StartConversation();
-        if (_chat.ActiveConversation is not { } conversation) return;
+        if (_chat.ActiveConversation is not { } conversation) return false;
 
         if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, out var refusalKey))
         {
             AppendNotice(NoticeFor(refusalKey), danger: true);
-            return;
+            return false;
         }
 
         RememberSentText(text);
         ConversationStateChanged?.Invoke();
+        return true;
     }
 
     private void RegenerateAsync()
@@ -3779,10 +3778,11 @@ public partial class ChatPanel : UserControl
     internal object? FirstBubbleForCheck => MessageRows.FirstOrDefault();
 
     // ── Approval card ──
-    // The pending card lives in the composer's decision host now, not in the transcript: the host is the one
-    // place a decision is answered, so it is the one place a check looks. The transcript keeps a signpost line
-    // (class approval-pending-line) which is deliberately NOT counted here — these accessors mean "actionable
-    // right now", and FlowApprovalCardCountForCheck below is the negative half that proves the move happened.
+    // Both kinds of decision are asked by the host, and the host is the one place a check looks: it is the one place
+    // a decision is answered. It sits in its own row above the composer frame, so a question never covers the draft
+    // that was being typed when it arrived. The transcript keeps a signpost line (class approval-pending-line)
+    // which is deliberately NOT counted here — these accessors mean "actionable right now", and
+    // FlowApprovalCardCountForCheck below is the negative half that proves the move happened.
     private IEnumerable<Border> ApprovalCards
         => DecisionHost.IsVisible && _decisionCallId is not null ? [DecisionHost] : [];
 
@@ -3830,6 +3830,61 @@ public partial class ChatPanel : UserControl
             .GetLogicalDescendants().OfType<Button>()
             .FirstOrDefault(candidate => candidate.Tag as string == actionKey);
         if (button is not null) button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
+
+    /// <summary>Presses the detail block's own toggle the way a pointer does: the control flips its state and then
+    /// raises the click that reads it. Raising the click alone would leave the box unchecked and measure the
+    /// collapsed card, which is not the state the ceiling is about.</summary>
+    internal void ExpandApprovalDetailForCheck()
+    {
+        var toggle = ApprovalCards.FirstOrDefault()?
+            .GetLogicalDescendants().OfType<ToggleButton>()
+            .FirstOrDefault(candidate => candidate.Tag as string == "ChatApprovalExpand");
+        if (toggle is null) return;
+        toggle.IsChecked = true;
+        toggle.RaiseEvent(new RoutedEventArgs(ToggleButton.ClickEvent));
+    }
+
+    /// <summary>How far the lowest answer button hangs below the card's own bottom edge, in device-independent
+    /// pixels; nothing below zero means every button is inside the clip. The host clips, so an expanded detail block
+    /// that outgrows the ceiling hides 拒绝 and 允许 behind it — a question with no way to answer it.</summary>
+    internal double ApprovalActionsOverflowForCheck
+    {
+        get
+        {
+            if (ApprovalCardForCheck is not { } card) return double.NaN;
+            var worst = double.NegativeInfinity;
+            foreach (var tag in new[] { "ApprovalDeny", "ApprovalAllow" })
+            {
+                var button = card.GetLogicalDescendants().OfType<Button>()
+                    .FirstOrDefault(candidate => candidate.Tag as string == tag);
+                if (button is null || button.TranslatePoint(new Point(0, button.Bounds.Height), card) is not { } bottom)
+                    return double.NaN;
+                worst = Math.Max(worst, bottom.Y - card.Bounds.Height);
+            }
+            return worst;
+        }
+    }
+
+    /// <summary>The box the card used to cover. A decision is a question asked <i>above</i> the draft, so the draft
+    /// keeps working while it waits: enabled, hit-testable, and in the tab order like any other moment.</summary>
+    internal bool ComposerInputEnabledForCheck => InputBox.IsEnabled;
+
+    internal bool DecisionHostFocusedForCheck => DecisionHost.IsKeyboardFocusWithin;
+
+    /// <summary>The card as arranged, in the composer frame's own coordinates: its bottom edge (negative means above
+    /// the frame's top, which is the whole promise) and its left edge against the frame's. A card that still painted
+    /// over the input box would report a positive bottom; one that drifted out of the column reports an offset.</summary>
+    internal (double BottomRelativeToFrame, double LeftOffsetFromFrame)? DecisionHostPlacementForCheck
+    {
+        get
+        {
+            if (!DecisionHost.IsVisible || DecisionHost.Bounds.Height <= 0) return null;
+            if (DecisionHost.TranslatePoint(new Point(0, DecisionHost.Bounds.Height), ComposerFrame)
+                is not { } bottom) return null;
+            if (DecisionHost.TranslatePoint(new Point(0, 0), ComposerFrame) is not { } left) return null;
+            return (bottom.Y, left.X);
+        }
     }
 
     internal int PendingPlanApprovalCardsForCheck => PlanApprovalCards.Count();
