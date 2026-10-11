@@ -513,7 +513,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             // context on bytes nobody asked for. The call itself is shown: "it is mid-way through file_write"
             // is a fact about the peer that a reader came here for.
             if (turn.Role == ChatRoles.Tool) continue;
-            builder.Append('\n').Append(Describe(turn));
+            builder.Append('\n').Append(Describe(turn, context.DataRoot));
         }
 
         if (peer.Messages.Count > shown.Count)
@@ -626,8 +626,12 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         => $"Refused: 「{target}」 is not one session's exact title or id. Call list_sessions and use an id.";
 
     /// <summary>One turn as the peer's model reads it. Tool results are left out — they are the other session's
-    /// raw command output, and forwarding them would spend this context on bytes nobody asked for.</summary>
-    private static string Describe(ChatTurn turn)
+    /// raw command output, and forwarding them would spend this context on bytes nobody asked for.
+    ///
+    /// <para>A plan's text is read out of the document its turn names, because that is where it is stored. The
+    /// peer has no other way to it: <c>data</c> is a protected root for the file tools, so this is the one door
+    /// across sessions, and a document that is gone is said so rather than answered with an empty line.</para></summary>
+    private static string Describe(ChatTurn turn, string? dataRoot)
     {
         var speaker = turn.Role switch
         {
@@ -635,9 +639,17 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             ChatRoles.User => "user",
             _ => "assistant",
         };
-        var body = turn.Text.Length <= MaxTurnCharacters
-            ? turn.Text
-            : turn.Text[..MaxTurnCharacters] + "…";
+        var stored = PlanStore.BodyOf(turn, dataRoot, out var state);
+        var text = state switch
+        {
+            PlanBodyState.Read or PlanBodyState.NoReference => stored ?? "",
+            _ when turn.Plan is { Title.Length: > 0, File: { } gone } =>
+                $"[the plan 「{turn.Plan.Title}」 is stored as ai/plans/{gone}, and that file is no longer on disk]",
+            _ => "[a plan this session wrote is no longer on disk]",
+        };
+        var body = text.Length <= MaxTurnCharacters
+            ? text
+            : text[..MaxTurnCharacters] + "…";
         if (turn.ToolCallId is { Length: > 0 })
             body += (body.Length > 0 ? " " : "") + $"[calls {turn.ToolName}"
                     + (turn.ApprovalState == ChatApprovalStates.Pending ? ", awaiting approval" : "") + "]";

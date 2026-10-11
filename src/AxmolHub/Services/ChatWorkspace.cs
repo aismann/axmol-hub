@@ -394,8 +394,10 @@ public sealed class ChatWorkspace : IDisposable
         if (end - start < 2) return null;
         // A leaked tool call stays in the transcript exactly as it arrived, but it is not shown to the model
         // writing the summary: a summary that learns the shape carries it into every request that follows, and
-        // one bad turn starts answering on its own for the rest of the session.
-        var archived = conversation.Messages.Skip(start).Take(end - start)
+        // one bad turn starts answering on its own for the rest of the session. The strip therefore runs on the
+        // materialized copy, after a filed plan's body is back in its message — otherwise the summarizer is
+        // handed an empty assistant turn and the plan leaves this session's summary for good.
+        var archived = MaterializePlans(conversation.Messages.Skip(start).Take(end - start))
             .Select(turn => ControlTokens.IsLeakedCall(turn.Text)
                 ? turn with { Text = ControlTokens.Strip(turn.Text) }
                 : turn)
@@ -2398,6 +2400,14 @@ public sealed class ChatWorkspace : IDisposable
         return _active;
     }
 
+    /// <summary>What approving a plan writes as the user's instruction, <b>without</b> the plan under it. The body
+    /// rides on the turn as a <see cref="PlanReference"/> like the plan turn's own, and the request boundary puts
+    /// the text back (<see cref="MaterializePlans"/>), so the bytes the model is handed are the ones it is handed
+    /// today while the session file names one document instead of holding two copies of it.</summary>
+    internal const string PlanApprovalInstruction =
+        "Implement the following plan, which I have reviewed and approved. Follow this plan only; " +
+        "ask before taking actions outside its scope.";
+
     /// <summary>Resolves a plan review card. Approval feeds the exact reviewed plan back as a user instruction and
     /// starts it in Agent mode; revision leaves the composer ready for a new Plan-mode request.</summary>
     internal bool TryResolvePlanApproval(
@@ -2425,13 +2435,25 @@ public sealed class ChatWorkspace : IDisposable
 
         if (decision == PlanApprovalStates.Approved)
         {
+            // The body is read before anything is judged, because a filed plan's text is not on the turn: every
+            // test below would pass on an empty string, and an empty string is what would then be sent.
+            var body = PlanStore.BodyOf(pending, _dataRoot, out var bodyState);
+
             // A review card can be standing on a turn where the model wrote its tool call out as text instead of
             // sending one. That markup is not a plan, and approving it feeds it back as a user instruction — the
             // one role the model trusts most. Measured in one session's own transcript: a leaked call was
             // approved, replayed as the user's words, and the leak then recurred three more times.
-            if (ControlTokens.IsLeakedCall(pending.Text))
+            if (ControlTokens.IsLeakedCall(body))
             {
                 refusalKey = "ChatPlanLeakedCall";
+                return false;
+            }
+
+            // The document is named and not on disk: approving would start an Agent run on an instruction with no
+            // plan in it. Refusing says so, and the card stays where the person can still revise or reject it.
+            if (bodyState is not (PlanBodyState.Read or PlanBodyState.NoReference) || string.IsNullOrEmpty(body))
+            {
+                refusalKey = "ChatPlanBodyGone";
                 return false;
             }
 
@@ -2457,9 +2479,7 @@ public sealed class ChatWorkspace : IDisposable
             if (decision == PlanApprovalStates.Approved)
             {
                 opened.Mode = ChatModes.Agent;
-                opened.Append(ChatTurn.User(
-                    "Implement the following plan, which I have reviewed and approved. Follow this plan only; " +
-                    "ask before taking actions outside its scope.\n\n" + pending.Text));
+                opened.Append(ChatTurn.User(PlanApprovalInstruction) with { Plan = pending.Plan });
             }
             else if (decision == PlanApprovalStates.RevisionRequested)
             {
@@ -2804,6 +2824,11 @@ public sealed class ChatWorkspace : IDisposable
     /// <summary>What the session file says right now, cache aside. For the self-check only.</summary>
     internal Conversation? StoredCopyForCheck(string conversationId) => _sessions.LoadFromDisk(conversationId);
 
+    /// <summary>The session file's own bytes as written. For the self-check only, and only for a claim about the
+    /// file — "the plan's text is not in this transcript's JSON" cannot be answered by the hydrated object,
+    /// which holds the body again as soon as anything resolves its reference.</summary>
+    internal string? StoredSessionTextForCheck(string conversationId) => _sessions.Store.ReadStoredText(conversationId);
+
     /// <summary>Where one stored attachment sits, or <c>null</c> when the name is not a plain file name or the
     /// bytes are gone. The view paints thumbnails from a path rather than from the bytes so a long transcript
     /// does not read every attachment while it is being laid out.</summary>
@@ -2814,6 +2839,16 @@ public sealed class ChatWorkspace : IDisposable
     /// the pictures with it" has to look at that directory rather than at anything in memory.</summary>
     internal string SessionImageDirectory(string conversationId)
         => _sessions.Store.SessionImageDirectory(conversationId);
+
+    /// <summary>The text of one plan: its filed document when the turn names one, the turn's own text when it
+    /// names nothing, and <c>null</c> with the reason when the document is not there to read. The transcript and
+    /// the review column ask through here so both read the one representation rule
+    /// (<see cref="PlanStore.BodyOf"/>) rather than each keeping their own idea of where a plan lives.</summary>
+    internal string? PlanBody(ChatTurn turn, out PlanBodyState state) => PlanStore.BodyOf(turn, _dataRoot, out state);
+
+    /// <summary>Where plan documents live, plans stamped or not. "The body left the session file" is a fact about
+    /// the disk, and a check that asserts it has to be able to name the place.</summary>
+    internal string? PlansDirectoryForCheck => PlanStore.DirectoryFor(_dataRoot);
 
     internal int PreparedHistoryCountForCheck(string conversationId) => PrepareRequest(conversationId)?.History.Count ?? -1;
 
@@ -2855,6 +2890,29 @@ public sealed class ChatWorkspace : IDisposable
     internal bool SeedSearchReplyForCheck(string conversationId, string text, ServerSearchLog searches)
         => _sessions.TryUpdate(conversationId, opened => opened.Append(
             new ChatTurn(ChatRoles.Assistant, text, DateTimeOffset.Now) { WebSearch = searches.ToStored() }));
+
+    /// <summary>
+    /// An assistant answer recorded as the plan it is, through the two doors a finished plan-mode run uses: the
+    /// append, then the stamp that files the body and leaves the turn holding its name. For the self-check only —
+    /// a check that wants to look at a plan should not have to script a model, and must not have to invent a shape
+    /// the app never writes.
+    ///
+    /// <paramref name="reasoning"/> is there because the fold is the failure this fixture exists for: a thinking
+    /// model's plan has thinking on the turn and, once the body is filed, no text — which is precisely the
+    /// silhouette the transcript folds away as machine work unless the plan is excepted by name.
+    /// </summary>
+    internal bool SeedPlanReplyForCheck(string conversationId, string body, string? reasoning = null)
+    {
+        var appended = _sessions.TryUpdate(conversationId, opened =>
+        {
+            opened.Mode = ChatModes.Plan;
+            opened.Append(new ChatTurn(ChatRoles.Assistant, body, DateTimeOffset.Now)
+            {
+                Reasoning = reasoning,
+            });
+        });
+        return appended && MarkCompletedPlanPending(conversationId);
+    }
 
     public bool IsRunning(string conversationId)
         => _runs.TryGetValue(conversationId, out var run) && run.IsStreaming;
@@ -3861,13 +3919,17 @@ public sealed class ChatWorkspace : IDisposable
         return _sessions.TryUpdate(conversationId, opened =>
         {
             var attachedContext = opened.Messages[index].AttachedContext;
+            // The plan an approval instruction refers to travels with it. A person editing that sentence is
+            // changing what they asked for, not withdrawing the document they approved, and an instruction whose
+            // plan silently went missing would reach the model as exactly that: a command to implement nothing.
+            var plan = opened.Messages[index].Plan;
             opened.Messages.RemoveRange(index, opened.Messages.Count - index);
             if (index < SummaryMessageCount(opened))
             {
                 opened.ContextSummary = "";
                 opened.ContextSummaryThroughMessageCount = 0;
             }
-            opened.Append(ChatTurn.User(text, attachedContext));
+            opened.Append(ChatTurn.User(text, attachedContext) with { Plan = plan });
         });
     }
 
@@ -4181,6 +4243,47 @@ public sealed class ChatWorkspace : IDisposable
         }).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Puts a filed plan body back where the model reads it, and hands back copies.
+    ///
+    /// <para>A plan turn's <see cref="ChatTurn.Text"/> no longer holds its body, so anything that assembles a
+    /// request has to read the document first: a transcript that went out with an empty assistant message would
+    /// teach the model that it answered a plan request with nothing. Both doors come through here — the reply
+    /// request and the compaction request — because a plan the summarizer cannot see is a plan that vanishes from
+    /// every session summary that follows, silently.</para>
+    ///
+    /// <para>Nothing stored is touched: the persisted turn keeps its reference, which is the boundary rule
+    /// <see cref="ChatTurn.InjectedFrom"/> and a captured frame already follow — what is on disk is a fact about
+    /// the conversation, what goes on the wire is assembled at the last step. A body that is not on disk is
+    /// replaced with <see cref="PlanStore.MissingNotice"/>, so the model is told what is missing instead of being
+    /// handed an empty message to invent a plan into.</para>
+    /// </summary>
+    private List<ChatTurn> MaterializePlans(IEnumerable<ChatTurn> turns)
+    {
+        var materialized = new List<ChatTurn>();
+        foreach (var turn in turns)
+        {
+            if (turn.Plan is not { File: { Length: > 0 } name })
+            {
+                materialized.Add(turn);
+                continue;
+            }
+
+            var body = PlanStore.Read(_dataRoot, name, out _) ?? PlanStore.MissingNotice(name);
+            // An empty text means this turn's message is the plan itself; text that is already there means the
+            // plan is what the message carries — approval's instruction sentence, with the body under it exactly
+            // as it was when a person approved it. The reference comes off the copy: this turn now holds its body
+            // as text, and a copy that named the document as well would be priced twice by the estimator — once
+            // from the figure frozen on it, once from the text put back here.
+            materialized.Add(turn with
+            {
+                Text = turn.Text.Length == 0 ? body : turn.Text + "\n\n" + body,
+                Plan = null,
+            });
+        }
+        return materialized;
+    }
+
     /// <summary>Builds one request against the transcript as it stands, on the UI thread: the history copy and
     /// the Hub snapshot the read-only tools are drawn from are both things the panel is reading concurrently.
     /// Returns null when the session or a usable model is gone.
@@ -4205,7 +4308,7 @@ public sealed class ChatWorkspace : IDisposable
         }
 
         var mode = NormalizeMode(conversation.Mode);
-        var history = conversation.Messages.Skip(SummaryMessageCount(conversation)).ToList();
+        var history = MaterializePlans(conversation.Messages.Skip(SummaryMessageCount(conversation)));
         var modelName = choice.ModelName;
         var reasoning = ModelCatalog.SupportsReasoningEffort(choice.Provider, modelName, conversation.ReasoningEffort)
             ? ChatReasoningEfforts.Normalize(conversation.ReasoningEffort)
@@ -4489,26 +4592,58 @@ public sealed class ChatWorkspace : IDisposable
         });
     }
 
+    /// <summary>
+    /// Turns the answer a plan-mode run just finished into a review item, and files its body in
+    /// <see cref="PlanStore"/> so the session JSON carries a name instead of several screens of markdown.
+    ///
+    /// <para>The scan walks back for the newest assistant answer that is prose rather than a call. A turn already
+    /// carrying a verdict stops it <b>before</b> the empty-text test, because a filed plan has no text to test:
+    /// reading the two in the other order would step over the plan that was answered and stamp an older one, and
+    /// the card would then be standing on a document the person already decided.</para>
+    ///
+    /// <para>Writing the document happens here and nowhere else, so every plan the shell shows is one the person
+    /// was offered. A body that cannot be filed — no data root, over the ceiling, a disk that refuses — is stamped
+    /// with its text left in the transcript, which is what a session written before the plan store looks like;
+    /// the surfaces read one rule (<see cref="PlanStore.BodyOf"/>) rather than two shapes.</para>
+    /// </summary>
     private bool MarkCompletedPlanPending(string conversationId)
     {
         var pending = false;
+        string? filing = null;
         _sessions.TryUpdate(conversationId, conversation =>
         {
             if (NormalizeMode(conversation.Mode) != ChatModes.Plan) return;
             for (var index = conversation.Messages.Count - 1; index >= 0; index--)
             {
                 var turn = conversation.Messages[index];
-                if (turn.Role != ChatRoles.Assistant || turn.ToolCallId is not null || turn.Text.Length == 0) continue;
+                if (turn.Role != ChatRoles.Assistant || turn.ToolCallId is { Length: > 0 }) continue;
                 if (turn.PlanApprovalState is not null) return;
+                if (turn.Text.Length == 0) continue;
+
+                var body = turn.Text;
+                var filed = PlanStore.Store(_dataRoot, body);
                 conversation.Messages[index] = turn with
                 {
+                    // The document is the copy now: the transcript's text goes empty so the session file holds a
+                    // name rather than the plan twice. A body that could not be filed keeps its text, which is the
+                    // shape a session from before the store has, and the one rule every surface reads.
+                    Text = filed.Stored ? "" : body,
                     PlanApprovalState = PlanApprovalStates.Pending,
                     ApprovalSeen = conversationId == _active?.Id,
+                    Plan = new PlanReference(
+                        filed.Stored ? filed.Name : null,
+                        PlanStore.TitleOf(body),
+                        body.Length,
+                        ContextTrimmer.BodyTokens(body)),
                 };
+                filing = filed.Stored
+                    ? $"Plan stored: ai/plans/{filed.Name}"
+                    : $"Plan kept in the transcript: {filed.Message}";
                 pending = true;
                 return;
             }
         });
+        if (pending && filing is not null) Audit(conversationId, filing);
         return pending;
     }
 

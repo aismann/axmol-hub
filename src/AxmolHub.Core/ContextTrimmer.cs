@@ -51,18 +51,34 @@ public static class ContextTrimmer
     /// a data URL, and a turn whose only text is "what is this error?" is not the cheap turn the character count suggests.
     /// A thinking model's reasoning is charged as well, and it is the largest field on the turn by far: a
     /// gateway that makes the client send it back puts it on the wire of every later request, so a window that
-    /// ignored it would keep "fitting" a conversation it can no longer afford to send.</summary>
+    /// ignored it would keep "fitting" a conversation it can no longer afford to send.
+    ///
+    /// <para>A plan whose body was filed in <see cref="PlanStore"/> carries that body's cost as
+    /// <see cref="PlanReference.Tokens"/> rather than as text, and it is added here — the same figure the request
+    /// pays, because the wire copy of the turn is the body back inlined
+    /// (<c>ChatWorkspace.MaterializePlans</c>). A plan turn whose reference holds no name keeps its body in
+    /// <see cref="ChatTurn.Text"/>, which is already counted above, so the frozen figure is charged only when a
+    /// file stands in for the text. Without this the ring would read a plan of several thousand characters as free
+    /// and pick a window that the request it then builds does not fit.</para></summary>
     public static int EstimateTokens(ChatTurn turn)
     {
         var units = TokenWeighing.Units(turn.Text)
                     + TokenWeighing.Units(turn.AttachedContext)
                     + TokenWeighing.Units(turn.ToolArguments)
                     + TokenWeighing.Units(turn.Reasoning);
-        return ToTokens(units) + MessageOverheadTokens + turn.Images.Count * ImageTokenCost;
+        var filed = turn.Plan is { File: { Length: > 0 } } ? turn.Plan.Tokens : 0;
+        return ToTokens(units) + MessageOverheadTokens + filed + turn.Images.Count * ImageTokenCost;
     }
 
     /// <summary>The cost of one message holding <paramref name="text"/>.</summary>
     public static int EstimateTokens(string text) => ToTokens(TokenWeighing.Units(text)) + MessageOverheadTokens;
+
+    /// <summary>The cost of a plan body <b>on its own</b>, in the currency
+    /// <see cref="EstimateTokens(ChatTurn)"/> adds to a turn: the body's units divided, and deliberately no
+    /// <see cref="MessageOverheadTokens"/>, because the framing of the message carrying it is charged once by
+    /// the turn it belongs to. This is the half of the identity the plan store has to keep: a stamped turn and the
+    /// same turn with its body back in <see cref="ChatTurn.Text"/> must price alike.</summary>
+    public static int BodyTokens(string body) => ToTokens(TokenWeighing.Units(body));
 
     /// <summary>Converts estimate-units to tokens. The divisor is the same for every script because the script
     /// difference is carried by the weights, not by the division: an ASCII string's unit count is its length, so

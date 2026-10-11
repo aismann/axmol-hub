@@ -4516,12 +4516,31 @@ public partial class ShellCheckWindow : Window
             var sent = chat.TryEnqueueSend(session.Id, "请先给出计划", null, out var refusal);
             chat.OpenConversation(observer.Id);
             await WaitForIdleAsync(chat);
+            // A finished plan-mode answer becomes a review item, and its body leaves the transcript for a document
+            // of its own. The halves are asserted together because each alone passes on a bug: a turn still
+            // holding the text is the old shape, a session file still holding it is the shape this change exists
+            // to remove, and a JSON naming a file nobody wrote is worse than either.
+            var stamped = session.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
+                                                                 && turn.PlanApprovalState == PlanApprovalStates.Pending);
+            var name = stamped?.Plan?.File ?? "";
+            var body = chat.PlansDirectoryForCheck is { } plans && System.IO.File.Exists(System.IO.Path.Combine(plans, name))
+                ? System.IO.File.ReadAllText(System.IO.Path.Combine(plans, name))
+                : null;
+            var json = chat.StoredSessionTextForCheck(session.Id) ?? "";
             Check(sent && refusal is null
-                  && session.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant)?.Text == plan
-                  && session.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant)?.PlanApprovalState
-                      == PlanApprovalStates.Pending,
-                "计划模式结束后将计划持久化为待确认项（会话 " + session.Id + "；拒绝原因 "
-                + (refusal ?? "无") + "）");
+                  && stamped is not null
+                  && stamped.Text.Length == 0
+                  && name.Length == 35 && name.EndsWith(".md", StringComparison.Ordinal)
+                  && name[..32].All(Uri.IsHexDigit)
+                  && stamped.Plan!.Title == "Reviewed plan"
+                  && stamped.Plan.Chars == plan.Length
+                  && stamped.Plan.Tokens > 0
+                  && body == plan
+                  && json.Contains(name, StringComparison.Ordinal)
+                  && !json.Contains("First, inspect the implementation", StringComparison.Ordinal),
+                "计划模式结束后把正文写进 ai/plans 下的独立文件、会话 JSON 只留它的文件名，并把这一轮标成待确认项"
+                + "（会话 " + session.Id + "，盘上正文 " + (body?.Length ?? -1) + "/" + plan.Length
+                + " 字，文件 " + name + "，拒绝原因 " + (refusal ?? "无") + "）");
         }
 
         try
@@ -4556,7 +4575,8 @@ public partial class ShellCheckWindow : Window
                 + "（拒绝键 " + (leakedRefusal ?? "无") + "）");
             chat.DeleteConversation(leakedPlan.Id);
 
-            chat.ClientOverride = (_, _) => new ScriptedChatClient([plan]);
+            ScriptedChatClient? planClient = null;
+            chat.ClientOverride = (_, _) => planClient = new ScriptedChatClient([plan]);
 
             await RunPlanInBackgroundAsync(approvedSession);
             Check(chat.PendingBackgroundApprovalCount(observer.Id) == 1
@@ -4846,6 +4866,10 @@ public partial class ShellCheckWindow : Window
                 "同一张计划卡就地换掉措辞：要求修改后旧卡说「计划已要求修改」、新卡说「计划待你审阅」，不再另起一行决定记录（实际 "
                 + string.Join(" / ", panel.PlanCardStateKeysForCheck) + "）");
 
+            // The approved run's scripted answer is deliberately not the plan's own text. The assertion further
+            // down reads the session file for "no copy of the plan body anywhere", and an agent reply that happened
+            // to repeat the fixture string would fail it for a reason that has nothing to do with plans.
+            chat.ClientOverride = (_, _) => planClient = new ScriptedChatClient(["开始按计划改第一个文件。"]);
             panel.ClickPlanChoiceForCheck("ChatPlanApprove");
             panel.ClickPlanContinueForCheck();
             await WaitForIdleAsync(chat);
@@ -4854,18 +4878,33 @@ public partial class ShellCheckWindow : Window
                                       + "Follow this plan only; ask before taking actions outside its scope.\n\n" + plan;
             var approvedState = approvedCopy?.Messages
                 .LastOrDefault(turn => turn.Role == ChatRoles.Assistant)?.PlanApprovalState;
-            var approvedUserText = approvedCopy?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User)?.Text;
+            var approvedUserTurn = approvedCopy?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User);
+            var approvedUserText = approvedUserTurn?.Text;
+            // The split this change is built on, read from both ends: what the session file keeps is the sentence,
+            // and what the model is handed is the sentence with the approved plan under it — byte for byte what
+            // approval has always sent. Asserting only the first half would let the body go missing on the wire;
+            // asserting only the second would let it stay pasted into the transcript. Both turns naming one
+            // document is the third half: the instruction must point at the plan it approves, not at a copy.
+            var wireInstruction = planClient?.LastMessages?
+                .LastOrDefault(message => message.Role == Microsoft.Extensions.AI.ChatRole.User)?.Text;
             var approvedRun = chat.RunFor(approvedSession.Id);
             Check(approvedCopy?.Mode == ChatModes.Agent
                   && approvedCopy.Messages.Any(turn => turn.Role == ChatRoles.Assistant
                       && turn.PlanApprovalState == PlanApprovalStates.Approved)
-                  && approvedUserText == approvedInstruction
+                  && approvedUserText == ChatWorkspace.PlanApprovalInstruction
+                  && approvedUserTurn?.Plan?.File is { Length: > 0 } approvedName
+                  && approvedName == approvedCopy.Messages
+                      .LastOrDefault(turn => turn.Role == ChatRoles.Assistant
+                                             && turn.PlanApprovalState == PlanApprovalStates.Approved)?.Plan?.File
+                  && wireInstruction == approvedInstruction
                   && approvedRun is null
                   && chat.PendingApprovalConversationCount() == 1,
-                "批准后切换 Agent 并以用户指令附带原样审阅计划继续执行，完成后无残留运行（模式 "
-                + approvedCopy?.Mode + "，末条计划状态 " + approvedState + "，用户指令「"
-                + approvedUserText?.Replace('\n', '|') + "」，运行 " + approvedRun?.Phase
-                + "，其他待审批会话数 " + chat.PendingApprovalConversationCount() + "）");
+                "批准后切换 Agent 并以用户指令附带原样审阅计划继续执行：存的是引用，线上是全文，完成后无残留运行（模式 "
+                + approvedCopy?.Mode + "，末条计划状态 " + approvedState + "，存下的指令「"
+                + approvedUserText?.Replace('\n', '|') + "」，引用 "
+                + (approvedUserTurn?.Plan?.File ?? "无") + "，线上末条用户消息 "
+                + (wireInstruction?.Length ?? -1) + "/" + approvedInstruction.Length + " 字，运行 "
+                + approvedRun?.Phase + "，其他待审批会话数 " + chat.PendingApprovalConversationCount() + "）");
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
             Check(panel.PendingPlanApprovalCardsForCheck == 0,
@@ -4954,6 +4993,101 @@ public partial class ShellCheckWindow : Window
             panel.ClickPlanCardForCheck(1);
             Check(shell.InspectorPlanMarkdownForCheck.Contains("The newer body", StringComparison.Ordinal),
                 "点新的那张就换到新的一份：卡片与面板说的始终是同一份文档");
+
+            // A thinking model's plan is the shape this change creates: reasoning on the turn, and no text once
+            // the body is filed. That is exactly the silhouette the transcript folds away as machine work, and a
+            // review card buried inside a collapsed 「Thought for Ns」 is a decision nobody is ever asked to make.
+            var thinkingPlan = chat.StartConversation();
+            chat.OpenConversation(thinkingPlan.Id);
+            chat.SeedPlanReplyForCheck(thinkingPlan.Id, plan, "先想清楚要动哪几个文件");
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(chat.StoredCopyForCheck(thinkingPlan.Id)?.Messages
+                      .LastOrDefault(turn => turn.PlanApprovalState == PlanApprovalStates.Pending)
+                  is { Text.Length: 0, Reasoning.Length: > 0, Plan.File.Length: > 0 } thoughtPlan
+                  && panel.PlanCardCountForCheck == 1
+                  && panel.PlanCardOnScreenForCheck(0),
+                "正文进了文件、带着思考的计划仍然是转录里一张看得见、点得开的卡，没有被折进「Thought for Ns」"
+                + "（卡面「" + string.Join(" / ", panel.PlanCardTextsForCheck) + "」）");
+            chat.DeleteConversation(thinkingPlan.Id);
+            // Deleting the session that was on screen leaves the panel with no transcript, and every card pressed
+            // below would press nothing — the assertion would read as a missing plan rather than as a missing view.
+            chat.OpenConversation(twoPlanSession.Id);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+
+            // The store is bounded, so an older plan's document can be gone while its turn stays in the
+            // transcript. Neither surface gets to pretend: the column names the file that is missing instead of
+            // falling back to 「还没有生成计划」, and approving is refused rather than answered with an
+            // instruction that has nothing under it.
+            var newestPlanIndex = -1;
+            for (var index = twoPlanSession.Messages.Count - 1; index >= 0; index--)
+                if (twoPlanSession.Messages[index].PlanApprovalState == PlanApprovalStates.Pending)
+                {
+                    newestPlanIndex = index;
+                    break;
+                }
+            var goneTurn = newestPlanIndex >= 0 ? twoPlanSession.Messages[newestPlanIndex] : null;
+            var missingName = goneTurn?.Plan?.File ?? "";
+            var missingChars = goneTurn?.Plan?.Chars ?? 0;
+            if (chat.PlansDirectoryForCheck is { } plansDir && missingName.Length > 0)
+            {
+                var missingPath = System.IO.Path.Combine(plansDir, missingName);
+                if (System.IO.File.Exists(missingPath)) System.IO.File.Delete(missingPath);
+            }
+            shell.CloseInspector();
+            panel.ClickPlanCardForCheck(1);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(missingName.Length > 0
+                  && shell.InspectorPlanMarkdownForCheck.Contains(missingName, StringComparison.Ordinal)
+                  && shell.InspectorPlanMarkdownForCheck != HubStrings.Get("InspectorPlanEmpty")
+                  && !shell.InspectorPlanMarkdownForCheck.Contains("The newer body", StringComparison.Ordinal)
+                  && !shell.InspectorPlanMarkdownForCheck.Contains("The older body", StringComparison.Ordinal),
+                "正文文件被淘汰之后，右栏点名是哪一个文件不在了，既不谎称「还没有生成计划」也不去念另一份（面板里 "
+                + shell.InspectorPlanMarkdownForCheck.Replace('\n', '|') + "）");
+            var turnsBeforeGone = twoPlanSession.Messages.Count;
+            var refusedGone = !chat.TryResolvePlanApproval(twoPlanSession.Id, newestPlanIndex,
+                PlanApprovalStates.Approved, out var goneRefusal);
+            Check(refusedGone && goneRefusal == "ChatPlanBodyGone"
+                  && HubStrings.Get(goneRefusal!) != goneRefusal
+                  && twoPlanSession.Messages.Count == turnsBeforeGone
+                  && goneTurn?.PlanApprovalState == PlanApprovalStates.Pending,
+                "读不到正文的计划：批准被拒绝并给出理由（" + missingChars + " 字的 " + missingName
+                + "），不追加任何用户指令，卡片留在原处（拒绝键 " + (goneRefusal ?? "无") + "）");
+
+            // A plan carried over from a previous run: the session file names a document, and those two files are
+            // all a later shell gets. Copied the way a data root moves — the JSON and the .md, nothing else — and
+            // read back by a window that never saw a model produce either.
+            var carriedName = approvedSession.Messages
+                .LastOrDefault(turn => turn.PlanApprovalState is not null)?.Plan?.File ?? "";
+            var carriedJson = chat.StoredSessionTextForCheck(approvedSession.Id) ?? "";
+            var carriedRoot = ScratchDirectory.Resolve("plan-carried");
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(carriedRoot, "ai", "sessions"));
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(carriedRoot, "ai", "plans"));
+            System.IO.File.WriteAllText(
+                System.IO.Path.Combine(carriedRoot, "ai", "sessions", approvedSession.Id + ".json"), carriedJson);
+            var carriedSource = System.IO.Path.Combine(chat.PlansDirectoryForCheck ?? "", carriedName);
+            if (System.IO.File.Exists(carriedSource))
+                System.IO.File.Copy(carriedSource, System.IO.Path.Combine(carriedRoot, "ai", "plans", carriedName));
+            var carriedPrefs = new PreferencesStore(PreferencesPathFor(carriedRoot));
+            var carriedShell = new MainWindow(carriedRoot, carriedPrefs, carriedPrefs.Load());
+            carriedShell.Show();
+            carriedShell.NavigateTo("Assistant");
+            carriedShell.Chat.OpenConversation(approvedSession.Id);
+            carriedShell.OpenInspector("plan", -1);
+            carriedShell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(carriedName.Length > 0
+                  && carriedShell.InspectorPlanMarkdownForCheck
+                      .Contains("First, inspect the implementation", StringComparison.Ordinal)
+                  && carriedJson.Contains(carriedName, StringComparison.Ordinal)
+                  && !carriedJson.Contains("First, inspect the implementation", StringComparison.Ordinal),
+                "换一根数据根重开之后，只凭会话 JSON 里的那个文件名就把计划读回屏幕上，而 JSON 自始至终没有正文（面板 "
+                + carriedShell.InspectorPlanMarkdownForCheck.Length + " 字，文件 " + carriedName + "）");
+            carriedShell.Close();
         }
         finally
         {

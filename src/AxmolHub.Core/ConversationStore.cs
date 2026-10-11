@@ -148,6 +148,18 @@ public sealed class ConversationStore(string root)
             : null;
     }
 
+    /// <summary>
+    /// The session file's own text, before anything is deserialized. For the self-check only, and it exists
+    /// because "the plan body left the session file" is a claim about these bytes: read back through
+    /// <see cref="Load"/> it would be answered by the hydrated object, which holds the body again the moment the
+    /// reference is resolved.
+    /// </summary>
+    public string? ReadStoredText(string id)
+    {
+        var path = ConversationPath(id);
+        return File.Exists(path) ? File.ReadAllText(path) : null;
+    }
+
     /// <summary>Writes a conversation and refreshes its index entry, atomically.</summary>
     public void Save(Conversation conversation)
     {

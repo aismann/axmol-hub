@@ -1712,6 +1712,122 @@ if (args.Contains("--check-ai-sessions"))
         throw new Exception("A second seed re-ran the migration over a registry that already exists.");
     Console.WriteLine("PASS: WorkspaceStore migrates once, from the absence of its file.");
     File.Delete(registryPath);
+
+    // ── the plan store: a plan's body is a document, and the session file keeps its name ──
+    var planRoot = Path.Combine(root, "plans-check");
+    if (Directory.Exists(planRoot)) Directory.Delete(planRoot, recursive: true);
+    Directory.CreateDirectory(planRoot);
+    const string planBody = "# 计划：把正文搬出会话文件\n\n"
+                            + "```text\nai/plans/<guid>.md\n```\n\n- 第一步：改动 `Conversation`，保留下划线。\n";
+    if (PlanStore.DirectoryFor(null) is not null || PlanStore.DirectoryFor("") is not null)
+        throw new Exception("The plan store invented a directory with no data root.");
+    if (PlanStore.DirectoryFor(planRoot) != Path.Combine(planRoot, "ai", "plans"))
+        throw new Exception($"Plans do not live beside the other ai/ state ({PlanStore.DirectoryFor(planRoot)}).");
+    if (Directory.Exists(PlanStore.DirectoryFor(planRoot)!))
+        throw new Exception("Asking where plans live created the directory; only a plan being stored pays for it.");
+
+    var filed = PlanStore.Store(planRoot, planBody);
+    if (!filed.Stored || !filed.Name.EndsWith(".md", StringComparison.Ordinal)
+        || filed.Name.Length != 35 || !filed.Name[..32].All(Uri.IsHexDigit))
+        throw new Exception($"A plan document was not filed under a GUID name ({filed.Name}, {filed.Message}).");
+    if (PlanStore.Read(planRoot, filed.Name, out var filedState) != planBody || filedState != PlanBodyState.Read)
+        throw new Exception("A plan body did not come back byte for byte from the file it was written to.");
+    if (PlanStore.Store(planRoot, planBody).Name == filed.Name)
+        throw new Exception("Two plans of the same body share one document, so one of them would be rewritten.");
+
+    // The refusal table, and the reason each row exists: this directory is shared by every session, so a name
+    // read out of one session file must not be able to ask for another's data or anything outside the store.
+    foreach (var rejected in new[] { "..\\x.md", "../x.md", "x.txt", Path.Combine(planRoot, "x.md"),
+                                     filed.Name[..31] + ".md", "index.json", "", "   " })
+    {
+        if (PlanStore.Read(planRoot, rejected, out var rejectState) is not null
+            || rejectState != PlanBodyState.RefusedPath)
+            throw new Exception($"A plan name a session file invented was followed anyway ({rejected}).");
+    }
+    if (PlanStore.Read(planRoot, null, out var nullState) is not null || nullState != PlanBodyState.RefusedPath)
+        throw new Exception("A turn with no name was read as a document rather than as no reference.");
+    if (PlanStore.Store(planRoot, "").Stored || PlanStore.Store(null, planBody).Stored
+        || PlanStore.Store("", planBody).Stored)
+        throw new Exception("An empty body or a missing data root still wrote a document.");
+    if (PlanStore.Store(planRoot, new string('规', PlanStore.MaxBodyCharacters + 1)).Stored)
+        throw new Exception("A plan longer than the store's ceiling was given a file of its own.");
+
+    // The one reading rule, in both of the shapes it has to answer for: a turn naming a document, and a turn that
+    // is the document. The second is every session file written before the store existed and every stamp whose
+    // write failed — one code path, which is why the migration is "nothing".
+    var namedTurn = ChatTurn.Assistant("") with
+    {
+        PlanApprovalState = PlanApprovalStates.Pending,
+        Plan = new PlanReference(filed.Name, "计划", planBody.Length, ContextTrimmer.BodyTokens(planBody)),
+    };
+    var inlineTurn = ChatTurn.Assistant(planBody) with { PlanApprovalState = PlanApprovalStates.Pending };
+    var missingTurn = namedTurn with { Plan = namedTurn.Plan! with { File = new string('a', 32) + ".md" } };
+    if (PlanStore.BodyOf(inlineTurn, planRoot, out var inlineState) != planBody
+        || inlineState != PlanBodyState.NoReference)
+        throw new Exception("A plan whose body is its own text was not read as one.");
+    if (PlanStore.BodyOf(namedTurn, planRoot, out var namedState) != planBody || namedState != PlanBodyState.Read)
+        throw new Exception("A plan's own turn did not resolve to the document it names.");
+    if (PlanStore.BodyOf(missingTurn, planRoot, out var missingState) is not null
+        || missingState != PlanBodyState.Gone)
+        throw new Exception("A missing plan document read as an empty plan instead of as a fact.");
+    if (!PlanStore.MissingNotice(filed.Name).Contains(filed.Name, StringComparison.Ordinal))
+        throw new Exception("The notice handed the model did not say which document is gone.");
+
+    // Titles are frozen where the body is filed, so the card never reads a file. Written by a model, so none of
+    // the three shapes can be assumed: a heading, a preamble, or a fence first.
+    if (PlanStore.TitleOf(planBody) != "计划：把正文搬出会话文件")
+        throw new Exception($"A fenced preamble stole the title ({PlanStore.TitleOf(planBody)}).");
+    if (PlanStore.TitleOf("- 直接以一个列表项开场\n\n正文") != "直接以一个列表项开场")
+        throw new Exception("A plan with no heading gave its card no name.");
+    if (PlanStore.TitleOf("```\nint main(){}\n```\n\n# 真标题") != "真标题")
+        throw new Exception("Code inside a fence was read as the plan's own first line.");
+    if (PlanStore.TitleOf("## 改 file_write 的两处") != "改 file_write 的两处"
+        || PlanStore.TitleOf("## **加粗**的标题") != "加粗的标题")
+        throw new Exception("A symbol or an emphasis mark was mishandled while the title was being made.");
+    var longTitle = PlanStore.TitleOf(new string('长', PlanStore.TitleCharacters + 40));
+    if (longTitle.Length != PlanStore.TitleCharacters + 1 || !longTitle.EndsWith("…", StringComparison.Ordinal))
+        throw new Exception($"A title longer than the card's terms was not cut to them ({longTitle.Length}).");
+    if (PlanStore.TitleOf("") != "" || PlanStore.TitleOf("```\ncode only\n```") != "")
+        throw new Exception("A plan with nothing to name invented a title instead of leaving it to the view.");
+
+    // What the session file actually holds: the name, and not a character of the body. Read as text on purpose —
+    // a hydrated object reads the body back the moment anything resolves the reference.
+    var planStore = new ConversationStore(planRoot);
+    var planSession = Conversation.Create("orcarouter");
+    planSession.Append(ChatTurn.User("先给出计划"));
+    planSession.Append(namedTurn);
+    planSession.Append(ChatTurn.User("Implement the following plan.") with { Plan = namedTurn.Plan });
+    planStore.Save(planSession);
+    var planJson = planStore.ReadStoredText(planSession.Id)
+                   ?? throw new Exception("The plan session did not write a session file.");
+    if (!planJson.Contains(filed.Name, StringComparison.Ordinal)
+        || planJson.Contains("把正文搬出会话文件", StringComparison.Ordinal))
+        throw new Exception("A filed plan's body was still written into the session file.");
+    var rereadPlan = planStore.Load(planSession.Id) ?? throw new Exception("A plan session did not reload.");
+    if (rereadPlan.Messages[1].Plan?.File != filed.Name || rereadPlan.Messages[1].Plan?.Chars != planBody.Length
+        || rereadPlan.Messages[1].Plan?.Tokens != ContextTrimmer.BodyTokens(planBody)
+        || rereadPlan.Messages[2].Plan?.File != filed.Name)
+        throw new Exception("A plan reference did not survive the session file it is stored in.");
+    if (PlanStore.BodyOf(rereadPlan.Messages[1], planRoot, out _) != planBody)
+        throw new Exception("A plan reloaded from disk came back without its body.");
+    File.WriteAllText(Path.Combine(planRoot, "ai", "sessions", "legacy-inline-plan.json"),
+        """{"Id":"legacy-inline-plan","Title":"legacy","ProviderId":"orcarouter","Messages":[{"Role":"assistant","Text":"# 旧计划\n\n正文还在轮子上。","PlanApprovalState":"pending"}]}""");
+    var legacyPlan = planStore.Load("legacy-inline-plan") ?? throw new Exception("A session file written before the plan store stopped loading.");
+    if (legacyPlan.Messages[0].Plan is not null
+        || PlanStore.BodyOf(legacyPlan.Messages[0], planRoot, out var legacyState) != "# 旧计划\n\n正文还在轮子上。"
+        || legacyState != PlanBodyState.NoReference)
+        throw new Exception("An inline plan from before the store was read as a document nobody wrote.");
+
+    // Bounded the way the undo store is: enough plans to trip the cap, and the guarantee that matters — the one
+    // just stamped is never the one the pass takes, because the write happens before the sweep.
+    var last = PlanStore.Store(planRoot, "最新的一份计划").Name;
+    for (var index = 0; index < PlanStore.MaxFiles + 10; index++)
+        last = PlanStore.Store(planRoot, $"计划 {index:D3}：{(index % 7 == 0 ? "清理旧正文" : "file the body")}").Name;
+    if (PlanStore.FileCount(planRoot) > PlanStore.MaxFiles)
+        throw new Exception($"The plan store grew past its bound ({PlanStore.FileCount(planRoot)} files).");
+    if (PlanStore.Read(planRoot, last, out _) != $"计划 {PlanStore.MaxFiles + 9:D3}：file the body")
+        throw new Exception("The eviction pass took the plan that had just been written.");
+    Console.WriteLine("PASS: PlanStore files a plan as ai/plans/<guid>.md, refuses every other name, and bounds itself.");
     return;
 }
 if (args.Contains("--check-ai-memory"))
@@ -2472,6 +2588,41 @@ if (args.Contains("--check-ai-context"))
     if (emptySplit.Categories().Count != 1
         || !emptySplit.Categories().Single().Kind.Equals(ContextCostKind.SystemPrompt))
         throw new Exception("An empty summary or memory index still took a row in the popover.");
+    // A filed plan is priced from the figure frozen on its turn, and that figure has to be the one the request
+    // pays when the body is put back for the wire. Not an approximation: an estimate that reads low sends an
+    // oversized request, and one that reads high drops turns the model still needs.
+    var pricedBody = "# 计划\n\n"
+                     + string.Concat(Enumerable.Range(1, 60).Select(i => $"- 第 {i} 步：改实现并跑一遍自检。\n"));
+    var filedPlan = ChatTurn.Assistant("") with
+    {
+        PlanApprovalState = PlanApprovalStates.Pending,
+        Plan = new PlanReference("0123456789abcdef0123456789abcdef.md", "计划",
+            pricedBody.Length, ContextTrimmer.BodyTokens(pricedBody)),
+    };
+    // The copy the request is assembled from holds the body as text and names no document. Both halves are
+    // pinned: a boundary that left the reference on the copy would have the estimator bill the same plan twice.
+    var wirePlan = filedPlan with { Text = pricedBody, Plan = null };
+    if (ContextTrimmer.EstimateTokens(filedPlan) != ContextTrimmer.EstimateTokens(wirePlan))
+        throw new Exception($"A filed plan prices at {ContextTrimmer.EstimateTokens(filedPlan)} while the same body inside "
+                            + $"the message costs {ContextTrimmer.EstimateTokens(wirePlan)}.");
+    if (ContextTrimmer.EstimateTokens(filedPlan with { Text = pricedBody })
+        == ContextTrimmer.EstimateTokens(wirePlan))
+        throw new Exception("A copy holding both the body and its frozen figure cost the same as one holding the body, "
+                            + "so the identity above proves nothing about the boundary.");
+    // The length cannot stand in for the weight. This body is Chinese: priced at characters-per-token it would be
+    // counted at a quarter of what it costs, and the low direction is the one this file calls a failed turn.
+    if (ContextTrimmer.BodyTokens(pricedBody) <= pricedBody.Length / ContextTrimmer.CharactersPerToken)
+        throw new Exception("A Chinese plan was priced by its length instead of its weight.");
+    var planMeter = new ContextLedger();
+    planMeter.AddTurn(filedPlan);
+    if (planMeter.TotalTokens != ContextTrimmer.EstimateTokens(filedPlan)
+        || planMeter.Categories().Count(row => row.Kind == ContextCostKind.Messages) != 1)
+        throw new Exception("A plan's frozen cost is not booked under 正文, so the breakdown stopped adding up to the request.");
+    // The inline case is the same turn with its body in the text and no document named: charging the frozen figure
+    // on top of it would price one plan twice.
+    if (ContextTrimmer.EstimateTokens(ChatTurn.Assistant(pricedBody) with { Plan = filedPlan.Plan! with { File = null } })
+        != ContextTrimmer.EstimateTokens(ChatTurn.Assistant(pricedBody)))
+        throw new Exception("A plan kept in the transcript paid for its body twice.");
     // Where the denominator came from has to be sayable, and the two surfaces that say it must not own two
     // different spellings of the same five facts.
     var sourceKeys = new[]
@@ -5074,7 +5225,27 @@ if (args.Contains("--check-ai-cross-session"))
     {
         ApprovalState = ChatApprovalStates.Pending,
     });
-    foreach (var session in new[] { talker, echoer, shaderPeer, twinA, twinB }) bodiesStore.Save(session);
+    // A peer's plan, in the two states a reader can meet it in: its body filed in a document, and its document
+    // gone. The file tools will not open <c>ai/plans</c> — the data root is a protected root — so read_session is
+    // the only door across sessions, and an empty assistant line is what a plan looks like when nothing resolves
+    // the reference the turn carries.
+    var planner = Conversation.Create("orcarouter");
+    planner.Title = "Planned the migration";
+    planner.Append(ChatTurn.User("先给出迁移计划"));
+    var plannerBody = "# 迁移计划\n\n- 先把正文搬出会话文件。\n";
+    var plannerFiled = PlanStore.Store(bodiesRoot, plannerBody);
+    planner.Append(ChatTurn.Assistant("") with
+    {
+        PlanApprovalState = PlanApprovalStates.Pending,
+        Plan = new PlanReference(plannerFiled.Name, PlanStore.TitleOf(plannerBody), plannerBody.Length,
+            ContextTrimmer.BodyTokens(plannerBody)),
+    });
+    planner.Append(ChatTurn.Assistant("") with
+    {
+        PlanApprovalState = PlanApprovalStates.RevisionRequested,
+        Plan = new PlanReference(new string('f', 32) + ".md", "找不到文件的旧计划", 4_000, 5_334),
+    });
+    foreach (var session in new[] { talker, echoer, shaderPeer, twinA, twinB, planner }) bodiesStore.Save(session);
 
     var peerDeliveries = new List<(string Target, string Text, CrossSessionDecision Decision)>();
     var peerLive = new CrossSessionRunState(TargetRunning: false, FleetHasRoom: true, QueueHasRoom: true, WakesUsed: 0);
@@ -5092,6 +5263,13 @@ if (args.Contains("--check-ai-cross-session"))
     var echoTools = new WorkspaceTools(peerScope with { ConversationId = echoer.Id });
     var selfTools = new WorkspaceTools(peerScope with { ConversationId = shaderPeer.Id });
     var noPeers = new WorkspaceTools(WorkspaceToolScope.Empty);
+
+    // The peer's two plans, read through the one door that resolves them.
+    var peerPlans = peerTools.ReadSession(planner.Id, 10);
+    if (!peerPlans.Contains("先把正文搬出会话文件", StringComparison.Ordinal)
+        || !peerPlans.Contains("「找不到文件的旧计划」", StringComparison.Ordinal)
+        || !peerPlans.Contains("no longer on disk", StringComparison.Ordinal))
+        throw new Exception($"read_session forwarded a peer's filed plan as an empty line:{Environment.NewLine}{peerPlans}");
 
     var transcript = peerTools.ReadSession(shaderPeer.Title, 20);
     if (!transcript.Contains("last 20 of 24 turns") || !transcript.Contains("为什么着色器构建失败？")

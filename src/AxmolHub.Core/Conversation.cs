@@ -81,6 +81,27 @@ public static class ChatRouting
 public sealed record ChatImage(string File, string MediaType, long Bytes);
 
 /// <summary>
+/// The plan this turn refers to, frozen when the review card was raised.
+///
+/// <para><see cref="File"/> names the markdown document inside <c>&lt;data-root&gt;/ai/plans/</c> — a name and
+/// never a path, for the same reason <see cref="ChatImage.File"/> and <see cref="ChatTurn.UndoName"/> are: a
+/// session file that spells out the data root stops meaning anything once the root moves. A fork copies the turns
+/// that name a document, so two sessions may hold one file, which is what the flat shared store is for.</para>
+///
+/// <para><b>The representation rule, and it is the only branch anywhere:</b> <see cref="File"/> naming a document
+/// means the plan body <i>is</i> that document and this turn's text does not hold it; a null name means the body
+/// <i>is</i> the text. The second case is not a legacy shape to migrate away — it is what Hub stamps when the file
+/// cannot be written, so a disk full and a session from before the plan store are one code path.</para>
+///
+/// <para><see cref="Title"/> and <see cref="Chars"/> exist so drawing a card touches no disk.
+/// <see cref="Tokens"/> exists because <see cref="Chars"/> cannot be converted into it: a Han character weighs
+/// <see cref="TokenWeighing.WideUnits"/> units while the divisor assumes one per character, so pricing a Chinese
+/// plan from its length would under-state it about fourfold — and the estimator's own comment names the low
+/// direction as the dangerous one.</para>
+/// </summary>
+public sealed record PlanReference(string? File, string Title, int Chars, int Tokens);
+
+/// <summary>
 /// One message in a conversation, in <b>Hub's own</b> persisted shape.
 ///
 /// This is deliberately not <c>Microsoft.Extensions.AI.ChatMessage</c>: that type carries a polymorphic
@@ -117,8 +138,16 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// attention badge; the request itself remains pending until an explicit decision.</summary>
     public bool ApprovalSeen { get; init; }
 
-    /// <summary>Approval state for an assistant plan. Non-null only after a Plan-mode answer is ready for review.</summary>
+    /// <summary>Approval state for an assistant plan. Non-null only after a Plan-mode answer is ready for review.
+    /// The state is what makes a turn a plan; <see cref="Plan"/> says where its body is.</summary>
     public string? PlanApprovalState { get; init; }
+
+    /// <summary>The plan this turn refers to, frozen when the card was raised, and <c>null</c> on every turn that
+    /// is not a plan. Both halves of one review carry it: the assistant turn the plan was written on, and the
+    /// user instruction approval writes — two turns, one document, so the plan's text is filed once instead of
+    /// being pasted into the session file twice. See <see cref="PlanReference"/> for what the turn's own
+    /// <see cref="Text"/> holds while the reference stands.</summary>
+    public PlanReference? Plan { get; init; }
 
     /// <summary>What approving this call would do, frozen when it was asked for — a diff for a write, a command
     /// line for a build. Frozen rather than recomputed because the decision can come after a restart, and the

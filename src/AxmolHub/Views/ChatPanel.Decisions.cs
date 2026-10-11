@@ -157,14 +157,13 @@ public partial class ChatPanel
     /// conversation, otherwise the newest plan it holds. The fallback is what a stale pointer degrades to — a
     /// message deleted or regenerated since the card was drawn should move the pane to the plan that is really
     /// there, not leave it showing nothing.</summary>
-    private static string? PlanTextFor(Conversation? conversation, int turnIndex)
+    private string? PlanTextFor(Conversation? conversation, int turnIndex)
     {
         if (conversation is null) return null;
         if (turnIndex >= 0 && turnIndex < conversation.Messages.Count
-            && conversation.Messages[turnIndex] is { Role: ChatRoles.Assistant, PlanApprovalState: { Length: > 0 } } chosen
-            && chosen.Text is { Length: > 0 } chosenText)
+            && conversation.Messages[turnIndex] is { Role: ChatRoles.Assistant, PlanApprovalState: { Length: > 0 } } chosen)
         {
-            return chosenText;
+            return PlanMarkdown(chosen);
         }
 
         return LatestPlanText(conversation);
@@ -173,7 +172,7 @@ public partial class ChatPanel
     /// <summary>The markdown of the newest plan this conversation produced — the pending one if a plan is
     /// waiting, otherwise the last one it answered, so the card and 「查看计划」 still show something after
     /// approval.</summary>
-    private static string? LatestPlanText(Conversation? conversation)
+    private string? LatestPlanText(Conversation? conversation)
     {
         if (conversation is null) return null;
         string? latest = null;
@@ -181,9 +180,30 @@ public partial class ChatPanel
         {
             if (turn.Role != ChatRoles.Assistant) continue;
             if (turn.PlanApprovalState is not { Length: > 0 }) continue;
-            if (turn.Text is { Length: > 0 } text) latest = text;
+            if (PlanMarkdown(turn) is { Length: > 0 } markdown) latest = markdown;
         }
         return latest;
+    }
+
+    /// <summary>
+    /// What the pane shows for one plan turn: its body, wherever the turn says it is.
+    ///
+    /// <para><see cref="ChatWorkspace.PlanBody"/> is the one reading of the reference rule, so a plan whose body
+    /// was filed and a plan written before the store existed are drawn by the same three lines.</para>
+    ///
+    /// <para>A document that is not where the turn points gets a sentence saying so rather than <c>null</c>:
+    /// <see cref="InspectorPanel.Reload"/> reads an empty input as 「还没有生成计划」, and telling somebody who has
+    /// a plan on the transcript that none was generated is a different claim than the one that is true.</para>
+    /// </summary>
+    private string? PlanMarkdown(ChatTurn turn)
+    {
+        if (_chat is null) return turn.Text;
+        var body = _chat.PlanBody(turn, out var state);
+        if (state is PlanBodyState.Read or PlanBodyState.NoReference) return body;
+        return string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get("InspectorPlanGoneFormat"),
+            turn.Plan?.Chars ?? 0,
+            turn.Plan?.File ?? "");
     }
 
     // ── the host ──
@@ -660,8 +680,9 @@ public partial class ChatPanel
     /// The transcript's whole presence for a plan: one bordered card naming the plan and where it stands, and
     /// none of its body. A plan runs to screens, and its row used to run with it — the conversation got pushed
     /// out of view to display a document that is read once, in one sitting, somewhere with room to scroll. The
-    /// body stays on the turn and still goes to the provider unchanged, and the row's own copy action still hands
-    /// it over in full; this is a decision about painting, not about what was said.
+    /// body is filed in <see cref="PlanStore"/> and the turn carries its name, so the card is drawn from the
+    /// title frozen at that moment and painting a transcript opens no file; this is a decision about painting,
+    /// not about what was said.
     ///
     /// One card carries the disposition instead of a card plus a record line, because after a decision the two
     /// would be the same sentence twice. It is a button rather than a border: it has to take Enter and be
@@ -671,7 +692,7 @@ public partial class ChatPanel
     private Control BuildPlanCard(ChatTurn turn, int turnIndex)
     {
         var stateKey = PlanCardStateKey(turn.PlanApprovalState ?? PlanApprovalStates.Pending);
-        var title = PlanTitleOf(turn.Text);
+        var title = PlanCardTitle(turn);
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*") };
         row.Children.Add(new Path { Classes = { "plan-card-icon" }, Data = ThemeGeometry("Hub.Icon.ChatModePlan") });
         row.Children.Add(new TextBlock { Classes = { "plan-card-label" }, Text = HubStrings.Get(stateKey) });
@@ -702,66 +723,14 @@ public partial class ChatPanel
         _ => "ChatPlanRejected",
     };
 
-    private static readonly System.Text.RegularExpressions.Regex PlanHeadingPattern = new(
-        @"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$",
-        System.Text.RegularExpressions.RegexOptions.Compiled
-        | System.Text.RegularExpressions.RegexOptions.Multiline);
-    private static readonly System.Text.RegularExpressions.Regex PlanListMarkerPattern = new(
-        @"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+", System.Text.RegularExpressions.RegexOptions.Compiled);
-    private static readonly System.Text.RegularExpressions.Regex PlanQuoteMarkerPattern = new(
-        @"^[ \t]>+[ \t]?", System.Text.RegularExpressions.RegexOptions.Compiled);
-    private static readonly System.Text.RegularExpressions.Regex PlanFencePattern = new(
-        @"^[ \t]*(?:```|~~~)", System.Text.RegularExpressions.RegexOptions.Compiled);
-
-    /// <summary>Inline markdown that is not part of a title's wording: a link's target, and paired emphasis
-    /// marks. Matched in pairs rather than deleting every <c>*</c> and <c>_</c>, so a name like
-    /// <c>axslcc_parse_file</c> keeps its underscores instead of becoming one long word.</summary>
-    private static readonly (System.Text.RegularExpressions.Regex Pattern, string Replacement)[] PlanInlineMarks =
+    /// <summary>What the card calls this plan: the title frozen on the turn when its body was filed, and the same
+    /// derivation run over the turn's own text for a plan whose body never left it. Neither branch opens a file,
+    /// so painting a transcript of a hundred turns costs no disk read — which is why the title is stored rather
+    /// than read back out of the document every time.</summary>
+    private static string PlanCardTitle(ChatTurn turn)
     {
-        (new(@"\[([^\]]*)\]\([^)]*\)", System.Text.RegularExpressions.RegexOptions.Compiled), "$1"),
-        (new(@"\*\*(.+?)\*\*", System.Text.RegularExpressions.RegexOptions.Compiled), "$1"),
-        (new(@"__(.+?)__", System.Text.RegularExpressions.RegexOptions.Compiled), "$1"),
-        (new(@"~~(.+?)~~", System.Text.RegularExpressions.RegexOptions.Compiled), "$1"),
-        (new(@"[*_`](.+?)[*_`]", System.Text.RegularExpressions.RegexOptions.Compiled), "$1"),
-    };
-
-    /// <summary>How much of a title is worth a glance. The card trims at its own width anyway; this cap is what
-    /// stops a model that titled a plan with a paragraph from producing a card that is nothing but title.</summary>
-    private const int PlanTitleCharacters = 80;
-
-    /// <summary>The plan's own heading when it has one, its first real line when it does not, and a named
-    /// fallback when there is nothing to name. A plan is written by a model, so none of the three can be
-    /// assumed: it may open with a heading, with a preamble, or with a fenced block.</summary>
-    private static string PlanTitleOf(string markdown)
-    {
-        var heading = PlanHeadingPattern.Match(markdown);
-        var raw = heading.Success ? heading.Groups[1].Value : FirstPlanProseLine(markdown);
-        foreach (var (pattern, replacement) in PlanInlineMarks) raw = pattern.Replace(raw, replacement);
-        raw = raw.Trim();
-        if (raw.Length == 0) return HubStrings.Get("ChatPlanCardUntitled");
-        return raw.Length <= PlanTitleCharacters
-            ? raw
-            : raw[..PlanTitleCharacters].TrimEnd() + "…";
-    }
-
-    private static string FirstPlanProseLine(string markdown)
-    {
-        var insideFence = false;
-        foreach (var line in markdown.Split('\n'))
-        {
-            // A fenced block's opening line is the fence and its body is code: neither is a title, and the fence
-            // has to be tracked rather than skipped so everything inside it stays out of the running too.
-            if (PlanFencePattern.IsMatch(line))
-            {
-                insideFence = !insideFence;
-                continue;
-            }
-            if (insideFence) continue;
-
-            var text = PlanListMarkerPattern.Replace(PlanQuoteMarkerPattern.Replace(line.Trim(), ""), "").Trim();
-            if (text.Length > 0 && !text.StartsWith("---", StringComparison.Ordinal)) return text;
-        }
-        return "";
+        var title = turn.Plan?.Title ?? PlanStore.TitleOf(turn.Text);
+        return title.Length > 0 ? title : HubStrings.Get("ChatPlanCardUntitled");
     }
 
     // ── the steer-confirm strip ──

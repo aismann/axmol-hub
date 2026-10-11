@@ -599,6 +599,10 @@ public static class HubTexts
         // The same failure seen from the review card: the markup looks like a plan the model laid out, and
         // approving it would tell the model to carry out its own mistake. Say what it is instead.
         ["ChatPlanLeakedCall"] = ("这段回复是模型写出来的工具调用，不是计划，没有可批准执行的内容。", "This reply is a tool call the model wrote out as text, not a plan, so there is nothing here to approve."),
+        // The plan is still on the transcript and its document is not on disk — Hub keeps only the most recent
+        // plans, or somebody deleted the file. Approving would send an instruction with no plan under it, so the
+        // card refuses and says which of its two halves is missing.
+        ["ChatPlanBodyGone"] = ("这个计划的正文已经不在 Hub 保存的文件里，批准它只会发出一句读不到内容的指令；请重新生成计划。", "This plan's text is no longer in the file Hub kept for it, so approving it would issue an instruction with nothing to follow. Ask for a new plan."),
         // Refusals a send can get back now that several sessions answer at once. The cap is deliberately not
         // spelled out as a number: the limit lives in code, and a literal here would go stale silently.
         ["ChatSessionBusy"] = ("这个会话正在生成回复，请先停止它或等回复结束。", "This session is already answering. Stop it or wait for the reply to finish."),
@@ -704,6 +708,9 @@ public static class HubTexts
         ["InspectorTabChanges"] = ("改动", "Changes"),
         ["InspectorChangesEmpty"] = ("这个会话还没改动任何文件", "This session has not touched any file yet"),
         ["InspectorPlanEmpty"] = ("还没有生成计划", "No plan yet"),
+        // The plan exists and its document does not. "No plan yet" would be the wrong sentence to show somebody
+        // who has one on the transcript, so the pane names the file it looked for and how long the plan was.
+        ["InspectorPlanGoneFormat"] = ("这份计划（{0} 字）的正文已不在 ai/plans/{1} 里：Hub 只保留最近的计划文件，或者它被手工删掉了。", "This plan's text ({0} characters) is no longer in ai/plans/{1}: Hub keeps only the most recent plans, or the file was removed by hand."),
         // Four honest ways a diff can be unavailable. Each names why it stopped instead of drawing nothing:
         // a created file has no before by construction, and a copy that aged out or was spent by a revert is
         // gone for good in a store bounded at 64 files / 8 MiB.

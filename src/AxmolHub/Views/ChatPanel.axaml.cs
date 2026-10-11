@@ -1972,8 +1972,10 @@ public partial class ChatPanel : UserControl
         // the model had recited it — which is exactly what a person cannot un-see. One quiet line says what
         // arrived, trimmed to what a glance holds.
         // A plan is the other case where a row's text is a document rather than a reply, and it is suppressed the
-        // same way the tool payload is. The card built below stands in for it and names it; the turn keeps its
-        // text, so the provider still gets the plan verbatim and this row's copy action still hands over all of it.
+        // same way the tool payload is. The card built below stands in for it and names it. Nothing was taken away
+        // from the provider either: the body is filed in its own document and put back on the wire where the
+        // request is assembled, and this row's copy action resolves it the same way — a decision about painting,
+        // not about what was said.
         var isPlanTurn = turn.PlanApprovalState is { Length: > 0 };
         if (turn.Role == ChatRoles.Tool) body.Children.Add(ToolResultLine(toolName, turn));
         else if (!isPlanTurn) body.Children.Add(new TextBlock { Classes = { "turn-text" }, Text = turn.Text });
@@ -2007,7 +2009,12 @@ public partial class ChatPanel : UserControl
         // exchange). `index` is the only thing that gates the bar, so nulling it here leaves stored indexes
         // untouched for every other turn.
         var actionableIndex = turn.ToolCallId is { Length: > 0 } ? (int?)null : index;
-        target.Children.Add(BuildMessageRow(fromUser, body, actionableIndex, turn.Role, turn.Text, isLast, turn.At));
+        // 「复制」 hands over what was said, and for a plan what was said is the document the card stands in for.
+        // Resolved per row rather than per keystroke: a session holds a handful of plans, and this runs once for
+        // each turn the transcript paints. A body no longer on disk copies as nothing, which beats copying the
+        // card's title back as though it were the plan.
+        var copyText = isPlanTurn ? _chat.PlanBody(turn, out _) ?? "" : turn.Text;
+        target.Children.Add(BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At));
 
         // User text is plain by nature, and a tool payload is now a quiet line rather than a bubble; only the
         // assistant's own words carry Markdown worth rendering — and a plan's words do not render here at all.
@@ -2026,12 +2033,18 @@ public partial class ChatPanel : UserControl
     /// <summary>Whether a turn is machine work rather than something said: a tool result, a call, or a
     /// thinking-only answer. These are the turns a run folds into one group; prose and user turns break it.
     /// A thinking turn that also carries prose is prose — the answer is what was asked for, and folding it
-    /// away would hide the reply.</summary>
+    /// away would hide the reply.
+    ///
+    /// <para>A plan is prose whatever its text says, so it is excepted by name. Its body lives in its own document
+    /// and its turn's text is legitimately empty, which is the shape this test would otherwise read as
+    /// "thought and said nothing" — and the review card would go inside the collapsed 「Thought for Ns」 fold, on a
+    /// model whose answers always carry thinking.</para></summary>
     private static bool IsActivityTurn(ChatTurn turn) => turn.Role switch
     {
         ChatRoles.Tool => true,
         ChatRoles.Assistant => turn.ToolCallId is { Length: > 0 }
-                               || (turn.Reasoning is { Length: > 0 } && turn.Text.Length == 0),
+                               || (turn.Reasoning is { Length: > 0 } && turn.Text.Length == 0
+                                   && turn.PlanApprovalState is null),
         _ => false,
     };
 

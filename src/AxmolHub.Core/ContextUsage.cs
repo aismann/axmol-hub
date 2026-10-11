@@ -77,7 +77,11 @@ public sealed class ContextLedger
 
     /// <summary>What one turn costs, in the order the estimator divides it: text, attachment, arguments, reasoning.
     /// The attachment and the pictures come out as their own rows because those are the two a person can decide
-    /// differently about — a folder can be un-added, a picture can be left for the next message.</summary>
+    /// differently about — a folder can be un-added, a picture can be left for the next message. A plan whose body
+    /// was filed in <see cref="PlanStore"/> is a raw add under <see cref="ContextCostKind.Messages"/>, the way
+    /// pictures are: the figure is already divided, and a plan <i>is</i> the conversation saying something, so it
+    /// belongs under the row the person reads as the transcript — a kind of its own would be printed as 「图片」 by
+    /// the category label's fall-through and would split one message's cost across two headings.</summary>
     public void AddTurn(ChatTurn turn)
     {
         BeginMessage();
@@ -86,6 +90,7 @@ public sealed class ContextLedger
         AddPart(ContextCostKind.Messages, turn.ToolArguments);
         AddPart(ContextCostKind.Messages, turn.Reasoning);
         EndMessage(ContextCostKind.Messages);
+        if (turn.Plan is { File: { Length: > 0 } } filed) Add(ContextCostKind.Messages, filed.Tokens);
         if (turn.Images.Count > 0)
             Add(ContextCostKind.Images, turn.Images.Count * ContextTrimmer.ImageTokenCost);
     }
