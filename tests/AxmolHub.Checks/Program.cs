@@ -208,6 +208,68 @@ if (args.Contains("--check-ai-providers"))
         throw new Exception("A provider that can really be called was reported as not ready.");
     Console.WriteLine("PASS: one readiness rule — a gated provider is ready only once its secret is actually there.");
 
+    // ── The retry policy is Hub's own number, counted at the transport ──
+    // A 429 the pipeline retries is a rate limit; one it does not is a dead connection the user reads as a broken
+    // assistant. The client model shipped a default, so this was a behaviour nobody wrote down, nobody budgeted
+    // against the 16-iteration tool loop, and no cell could see. These count requests against a loopback handler,
+    // so what is asserted is what Hub does — not what a dependency happened to answer to in this version.
+    var retryProvider = new ModelProvider { IsCustom = true, Name = "Retry", BaseUrl = "http://127.0.0.1:9/v1", Model = "m" };
+    var retryMessages = new List<ChatMessage> { new(ChatRole.User, "hi") };
+    var onceThrottled = new RateLimitWire(failFirst: 1);
+    var recovered = "";
+    try
+    {
+        await ChatClientFactory.Create(retryProvider, "m", null, null, onceThrottled).GetResponseAsync(retryMessages);
+    }
+    catch (Exception ex)
+    {
+        recovered = "threw " + ex.GetType().Name;
+    }
+    if (!onceThrottled.SawRetryAfter || onceThrottled.Attempts != 2)
+        throw new Exception($"A rate limit that could be recovered took {onceThrottled.Attempts} attempt(s) and "
+                            + (recovered.Length == 0 ? "answered" : recovered) + ", Retry-After seen: "
+                            + onceThrottled.SawRetryAfter + ".");
+
+    // Exhausted, it stops at MaxRetries + 1 and hands back the provider's own words — which is what the message the
+    // user sees is assembled from. The text is recorded from the run rather than written from memory: it comes out
+    // of the client model, and a cell that guesses it can pass on the wrong string.
+    var throttled = new RateLimitWire(failFirst: 0, always: true);
+    var exhausted = "";
+    try
+    {
+        await ChatClientFactory.Create(retryProvider, "m", null, null, throttled).GetResponseAsync(retryMessages);
+    }
+    catch (Exception ex)
+    {
+        exhausted = ex.GetType().Name + ": " + ex.Message;
+    }
+    if (throttled.Attempts != ChatClientFactory.MaxRetries + 1 || exhausted.Length == 0)
+        throw new Exception($"A provider that only ever answers 429 took {throttled.Attempts} attempt(s) and threw "
+                            + (exhausted.Length == 0 ? "nothing at all" : exhausted));
+
+    // The streaming wire is what a chat turn actually uses, and the policy is documented not to restart a response
+    // whose body has already begun. So this one measures instead of assuming it matches the two calls above — the
+    // number lands in the PASS line, where the next reader can see what a rate limit costs a streamed answer.
+    var streaming = new RateLimitWire(failFirst: 1);
+    try
+    {
+        await foreach (var update in ChatClientFactory.Create(retryProvider, "m", null, null, streaming)
+                           .GetStreamingResponseAsync(retryMessages, new ChatOptions()))
+            _ = update;
+    }
+    catch (Exception ex)
+    {
+        streaming.Failure = ex.GetType().Name;
+    }
+    if (streaming.Attempts != 2)
+        throw new Exception($"The streamed call took {streaming.Attempts} attempt(s) where the measured answer was "
+                            + "2 — a 429 that arrives before the body is consumed is retried on this wire too "
+                            + streaming.Failure);
+    Console.WriteLine("PASS: the retry policy is stated, budgeted and counted — a 429 recovers inside 2 attempts, an "
+                      + "exhausted one stops at " + throttled.Attempts + ", the streamed call retries the same way, "
+                      + "and the provider's words come back as "
+                      + exhausted[..Math.Min(96, exhausted.Length)].Replace('\n', '·').Replace("\r", "") + ".");
+
 
     // ProviderStore keeps keys out of JSON; CredentialStore owns the key and rehydrates it from the
     // secret store. The split is the whole point: a provider is a declaration, an account is a secret.
@@ -7119,6 +7181,46 @@ sealed class WireRecorder : System.Net.Http.HttpMessageHandler
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
         };
+    }
+}
+
+/// <summary>A transport that answers 429 — optionally forever — and then a valid completion, counting every attempt
+/// the pipeline made. The retry path is otherwise invisible from this repository: the policy that implements it
+/// lives in a dependency, so without a counter here nothing knows how many requests a turn really costs, and a
+/// dropped retry would look exactly like a working channel that simply was not needed today.</summary>
+file sealed class RateLimitWire(int failFirst, bool always = false) : System.Net.Http.HttpMessageHandler
+{
+    public int Attempts;
+    public bool SawRetryAfter;
+    public string Failure = "";
+
+    protected override System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+    {
+        Attempts++;
+        if (always || Attempts <= failFirst)
+        {
+            var throttled = new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+            {
+                Content = new StringContent(
+                    "{\"error\":{\"message\":\"Rate limit reached. Slow down.\",\"type\":\"rate_limit_error\","
+                    + "\"code\":\"rate_limit_exceeded\"}}", Encoding.UTF8, "application/json"),
+            };
+            // Zero, not absent: the policy has to be seen reading the provider's own wait, and a real delay would
+            // make the suite depend on a clock.
+            throttled.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.Zero);
+            SawRetryAfter = true;
+            return System.Threading.Tasks.Task.FromResult(throttled);
+        }
+
+        var responses = request.RequestUri?.AbsolutePath.Contains("responses", StringComparison.Ordinal) == true;
+        return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(responses
+                ? "{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"model\":\"m\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}"
+                : "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}",
+                Encoding.UTF8, "application/json"),
+        });
     }
 }
 

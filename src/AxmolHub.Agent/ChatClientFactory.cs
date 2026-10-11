@@ -22,6 +22,22 @@ namespace AxmolHub.Agent;
 /// </summary>
 public static class ChatClientFactory
 {
+    /// <summary>
+    /// How many retries the request pipeline may make after its first attempt, on both wires.
+    ///
+    /// <para>Two — three attempts in total — which is the number the client model's own default already applied.
+    /// The number is not the change; <b>owning</b> it is. Inherited, it was invisible in this file, undocumented,
+    /// unasserted, and one SDK bump away from becoming a different number that nobody chose, on a request path
+    /// where a retry is what makes a rate-limited provider feel like a broken connection.</para>
+    ///
+    /// <para>The budget this has to be read against: a turn may run <see cref="ChatPipeline.MaximumToolIterations"/>
+    /// tool round-trips, and every one of them is a request that can now be attempted three times — up to
+    /// 48 requests in a turn, each of which can sit out the app's own idle timeout while the provider's
+    /// <c>Retry-After</c> says how long the next attempt waits. That is why the number stays small and why the
+    /// checks count the requests rather than trusting the policy.</para>
+    /// </summary>
+    public const int MaxRetries = 2;
+
     public static IChatClient Create(Core.ModelProvider provider, string? modelOverride = null)
         => Create(provider, modelOverride, null);
 
@@ -92,6 +108,9 @@ public static class ChatClientFactory
             // NoWarn would also be swallowing the next one.
 #pragma warning disable OPENAI001 // OpenAI.Responses is marked experimental in the 2.14 SDK.
             var options = new ResponsesClientOptions { Endpoint = new Uri(provider.BaseUrl) };
+            // The retry decision is stated on both wires from one constant, so the two cannot drift into two
+            // different numbers of attempts.
+            options.RetryPolicy = new ClientRetryPolicy(MaxRetries);
             if (transport is not null)
                 options.Transport = new HttpClientPipelineTransport(new System.Net.Http.HttpClient(transport));
             if (headers is not null)
@@ -101,6 +120,7 @@ public static class ChatClientFactory
         }
 
         var chatOptions = new OpenAIClientOptions { Endpoint = new Uri(provider.BaseUrl) };
+        chatOptions.RetryPolicy = new ClientRetryPolicy(MaxRetries);
         if (transport is not null)
             chatOptions.Transport = new HttpClientPipelineTransport(new System.Net.Http.HttpClient(transport));
         if (reasoning is not null)
