@@ -221,18 +221,26 @@ public static class MemoryStore
 
         try
         {
-            // Bounded rather than whole-file: a character-capped read is what keeps a 40 MB file — or one whose
-            // name somebody reused for a data dump — from being slurped into memory and then thrown away.
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = new StreamReader(stream);
-            var buffer = new char[MaxCharterCharacters + 1];
-            var read = reader.ReadBlock(buffer, 0, buffer.Length);
-            var text = new string(buffer, 0, read).Trim();
+
+            // A charter short enough to scan is read whole, which is what lets the cut below land on a section
+            // boundary. Past that ceiling the read stays a bounded head window: a 40 MB file — or one whose name
+            // somebody reused for a data dump — must not be slurped to be thrown away, and a file that size has no
+            // section an assistant should follow anyway.
+            var scannable = stream.Length <= MaxCharterScanBytes;
+            string text;
+            if (scannable) text = reader.ReadToEnd().Trim();
+            else
+            {
+                var buffer = new char[MaxCharterCharacters + 1];
+                text = new string(buffer, 0, reader.ReadBlock(buffer, 0, buffer.Length)).Trim();
+            }
             if (text.Length == 0) return "";
 
-            var body = read > MaxCharterCharacters
-                ? text[..MaxCharterCharacters] + "\n…(truncated)"
-                : text;
+            var body = text.Length <= MaxCharterCharacters ? text
+                : scannable ? CutBySection(text)
+                : text[..MaxCharterCharacters] + CharterCut;
             return "\n\n# Project instructions (AGENTS.md, read from the workspace root)\n"
                    + "The people who work in this repository wrote the following for their project. Follow it where "
                    + "the user has not said otherwise — their build and test commands, their layout, their "
@@ -246,6 +254,77 @@ public static class MemoryStore
         {
             return "";
         }
+    }
+
+    /// <summary>How long a charter may be and still be read whole so its sections can be chosen. The injected text
+    /// is bounded by <see cref="MaxCharterCharacters"/> either way; this only decides whether the file's tail is
+    /// in memory to be chosen from.</summary>
+    private const int MaxCharterScanBytes = 256 * 1024;
+
+    /// <summary>The marker left where charter text was dropped. Its exact spelling is asserted, because a charter
+    /// that lost rules in silence is worse than one that says so.</summary>
+    private const string CharterCut = "\n…(truncated)";
+
+    /// <summary>
+    /// Cut an oversized charter at section boundaries, spending the budget on its head <b>and</b> its tail rather
+    /// than on its head alone.
+    ///
+    /// <para>The sections at the end of such a file are usually the rules about rules — how to name things, where
+    /// the work log lives, what a commit title looks like — and a plain head cut throws exactly those away while
+    /// keeping the introductory prose nobody re-reads. Hub met this on its own repository: the comment-language
+    /// rule and the pointer to <c>.agents</c> sat past the cap, so the assistant developing Hub was never told
+    /// them.</para>
+    ///
+    /// <para>Half the budget goes to the head, the rest to the tail, both snapped to the block edges
+    /// <see cref="Sections"/> reports. One block alone over half the budget still gets its opening lines, because
+    /// a charter whose first lines never arrive is a charter the model cannot attribute; a file with no section at
+    /// all falls back to the head cut, where there is no boundary to snap to.</para>
+    /// </summary>
+    private static string CutBySection(string text)
+    {
+        var blocks = Sections(text);
+        if (blocks.Count < 2) return text[..MaxCharterCharacters] + CharterCut;
+
+        var headRoom = MaxCharterCharacters / 2;
+        var head = 0;
+        var headCount = 0;
+        while (headCount < blocks.Count && head + blocks[headCount].Length <= headRoom)
+        {
+            head += blocks[headCount].Length;
+            headCount++;
+        }
+        if (headCount == 0)
+        {
+            head = headRoom;
+            headCount = 1;
+        }
+
+        var tailStart = blocks.Count;
+        var tail = 0;
+        while (tailStart > headCount && tail + blocks[tailStart - 1].Length <= MaxCharterCharacters - head)
+        {
+            tail += blocks[tailStart - 1].Length;
+            tailStart--;
+        }
+
+        var headText = string.Concat(blocks.Take(headCount));
+        if (headText.Length > head) headText = headText[..head];
+        return tailStart < blocks.Count
+            ? headText + CharterCut + "\n" + string.Concat(blocks.Skip(tailStart))
+            : headText + CharterCut;
+    }
+
+    /// <summary>The text cut before every line that opens with <c>#</c>, index 0 included, so concatenating the
+    /// result reproduces <paramref name="text"/> exactly and a block is one section as its author wrote it.</summary>
+    private static IReadOnlyList<string> Sections(string text)
+    {
+        var starts = new List<int> { 0 };
+        for (var i = 1; i < text.Length; i++)
+            if (text[i] == '#' && text[i - 1] == '\n') starts.Add(i);
+        var blocks = new List<string>(starts.Count);
+        for (var index = 0; index < starts.Count; index++)
+            blocks.Add(text[starts[index]..(index + 1 < starts.Count ? starts[index + 1] : text.Length)]);
+        return blocks;
     }
 
     /// <summary>Topic names are kebab-case with a <c>.md</c> suffix and nothing else: no separators, no drive,

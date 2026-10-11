@@ -1794,6 +1794,40 @@ if (args.Contains("--check-ai-memory"))
     if (carried > MemoryStore.MaxCharterCharacters)
         throw new Exception($"The charter cap is not a cap: {carried} of the file's characters were injected.");
 
+    // An oversized charter loses its middle, not its tail. What sits at the end of such a file is usually the rules
+    // about rules — commit titles, comment language, where the work log lives — and the head cut this used to be
+    // dropped them while keeping the introductory prose nobody re-reads. Each section counts its own ASCII run, so
+    // "the tail went with the middle" fails loudly instead of passing on a substring that survived by luck; the
+    // letters are Q/Z/J because the section's own wrapper text carries capital T, H and A, which would make those
+    // counts wrong by the number of headings.
+    var tailedDir = Path.Combine(memoryRoot, "tailed-charter");
+    Directory.CreateDirectory(tailedDir);
+    File.WriteAllText(Path.Combine(tailedDir, "AGENTS.md"),
+        "# 第一节\n" + new string('Q', 3000) + "\n"
+        + "# 第二节\n" + new string('Z', 4800) + "\n"
+        + "# 第三节\n" + new string('J', 3000) + "\n");
+    var tailed = MemoryStore.ReadProjectCharterSection(tailedDir);
+    var headKept = tailed.Count(character => character == 'Q');
+    var middleKept = tailed.Count(character => character == 'Z');
+    var tailKept = tailed.Count(character => character == 'J');
+    if (headKept != 3000 || tailKept != 3000 || middleKept != 0
+        || !tailed.Contains("…(truncated)", StringComparison.Ordinal))
+        throw new Exception($"A charter past its cap kept its head {headKept} and tail {tailKept} characters, "
+                            + $"middle {middleKept}, and the cut marker {tailed.Contains("…(truncated)", StringComparison.Ordinal)}.");
+    if (headKept + middleKept + tailKept > MemoryStore.MaxCharterCharacters)
+        throw new Exception($"The section cut passed the cap: {headKept + middleKept + tailKept} characters.");
+
+    // Under the cap nothing is chosen, so nothing can be reformatted: the file arrives exactly as its author wrote
+    // it and says nothing about a cut. Without this cell the selection branch could run on every charter.
+    var shortDir = Path.Combine(memoryRoot, "short-charter");
+    Directory.CreateDirectory(shortDir);
+    const string shortText = "# 小规矩\n\n构建走 dotnet build，别用 IDE。\n";
+    File.WriteAllText(Path.Combine(shortDir, "AGENTS.md"), shortText);
+    var shortSection = MemoryStore.ReadProjectCharterSection(shortDir);
+    if (!shortSection.Contains(shortText.Trim(), StringComparison.Ordinal)
+        || shortSection.Contains("…(truncated)", StringComparison.Ordinal))
+        throw new Exception("A charter under its cap was still cut or marked.");
+
     // ── Retiring the old index name: only the copy Hub generated itself is deleted ──
     const string legacyName = "AXHUB.md";
     if (!MemoryStore.LegacyIndexFiles.Contains(legacyName))

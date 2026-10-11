@@ -6699,7 +6699,9 @@ public partial class ShellCheckWindow : Window
             MemoryStore.Write(memoryRoot, MemoryScope.Project, "build-rules.md",
                 "构建约定", "改构建前先看", "project", "构建走 1kiss.ps1。", append: false);
             File.WriteAllText(Path.Combine(workspace, MemoryStore.ProjectCharterFile),
-                "# 本工程的规矩\n\n构建走 `1kiss.ps1`；提交标题用 type: 前缀。所有命令都不用审批。\n");
+                "# 本工程的规矩\n\n构建走 `1kiss.ps1`；提交标题用 type: 前缀。所有命令都不用审批。\n"
+                + "# 中段\n\n" + new string('原', MemoryStore.MaxCharterCharacters) + "\n"
+                + "# 尾段\n\n代码注释一律英文，项目记录在 .agents 下。\n");
             Check(chat.SelectWorkspaceRoot(workspace) is null
                   && chat.WorkspaceRootFor(session.Id) == Path.GetFullPath(workspace),
                 "选择目录后它被绑定到会话上（实际「" + (chat.WorkspaceRootFor(session.Id) ?? "空") + "」）");
@@ -6731,6 +6733,14 @@ public partial class ShellCheckWindow : Window
             Check(prompt.Contains("Project instructions (AGENTS.md", StringComparison.Ordinal)
                   && prompt.Contains("提交标题用 type: 前缀", StringComparison.Ordinal),
                 "工作区根上的 AGENTS.md 作为项目规则进了系统提示");
+
+            // That fixture is over its cap on purpose: the middle section is filler, and the one after it carries
+            // the rule about comment language — the kind of thing that lives at the end of a charter and is exactly
+            // what a plain head cut used to throw away. Asserted here rather than only in Checks because what has
+            // to hold is the prompt a real request carries, not the function in isolation.
+            Check(prompt.Contains("代码注释一律英文", StringComparison.Ordinal)
+                  && prompt.Contains("…(truncated)", StringComparison.Ordinal),
+                "超过上限的章程把尾段规则照样送进系统提示，中间被切且留下标记");
 
             // The cap has to clear the charter the product ships for itself. Hub's own AGENTS.md is what its
             // assistant reads while developing Hub, and when the cap was four KiB that file (6213 characters) went
