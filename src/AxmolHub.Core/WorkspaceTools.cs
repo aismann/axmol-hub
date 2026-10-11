@@ -315,9 +315,14 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                  + "Nothing is written to the workspace.")]
     public string CaptureScreen(
         [Description("Part of the window's title, matched case-insensitively. Leave it empty only when fullscreen "
-                     + "is true; a target matching several windows is refused rather than guessed.")]
+                     + "is true or process_id names the window; a target matching several windows is refused "
+                     + "rather than guessed.")]
         string target = "",
-        [Description("Capture the entire display instead of one window.")] bool fullscreen = false)
+        [Description("Capture the entire display instead of one window.")] bool fullscreen = false,
+        [Description("The process that owns the window, when the title alone does not pick exactly one — two Hub "
+                     + "windows can carry the same title, and the refusal lists each one's pid. Narrowing only: a "
+                     + "pid owning several windows is still refused.")]
+        int process_id = 0)
     {
         // No path guard runs here, deliberately: this call reads the screen and stores into Hub's own session
         // directory, so the sandbox has nothing to say about it. What does have something to say is the approval
@@ -328,12 +333,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             return $"Refused: this build has no capture host for {backend.Label}. Ask the user for a screenshot "
                    + "instead; do not retry the capture.";
 
-        // The whole display is the one call with no target; anything else has to name exactly one window first.
+        // The whole display is the one call with no address; anything else has to name exactly one window first —
+        // by title, by process, or by both.
         var wanted = (target ?? "").Trim();
         CapturableWindow? window = null;
-        if (!fullscreen || wanted.Length > 0)
+        if (!fullscreen || wanted.Length > 0 || process_id > 0)
         {
-            var match = ScreenCapture.Find(TryWindows(host), wanted);
+            var match = ScreenCapture.Find(TryWindows(host), wanted, process_id);
             if (!match.Ok) return match.Refusal!;
             window = match.Window;
         }

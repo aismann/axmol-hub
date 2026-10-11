@@ -3664,9 +3664,15 @@ if (args.Contains("--check-ai-tools"))
     // ── capture_screen: target matching, black frames not sent, normal frames landing in the session directory ──
     // The tool's every branch is asserted against a host that draws nothing, because the decision — which window,
     // is this frame worth sending, where do the bytes go — is Core's, and only the pixels are the host's.
-    if (!bound["capture_screen"].JsonSchema.GetRawText().Contains("fullscreen", StringComparison.Ordinal)
-        || !bound["capture_screen"].JsonSchema.GetRawText().Contains("target", StringComparison.Ordinal))
-        throw new Exception("capture_screen's schema hides the two arguments the model has to send.");
+    var captureSchema = bound["capture_screen"].JsonSchema.GetRawText();
+    if (!captureSchema.Contains("fullscreen", StringComparison.Ordinal)
+        || !captureSchema.Contains("target", StringComparison.Ordinal)
+        || !captureSchema.Contains("process_id", StringComparison.Ordinal)
+        // The camelCase needle is the point, not decoration: AIFunctionFactory exports the C# parameter name with
+        // no naming policy, so spelling the parameter `processId` would reach the model in camelCase and every
+        // call it made would arrive with an argument the body never reads.
+        || captureSchema.Contains("processId", StringComparison.Ordinal))
+        throw new Exception("capture_screen's schema hides an argument the model has to send, or exports it in camelCase.");
 
     // A scope with no capture host is the honest case on a host this build has not taught: the model is told the
     // capture is not wired in, and is told not to retry it. A black frame would read as a working channel.
@@ -3758,7 +3764,59 @@ if (args.Contains("--check-ai-tools"))
     var where = Path.Combine(shotRoot, "ai", "sessions", session.Id);
     if (Directory.GetFiles(where).Length != 1 || landed.Single() is not { File: "1.png", MediaType: "image/png" })
         throw new Exception($"The frame Hub stored is not the one the turn names: {landed.Single()}");
-    Console.WriteLine("PASS: capture_screen refuses an ambiguous target, refuses a blank frame, and stores only a frame worth sending.");
+
+    // The case a process id exists for: two Hub windows with byte-identical titles — the installed app and the dev
+    // build made from the same tree, both titled from the assembly version. A title cannot pick one, and the
+    // refusal has to say that and name the way out; a pid can, and neither half is ever allowed to guess.
+    var twinRoot = Path.Combine(toolRoot, "twin-shots");
+    var twinShots = new ConversationStore(twinRoot);
+    var twinSession = Conversation.Create("orcarouter");
+    var twinAsked = new List<CapturableWindow?>();
+    var twinLanded = new List<ChatImage>();
+    var twins = new ScreenCaptureBridge(
+        () => [new CapturableWindow(11, "Axmol Hub v0.9.3", 200, 1200, 800),
+               new CapturableWindow(12, "Axmol Hub v0.9.3", 201, 1280, 820)],
+        window =>
+        {
+            twinAsked.Add(window);
+            return new CapturedFrame(pngBytes, window?.Width ?? 1, window?.Height ?? 1,
+                new FrameStats(window?.Width ?? 1, window?.Height ?? 1, 240, 182.4));
+        });
+    var twinHost = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, twinSession.Id, [], log,
+        null, twinShots, null, twins, frames => twinLanded.AddRange(frames)));
+    var twinRefusal = twinHost.CaptureScreen("Axmol Hub");
+    if (!twinRefusal.Contains("matches 2 windows", StringComparison.Ordinal)
+        || !twinRefusal.Contains("process_id", StringComparison.Ordinal) || twinAsked.Count != 0)
+        throw new Exception($"Two windows sharing a title were not refused by title: {twinRefusal}");
+    var picked = twinHost.CaptureScreen("Axmol Hub", false, 201);
+    if (!picked.Contains("pid 201", StringComparison.Ordinal) || picked.Contains("pid 200", StringComparison.Ordinal)
+        || twinAsked.Single() is not { } chosen || chosen.Handle != 12 || twinLanded.Count != 1)
+        throw new Exception($"The process id did not pick the window it named: {picked}");
+
+    // A pid narrows the owner, never the window: one process with two windows is still two answers.
+    var twinPid = ScreenCapture.Find([new CapturableWindow(21, "助手页", 700, 1, 1),
+                                      new CapturableWindow(22, "设置页", 700, 1, 1)], "", 700);
+    if (twinPid.Ok || !twinPid.Refusal!.Contains("matches 2 windows", StringComparison.Ordinal))
+        throw new Exception($"A process owning two windows was picked anyway: {twinPid.Refusal}");
+
+    // The list a refusal prints is what the model reads next, so this Hub's own windows are marked — an assistant
+    // developing Hub is looking for Hub's window, and there are usually two of them on the screen.
+    var marked = ScreenCapture.Find([new CapturableWindow(31, "Axmol Hub v0.9.3", Environment.ProcessId, 1, 1),
+                                     new CapturableWindow(32, "Axmol Hub v0.9.3", Environment.ProcessId + 1, 1, 1)],
+        "Axmol Hub");
+    if (marked.Ok || !marked.Refusal!.Contains("(this Hub)", StringComparison.Ordinal))
+        throw new Exception($"The refusal did not say which of those windows this Hub owns: {marked.Refusal}");
+
+    // A card that shows a bare number is a card nobody can approve: the pid is how the model addresses the window,
+    // the title is what the person is agreeing to let leave the machine.
+    var pidCard = ToolPreviews.PreviewFor("capture_screen", """{"process_id":201}""",
+        new WorkspaceToolScope(workspace, guards, dataRoot, twinSession.Id, [], null, null, null, null, twins));
+    if (!pidCard.Contains("window \"Axmol Hub v0.9.3\"", StringComparison.Ordinal)
+        || !pidCard.Contains("pid 201", StringComparison.Ordinal))
+        throw new Exception($"A capture by process id alone put no window on the card: {pidCard}");
+
+    Console.WriteLine("PASS: capture_screen refuses an ambiguous target, refuses a blank frame, narrows by process id "
+                      + "without ever picking, and stores only a frame worth sending.");
 
     // ── web_fetch: the network tool that never makes a single real request here ──
     // Every branch of a page fetch is a decision over a response somebody hands back, so the host here is a

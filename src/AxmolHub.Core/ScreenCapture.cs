@@ -43,36 +43,55 @@ public static class ScreenCapture
         public bool Ok => Refusal is null;
     }
 
-    /// <summary>Substring match on the title, case-insensitive, the way a person names a window when they cannot
-    /// see the exact title. An unambiguous hit is the only answer: guessing between two windows would send the
-    /// assistant a frame it did not ask for, and it cannot tell that from one that has nothing on it.</summary>
-    public static Match Find(IReadOnlyList<CapturableWindow> windows, string? target)
+    /// <summary>
+    /// The one window an answer was asked for, or the sentence that says it could not be picked out. A
+    /// <c>null</c> window with no refusal is the whole display.
+    ///
+    /// <para>Substring matching on the title is how a person names a window they cannot see exactly. The process id
+    /// is the other half of the address: two Hub windows carry byte-identical titles — the installed app and the
+    /// dev build somebody is developing from the same tree — and a capture that cannot tell them apart hands the
+    /// assistant a frame of the wrong one, which looks exactly like success. <paramref name="processId"/> narrows
+    /// the search; it never picks. An unambiguous hit is still the only answer.</para>
+    /// </summary>
+    public static Match Find(IReadOnlyList<CapturableWindow> windows, string? target, int processId = 0)
     {
         var wanted = (target ?? "").Trim();
-        if (wanted.Length == 0)
+        if (wanted.Length == 0 && processId <= 0)
             return new Match(null,
                 "Refused: capture_screen needs a window title, or fullscreen=true to take the whole display. Say "
                 + "which one; do not call it with no target.");
 
         var hits = windows.Where(window =>
-            window.Title.Contains(wanted, StringComparison.OrdinalIgnoreCase)).ToList();
+            (wanted.Length == 0 || window.Title.Contains(wanted, StringComparison.OrdinalIgnoreCase))
+            && (processId <= 0 || window.ProcessId == processId)).ToList();
         if (hits.Count == 1) return new Match(hits[0], null);
         if (hits.Count == 0)
             return new Match(null,
-                $"Refused: no visible window title contains \"{wanted}\". On screen now: {Named(windows)}. Name one "
-                + "of those, or capture the whole display with fullscreen=true; do not retry this target.");
+                $"Refused: no visible window title contains the target {Addressed(wanted, processId)}. On screen "
+                + $"now: {Named(windows)}. Name one of those, narrow it with more of its title, or pass its process "
+                + "id as process_id; or capture the whole display with fullscreen=true. Do not retry this target.");
 
         return new Match(null,
-            $"Refused: \"{wanted}\" matches {hits.Count} windows: {Named(hits)}. Narrow it to one title — Hub will "
-            + "not pick which of them you meant; do not retry the same target.");
+            $"Refused: {Addressed(wanted, processId)} matches {hits.Count} windows: {Named(hits)}. Narrow it to one "
+            + "— more words of the title, or the process id as process_id. Hub will not pick which of them you "
+            + "meant; do not retry the same target.");
     }
 
+    /// <summary>What the call asked for, in the words the model can act on. Naming only the title when the caller
+    /// also gave a pid would send it chasing a title that was never the ambiguous half.</summary>
+    private static string Addressed(string wanted, int processId)
+        => wanted.Length > 0
+            ? $"\"{wanted}\"" + (processId > 0 ? $" from pid {processId}" : "")
+            : $"pid {processId}";
+
     /// <summary>Titles, size and owner, capped. A refusal that lists nothing leaves the model to invent a title,
-    /// which it does with confidence.</summary>
+    /// which it does with confidence. The current process's own windows are marked, because an assistant working
+    /// on Hub is looking for Hub's window and there are usually two of them on the screen.</summary>
     private static string Named(IReadOnlyList<CapturableWindow> windows)
     {
         var head = string.Join("; ", windows.Take(MaxWindowsListed)
-            .Select(window => $"\"{window.Title}\" {window.Width}×{window.Height} pid {window.ProcessId}"));
+            .Select(window => $"\"{window.Title}\" {window.Width}×{window.Height} pid {window.ProcessId}"
+                              + (window.ProcessId == Environment.ProcessId ? " (this Hub)" : "")));
         return windows.Count > MaxWindowsListed
             ? $"{head} — and {windows.Count - MaxWindowsListed} more not listed"
             : head;

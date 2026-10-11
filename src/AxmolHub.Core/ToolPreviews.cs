@@ -122,18 +122,20 @@ public static class ToolPreviews
     }
 
     /// <summary>Which window is about to be drawn, or the whole display. A person approving this is approving
-    /// "this is what the model gets to see", so the card names the window the target resolves to — and when the
-    /// target is ambiguous the card says so, because the tool will refuse it the same way.</summary>
+    /// "this is what the model gets to see", so the card names the window the address resolves to — and when the
+    /// address is ambiguous the card says so, because the tool will refuse it the same way. A bare process id
+    /// never reaches the card alone: whoever is deciding has to see the window they are agreeing to show.</summary>
     private static string CapturePreview(IReadOnlyDictionary<string, JsonElement> arguments, WorkspaceToolScope scope)
     {
         var backend = CaptureBackends.ForCurrent();
         if (!backend.Available) return $"capture_screen · {backend.Refusal}";
         var target = Text(arguments, "target");
-        if (string.IsNullOrWhiteSpace(target) && Flag(arguments, "fullscreen"))
+        var processId = Integer(arguments, "process_id");
+        if (string.IsNullOrWhiteSpace(target) && processId <= 0 && Flag(arguments, "fullscreen"))
             return $"capture_screen · fullscreen · {backend.Label}";
         if (scope.Screen is not { } host)
-            return $"capture_screen · \"{target}\" · this build has no capture host for {backend.Label}, so the "
-                   + "call will be refused";
+            return $"capture_screen · {Addressed(target, processId)} · this build has no capture host for "
+                   + $"{backend.Label}, so the call will be refused";
 
         IReadOnlyList<CapturableWindow> windows = [];
         try
@@ -142,15 +144,22 @@ public static class ToolPreviews
         }
         catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
-            // A card still has to render, and it renders the target the model asked for.
+            // A card still has to render, and it renders the address the model asked for.
         }
-        var match = ScreenCapture.Find(windows, target);
-        if (!match.Ok) return $"capture_screen · \"{target}\"\n{match.Refusal}";
+        var match = ScreenCapture.Find(windows, target, processId);
+        if (!match.Ok) return $"capture_screen · {Addressed(target, processId)}\n{match.Refusal}";
         return match.Window is { } found
             ? $"capture_screen · window \"{found.Title}\" (pid {found.ProcessId}) · {found.Width}×{found.Height} · "
               + $"{backend.Label}"
             : $"capture_screen · fullscreen · {backend.Label}";
     }
+
+    /// <summary>How the call addressed the window, in the words a person reading the card already knows: the title
+    /// is the thing they can judge, the pid is only there because two windows can share a title.</summary>
+    private static string Addressed(string target, int processId)
+        => string.IsNullOrWhiteSpace(target)
+            ? $"pid {processId}"
+            : $"\"{target}\"" + (processId > 0 ? $" · pid {processId}" : "");
 
     /// <summary>Where this machine is about to go. The host is the thing a person is deciding about, so it leads the
     /// card with the path and query after it — the query comes because a query is what gets sent, and it is the part
@@ -231,4 +240,9 @@ public static class ToolPreviews
         => arguments.TryGetValue(name, out var value) && value.TryGetInt32(out var number)
             ? number.ToString(System.Globalization.CultureInfo.InvariantCulture)
             : "(default)";
+
+    /// <summary>An integer argument as the tool sees it: absent or unreadable is the same 0 the tool's own default
+    /// parameter carries, so the card resolves the address exactly the way the body will.</summary>
+    private static int Integer(IReadOnlyDictionary<string, JsonElement> arguments, string name)
+        => arguments.TryGetValue(name, out var value) && value.TryGetInt32(out var number) ? number : 0;
 }
