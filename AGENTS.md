@@ -26,7 +26,10 @@ Rules that follow from this:
 - **Say a thing once.** The model lives only in the composer chip; the title only in the top bar.
   Don't add a second label repeating information already on screen.
 - **Hide secondary things.** History lists, search, and log details live in collapsible/dismissible
-  chrome; the default view is just the task at hand. Empty sessions are reused, not stacked.
+  chrome; the default view is just the task at hand. Empty sessions are reused, not stacked — and an empty
+  session does not take a row either. **A place the user named outlives the sessions in it.** A workspace that
+  has run out of conversations keeps its header and says so in one muted line, because the ＋ and the path
+  repair live on that header; only removing the workspace makes it leave.
 - **Surfaces must clip.** Zero-width / collapsed containers need `ClipToBounds`; overflowing children
   painting through is a bug, not a style. Put scrollable lists in a bounded (DockPanel fill / Grid
   row) slot — a StackPanel hands out infinite height and breaks scrolling.

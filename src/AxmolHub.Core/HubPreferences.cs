@@ -69,8 +69,9 @@ public sealed class HubPreferences
     /// <c>recent</c> / <c>archived</c>); the value is <b>the user's explicit choice</b>. A dictionary rather than a list of booleans because the
     /// defaults are not uniform: workspaces and "Chats" start expanded, "Archived" starts collapsed, and "I opened this collapsed one" has to stay
     /// distinguishable from "I never touched this one". The copy changes but the keys do not — <c>recent</c> doubles as the stored collapse
-    /// preference, so renaming the string would orphan that preference. Groups are derived from sessions and may exist today and be gone tomorrow,
-    /// so an unrecognised key simply never renders; no cleanup is needed and leaving it costs nothing.
+    /// preference, so renaming the string would orphan that preference. A group can now outlive its sessions (the workspace registry), but it can
+    /// still leave — removed, or re-pathed away — so the same rule holds: an unrecognised key simply never renders, no cleanup is needed, and
+    /// leaving it costs nothing. What it does buy is a fold that survives an empty stretch, which is the one time a group's state is all there is.
     /// </summary>
     public Dictionary<string, bool> SidebarGroupExpanded { get; set; } = [];
 

@@ -1,10 +1,13 @@
 namespace AxmolHub.Core;
 
 /// <summary>
-/// The keys the conversation list sorts sessions into. They are derived, never stored: a session's workspace is
-/// the fact (<see cref="Conversation.WorkspaceRoot"/>), and which bucket it lands in is a reading of that fact —
-/// so moving a directory and re-pointing the sessions that used it moves the group with them, with nothing left
-/// behind to forget.
+/// The keys the conversation list sorts sessions into. A key is still a reading of a path rather than an identity
+/// somebody invented — <see cref="Workspace"/> derives it from the session's directory
+/// (<see cref="Conversation.WorkspaceRoot"/>) — so moving a directory and re-pointing the sessions that used it
+/// moves the group with them. What is stored now is the other half of the question: <i>which</i> directories are
+/// workspaces at all lives in <see cref="WorkspaceStore"/>, because a workspace whose last session was deleted or
+/// put away is still the place somebody named, and a group that vanished with its sessions took its ＋ and its
+/// 编辑路径 entry point along with them.
 ///
 /// <para>Some of the keys name a bucket rather than a place: sessions with no workspace at all, sessions the user
 /// put away, and the heading the workspace groups hang under. Those are real states of the list, not paths, so
