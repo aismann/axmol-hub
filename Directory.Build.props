@@ -19,6 +19,9 @@
          stop copying extra copies anywhere else. -->
     <Version>0.9.4</Version>
 
+    <Company>Simdsoft Limited</Company>
+    <Copyright>Copyright &#169; 2026 Simdsoft Limited</Copyright>
+
     <!-- The NuGet-side equivalent of the repo's existing "version + SHA-256 double pin"
          philosophy: pin the shipped dependency closure in packages.lock.json so different
          dev machines don't resolve different versions.
