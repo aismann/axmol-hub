@@ -109,6 +109,12 @@ internal sealed class TransferQueue
         /// <summary>The failure message, or null. Shown inline on the row.</summary>
         public string? Error { get; private set; }
 
+        /// <summary>What the owner of this transfer estimated rather than measured. Never in
+        /// <see cref="MeasureText"/>, only in <see cref="HintText"/>.</summary>
+        private long? EstimatedTotal { get; set; }
+
+        private double? EstimatedRate { get; set; }
+
         /// <summary>
         /// The exception behind <see cref="Error"/>, kept whole. The row only needs the message, but the
         /// caller that owns the work needs the type: <see cref="HubWorkspace.ShowOperationErrorAsync"/>
@@ -176,6 +182,28 @@ internal sealed class TransferQueue
             OnProgress?.Invoke();
         }
 
+        /// <summary>
+        /// What the transport cannot measure but its owner can estimate: the size of the transfer Velopack
+        /// is about to make, and the rate derived from our own clock against it.
+        ///
+        /// <para>These never reach <see cref="MeasureText"/>. An estimate is not a measurement, and putting
+        /// one in the same column as a measured <c>12.4 MB / 30.1 MB</c> would let a guessed total look like
+        /// a fact the server confirmed. They reach <see cref="HintText"/> — the tooltip — which is where this
+        /// pair has always lived.</para>
+        /// </summary>
+        public void ReportEstimate(long? totalBytes, double? rate)
+        {
+            EstimatedTotal = totalBytes;
+            EstimatedRate = rate;
+            OnProgress?.Invoke();
+        }
+
+        /// <summary>The estimate, in words, or null when there is nothing honest to say.</summary>
+        public string? HintText => EstimatedTotal is { } total && total > 0
+            ? string.Format(HubStrings.Get("TransferEstimateSize"), FormatBytes(total))
+              + (EstimatedRate is { } rate && rate > 0 ? " · " + UpdateService.FormatSpeed(rate) : "")
+            : null;
+
         /// <summary>The bytes are down and the rest is local work.</summary>
         public void MarkApplying()
         {
@@ -239,6 +267,8 @@ internal sealed class TransferQueue
             Error = null;
             Fault = null;
             Report = Progress.Unknown;
+            EstimatedTotal = null;
+            EstimatedRate = null;
             _completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 

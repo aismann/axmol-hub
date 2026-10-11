@@ -390,6 +390,9 @@ internal sealed class UpdateService
             // whatever it is really transferring (see DescribeDownload) against our own clock. Sampling is
             // clamped to 500 ms — a finer window would only make the tooltip jitter.
             var (totalBytes, transferPercent) = DescribeDownload(update);
+            // The row gets the estimate before the first sample lands, so hovering it says what is coming
+            // even in the first second, while the rate is still nothing to report.
+            item.ReportEstimate(totalBytes, null);
             var clock = Stopwatch.StartNew();
             long sampledBytes = 0;
             var sampledMs = 0L;
@@ -407,8 +410,10 @@ internal sealed class UpdateService
                 {
                     // Past the transfer phase (delta updates patch locally from here): there is no
                     // download rate left to report, so don't keep showing a stale one. The row says the
-                    // same thing — the work is local now, and unmeasurable.
+                    // same thing — the work is local now, and unmeasurable — and its tooltip loses the
+                    // size too, because the bytes it estimated are no longer the bytes being moved.
                     DownloadBytesPerSecond = 0;
+                    item.ReportEstimate(null, null);
                     item.MarkApplying();
                 }
                 else if (totalBytes > 0 && window >= sampleWindowMs)
@@ -420,6 +425,7 @@ internal sealed class UpdateService
                         : DownloadBytesPerSecond * (1 - smoothing) + instant * smoothing;
                     sampledBytes = bytes;
                     sampledMs = elapsedMs;
+                    item.ReportEstimate(totalBytes, DownloadBytesPerSecond);
                 }
 
                 Changed?.Invoke();

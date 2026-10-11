@@ -924,6 +924,13 @@ public partial class MainWindow : Window
         private readonly ProgressBar _bar = new() { Minimum = 0, Maximum = 100, Height = 6 };
         private readonly TextBlock _measure = new() { Classes = { "queue-row-measure" } };
         private readonly TextBlock _error = new() { Classes = { "queue-row-error" }, IsVisible = false };
+        /// <summary>The row's tooltip body, held rather than re-set: assigning a new tooltip closes the one
+        /// on screen, and a rate that updates every 500 ms would dismiss itself mid-read.</summary>
+        /// <summary>
+        /// The row's tooltip body, held rather than re-set: assigning a new tooltip closes the one on screen,
+        /// and a rate that updates every 500 ms would dismiss itself mid-read.
+        /// </summary>
+        private readonly TextBlock _tip = new();
         private readonly Button _cancel = StripButton();
         private readonly Button _retry = StripButton();
         private readonly Button _dismiss = StripButton();
@@ -970,6 +977,9 @@ public partial class MainWindow : Window
             .Where(button => button.IsVisible)
             .Select(button => button.Content as string ?? "?"));
 
+        /// <summary>What the row's tooltip currently says, whether or not anybody is hovering it.</summary>
+        public string TipForCheck => _tip.Text ?? "";
+
         public void Update()
         {
             _title.Text = _item.Title + " · " + _item.PhaseText;
@@ -978,6 +988,10 @@ public partial class MainWindow : Window
             _bar.IsIndeterminate = _item.State == TransferQueue.Phase.Applying;
             _bar.Value = _item.Fill ?? 0;
             _measure.Text = _item.MeasureText;
+            // The estimate reaches the user through the tooltip and nowhere else: the measure column is kept
+            // for bytes the transport actually counted, so a guessed total can never read as a confirmed one.
+            _tip.Text = _item.HintText ?? "";
+            ToolTip.SetTip(Control, _item.HintText is null ? null : _tip);
             _error.Text = _item.Error ?? "";
             _error.IsVisible = _item.Error is { Length: > 0 };
             // Re-read on every repaint, not once at construction: these are the shell's own buttons, and the
@@ -1010,6 +1024,14 @@ public partial class MainWindow : Window
     /// it is missing or mis-wired.</summary>
     internal string QueueRowActionsForCheck
         => string.Join(" / ", _queueRowViews.Select(view => view.ActionsForCheck));
+
+    /// <summary>One row's tooltip and its measure column, as "tip|measure" — so a check can prove the
+    /// estimate stayed out of the column that carries measured bytes.</summary>
+    internal string QueueRowMeasureForCheck(string identity)
+    {
+        var view = _queueRowViews.FirstOrDefault(v => v.Bound.Identity == identity);
+        return view is null ? "" : view.TipForCheck + "|" + view.Bound.MeasureText;
+    }
 
     /// <summary>Presses one row's button by its word, through the button rather than the queue method it
     /// ends up calling. False when the row does not offer that word right now — which is itself the answer a
