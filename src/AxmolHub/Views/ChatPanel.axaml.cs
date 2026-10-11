@@ -1971,7 +1971,7 @@ public partial class ChatPanel : UserControl
         // The machine half of a tool exchange is not prose. What came back is a JSON array, a directory listing,
         // or a compiler's stderr, and painting it in the assistant's own face makes the transcript read as though
         // the model had recited it — which is exactly what a person cannot un-see. One quiet line says what
-        // arrived; the payload itself stays one hover away.
+        // arrived, trimmed to what a glance holds.
         // A plan is the other case where a row's text is a document rather than a reply, and it is suppressed the
         // same way the tool payload is. The card built below stands in for it and names it; the turn keeps its
         // text, so the provider still gets the plan verbatim and this row's copy action still hands over all of it.
@@ -2273,8 +2273,9 @@ public partial class ChatPanel : UserControl
 
     /// <summary>One folded tool exchange wrapped in its own expander. The collapsed line names the action; clicking
     /// it reveals the whole exchange — the arguments the call was made with and the payload that came back — in a
-    /// detail panel that grows downward in place. The concrete operation is therefore on the page, not stranded one
-    /// hover away in a tooltip, which a trackpad can't reach and a check can't read.</summary>
+    /// detail panel that grows downward in place. That panel is the operation's only readable surface: a hover is
+    /// not one, because a trackpad cannot reach it, a check cannot read it, and a session transcript the model was
+    /// handed is far too long to fit in one anyway.</summary>
     private Control BuildActivityRowShell(string conversationId, ChatTurn? call, ChatTurn result)
     {
         var toggle = new ToggleButton { Classes = { "activity-row-toggle" }, Content = BuildActivityRow(call, result) };
@@ -2314,26 +2315,14 @@ public partial class ChatPanel : UserControl
             Classes = { "activity-detail-label" },
             Text = HubStrings.Get("ActivityDetailInput"),
         });
-        body.Children.Add(new TextBlock
-        {
-            Classes = { "activity-detail-body" },
-            Text = FormatToolArguments(call),
-            MaxHeight = 160,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-        });
+        body.Children.Add(BoundedDetailScroll(FormatToolArguments(call), 160));
 
         body.Children.Add(new TextBlock
         {
             Classes = { "activity-detail-label" },
             Text = HubStrings.Get("ActivityDetailOutput"),
         });
-        body.Children.Add(new TextBlock
-        {
-            Classes = { "activity-detail-body" },
-            Text = FormatToolResult(result),
-            MaxHeight = 200,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-        });
+        body.Children.Add(BoundedDetailScroll(FormatToolResult(result), 200));
 
         return new Border
         {
@@ -2342,6 +2331,19 @@ public partial class ChatPanel : UserControl
             Child = body,
         };
     }
+
+    /// <summary>One half of the exchange in a scroll window of its own. The bound is the point: a compiler's whole
+    /// stderr or a peer session's transcript must not stretch the transcript, and clipping it silently would strand
+    /// the part that matters — so the box holds still and its content scrolls inside it. Horizontal scrolling stays
+    /// off, because the column is where the wrap happens.</summary>
+    private static ScrollViewer BoundedDetailScroll(string text, double maxHeight) => new()
+    {
+        Content = new TextBlock { Classes = { "activity-detail-body" }, Text = text },
+        MaxHeight = maxHeight,
+        ClipToBounds = true,
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+    };
 
     /// <summary>The call's arguments as a small readable block: each top-level JSON field on its own
     /// <c>key: value</c> line, strings unquoted and everything else verbatim. This is where a long command shows in
@@ -2373,8 +2375,8 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>The payload the tool returned, normalized to one line ending style and capped so a compiler's whole
-    /// stderr can't stretch the transcript — a tool output that matters is read in full via the inspector, not here.
-    /// A truncated tail is said so rather than cut silently.</summary>
+    /// stderr can't stretch the transcript. The cap is what the row's detail scrolls inside; nothing else in the
+    /// shell shows a tool payload, so past this bound the tail is said to be missing rather than cut silently.</summary>
     private static string FormatToolResult(ChatTurn result)
     {
         const int cap = 4096;
@@ -2430,7 +2432,6 @@ public partial class ChatPanel : UserControl
             grid.Children.Add(chip);
         }
 
-        if (result.Text.Length > 0) ToolTip.SetTip(grid, result.Text);
         return grid;
     }
 
@@ -2505,7 +2506,7 @@ public partial class ChatPanel : UserControl
             : $"{Math.Max(0, (int)span.TotalSeconds)}s";
 
     /// <summary>What came back from one tool call, as a single muted line: the tool that answered, then the first
-    /// line of its payload, with the whole thing on hover. A result that failed is said so, because the line is
+    /// line of its payload, trimmed and said to be trimmed. A result that failed is said so, because the line is
     /// otherwise the only place a refused or crashed call is visible at all.</summary>
     private static TextBlock ToolResultLine(string? toolName, ChatTurn turn)
     {
@@ -2530,9 +2531,6 @@ public partial class ChatPanel : UserControl
             Classes = { turn.ToolFailed ? "danger" : "muted", "tool-result-line" },
             Text = line.ToString(),
         };
-        // The whole payload on hover, including the lines the one-line summary dropped. An empty result has
-        // nothing to show, and an empty tooltip is simply no tooltip at all.
-        if (turn.Text.Length > 0) ToolTip.SetTip(block, turn.Text);
         return block;
     }
 
@@ -3580,6 +3578,24 @@ public partial class ChatPanel : UserControl
         => MessageFlow.GetLogicalDescendants().OfType<Border>()
             .Where(border => border.Classes.Contains("activity-detail"))
             .ElementAtOrDefault(index);
+
+    /// <summary>The hover text a collapsed action row carries. It has to come back empty: the row used to hang the
+    /// whole tool payload there, which for a session transcript is tens of thousands of characters no tooltip can
+    /// show. The detail panel below is that payload's only surface.</summary>
+    internal string ActivityRowTooltipForCheck(int index)
+        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+            .Where(grid => grid.Classes.Contains("activity-row"))
+            .ElementAtOrDefault(index) is { } row
+            ? ToolTip.GetTip(row) as string ?? ""
+            : "";
+
+    /// <summary>Whether the Nth row's detail actually scrolls — the opened panel is bounded, so proof that a long
+    /// payload is reachable is that its content extends past what the box shows. A scroller handed infinite height
+    /// (no bound of its own) reports a viewport as tall as its content, and this says false for it.</summary>
+    internal bool ActivityRowDetailScrollsForCheck(int index)
+        => ActivityRowDetailAt(index) is { } detail
+            && detail.GetLogicalDescendants().OfType<ScrollViewer>()
+                .Any(scroll => scroll.Extent.Height > scroll.Viewport.Height + 1);
 
     // ── the left-slot expander arrow: where it sits, what glyph it is, and the status it swaps with ──
 

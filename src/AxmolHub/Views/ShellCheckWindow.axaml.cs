@@ -3043,18 +3043,22 @@ public partial class ShellCheckWindow : Window
             // ── one action row opens into its own concrete operation ──
             // The group opening was only half the story: inside, each row still folded its command to a 60-char chip
             // and hid the tool's answer behind a hover that a trackpad can't reach and a check can't read. A row now
-            // carries its own expander. The seed uses a run_command whose command is longer than that chip and whose
-            // payload the collapsed row never shows, so the opened detail is the only place these strings can come from.
+            // carries its own expander, and it is the payload's only surface — so the seed uses a run_command whose
+            // command is longer than that chip and a return long enough to overflow the opened box, neither of which
+            // the collapsed row can show.
             var detailSession = chat.StartConversation();
             chat.SetWorkspaceRoot(detailSession.Id, workspace);
             chat.SetApprovalMode(detailSession.Id, ToolApprovalModes.Full);
             chat.OpenConversation(detailSession.Id);
             var longCommand =
                 "cmake -S D:/dev/axmolengine/axmol-hub/samples/cpp/CMakeLists.txt -B build && cmake --build build";
+            var longPayload = "shell: PowerShell 7 · exit: 0\n" + string.Join("\n",
+                Enumerable.Range(1, 60).Select(step =>
+                    $"[ 42%] Building CXX object CMakeFiles/app.dir/src/Scene{step}.cpp.o，这一行足够长以撑出输出块"));
             var detailTurns = chat.ActiveConversation!.Messages;
             detailTurns.Add(ChatTurn.User("把计算器编一下"));
             detailTurns.Add(ChatTurn.FunctionCall("call_det", "run_command", "{\"command\":\"" + longCommand + "\"}"));
-            detailTurns.Add(ChatTurn.FunctionResult("call_det", "shell: PowerShell 7 · exit: 0"));
+            detailTurns.Add(ChatTurn.FunctionResult("call_det", longPayload));
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
@@ -3065,13 +3069,23 @@ public partial class ShellCheckWindow : Window
             Dispatcher.UIThread.RunJobs();
             Check(!panel.ActivityRowExpandedForCheck(0),
                 "工具行默认也是收起的：先只看到一句动作，点开才看那次调用的细节");
+            Check(panel.ActivityRowTooltipForCheck(0).Length == 0,
+                "收起的工具行身上不再挂 payload tooltip，整段返回只属于展开面（实际挂了 "
+                + panel.ActivityRowTooltipForCheck(0).Length + " 字）");
             panel.SetActivityRowExpandedForCheck(0, true);
+            shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             var detailText = panel.ActivityRowDetailTextForCheck(0);
+            // The report is one line per cell, and this payload is deliberately 60 lines long, so what it prints is
+            // the head of the detail on one line — enough to see what actually rendered, not the whole box.
+            var detailHead = detailText.Replace('\n', ' ').Replace('\r', ' ');
+            if (detailHead.Length > 100) detailHead = detailHead[..100] + "…";
             Check(panel.ActivityRowExpandedForCheck(0)
                   && detailText.Contains(longCommand, StringComparison.Ordinal)
                   && detailText.Contains("shell: PowerShell 7 · exit: 0", StringComparison.Ordinal),
-                "点开这一行看得到完整命令原文（未截断）与工具返回的 payload（实际详情「" + detailText + "」）");
+                "点开这一行看得到完整命令原文（未截断）与工具返回的 payload（实际详情「" + detailHead + "」）");
+            Check(panel.ActivityRowDetailScrollsForCheck(0),
+                "输出块是有界可滚动的：比界面装得下的还长时读得到底，而不是被省略号截掉");
             panel.SetActivityRowExpandedForCheck(0, false);
             Dispatcher.UIThread.RunJobs();
             Check(!panel.ActivityRowExpandedForCheck(0), "再点一下把这条行收回去");
