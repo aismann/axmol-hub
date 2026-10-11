@@ -89,10 +89,30 @@ internal sealed class UpdateService
     public event Action? Changed;
 
     /// <summary>
-    /// Whether an available update is downloaded in the background as soon as a check finds it.
-    /// Mirrors the settings-page checkbox; seeded from <c>HubPreferences.AutoDownloadUpdates</c>.
+    /// Whether an available update is downloaded in the background as soon as a check finds it. Mirrors the
+    /// settings-page checkbox; seeded from <c>HubPreferences.AutoDownloadUpdates</c>.
+    ///
+    /// <para>Changing it raises <see cref="Changed"/> because it is exactly what decides the strip's offer: on,
+    /// nothing is waiting to be asked for; off, the download becomes the slot's action. A setter that only
+    /// stored the field left the lit slot selling a button for a transfer that had just become automatic — and,
+    /// switched the other way, a queue that nobody had started and nothing had started offering.</para>
     /// </summary>
-    public bool AutoDownload { get; set; }
+    public bool AutoDownload
+    {
+        get => _autoDownload;
+        set
+        {
+            if (_autoDownload == value)
+            {
+                return;
+            }
+
+            _autoDownload = value;
+            Changed?.Invoke();
+        }
+    }
+
+    private bool _autoDownload;
 
     /// <summary>The selected update channel. Preview builds always include GitHub pre-releases.</summary>
     public string UpdateChannel
