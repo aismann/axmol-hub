@@ -52,6 +52,13 @@ public sealed class HubWorkspace : IDisposable
     private readonly HostPowerShellInstaller _hostShellInstaller;
 
     private CancellationTokenSource? _operation;
+
+    /// <summary>
+    /// The downloads. Deliberately not under <see cref="ExecuteAsync"/>: a transfer must not grey out the
+    /// page it was started from, and two of them must not crowd each other out. See
+    /// <see cref="TransferQueue"/> for where the line is drawn.
+    /// </summary>
+    private readonly TransferQueue _transfers = TransferQueue.Instance;
     private BuildProgressWindow? _buildProgress;
     private readonly TaskCompletionSource _engineIndexReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -363,6 +370,71 @@ public sealed class HubWorkspace : IDisposable
     /// <summary>Cancellable while an operation is running (previously had to avoid non-interruptible steps like the MSVC installer; that path has been handed back to the engine).</summary>
     public bool CanCancel => _operation is not null;
 
+    /// <summary>
+    /// Runs one download on <see cref="TransferQueue"/> instead of under the exclusive lock, and gives it
+    /// the parts of <see cref="ExecuteAsync"/>'s lifecycle that still apply: a log line for the title, a
+    /// state save and a page refresh when it lands, and the typed error dialog when it does not.
+    ///
+    /// What it deliberately does **not** get is the busy flag and the status line. A download that
+    /// disables the page it was started from is the exact thing this queue exists to stop, and its
+    /// progress now belongs to its own row rather than to the one sentence the strip can say.
+    /// </summary>
+    /// <returns>A task that completes when the transfer settles — the same thing
+    /// <see cref="ExecuteAsync"/> awaited, so a caller that needs "is it installed yet" (the deep link,
+    /// the version picker) keeps meaning it. Null from the queue means "already running"; that is not an
+    /// error, and the row already on screen is the answer.</returns>
+    private Task EnqueueTransfer(
+        string identity,
+        string titleKey,
+        string? subject,
+        string logTitleKey,
+        Func<TransferQueue.Item, CancellationToken, Task> work)
+    {
+        var item = _transfers.Enqueue(identity, titleKey, subject, work,
+            onFinished: finished => FinishTransfer(finished, logTitleKey));
+        if (item is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        Log.Write(logTitleKey);
+        return item.Completion;
+    }
+
+    /// <summary>What a settled transfer leaves behind. Mirrors the success / cancel / failure arms of
+    /// <see cref="ExecuteAsync"/> one-for-one, including the reason a failure keeps its exception **type**:
+    /// <see cref="ShowOperationErrorAsync"/> chooses the advice the user can act on from that type.</summary>
+    private void FinishTransfer(TransferQueue.Item item, string logTitleKey)
+    {
+        var title = HubStrings.Get(logTitleKey);
+        if (item.Fault is { } error)
+        {
+            LastError = error.ToString();
+            Log.Write(LastError);
+            Failed?.Invoke();
+            if (!SuppressDialogs)
+            {
+                _ = ShowOperationErrorAsync(error);
+            }
+        }
+        else if (item.State == TransferQueue.Phase.Done)
+        {
+            Store.Save(State);
+            Log.Write(title + " · " + HubStrings.Get("Done"));
+        }
+        else
+        {
+            Log.Write(title + " · " + HubStrings.Get("Cancelled"));
+        }
+
+        Refresh();
+    }
+
+    /// <summary>Wraps a queue row as the byte reporter a Core transport expects. The row is what carries
+    /// the identity that this used to throw away into one status sentence.</summary>
+    private static IProgress<DownloadProgress> ByteProgress(TransferQueue.Item item)
+        => new Progress<DownloadProgress>(item.ReportBytes);
+
     private async Task ShowOperationErrorAsync(Exception error)
     {
         // The dialog shows only the reason the user can act on; the full stack trace stays in the log.
@@ -510,15 +582,13 @@ public sealed class HubWorkspace : IDisposable
 
     public async Task ChooseAndInstallEngineAsync()
     {
-        if (_operation is not null)
-        {
-            return;
-        }
-
+        // No busy guard here any more: an engine download is a transfer, and a transfer does not own the
+        // app. The picker is the place that stops asking for a version that is already arriving.
         // Pre-select the currently selected engine version: when installing the same version twice,
         // the second time at least doesn't require hunting from scratch.
         var preferred = SelectedEngine?.Version;
-        var release = await EngineVersionDialog.PickAsync(Owner, _releases, preferred, Preferences.DownloadSource);
+        var release = await EngineVersionDialog.PickAsync(Owner, _releases, preferred, Preferences.DownloadSource,
+            engine => EngineIsTransferring(engine.Version, engine.Channel));
         if (release is null)
         {
             return;
@@ -534,38 +604,55 @@ public sealed class HubWorkspace : IDisposable
     /// Installs the specified official engine version. When <paramref name="version"/> is null it
     /// picks the latest LTS in the manifest — the CLI and verification programs follow this default
     /// path, while the interactive UI lets the user pick first.
+    ///
+    /// This is a download, so it runs on <see cref="TransferQueue"/> rather than under the exclusive
+    /// lock: the returned task still completes when the transfer settles (so <c>await</c> means what it
+    /// meant), but the page stays live while it runs and a second engine can arrive alongside it.
     /// </summary>
-    public async Task InstallEngineAsync(string? version = null, string? downloadSourceOverride = null)
+    public Task InstallEngineAsync(string? version = null, string? downloadSourceOverride = null)
     {
         if (downloadSourceOverride is not null && !DownloadSources.IsKnown(downloadSourceOverride))
         {
             throw new InvalidOperationException("The requested engine download source is not supported.");
         }
 
-        await ExecuteAsync("Install official engine", async token =>
-        {
-            // A website link names a version from the current online catalog. Wait until the
-            // startup refresh has either adopted it or definitively fallen back to the built-in list.
-            if (downloadSourceOverride is not null)
+        return EnqueueTransfer(
+            EngineInstallIdentity(version),
+            "TransferEnginePackage",
+            version,
+            "Install official engine",
+            async (item, token) =>
             {
-                await _engineIndexReady.Task;
-            }
+                // A website link names a version from the current online catalog. Wait until the
+                // startup refresh has either adopted it or definitively fallen back to the built-in list.
+                if (downloadSourceOverride is not null)
+                {
+                    await _engineIndexReady.Task;
+                }
 
-            var catalog = Releases();
-            // A mistyped version must stop here: the manifest has id/url/sha256, and picking an
-            // arbitrary "closest" one means downloading an engine the user didn't ask for — which
-            // Hub wouldn't discover until the build fails.
-            var release = version is null ? catalog.LatestLts()
-                : catalog.Find(version) ?? throw new InvalidOperationException(
-                    HubStrings.Language == HubTexts.ChineseLanguage
-                        ? $"清单里没有 Axmol {version} 这个可安装版本。"
-                        : $"Axmol {version} is not an installable release in the manifest.");
+                var catalog = Releases();
+                // A mistyped version must stop here: the manifest has id/url/sha256, and picking an
+                // arbitrary "closest" one means downloading an engine the user didn't ask for — which
+                // Hub wouldn't discover until the build fails.
+                var release = version is null ? catalog.LatestLts()
+                    : catalog.Find(version) ?? throw new InvalidOperationException(
+                        HubStrings.Language == HubTexts.ChineseLanguage
+                            ? $"清单里没有 Axmol {version} 这个可安装版本。"
+                            : $"Axmol {version} is not an installable release in the manifest.");
 
-            var package = WithDownloadSource(release.Package, downloadSourceOverride);
-            var path = await _installer.InstallAsync(package, DownloadProgress(), token);
-            AddEngine(StateStore.ValidateEngine(path, package.Channel));
-        });
+                var package = WithDownloadSource(release.Package, downloadSourceOverride);
+                var path = await _installer.InstallAsync(package, ByteProgress(item), token, item.MarkApplying);
+                AddEngine(StateStore.ValidateEngine(path, package.Channel));
+            });
     }
+
+    /// <summary>
+    /// The queue identity of an engine install, keyed on the version that was asked for so asking twice
+    /// cannot fetch twice. The no-version default path shares one identity, which is the conservative
+    /// reading: a second "get me the latest" is refused while the first is still arriving rather than
+    /// racing it for the same bytes.
+    /// </summary>
+    internal static string EngineInstallIdentity(string? version) => $"engine:install:{version ?? "latest"}";
 
     /// <summary>
     /// Points a manifest package at the configured download source.
@@ -639,26 +726,89 @@ public sealed class HubWorkspace : IDisposable
             : "Only Hub-installed engines can be repaired or uninstalled. Imported folders are preserved.");
     }
 
-    public async Task RepairEngineAsync() => await ExecuteAsync("Repair engine", async token =>
+    /// <summary>
+    /// Re-downloads a Hub-installed engine over the current one, keeping the previous install as a
+    /// backup.
+    ///
+    /// Both the engine lookup and the confirmation now happen **before** anything is queued. The worker
+    /// has no window of its own to hold a dialog against, and a modal that surfaces after the user has
+    /// moved on to another page is the thing this queue exists to stop.
+    /// </summary>
+    public async Task RepairEngineAsync()
     {
-        var engine = RequiredEngine();
+        EngineEntry engine;
+        try
+        {
+            engine = RequiredEngine();
+            RequireEngineAtRest(engine);
+        }
+        catch (Exception ex)
+        {
+            // The report the locked action used to give: logged, the drawer open, the typed dialog — not
+            // an exception escaping into a button handler that has no catcher.
+            LastError = ex.ToString();
+            Log.Write(LastError);
+            Failed?.Invoke();
+            if (!SuppressDialogs)
+            {
+                await ShowOperationErrorAsync(ex);
+            }
+
+            return;
+        }
+
         var prompt = string.Format(HubStrings.Get("RepairPrompt"), engine.Version);
         if (await HubDialog.ShowAsync(Owner, HubStrings.Get("Repair"), prompt, HubDialogButtons.OkCancel, danger: true) != HubDialogResult.Ok)
         {
             return;
         }
 
-        await _installer.RepairAsync(WithDownloadSource(ManagedEnginePackage(engine)), DownloadProgress(), token);
-        StateStore.ValidateEngine(engine.Path, engine.Channel);
-        foreach (var project in State.Projects.Where(p => p.Version == engine.Version && p.Channel == engine.Channel))
+        await EnqueueTransfer(
+            EngineRepairIdentity(engine.Version, engine.Channel),
+            "TransferEnginePackage",
+            engine.Version,
+            "Repair engine",
+            async (item, token) =>
+            {
+                await _installer.RepairAsync(WithDownloadSource(ManagedEnginePackage(engine)), ByteProgress(item), token, item.MarkApplying);
+                StateStore.ValidateEngine(engine.Path, engine.Channel);
+                foreach (var project in State.Projects.Where(p => p.Version == engine.Version && p.Channel == engine.Channel))
+                {
+                    project.BuildStatus = "Not built";
+                }
+            });
+    }
+
+    /// <summary>Repairs are keyed per engine, so a second click on the same engine cannot fetch it twice
+    /// while the first is still arriving.</summary>
+    internal static string EngineRepairIdentity(string version, string channel) => $"engine:repair:{version}:{channel}";
+
+    /// <summary>
+    /// Whether a transfer is writing this engine's own directory right now — an install of the same
+    /// version, or a repair of it.
+    ///
+    /// The exclusive operation lock used to keep this from happening by accident: nothing else could run
+    /// while a download did. Taking downloads off that lock was the point, so the rule has to be said on
+    /// purpose instead — an engine is not a stable thing to uninstall, repair, or build against until the
+    /// transfer that is replacing it has settled.
+    /// </summary>
+    private bool EngineIsTransferring(string version, string channel)
+        => _transfers.FindActive(EngineInstallIdentity(version)) is not null
+           || _transfers.FindActive(EngineRepairIdentity(version, channel)) is not null;
+
+    /// <summary>The answer every engine operation gives when its own download has not landed yet.</summary>
+    private void RequireEngineAtRest(EngineEntry engine)
+    {
+        if (EngineIsTransferring(engine.Version, engine.Channel))
         {
-            project.BuildStatus = "Not built";
+            throw new InvalidOperationException(HubStrings.Get("EngineBusyTransferring"));
         }
-    });
+    }
 
     public async Task UninstallEngineAsync() => await ExecuteAsync("Uninstall engine", async _ =>
     {
         var engine = RequiredEngine();
+        RequireEngineAtRest(engine);
         var package = ManagedEnginePackage(engine);
         if (State.Projects.Any(p => p.Version == engine.Version && p.Channel == engine.Channel))
         {
@@ -770,9 +920,17 @@ public sealed class HubWorkspace : IDisposable
     private ProjectEntry RequiredProject() => SelectedProject
         ?? throw new InvalidOperationException("Select a project first.");
 
-    private EngineEntry RequiredEngine(ProjectEntry project) => State.Engines
-        .FirstOrDefault(e => e.Version == project.Version && e.Channel == project.Channel)
-        ?? throw new InvalidOperationException(HubStrings.Get("EngineMissing"));
+    private EngineEntry RequiredEngine(ProjectEntry project)
+    {
+        var engine = State.Engines
+            .FirstOrDefault(e => e.Version == project.Version && e.Channel == project.Channel)
+            ?? throw new InvalidOperationException(HubStrings.Get("EngineMissing"));
+        // Every caller of this is about to read the engine tree — a build, a run, a packaging dialog — and
+        // a repair swaps that tree underneath them while it lands. Same at-rest rule as the destructive
+        // engine operations, stated here so no caller has to remember it.
+        RequireEngineAtRest(engine);
+        return engine;
+    }
 
     /// <summary>
     /// Entry point for build/run. When <paramref name="selection"/> is null it first pops the
@@ -1303,30 +1461,46 @@ public sealed class HubWorkspace : IDisposable
         // pwsh in a terminal since then. This is the filesystem walk, not a spawn.
         HostShell = HostPowerShell.Probe();
         HostShellChanged?.Invoke();
-        await ExecuteAsync("Install PowerShell 7", async token =>
-        {
-            Log.Write($"Installing the host PowerShell; planned road: {HostShellPlan}.");
-            var result = await _hostShellInstaller.InstallAsync(DownloadProgress(), token);
-            Log.Write($"{result.Method}: {result.Detail}");
-            HostShell = await HostPowerShell.ProbeVersionAsync(_runner, HostPowerShell.Probe(), token);
-            HostShellChanged?.Invoke();
-            Log.Write(HostShell.Describe());
-            if (result.Outcome == HostShellInstallOutcome.LaunchedInTerminal)
-            {
-                // Hub handed the script to a terminal it cannot read. Reporting that as a completed install
-                // would be a false success, and reporting it as a failure would be a false alarm: the status
-                // line says where it went and what to press afterwards.
-                SetStatus(HubStrings.Get("HostShellInTerminal"));
-                HostShellAwaitingTerminal = true;
-                HostShellChanged?.Invoke();
-                return;
-            }
 
-            if (result.Outcome != HostShellInstallOutcome.Ready)
-            {
-                throw new HostShellInstallException(result, HostShell);
-            }
-        });
+        // Only the MSI road is a download, so only it goes on the queue. <see cref="HostShellPlan"/> answers
+        // MSI exactly when nothing named winget is on PATH, and <c>InstallAsync</c>'s own rule then has no
+        // other road to take — so this branch cannot flip after the decision. The other two stay under the
+        // lock: winget is a subprocess Hub cannot meter, and the terminal bootstrap hands a script to a
+        // window Hub can neither read nor close. A queue row for either would show numbers it does not have
+        // and a cancel that stops nothing.
+        if (HostShellPlan != HostShellMethod.GitHubMsi)
+        {
+            await ExecuteAsync("Install PowerShell 7", token => InstallHostShellAsync(token, DownloadProgress()));
+            return;
+        }
+
+        await EnqueueTransfer("hostshell:msi", "TransferHostShell", null, "Install PowerShell 7",
+            (item, token) => InstallHostShellAsync(token, ByteProgress(item)));
+    }
+
+    private async Task InstallHostShellAsync(CancellationToken token, IProgress<DownloadProgress> progress)
+    {
+        Log.Write($"Installing the host PowerShell; planned road: {HostShellPlan}.");
+        var result = await _hostShellInstaller.InstallAsync(progress, token);
+        Log.Write($"{result.Method}: {result.Detail}");
+        HostShell = await HostPowerShell.ProbeVersionAsync(_runner, HostPowerShell.Probe(), token);
+        HostShellChanged?.Invoke();
+        Log.Write(HostShell.Describe());
+        if (result.Outcome == HostShellInstallOutcome.LaunchedInTerminal)
+        {
+            // Hub handed the script to a terminal it cannot read. Reporting that as a completed install
+            // would be a false success, and reporting it as a failure would be a false alarm: the status
+            // line says where it went and what to press afterwards.
+            SetStatus(HubStrings.Get("HostShellInTerminal"));
+            HostShellAwaitingTerminal = true;
+            HostShellChanged?.Invoke();
+            return;
+        }
+
+        if (result.Outcome != HostShellInstallOutcome.Ready)
+        {
+            throw new HostShellInstallException(result, HostShell);
+        }
     }
 
     // ───────────────────────── Android devices ─────────────────────────

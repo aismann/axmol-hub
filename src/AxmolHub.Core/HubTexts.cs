@@ -60,7 +60,7 @@ public static class HubTexts
         ["BuildPlatformHint"] = ("项目源码可用于多个平台。每次构建可选择目标；Apple 平台需 macOS，Linux 需 Linux 宿主。", "Project sources support multiple platforms. Choose a target for this build; Apple platforms require macOS, Linux requires a Linux host."),
         ["Continue"] = ("继续", "Continue"),
         ["DownloadSize"] = ("下载大小", "Download size"),
-        ["InstallSelected"] = ("保存并安装所选", "Save and install selection"),
+        ["InstallSelected"] = ("安装", "Install"),
         ["Back"] = ("返回", "Back"),
         ["ComponentDetails"] = ("组件诊断", "Component diagnostics"),
         ["LocalHost"] = ("可在本机配置与构建", "Configure and build on this host"),
@@ -115,7 +115,9 @@ public static class HubTexts
         // The version number is deliberately not hard-coded: the manifest now carries six versions, and a button
         // reading "Install 2.11.5" would become a false statement after a manifest change — with the version picker right beside it.
         ["InstallOfficial"] = ("安装官方引擎", "Install official engine"),
-        ["ChooseEngineVersion"] = ("选择引擎版本", "Choose engine version"),
+        // The picker's window title. It says what the dialog ends up doing, not what step you are on: the
+        // old "选择引擎版本" named a step, while the button that closes the dialog has always said 安装.
+        ["InstallEngineTitle"] = ("安装 Axmol 引擎", "Install Axmol engine"),
         ["EngineVersionHint"] = ("每个版本独立安装到 Hub 数据目录，项目始终锁定创建时的版本。", "Each version installs independently into Hub storage. Projects keep the version they were created with."),
         ["EngineVersionNone"] = ("清单里没有可安装的引擎版本。", "The manifest declares no installable engine release."),
         ["EngineIndexRemote"] = ("版本列表来自 axmol.dev 索引。", "Version list from the axmol.dev index."),
@@ -397,6 +399,20 @@ public static class HubTexts
         ["RestartNow"] = ("立即重启", "Restart now"),
         // Deliberately without {0}: what gets appended after it is the raw exception text, which may contain braces, and string.Format would throw a FormatException.
         ["UpdateDownloadFailed"] = ("更新下载失败：", "Couldn't download the update: "),
+        // ── Download queue ──
+        // A queue row names the thing it is fetching, and the version rides behind that name **unformatted**:
+        // a version number is not a localized word, and a format key would print a bare "{0}" on the one path
+        // that has no version yet (install the latest). See TransferQueue.Item.Subject.
+        ["TransferEnginePackage"] = ("Axmol 引擎", "Axmol engine"),
+        ["TransferHostShell"] = ("PowerShell 7 安装程序", "PowerShell 7 installer"),
+        // The app's own update. The version rides behind the name like every other row, so this is the one
+        // product name in the table that is deliberately not translated.
+        ["TransferHubUpdate"] = ("Axmol Hub", "Axmol Hub"),
+        // Said by a row (and by the install button) whose bytes are already on their way.
+        ["TransferInFlightSuffix"] = ("正在进行", "In progress"),
+        // Said by every engine operation whose own download has not landed yet: the transfer is replacing the
+        // directory the operation is about to read or delete.
+        ["EngineBusyTransferring"] = ("这个引擎正在下载，等它结束后再操作。", "This engine is still downloading. Wait for the transfer to finish."),
         // Built-in AI assistant. The protocol baseline is OpenAI-compatible; the first phase's providers = OrcaRouter + custom.
         ["Assistant"] = ("AI 助手", "AI assistant"),
         ["AssistantHint"] = ("向助手提问 Axmol 相关问题。模型由你配置的 provider 提供。", "Ask the assistant about Axmol. Answers come from the provider you configure."),

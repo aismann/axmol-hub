@@ -26,10 +26,17 @@ public sealed class PackageEntry
 
 public sealed class PackageInstaller(DownloadManager downloads, string root, Action<string> log)
 {
-    public async Task<string> InstallAsync(PackageEntry package, IProgress<DownloadProgress>? progress = null, CancellationToken cancellation = default)
-        => await InstallAtAsync(package, SafePath(root, package.Destination), progress, cancellation);
+    /// <param name="onExtractStarted">
+    /// Called once the archive is on disk and the unzipping begins. The caller cannot infer that moment
+    /// from <paramref name="progress"/>: a cached package reports nothing at all and goes straight to
+    /// extraction, so "the bytes are done, now it is local work" has to come from the only side that
+    /// knows. Deliberately a bare callback rather than a stage enum — this type reports a fact about its
+    /// own pipeline, not how anyone chooses to display it.
+    /// </param>
+    public async Task<string> InstallAsync(PackageEntry package, IProgress<DownloadProgress>? progress = null, CancellationToken cancellation = default, Action? onExtractStarted = null)
+        => await InstallAtAsync(package, SafePath(root, package.Destination), progress, cancellation, onExtractStarted);
 
-    private async Task<string> InstallAtAsync(PackageEntry package, string destination, IProgress<DownloadProgress>? progress, CancellationToken cancellation)
+    private async Task<string> InstallAtAsync(PackageEntry package, string destination, IProgress<DownloadProgress>? progress, CancellationToken cancellation, Action? onExtractStarted)
     {
         if (Directory.Exists(destination)) throw new IOException($"Installation directory already exists: {destination}. Import or inspect it before repair.");
         var archive = await downloads.DownloadAsync(new Uri(package.Url), package.Sha256, Path.Combine(root, "cache"), progress, cancellation);
@@ -38,7 +45,11 @@ public sealed class PackageInstaller(DownloadManager downloads, string root, Act
         Directory.CreateDirectory(staging);
         try
         {
-            if (package.Format == "zip") await Task.Run(() => ExtractSafely(archive, staging, cancellation), cancellation);
+            if (package.Format == "zip")
+            {
+                onExtractStarted?.Invoke();
+                await Task.Run(() => ExtractSafely(archive, staging, cancellation), cancellation);
+            }
             else if (package.Format == "file") File.Copy(archive, SafePath(staging, package.VerifyFile));
             else throw new InvalidDataException($"Unsupported package format: {package.Format}");
             var contents = package.ArchiveRoot == "" ? staging : SafePath(staging, package.ArchiveRoot);
@@ -57,13 +68,13 @@ public sealed class PackageInstaller(DownloadManager downloads, string root, Act
         }
         finally { if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true); }
     }
-    public async Task<string> RepairAsync(PackageEntry package, IProgress<DownloadProgress>? progress = null, CancellationToken cancellation = default)
+    public async Task<string> RepairAsync(PackageEntry package, IProgress<DownloadProgress>? progress = null, CancellationToken cancellation = default, Action? onExtractStarted = null)
     {
         var destination = VerifyOwned(package);
         var replacement = destination + ".repair-" + Guid.NewGuid().ToString("N");
         try
         {
-            await InstallAtAsync(package, replacement, progress, cancellation);
+            await InstallAtAsync(package, replacement, progress, cancellation, onExtractStarted);
             cancellation.ThrowIfCancellationRequested();
             VerifyOwned(package);
             var backup = SafePath(root, "backups/" + package.Id + "-" + Guid.NewGuid().ToString("N"));

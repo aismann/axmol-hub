@@ -143,7 +143,13 @@ internal sealed class UpdateService
     /// Drives whether the auto-download switch is offered.</summary>
     public bool IsInstalled => CanUpdate();
 
-    private CancellationTokenSource? _downloadCancel;
+    /// <summary>
+    /// The queue identity of the pending update's row, or null while none was ever started. Kept because
+    /// <see cref="CancelDownload"/> has to name the transfer it is stopping, and the identity is built from
+    /// the version — which the channel switch clears right after cancelling.
+    /// </summary>
+    private string? _transferIdentity;
+
     private string _updateChannel = UpdateChannels.DefaultChannel;
 
     /// <summary>
@@ -298,25 +304,33 @@ internal sealed class UpdateService
     {
         if (Download == DownloadState.None && Last is { Result: CheckResult.UpdateAvailable, Update: { } update })
         {
-            _ = RunDownloadAsync(update, applyWhenDone: false);
+            StartDownload(update, applyWhenDone: false);
         }
     }
 
     /// <summary>Cancels a running download (manual or automatic). No-op when nothing is downloading.</summary>
-    public void CancelDownload() => _downloadCancel?.Cancel();
+    public void CancelDownload()
+    {
+        if (_transferIdentity is { } identity)
+        {
+            TransferQueue.Instance.Cancel(identity);
+        }
+    }
 
     /// <summary>
-    /// Downloads the pending update and then applies it, restarting the app. Awaited by the settings
-    /// page's "Download &amp; restart" button: on success it **never returns** — the process is
-    /// replaced by the updater. It returns normally only after a failure or a cancel; check
-    /// <see cref="DownloadError"/> to tell those apart.
+    /// Downloads the pending update and then applies it, restarting the app. Asked by the settings page's
+    /// "Download &amp; restart" button. It returns as soon as the transfer is queued: the download now lives
+    /// on the queue's row, and when it ends the process is replaced by the updater, so there is nothing
+    /// left here to await.
     /// </summary>
-    public async Task DownloadAndApplyAsync()
+    public Task DownloadAndApplyAsync()
     {
         if (Last is { Result: CheckResult.UpdateAvailable, Update: { } update })
         {
-            await RunDownloadAsync(update, applyWhenDone: true);
+            StartDownload(update, applyWhenDone: true);
         }
+
+        return Task.CompletedTask;
     }
 
     /// <summary>Applies the already-downloaded update and restarts (the "Restart now" button, shown
@@ -330,23 +344,31 @@ internal sealed class UpdateService
     }
 
     /// <summary>
-    /// Moves the bytes and reports progress through <see cref="Changed"/>. Progress is republished on
-    /// the download thread (Velopack throttles it); UI handlers marshal themselves.
+    /// Puts this update's download on the shared <see cref="TransferQueue"/> rather than on a cancellation
+    /// token of its own. An update downloading next to an engine install is two transfers on one pipe, and
+    /// before this they did not know the other existed.
+    ///
+    /// <para><b>Velopack reports a percentage and nothing else</b> — <c>DownloadUpdatesAsync</c> hands back
+    /// an <c>Action&lt;int&gt;</c>. So the row shows a percentage and an em-dash where an engine row shows
+    /// MB and MB/s: see <see cref="TransferQueue.Item.ReportPercent(int)"/>. The byte estimate from
+    /// <see cref="DescribeDownload"/> stays what it always was, the tooltip's, and never becomes the row's
+    /// total.</para>
+    ///
+    /// <para>Progress arrives on the download thread (Velopack throttles it); every handler here and on the
+    /// shell marshals itself, same as before.</para>
     /// </summary>
-    private async Task RunDownloadAsync(UpdateInfo update, bool applyWhenDone)
+    private void StartDownload(UpdateInfo update, bool applyWhenDone)
     {
-        _downloadCancel?.Dispose();
-        _downloadCancel = new CancellationTokenSource();
-        var token = _downloadCancel.Token;
-
-        Download = DownloadState.Downloading;
-        DownloadPercent = 0;
-        DownloadBytesPerSecond = 0;
-        DownloadError = null;
-        Changed?.Invoke();
-
-        try
+        var version = update.TargetFullRelease.Version.ToString();
+        _transferIdentity = $"hub:update:{version}";
+        TransferQueue.Instance.Enqueue(_transferIdentity, "TransferHubUpdate", version, async (item, token) =>
         {
+            Download = DownloadState.Downloading;
+            DownloadPercent = 0;
+            DownloadBytesPerSecond = 0;
+            DownloadError = null;
+            Changed?.Invoke();
+
             var manager = CreateManager();
 
             // Velopack only ever hands back a 0-100 percentage, so the byte rate has to be derived: size of
@@ -362,14 +384,17 @@ internal sealed class UpdateService
             await manager.DownloadUpdatesAsync(update, percent =>
             {
                 DownloadPercent = percent;
+                item.ReportPercent(percent);
 
                 var elapsedMs = clock.ElapsedMilliseconds;
                 var window = elapsedMs - sampledMs;
                 if (percent > transferPercent)
                 {
                     // Past the transfer phase (delta updates patch locally from here): there is no
-                    // download rate left to report, so don't keep showing a stale one.
+                    // download rate left to report, so don't keep showing a stale one. The row says the
+                    // same thing — the work is local now, and unmeasurable.
                     DownloadBytesPerSecond = 0;
+                    item.MarkApplying();
                 }
                 else if (totalBytes > 0 && window >= sampleWindowMs)
                 {
@@ -388,25 +413,38 @@ internal sealed class UpdateService
             DownloadPercent = 100;
             if (applyWhenDone)
             {
-                // Terminates this process; the updater relaunches the app after installing.
+                // Terminates this process; the updater relaunches the app after installing. Nothing below
+                // this line runs, and the row never gets to settle — which is the honest picture: the app
+                // it was a row in is gone.
                 manager.ApplyUpdatesAndRestart(update.TargetFullRelease);
                 return;
             }
 
             Download = DownloadState.Ready;
-        }
-        catch (OperationCanceledException)
+            Changed?.Invoke();
+        }, onFinished: FinishDownload);
+    }
+
+    /// <summary>
+    /// Brings this type's own state back in line with what the queue decided. The row keeps the failure and
+    /// the cancel honest on its own, but the settings card and the strip's restart action both read
+    /// <see cref="Download"/>, and a card still offering "restart" after a cancelled download would be a
+    /// button that does nothing.
+    /// </summary>
+    private void FinishDownload(TransferQueue.Item item)
+    {
+        DownloadBytesPerSecond = 0;
+        switch (item.State)
         {
-            Download = DownloadState.None;
-            DownloadPercent = 0;
-            DownloadBytesPerSecond = 0;
-        }
-        catch (Exception ex)
-        {
-            Download = DownloadState.None;
-            DownloadPercent = 0;
-            DownloadBytesPerSecond = 0;
-            DownloadError = ex.Message;
+            case TransferQueue.Phase.Failed:
+                Download = DownloadState.None;
+                DownloadPercent = 0;
+                DownloadError = item.Error;
+                break;
+            case TransferQueue.Phase.Cancelled:
+                Download = DownloadState.None;
+                DownloadPercent = 0;
+                break;
         }
 
         Changed?.Invoke();
