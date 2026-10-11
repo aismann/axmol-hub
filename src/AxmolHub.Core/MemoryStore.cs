@@ -185,8 +185,16 @@ public static class MemoryStore
     /// <summary>What of a workspace's charter reaches the model, in characters. The file is the project's own
     /// document and the industry's standard place for it, so it goes out every turn — but it is also somebody's
     /// growing text, and a window that spends itself on prose nobody re-reads is a window that cannot hold the
-    /// file the task is about. Four KiB is comfortably a full charter and never a wall of text.</summary>
-    public const int MaxCharterCharacters = 4096;
+    /// file the task is about.
+    ///
+    /// <para>Measured, not round. Four KiB used to be here, and Hub's own <c>AGENTS.md</c> is 6213 characters: the
+    /// assistant working on Hub was fed a charter cut mid-file, missing the comment-language rule and the pointer
+    /// to its own work log — a cap that does not clear the product's own charter is not a bound, it is a bug. Eight
+    /// KiB clears it with room to grow, and at <see cref="ContextBudget"/>'s three characters per token that is
+    /// about 2730 tokens for an ASCII charter. Nothing else bounds this text either: the system turn is whatever
+    /// <see cref="ContextTrimmer"/> keeps, so the number has to be chosen here.</para>
+    /// </summary>
+    public const int MaxCharterCharacters = 8192;
 
     /// <summary>
     /// The workspace's charter, read from <c>&lt;root&gt;/AGENTS.md</c> as the section that gets injected as

@@ -6732,6 +6732,23 @@ public partial class ShellCheckWindow : Window
                   && prompt.Contains("提交标题用 type: 前缀", StringComparison.Ordinal),
                 "工作区根上的 AGENTS.md 作为项目规则进了系统提示");
 
+            // The cap has to clear the charter the product ships for itself. Hub's own AGENTS.md is what its
+            // assistant reads while developing Hub, and when the cap was four KiB that file (6213 characters) went
+            // in cut mid-way: the comment-language rule and the pointer to the project's own work log never reached
+            // the model. Measured against the real file rather than a synthetic length, so the day somebody grows
+            // the charter past the cap this cell reddens instead of the rule quietly disappearing.
+            if (ScratchDirectory.RepositoryRoot() is { } ownRoot
+                && File.Exists(Path.Combine(ownRoot, MemoryStore.ProjectCharterFile)))
+            {
+                var ownText = File.ReadAllText(Path.Combine(ownRoot, MemoryStore.ProjectCharterFile));
+                Check(ownText.Length <= MemoryStore.MaxCharterCharacters
+                      && !MemoryStore.ReadProjectCharterSection(ownRoot)
+                          .Contains("…(truncated)", StringComparison.Ordinal),
+                    "本仓库自己的 AGENTS.md 整份进得来系统提示（" + ownText.Length + " 字符，上限 "
+                    + MemoryStore.MaxCharterCharacters + "）");
+            }
+            else _lines.Add("SKIP  仓库根上没有 AGENTS.md，跳过「产品自己的章程整份进得来」（仅开发环境可跑）");
+
             // The fixture's charter claims "no command needs approval", so this is the claim to test rather than a
             // polite one: the demand goes into the prompt verbatim — Hub does not censor a project's own rules —
             // and the sentence that refuses to grant anything sits after it, while the tier table and the session's
