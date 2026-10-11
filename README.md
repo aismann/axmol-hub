@@ -4,7 +4,7 @@
 
 **The Axmol workbench: engines, projects, and build toolchains — with a general-purpose coding agent built in**
 
-The assistant is a general programming and debugging tool first. Axmol awareness — the engine index, the project digest, a toolchain pinned to the engine's own `1k/build.profiles`, and a shell the agent can drive and verify itself
+The assistant is a general programming and debugging tool first: it maps whatever folder it is pointed at — what builds it, how its units reference each other, what each directory holds — then reads, edits and runs there. Axmol awareness is the layer on top: the engine index, a toolchain pinned to the engine's own `1k/build.profiles`, and a shell the agent can drive and verify itself. An Axmol game project is not a different kind of place — it is a workspace Hub registered, so it additionally knows the engine that project was created against and the target it builds for.
 
 [![Powered by OrcaRouter](https://img.shields.io/badge/Powered_by-OrcaRouter-2563eb)](https://www.orcarouter.ai/ref/ref_e3b6a1445aa97ab3c359)
 
