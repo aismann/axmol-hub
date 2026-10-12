@@ -40,15 +40,15 @@ Rules that follow from this:
   a text box is never the answer to the card above it.
 - **Reveal on hover, not on first paint.** Per-message actions, session ⋯ menus, secondary buttons
   stay quiet until hovered.
-- **Draw the chrome yourself.** Whatever the user sees inside Axmol Hub is drawn by Axmol Hub. The main
-  window's 32px self-drawn title bar (`ExtendClientAreaToDecorationsHint` + `Button.titlebar` +
-  `Button.window-control`, dragged through `TitleBarDragArea`) is the house style, and a child window that
-  keeps the platform's frame next to it reads as somebody else's app. So for a surface inside the shell, prefer
-  a **layer of the window** to a new `Window` whenever it does not need to leave it — settings moved from a
-  page to an overlay card for that reason — and where a real `Window` is genuinely right (a modeless build log,
-  a picker you want on a second monitor), give it the same chrome rather than a native frame. The verification
-  windows (`--verify-shell`, `--verify-foundation`, `--verify-ops`, the control gallery) are exempt: nobody but
-  the developer ever sees them.
+- **Draw the chrome yourself.** Whatever the user sees inside Axmol Hub is drawn by Axmol Hub: the main
+  window's 32px self-drawn title bar (`Button.titlebar` + `Button.window-control`, dragged through
+  `TitleBarDragArea`) is the house style, and a child window wearing the platform's frame beside it reads as
+  somebody else's app. For a surface inside the shell, prefer a **layer of the window** to a new `Window`
+  whenever it need not leave it — settings moved from a page to an overlay card for that reason — and where a
+  real `Window` is right (a modeless build log, a picker on a second monitor), draw its bar too.
+  **An internal dialog's bar has one close plate and nothing else** — minimise and maximise belong to the main
+  window — so a new dialog gets `HubDialogChrome`, whose spec is the shell's own bar.
+  The four verification windows are exempt.
 - **A layer leaves the window grabbable.** An overlay covers the shell, not the window: hold it to the row
   under the title bar and stop above the 28px status strip, so the drag lane and the strip's action slots —
   the download queue's restart / download / retry, which is the only place a pending app update can be acted
@@ -73,10 +73,9 @@ Always start the app against the repository's own `data/` directory:
 dotnet run --project src/AxmolHub -- --data-root ./data
 ```
 
-Without `--data-root`, the app falls back to the per-user data root
-(`%LocalAppData%\AxmolHub\data`) and any verification run would operate on the user's real engines,
-projects, toolchains, and credentials. `data/` is already in `.gitignore` and must never be
-committed.
+Without it the app falls back to the per-user root (`%LocalAppData%\AxmolHub\data`), and a verification run
+would operate on the user's real engines, projects, toolchains and credentials. `data/` is gitignored and must
+never be committed.
 
 ## Commit style
 
