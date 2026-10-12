@@ -10903,6 +10903,100 @@ public partial class ShellCheckWindow : Window
             "变更的那一行给看日志，抽屉带着它自己的标题（实际 " + shell.LogTitleForCheck + "）");
         shell.CloseTaskPopupForCheck();
 
+        // --- 5.1e Two gates over one list, and the one cancel with two entrances ---
+        // Started clean again: the own-stream row above is Done and a Done row would be counted by the label
+        // assertions below, which are about what is moving, not about what the list still remembers.
+        TaskQueue.Instance.ClearForCheck();
+        var pipeLeft = TaskQueue.Instance.EnqueueForCheck("engine:install:pipe-left", "TaskEnginePackage", "pipe-left");
+        var pipeRight = TaskQueue.Instance.EnqueueForCheck("engine:install:pipe-right", "TaskEnginePackage", "pipe-right");
+        var alongside = TaskQueue.Instance.EnqueueForCheck("project:build:alongside:windows-x64", "Build project",
+            "alongside · windows-x64", TaskQueue.TaskKind.Mutating);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(pipeLeft?.IsMoving == true && pipeRight?.IsMoving == true
+              && alongside?.State == TaskQueue.Phase.Running,
+            "传输与变更互不等待：两路下载在跑时变更直接开跑（实际 " + alongside?.State + "）");
+
+        // The other side of that line: a transfer that does not fit waits, and a change that does not fit is
+        // refused. Both readings are the ruling, so the second request is driven through the lifecycle — the
+        // refusal happens by not enqueuing, which a scripted Enqueue would paper over.
+        var dialogsBeforeSecond = HubDialogWindows().Length;
+        var second = shell.Workspace.ExecuteAsync("Set default engine", token => Task.Delay(int.MaxValue, token));
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var mutatingRows = TaskQueue.Instance.Items.Count(item => item.Kind == TaskQueue.TaskKind.Mutating);
+        Check(mutatingRows == 1 && shell.StatusTextForCheck == HubTexts.Get("DeepLinkBusy", HubStrings.Language)
+              && HubDialogWindows().Length == dialogsBeforeSecond,
+            "第二条变更被拒绝而不是排队，拒绝只花状态条一句话（面板里 " + mutatingRows + " 条变更）");
+        await second;
+
+        // The strip's cancel and the row's cancel cannot be allowed to disagree: one item, and whichever
+        // entrance is used leaves the other with nothing left to do.
+        shell.OpenTaskPopupForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.CanCancelForCheck
+              && shell.TaskRowActionsForCheck.Contains(cancelWord, StringComparison.Ordinal),
+            "行上的取消与状态条的取消同时亮着，说的是同一件事");
+        shell.ClickTaskRowActionForCheck("project:build:alongside:windows-x64", cancelWord);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(alongside?.State == TaskQueue.Phase.Cancelled && !shell.CanCancelForCheck,
+            "从行上取消之后，状态条的取消跟着熄灭（实际 " + alongside?.State + "）");
+
+        // The layer rule, stated for what a change now is: with the settings card up the strip's cancel must
+        // still answer, because cancelling a compile is the one action nobody else offers. It is driven from
+        // the strip this time rather than the row, and the item is a fresh one — the popover's own surface is
+        // not what this cell is about.
+        var underOverlay = TaskQueue.Instance.EnqueueForCheck("project:build:overlay:windows-x64", "Build project",
+            "overlay · windows-x64", TaskQueue.TaskKind.Mutating);
+        // Re-opened through the helper rather than the raw toggle, and the fresh instance put back into
+        // `settings`: opening the card builds a new page, so a local still holding the previous instance would
+        // leave every cell after this one reading a detached surface — which is a false red, not a false green,
+        // but still a red nobody caused.
+        settings = OpenSettingsOn(shell, "appearance");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.CanCancelForCheck && shell.Workspace.IsBusy,
+            "设置浮层开着时状态条的取消仍然按得下去");
+        shell.ClickCancelButtonForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(underOverlay?.State == TaskQueue.Phase.Cancelled,
+            "从状态条取消之后，浮层底下那条变更真的停了（实际 " + underOverlay?.State + "）");
+        TaskQueue.Instance.ClearForCheck();
+
+        // 「运行不是任务」read as two facts: after Hub records the game it launched, the gate is still empty
+        // and the list has no row for it; and when that game is holding its own output directory, a rebuild
+        // answers with a sentence the user can act on instead of the compiler's sharing-violation text.
+        // A fixture project rather than one out of state: the suite has moved to a scratch data root by now and
+        // has no registered project to hand, and the rule under test needs only the path a game was started
+        // for — the refusal happens before the target picker, so no artifact is touched either way.
+        var heldProject = new ProjectEntry { Name = "fixture-running", Path = "fixture://running" };
+        shell.Workspace.SelectedProject = heldProject;
+        shell.Workspace.RememberGameForCheck(heldProject.Path, Environment.ProcessId);
+        Check(!shell.Workspace.IsBusy && TaskQueue.Instance.ActiveCount == 0,
+            "游戏跑着的时候闸是空的，运行也不占任务列表");
+
+        var blocked = shell.Workspace.BuildAsync(configureOnly: false);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var blocker = HubDialogWindows().LastOrDefault();
+        var blockerText = blocker is null ? "" : NamedDescendant<TextBlock>(blocker, "DialogMessage")?.Text ?? "";
+        Check(blockerText.Contains(HubTexts.Get("ProjectStillRunning", HubStrings.Language), StringComparison.Ordinal),
+            "游戏占着输出目录时，构建给的是能行动的一句话（弹窗 " + blockerText + "）");
+        if (blocker is not null)
+        {
+            ActionButtons(blocker).FirstOrDefault()?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+
+        await blocked;
+        shell.Workspace.ForgetGamesForCheck();
+        shell.Workspace.SelectedProject = null;
+        // The failure opened the drawer, as it should — and the geometry cells downstream measure the shell
+        // with it closed. Leave the surface as it was found rather than as the last press left it.
+        shell.ShowLog(false);
+
         TaskQueue.Instance.ClearForCheck();
         UpdateService.Instance.ClearForCheck();
         shell.UpdateLayout();

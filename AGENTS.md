@@ -51,8 +51,8 @@ Rules that follow from this:
   The four verification windows are exempt.
 - **A layer leaves the window grabbable.** An overlay covers the shell, not the window: hold it to the row
   under the title bar and stop above the 28px status strip, so the drag lane and the strip's action slots —
-  the task queue's restart / download / retry (the only place a pending app update can be acted on) and a
-  running task row's cancel — stay pressable while it is up. Geometry checks cannot see a layer that merely
+  the task queue's restart / download / retry (the only place a pending app update can be acted on) and the
+  cancel for a running change — stay pressable while it is up. Geometry checks cannot see a layer that merely
   *looks* clear, so pair them with the child-index order assertion and one that proves the scrim has a brush.
 - **Match the established shell**: slim sidebar with the conversation list under the AI assistant nav
   item, centered 780–820px chat column, right-aligned user pill, borderless assistant text, centered
