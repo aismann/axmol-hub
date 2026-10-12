@@ -683,6 +683,12 @@ public partial class MainWindow : Window
 
         if (TaskSlotText is null) return;
 
+        // The strip's cancel follows the queue rather than an "operation started" announcement: the button's
+        // question is 「is there a change to stop」, and that is the queue's answer. Read from one place, it
+        // cannot be wired to a moment when the honest answer was still no — which is exactly how this button
+        // ended up disabled for every operation when the busy flag was raised before the task existed.
+        CancelButton.IsEnabled = _workspace.CanCancel;
+
         var service = UpdateService.Instance;
         var (visible, label, action) = TaskSlotStateFor(
             TaskQueue.Instance.Items, service.Download, CanStartDownload(), _restartArmed);
@@ -1064,6 +1070,11 @@ public partial class MainWindow : Window
     /// <summary>The strip's cancel, as the user can press it. An unlisted second-scale change has no row to
     /// cancel from, so this button is the only answer it gets — and it had better be enabled.</summary>
     internal bool CanCancelForCheck => CancelButton.IsEnabled;
+
+    /// <summary>Presses the strip's cancel through the button, so a check proves the wiring and not the
+    /// workspace method the button happens to call.</summary>
+    internal void ClickCancelButtonForCheck() => CancelButton.RaiseEvent(
+        new RoutedEventArgs(Button.ClickEvent));
     internal bool TaskSlotAccentForCheck => TaskSlot.Classes.Contains("accent");
 
     /// <summary>What the slot's tooltip says. The version number lives here, not in the label, so a check on
@@ -1546,12 +1557,9 @@ public partial class MainWindow : Window
 
         _workspace.StatusChanged += text => Status.Text = text;
 
-        // The busy flag no longer disables anything you navigate to. What used to protect 卸载 and 切换目录
-        // from a click during an engine build is now the sentence each entry point states at the gate
-        // (HubWorkspace.RefuseIfBusy), which says why the press did nothing instead of making the surface
-        // unpressable — the same reason the download queue stopped greying the page it ran on.
-        // What the flag still owns is the cancel button, whose only job is "stop that".
-        _workspace.BusyChanged += busy => CancelButton.IsEnabled = busy && _workspace.CanCancel;
+        // Nothing here disables a surface while work runs, and nothing here announces it either: the strip's
+        // cancel reads the queue itself (UpdateTaskSlot), which is the single place that knows whether there
+        // is a change to stop. The gate answers a refused press with a sentence instead of grey.
 
         _workspace.Failed += () => ShowLog(true);
 

@@ -231,9 +231,6 @@ public sealed class HubWorkspace : IDisposable
     /// <summary>Status bar text.</summary>
     public event Action<string>? StatusChanged;
 
-    /// <summary>An operation is running (pages disabled + cancel button enabled).</summary>
-    public event Action<bool>? BusyChanged;
-
     /// <summary>An operation failed: the main window expands the log panel in response.</summary>
     public event Action? Failed;
 
@@ -379,19 +376,15 @@ public sealed class HubWorkspace : IDisposable
             onFinished: settled => FinishGated(settled, titleKey), kind: TaskQueue.TaskKind.Mutating, listed: listed);
         if (item is null)
         {
-            // Already running under this identity: the row on screen is the answer, and the busy flag the
-            // first one set must not be dropped by the second request.
-            BusyChanged?.Invoke(false);
+            // Already running under this identity: the row on screen is the answer, and the repaint the first
+            // one owed must not be skipped because the second request was turned away.
             Refresh();
             return;
         }
 
-        // Raised after the item exists, and read back from the queue rather than assumed. The shell's cancel
-        // button asks `busy && CanCancel`, and CanCancel is the queue's answer — announce the flag first and
-        // the button is wired to a moment when the honest answer was still "nothing to cancel". Reading IsBusy
-        // also covers the work that settles on the spot: its finisher has already run by the time this line
-        // is reached, so the flag must not claim a change that is already over.
-        BusyChanged?.Invoke(IsBusy);
+        // Nothing is announced here. The shell reads the queue for its cancel button and the strip's label, so
+        // the one fact — 「a change is running」 — has one owner, and a work delegate that settles on the spot
+        // cannot leave a flag standing after its own finisher has run.
         await item.Completion;
     }
 
@@ -416,7 +409,6 @@ public sealed class HubWorkspace : IDisposable
             Log.Write(StatusText);
         }
 
-        BusyChanged?.Invoke(false);
         Refresh();
     }
 
@@ -1242,6 +1234,16 @@ public sealed class HubWorkspace : IDisposable
     /// <summary>Whether the wasm preview server is up — the answer the 运行 button needs in order to say
     /// 停止 instead, and the reason this is a property rather than a local in <see cref="RunAsync"/>.</summary>
     public bool WebPreviewRunning => _webPreview is not null;
+
+    /// <summary>Verification hook (<c>--verify-shell</c>): records a pid as the game Hub launched for this
+    /// workspace. The suite has no built artifact to start, and what the ruling is about is not the launch —
+    /// it is that a running game leaves the gate empty, takes no row, and shows up again only as the reason a
+    /// rebuild would fail.</summary>
+    internal void RememberGameForCheck(string projectPath, int pid) => _launchedGames[projectPath] = pid;
+
+    /// <summary>Verification hook: drops the remembered games, so a scripted "it is still running" cannot
+    /// leave the next round's build press refused for a process that only ever existed in this suite.</summary>
+    internal void ForgetGamesForCheck() => _launchedGames.Clear();
 
     public string WebPreviewUrl => _webPreview?.Url ?? "";
 
