@@ -801,17 +801,19 @@ public partial class ShellCheckWindow : Window
               && HubDialogChrome.DragExceeded(new Point(100, 16), new Point(105, 16))
               && HubDialogChrome.DragExceeded(new Point(100, 16), new Point(100, 21)),
             "指针没挪出阈值之前标题栏不动窗口：这是双击能被认出来的前提（否则第一下就已经进了系统的拖动循环）");
-        // The other half of the same dead-arm story: outside Windows the window manager owns a maximized window's
-        // geometry and answers a move request for it with nothing, which is what made a maximized bar un-draggable
-        // on WSLg while a normal one dragged fine. So a drag has to take the window out of that state first —
-        // except on Windows, where DWM does it and the Snap Layouts hook is built on it being done.
+        // The other half of the same dead-arm story: outside Windows the shell has to put the window back on its own
+        // geometry before it hands the platform a drag, because a window somebody else is holding does not follow the
+        // pointer. On WSLg what holds it is usually the shell's own fill — there the window manager's maximized
+        // caption never receives the press at all (see WslWorkAreaFill) — and on a real Linux desktop or macOS it can
+        // be the window manager's maximized state. Windows is excluded: DWM un-maximizes there and the Snap Layouts
+        // hook is built on that.
         Check(MainWindow.DragRestoresMaximized(false, WindowState.Maximized, false)
               && MainWindow.DragRestoresMaximized(false, WindowState.Normal, true)
               && !MainWindow.DragRestoresMaximized(false, WindowState.Normal, false)
               && !MainWindow.DragRestoresMaximized(false, WindowState.FullScreen, false)
               && !MainWindow.DragRestoresMaximized(true, WindowState.Maximized, false),
-            "已最大化（或已被壳自己铺满）的窗口在非 Windows 平台上拖动前必须先回到自己的几何，否则窗口管理器直接"
-            + "拒绝移动；Windows 那一支交给 DWM");
+            "已最大化（或已被壳自己铺满）的窗口在非 Windows 平台上拖动前必须先回到自己的几何，否则它不会跟手；"
+            + "Windows 那一支交给 DWM");
         // Which host fills the work area itself. WSLg is the one where the window manager's maximized window stops
         // receiving the pointer over its own caption (measured: clicks aimed at the drawn bar arrive ~27-35 px low),
         // so there the shell sizes the window instead; every other host leaves the job to its window manager.
@@ -829,6 +831,20 @@ public partial class ShellCheckWindow : Window
         Check(MainWindow.RestoredOriginForDrag(new PixelPoint(0, 0), new PixelPoint(-8, -8), 1920,
                 new Point(600, 16), new Size(1280, 880), 1.5) == new PixelPoint(292, -8),
             "同一套落位在 150% 缩放、且窗口管理器自己画外框时仍然一致：比例在 DIP 里算，长度在像素里写（期望 292,-8）");
+        // The two halves of the self-filled work area, on the numbers measured on WSLg. The size comes from the
+        // window manager's own maximize because the screen's working area over-reports it (2560x1440 said, 2560x1368
+        // used); the position is written against the window's *content*, while Window.Position is the origin of the
+        // shadow band Avalonia's X11 backend wraps around it (9 px per side, and none while maximized) — without
+        // that subtraction the content starts 9 px inside the work area and the window runs 9 px past its edge.
+        Check(MainWindow.WorkAreaRectFor(new PixelPoint(0, 0), new Size(2560, 1368), 1)
+                  == new PixelRect(0, 0, 2560, 1368)
+              && MainWindow.WorkAreaRectFor(new PixelPoint(1920, 0), new Size(1280, 880), 1.5)
+                  == new PixelRect(1920, 0, 1920, 1320),
+            "自己铺满时用的矩形：起点取屏幕工作区，尺寸取窗口管理器真正最大化到的那块（DIP 换算成像素）");
+        Check(MainWindow.FillOriginForContent(new PixelRect(0, 0, 2560, 1368), new PixelPoint(640, 280),
+                new PixelPoint(649, 289)) == new PixelPoint(-9, -9),
+            "铺满时写的是窗口原点，所以要按「内容原点减窗口原点」把阴影边距扣回来：内容落在 (0,0)，窗口自己退到 "
+            + "(-9,-9)（实测的 9px 阴影带）");
 
         // The double-click, driven through the real event on the real control rather than through the method it
         // ends up calling. The pointer is one this check made (Avalonia's IPointer cannot be implemented from

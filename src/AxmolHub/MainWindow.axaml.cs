@@ -112,11 +112,17 @@ public partial class MainWindow : Window
     /// host the maximized state is never the filled state.</summary>
     private bool _fillsWorkArea;
 
-    /// <summary>Armed while the window manager is asked to maximize once, so the rect it chooses can be recorded —
-    /// it is the only number on this host that says where a maximized window really lands.</summary>
+    /// <summary>Armed while the window manager is asked to maximize once, so the size it chooses can be recorded —
+    /// it is the only number on this host that says how much of the screen a maximized window really gets.</summary>
     private bool _learningFillRect;
 
-    /// <summary>The rect the window manager used for a maximized window, in physical pixels, learned once per run.</summary>
+    /// <summary>Set once the size is known and the window has been handed back to the window manager: the fill is
+    /// written a beat later, on a timer (see <see cref="LearnFillRect"/>), and this is what keeps a toggle that
+    /// arrives in the meantime from writing the geometry into the handover, where it would be erased.</summary>
+    private bool _fillPending;
+
+    /// <summary>The work area to fill, in physical pixels of the window's *content*: origin from the screen, size
+    /// from the window manager. Learned once per run.</summary>
     private PixelRect? _fillRect;
 
     /// <summary>
@@ -1687,8 +1693,8 @@ public partial class MainWindow : Window
     /// <c>WindowState</c>, is the state the caption plate toggles.</summary>
     internal bool FillsWorkAreaForCheck => _fillsWorkArea;
 
-    /// <summary>The rect the window manager used when it maximized this window once, learned on the first toggle and
-    /// cached for every later one.</summary>
+    /// <summary>The work-area rect the shell fills, learned on the first toggle and cached for every later one:
+    /// origin from the screen, size from the window manager's own maximize.</summary>
     internal PixelRect FillRectForCheck => _fillRect ?? default;
 
     /// <summary>Runs the plate's own flip, so a check can drive the fill and the un-fill through the same door a
@@ -2069,13 +2075,22 @@ public partial class MainWindow : Window
         WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     }
 
-    /// <summary>Enters or leaves the filled work area. The first entry asks the window manager to maximize once and
-    /// records the rect it actually lands on, because that is the only number on this host saying where a maximized
-    /// window really sits — <c>Screen.WorkingArea</c> over-reports it by the band the Windows taskbar costs the
-    /// display (measured: 2560x1440 reported, 2560x1368 used, host at 150%). Every later toggle applies the cached
-    /// rect and the window manager's maximized state is never shown again.</summary>
+    /// <summary>Enters or leaves the filled work area. The first entry asks the window manager to maximize
+    /// <em>once</em>, because its own rect is the only number on this host that knows how much of the screen a
+    /// maximized window really gets — the display's working area over-reports it by the band the host's taskbar
+    /// costs (measured: 2560x1440 reported, 2560x1368 used, host at 150%). Only the **size** is taken from that
+    /// detour; the origin comes from the screen. Every later toggle applies the cached rect straight away, in the
+    /// window manager's normal state, and the maximized state is never shown again.</summary>
     private void ToggleWorkAreaFill()
     {
+        // A second click inside the handover (the plate double-clicked, a double-click on the bar arriving twice)
+        // is dropped rather than honoured: the fill it would apply is the one already on its way, and writing the
+        // geometry now is what the wait exists to avoid.
+        if (_learningFillRect || _fillPending)
+        {
+            return;
+        }
+
         if (_fillsWorkArea)
         {
             LeaveWorkAreaFill();
@@ -2092,11 +2107,16 @@ public partial class MainWindow : Window
         WindowState = WindowState.Maximized;
     }
 
+    /// <summary>Parks the window's content on the work area, in the window manager's normal state — the state in
+    /// which paint and input agree here (see <see cref="WslWorkAreaFill"/>). The rect is written against the
+    /// content, while <see cref="Window.Position"/> is the origin of the shadow band Avalonia's X11 backend wraps
+    /// the client in (measured: 9 px on every side, and none at all while the window manager holds the window
+    /// maximized), so the rect's own origin is moved back by that inset before it is written.</summary>
     private void ApplyWorkAreaFill(PixelRect rect)
     {
         var scaling = RenderScaling <= 0 ? 1 : RenderScaling;
         _fillsWorkArea = true;
-        Position = new PixelPoint(rect.X, rect.Y);
+        Position = FillOriginForContent(rect, Position, this.PointToScreen(new Point(0, 0)));
         Width = rect.Width / scaling;
         Height = rect.Height / scaling;
         SyncWindowStateChrome();
@@ -2115,25 +2135,51 @@ public partial class MainWindow : Window
         SyncWindowStateChrome();
     }
 
-    /// <summary>Takes the window manager's maximized rect from the resize it reports rather than from the state
-    /// change, because the state arrives before the geometry does. Recording it and dropping the state in the same
-    /// breath leaves the window at the same pixels, so the handover to the shell's own fill is invisible — and the
-    /// caption comes back under the pointer, which is the whole reason for the detour.</summary>
-    private void CompleteFillLearning(Size clientSize)
+    /// <summary>Where to put the window so that its content starts at <paramref name="contentRect"/>'s origin:
+    /// whatever sits between the window's origin and its content today sits between them after the move too, so it
+    /// is subtracted. Pure, because the two origins are exactly the numbers a check cannot obtain without a real
+    /// window on a real X server.</summary>
+    internal static PixelPoint FillOriginForContent(PixelRect contentRect, PixelPoint windowOrigin, PixelPoint contentOrigin)
+        => new(contentRect.X - (contentOrigin.X - windowOrigin.X),
+               contentRect.Y - (contentOrigin.Y - windowOrigin.Y));
+
+    /// <summary>The work-area rect the shell fills: the origin a screen publishes for itself, the size the window
+    /// manager just used. Pure for the same reason — on every other platform the pair is never asked for, and a
+    /// check cannot make the window manager maximize.</summary>
+    internal static PixelRect WorkAreaRectFor(PixelPoint contentOrigin, Size maximizedClientSize, double scaling)
     {
-        var scaling = RenderScaling <= 0 ? 1 : RenderScaling;
-        // Anything not visibly bigger than the window's own normal size is an intermediate configure on the way to
-        // the maximized one; stay armed and wait for the resize that actually filled the screen.
-        if (_normalGeometry is { } normal && clientSize.Width <= normal.ClientSize.Width + 1)
+        var factor = scaling <= 0 ? 1 : scaling;
+        return new PixelRect(contentOrigin.X, contentOrigin.Y,
+            (int)Math.Round(maximizedClientSize.Width * factor, MidpointRounding.AwayFromZero),
+            (int)Math.Round(maximizedClientSize.Height * factor, MidpointRounding.AwayFromZero));
+    }
+
+    /// <summary>Records the size the window manager maximized to and hands the window back. Nothing is applied from
+    /// here: the window manager is about to put the window back where it found it, and a geometry written into that
+    /// handover comes off under ours (measured on WSLg — the resize that announces the restore arrives while
+    /// <c>Position</c> still reports the maximized origin, and the window manager's own configure lands after it, so
+    /// the size we asked for stayed and the position did not). Waiting a beat after the state change is what makes
+    /// the write the last one: measured to land and hold at 120 ms, with this 250 ms chosen as the margin. The flash
+    /// it costs is paid once per run, because the rect is cached.</summary>
+    private void LearnFillRect(Size clientSize)
+    {
+        var screen = Screens?.Primary;
+        _learningFillRect = false;
+        _fillRect = WorkAreaRectFor(screen?.WorkingArea.Position ?? default, clientSize, RenderScaling);
+        _fillPending = true;
+        WindowState = WindowState.Normal;
+        DispatcherTimer.RunOnce(WritePendingFill, TimeSpan.FromMilliseconds(250));
+    }
+
+    private void WritePendingFill()
+    {
+        if (!_fillPending || _fillRect is not { } rect)
         {
             return;
         }
 
-        _learningFillRect = false;
-        _fillRect = new PixelRect(Position.X, Position.Y,
-            (int)Math.Round(clientSize.Width * scaling), (int)Math.Round(clientSize.Height * scaling));
-        WindowState = WindowState.Normal;
-        ApplyWorkAreaFill(_fillRect.Value);
+        _fillPending = false;
+        ApplyWorkAreaFill(rect);
     }
 
     /// <summary>
@@ -2152,9 +2198,20 @@ public partial class MainWindow : Window
     {
         if (_learningFillRect && WindowState == WindowState.Maximized)
         {
-            CompleteFillLearning(clientSize);
+            // Anything not visibly bigger than the window's own normal size is an intermediate configure on the way
+            // to the maximized one; stay armed and wait for the resize that actually filled the screen.
+            if (_normalGeometry is { } before && clientSize.Width <= before.ClientSize.Width + 1)
+            {
+                return;
+            }
+
+            LearnFillRect(clientSize);
             return;
         }
+
+        // The window manager is still putting the window back. Nothing is recorded from these resizes: they are its
+        // own geometry on the way out, and the fill arrives on the timer (see <see cref="LearnFillRect"/>).
+        if (_fillPending) return;
 
         if (WindowState == WindowState.Maximized || _fillsWorkArea) return;
         if (clientSize.Width < MinWidth || clientSize.Height < MinHeight) return;
@@ -2162,16 +2219,16 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Whether a drag that began on the bar has to put the window back on its own geometry before the
-    /// platform will move it at all. Pure — the platform, the state and the fill come in — so the self-check can
-    /// drive both arms, the one that acts ending in <see cref="Window.BeginMoveDrag"/>, which is where a check would
-    /// hang. Windows is excluded on purpose: DWM un-maximizes there by itself and <see cref="TitleBarSnapHook"/> is
-    /// built on that. Everywhere else the window manager owns the geometry and answers a move request for a window it
-    /// has maximized with nothing at all (measured on WSLg, where a maximized bar simply does not drag) — and a
-    /// window the shell filled counts as maximized here for the reason a reader expects: pulling its caption is how
-    /// you get it off the screen.</summary>
+    /// platform moves it. Pure — the platform, the state and the fill come in — so the self-check can drive both
+    /// arms, the one that acts ending in <see cref="Window.BeginMoveDrag"/>, which is where a check would hang.
+    /// Windows is excluded on purpose: DWM un-maximizes there by itself and <see cref="TitleBarSnapHook"/> is built
+    /// on that. Everywhere else the shell does it, because a reader who pulls a caption means "take this window off
+    /// the screen", and a window the window manager still holds does not follow the pointer the way the press
+    /// expects. On WSLg the state a drag leaves is normally the shell's own fill (see <see cref="WslWorkAreaFill"/>)
+    /// — there, a window the window manager maximizes never receives the press at all — while the maximized arm is
+    /// what a window manager that maximized without being asked leaves behind.</summary>
     internal static bool DragRestoresMaximized(bool isWindows, WindowState state, bool fillsWorkArea)
         => !isWindows && (state == WindowState.Maximized || fillsWorkArea);
-
 
     /// <summary>Where to put the window once the maximized state is gone so that the bar is still under the pointer,
     /// at the same proportion of its width the pointer was at when the press landed — the semantics DWM gives on

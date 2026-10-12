@@ -19,11 +19,11 @@ namespace AxmolHub;
 ///   has no such split — paint and input agree, and the bar works.</item>
 /// </list>
 ///
-/// <para>So on this host the app asks the window manager to maximize <em>once</em>, records the rect it actually
-/// used (its work area is smaller than <c>Screen.WorkingArea</c> reports, by the 72 px the Windows taskbar costs at
-/// 150% scaling), then leaves the maximized state and applies that rect itself. The rect is cached, so a later
-/// toggle never shows the window manager's maximized state again and the window does not move a pixel when the
-/// flag is dropped.</para>
+/// <para>So on this host the app asks the window manager to maximize <em>once</em>, records the <em>size</em> it
+/// actually used (its work area is smaller than <c>Screen.WorkingArea</c> reports, by the 72 px the Windows taskbar
+/// costs at 150% scaling), hands the window back, and writes that rect itself once the window manager has finished
+/// restoring — a geometry written in the same breath as the state change is erased by the restore, measured ~30 ms
+/// later. The rect is cached, so a later toggle never shows the window manager's maximized state again.</para>
 ///
 /// <para>Windows is untouched (DWM, and <see cref="TitleBarSnapHook"/> built on it), and so are real Linux desktops
 /// and macOS: their window managers maximize without this split, and they un-maximize on a caption drag either
