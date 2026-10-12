@@ -40,6 +40,20 @@ Rules that follow from this:
   a text box is never the answer to the card above it.
 - **Reveal on hover, not on first paint.** Per-message actions, session ⋯ menus, secondary buttons
   stay quiet until hovered.
+- **Draw the chrome yourself.** Whatever the user sees inside Axmol Hub is drawn by Axmol Hub. The main
+  window's 32px self-drawn title bar (`ExtendClientAreaToDecorationsHint` + `Button.titlebar` +
+  `Button.window-control`, dragged through `TitleBarDragArea`) is the house style, and a child window that
+  keeps the platform's frame next to it reads as somebody else's app. So for a surface inside the shell, prefer
+  a **layer of the window** to a new `Window` whenever it does not need to leave it — settings moved from a
+  page to an overlay card for that reason — and where a real `Window` is genuinely right (a modeless build log,
+  a picker you want on a second monitor), give it the same chrome rather than a native frame. The verification
+  windows (`--verify-shell`, `--verify-foundation`, `--verify-ops`, the control gallery) are exempt: nobody but
+  the developer ever sees them.
+- **A layer leaves the window grabbable.** An overlay covers the shell, not the window: hold it to the row
+  under the title bar and stop above the 28px status strip, so the drag lane and the strip's action slots —
+  the download queue's restart / download / retry, which is the only place a pending app update can be acted
+  on — stay pressable while it is up. Geometry checks cannot see a layer that merely *looks* clear, so pair
+  them with the child-index order assertion and one that proves the scrim still has a brush to hit.
 - **Match the established shell**: slim sidebar with the conversation list under the AI assistant nav
   item, centered 780–820px chat column, right-aligned user pill, borderless assistant text, centered
   greeting + suggestion chips on empty state, 28px status strip. The assistant page may also open a
