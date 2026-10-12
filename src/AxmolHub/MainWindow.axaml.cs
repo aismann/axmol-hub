@@ -1035,6 +1035,21 @@ public partial class MainWindow : Window
 
     internal bool TaskSlotVisibleForCheck => TaskSlot.IsVisible;
     internal string TaskSlotTextForCheck => TaskSlotText.Text ?? "";
+
+    /// <summary>The two surfaces the busy gate used to switch off. A change running now has to leave both of
+    /// them pressable — the page it was started from and the settings card — and answer the press that cannot
+    /// go through with a sentence instead. Reading IsEnabled here is the only way to tell "the gate is gone"
+    /// from "the gate moved somewhere invisible".</summary>
+    internal bool PageEnabledForCheck => PageHost.IsEnabled;
+
+    internal bool SettingsHostEnabledForCheck => SettingsHost.IsEnabled;
+
+    /// <summary>What the strip's own line says — where a refused press leaves its reason.</summary>
+    internal string StatusTextForCheck => Status.Text ?? "";
+
+    /// <summary>The strip's cancel, as the user can press it. An unlisted second-scale change has no row to
+    /// cancel from, so this button is the only answer it gets — and it had better be enabled.</summary>
+    internal bool CanCancelForCheck => CancelButton.IsEnabled;
     internal bool TaskSlotAccentForCheck => TaskSlot.Classes.Contains("accent");
 
     /// <summary>What the slot's tooltip says. The version number lives here, not in the label, so a check on
@@ -1512,16 +1527,12 @@ public partial class MainWindow : Window
 
         _workspace.StatusChanged += text => Status.Text = text;
 
-        // During an operation pages are disabled and cancel is enabled — matching WPF's
-        // Pages.IsEnabled / CancelButton.IsEnabled.
-        _workspace.BusyChanged += busy =>
-        {
-            PageHost.IsEnabled = !busy;
-            // The settings card sits outside PageHost now, so the gate that used to cover it by inheritance has
-            // to be stated here: an engine build in flight must not leave a clickable 卸载 or 切换目录 behind.
-            SettingsHost.IsEnabled = !busy;
-            CancelButton.IsEnabled = busy && _workspace.CanCancel;
-        };
+        // The busy flag no longer disables anything you navigate to. What used to protect 卸载 and 切换目录
+        // from a click during an engine build is now the sentence each entry point states at the gate
+        // (HubWorkspace.RefuseIfBusy), which says why the press did nothing instead of making the surface
+        // unpressable — the same reason the download queue stopped greying the page it ran on.
+        // What the flag still owns is the cancel button, whose only job is "stop that".
+        _workspace.BusyChanged += busy => CancelButton.IsEnabled = busy && _workspace.CanCancel;
 
         _workspace.Failed += () => ShowLog(true);
 

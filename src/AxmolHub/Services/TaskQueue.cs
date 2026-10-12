@@ -634,8 +634,9 @@ internal sealed class TaskQueue
     /// <see cref="FinishTaskForCheck"/>; <see cref="ClearForCheck"/> takes it away.
     /// </summary>
     internal Item? EnqueueForCheck(string identity, string titleKey, string? subject = null,
-        TaskKind kind = TaskKind.Transfer)
-        => Enqueue(identity, titleKey, subject, (_, token) => Task.Delay(Timeout.Infinite, token), kind: kind);
+        TaskKind kind = TaskKind.Transfer, bool listed = true)
+        => Enqueue(identity, titleKey, subject, (_, token) => Task.Delay(Timeout.Infinite, token),
+            kind: kind, listed: listed);
 
     /// <summary>
     /// Verification hook: feeds one line through <see cref="TaskFeed"/>, the way the task's own process would.

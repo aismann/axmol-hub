@@ -108,9 +108,9 @@ public partial class MainWindow
         // Sized before the first arrange so the card never shows up at last time's rect for a frame; the
         // SizeChanged hook covers every resize that happens while it is already up.
         SyncSettingsCardSize();
-        // PageHost used to be the thing the busy gate disabled, and this surface is not inside it any more —
-        // the gate has to be stated here or an operation in flight becomes a settings page you can act on.
-        SettingsHost.IsEnabled = !_workspace.IsBusy;
+        // Not disabled while an operation runs: the card stays clickable and the press that cannot go through
+        // answers with a sentence (HubWorkspace.RefuseIfBusy). A greyed 卸载 used to be the only way this
+        // surface said "not now"; the strip says it now.
     }
 
     internal void CloseSettings()

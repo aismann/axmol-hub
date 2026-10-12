@@ -10788,6 +10788,77 @@ public partial class ShellCheckWindow : Window
         Check(restartWords.Count == 0,
             "设置页上没有任何会重启的按钮，两下闸门只长在槽位上（实际 " + string.Join("/", restartWords) + "）");
 
+        // --- 5.1d The change on this surface, and the page it no longer freezes ---
+        // A build is now a task row, so the gate that used to grey everything has to answer a refused press
+        // with something the user can read. Three facts, all read off the shell rather than inferred: the
+        // strip counts the change as its own row, the surfaces stay pressable, and the refusal is a sentence
+        // that costs no dialog.
+        // Started from an empty list: the cells above leave a scripted transfer behind on purpose, and a count
+        // assertion measured against it would be a number about the fixture rather than about the build.
+        TaskQueue.Instance.ClearForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var changeIdentity = "project:build:fixture:windows-x64";
+        if (TaskQueue.Instance.EnqueueForCheck(changeIdentity, "Build project", "fixture · windows-x64",
+                TaskQueue.TaskKind.Mutating) is null)
+        {
+            throw new InvalidOperationException("fixture: the build change was refused");
+        }
+
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var changeLabel = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubTexts.Get("TaskSlotFormat", HubStrings.Language), 1, 1);
+        Check(shell.Workspace.IsBusy && shell.TaskSlotVisibleForCheck && shell.TaskSlotTextForCheck == changeLabel,
+            "构建作为任务行点亮同一个槽位（实际 " + shell.TaskSlotTextForCheck + "）");
+
+        // The gate is held; nothing is disabled. This is the cell that used to be a grey rectangle.
+        Check(shell.PageEnabledForCheck && shell.SettingsHostEnabledForCheck,
+            "变更操作在跑时页面与设置卡都没有被冻住");
+
+        var dialogsBeforeChange = HubDialogWindows().Length;
+        await shell.Workspace.UninstallEngineAsync();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.Workspace.IsBusy
+              && shell.StatusTextForCheck == HubTexts.Get("DeepLinkBusy", HubStrings.Language)
+              && HubDialogWindows().Length == dialogsBeforeChange,
+            "被闸挡住的动手给的是状态条一句话，不弹窗（实际 " + shell.StatusTextForCheck + "）");
+
+        // The row's measure when the work can prove only that it is still going. The clock is what a compile
+        // can honestly report, where 「—」 would read as a task that stopped saying anything.
+        TaskQueue.Instance.AgeForCheck(changeIdentity, TimeSpan.FromMinutes(2));
+        shell.OpenTaskPopupForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var changeMeasure = shell.TaskRowMeasureForCheck(changeIdentity);
+        Check(changeMeasure.Contains("00:02:", StringComparison.Ordinal)
+              && changeMeasure.Contains(HubTexts.Get("BuildElapsed", HubStrings.Language), StringComparison.Ordinal),
+            "没有百分比的那一行给的是耗时，不是破折号（实际 " + changeMeasure + "）");
+        shell.CloseTaskPopupForCheck();
+        TaskQueue.Instance.FinishTaskForCheck(changeIdentity, TaskQueue.Phase.Done);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
+        // The other half of the same ruling: second-scale work holds this very gate, and takes no row. Were it
+        // to show one, the popover would fill with flashes and 「is Hub busy」 would have two answers again.
+        // Started through the real lifecycle rather than scripted into the queue, because the strip's cancel is
+        // wired to the busy signal that lifecycle raises — a hand-made item would leave that wiring outside the
+        // picture while still passing every word of this assertion.
+        var quiet = shell.Workspace.ExecuteAsync("Open project folder",
+            token => Task.Delay(int.MaxValue, token));
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.Workspace.IsBusy && shell.CanCancelForCheck
+              && TaskQueue.Instance.Items.Count == 0 && !shell.TaskSlotVisibleForCheck,
+            "秒级操作占着同一个闸、也取消得掉，但不占行也不点亮槽位");
+        shell.Workspace.Cancel();
+        await quiet;
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(!shell.Workspace.IsBusy && !shell.CanCancelForCheck,
+            "取消那条秒级操作后闸空出来，状态条的取消也跟着熄灭");
+
         TaskQueue.Instance.ClearForCheck();
         UpdateService.Instance.ClearForCheck();
         shell.UpdateLayout();

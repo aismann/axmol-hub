@@ -110,6 +110,13 @@ public partial class ToolchainsPage : UserControl
         }
 
         var engine = _workspace.ToolchainEngine;
+        // Asked before the confirmation, not after it: a question the user answers and then watches get
+        // refused is worse than the greyed page this replaced, because it costs a click and gives no reason.
+        if (_workspace.RefuseIfBusy())
+        {
+            return;
+        }
+
         var prompt = engine is null
             ? HubStrings.Get("EngineSetupHint")
             : engine + "\n\n" + HubStrings.Get("EngineSetupHint");
@@ -218,6 +225,11 @@ public partial class ToolchainsPage : UserControl
         if (_workspace.Owner is null)
         {
             await _workspace.InstallHostShellAsync();
+            return;
+        }
+
+        if (_workspace.RefuseIfBusy())
+        {
             return;
         }
 

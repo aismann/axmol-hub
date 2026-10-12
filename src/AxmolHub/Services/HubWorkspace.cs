@@ -344,20 +344,36 @@ public sealed class HubWorkspace : IDisposable
         Func<TaskQueue.Item, CancellationToken, Task> work)
         => RunGated(identity, titleKey, subject, work, listed: true);
 
+    /// <summary>
+    /// The question an entry point asks <b>before</b> it shows a dialog it would then have to take back: is
+    /// the exclusive gate taken? If it is, the press is answered with one sentence on the strip and in the log
+    /// — no modal, because an action that did nothing does not get to cover the composer, and no grey page,
+    /// because this round's whole point is that the surface stays live while work runs.
+    /// </summary>
+    public bool RefuseIfBusy()
+    {
+        if (_tasks.ActiveMutating is null)
+        {
+            return false;
+        }
+
+        var sentence = HubStrings.Get("DeepLinkBusy");
+        SetStatus(sentence);
+        Log.Write(sentence);
+        return true;
+    }
+
     private async Task RunGated(string identity, string titleKey, string? subject,
         Func<TaskQueue.Item, CancellationToken, Task> work, bool listed)
     {
         // A change does not queue behind another change: two of them interleaving can leave the disk in a
-        // state no sentence describes. It is refused. Today that refusal is silent — the same silent return
-        // the download queue was built to stop — and it becomes a spoken one in the step that also stops
-        // greying the page, because a page that no longer goes grey has to say something else.
-        if (_tasks.ActiveMutating is not null)
+        // state no sentence describes. It is refused — out loud, in the one place every entry point asks.
+        if (RefuseIfBusy())
         {
             return;
         }
 
         LastError = "";
-        BusyChanged?.Invoke(true);
         SetStatus(HubStrings.Get(titleKey));
         Log.Write(titleKey);
 
@@ -372,6 +388,12 @@ public sealed class HubWorkspace : IDisposable
             return;
         }
 
+        // Raised after the item exists, and read back from the queue rather than assumed. The shell's cancel
+        // button asks `busy && CanCancel`, and CanCancel is the queue's answer — announce the flag first and
+        // the button is wired to a moment when the honest answer was still "nothing to cancel". Reading IsBusy
+        // also covers the work that settles on the spot: its finisher has already run by the time this line
+        // is reached, so the flag must not claim a change that is already over.
+        BusyChanged?.Invoke(IsBusy);
         await item.Completion;
     }
 
@@ -867,32 +889,59 @@ public sealed class HubWorkspace : IDisposable
         }
     }
 
-    public async Task UninstallEngineAsync() => await ExecuteAsync("Uninstall engine", async _ =>
+    /// <summary>
+    /// Delete a managed engine directory. The gate is asked and the question is put <b>before</b> the work is
+    /// taken up: an uninstall is the one click that cannot be undone, so it must never be a dialog the user
+    /// answers and then watches get refused — and it must keep <see cref="RequireEngineAtRest"/> as the guard
+    /// against deleting a tree a transfer is still writing into.
+    /// </summary>
+    public async Task UninstallEngineAsync()
     {
-        var engine = RequiredEngine();
-        RequireEngineAtRest(engine);
-        var package = ManagedEnginePackage(engine);
-        if (State.Projects.Any(p => p.Version == engine.Version && p.Channel == engine.Channel))
-        {
-            throw new InvalidOperationException(HubStrings.Language == HubTexts.ChineseLanguage
-                ? "仍有项目使用此引擎，请先移出项目列表。项目文件会保留。"
-                : "Projects still use this engine. Remove them from the list first; project files are preserved.");
-        }
-
-        var prompt = string.Format(HubStrings.Get("UninstallPrompt"), engine.Version);
-
-        if (await HubDialog.ShowAsync(Owner, HubStrings.Get("Uninstall"), prompt, HubDialogButtons.OkCancel, danger: true) != HubDialogResult.Ok)
+        if (RefuseIfBusy())
         {
             return;
         }
 
-        _installer.Uninstall(package);
-        State.Engines.Remove(engine);
-        if (State.DefaultEnginePath == engine.Path)
+        EngineEntry engine;
+        PackageEntry package;
+        try
         {
-            State.DefaultEnginePath = State.Engines.FirstOrDefault()?.Path;
+            engine = RequiredEngine();
+            RequireEngineAtRest(engine);
+            package = ManagedEnginePackage(engine);
+            if (State.Projects.Any(p => p.Version == engine.Version && p.Channel == engine.Channel))
+            {
+                throw new InvalidOperationException(HubStrings.Language == HubTexts.ChineseLanguage
+                    ? "仍有项目使用此引擎，请先移出项目列表。项目文件会保留。"
+                    : "Projects still use this engine. Remove them from the list first; project files are preserved.");
+            }
+
+            var prompt = string.Format(HubStrings.Get("UninstallPrompt"), engine.Version);
+            if (await HubDialog.ShowAsync(Owner, HubStrings.Get("Uninstall"), prompt, HubDialogButtons.OkCancel, danger: true) != HubDialogResult.Ok)
+            {
+                return;
+            }
         }
-    });
+        catch (Exception ex)
+        {
+            await ReportFailureAsync(ex);
+            return;
+        }
+
+        // The directory goes and the bookkeeping follows, so the gated body needs nothing but the package it
+        // was handed: every question that could change the answer has already been answered above.
+        await ExecuteAsync("Uninstall engine", _ =>
+        {
+            _installer.Uninstall(package);
+            State.Engines.Remove(engine);
+            if (State.DefaultEnginePath == engine.Path)
+            {
+                State.DefaultEnginePath = State.Engines.FirstOrDefault()?.Path;
+            }
+
+            return Task.CompletedTask;
+        });
+    }
 
     private EngineEntry RequiredEngine() => SelectedEngine
         ?? throw new InvalidOperationException("Select an engine first.");
@@ -1001,7 +1050,7 @@ public sealed class HubWorkspace : IDisposable
     /// </summary>
     public async Task BuildAsync(bool configureOnly, (BuildTarget Target, string Configuration)? selection = null)
     {
-        if (IsBusy)
+        if (RefuseIfBusy())
         {
             return;
         }
@@ -1336,7 +1385,7 @@ public sealed class HubWorkspace : IDisposable
     /// </summary>
     public async Task BuildEngineAsync()
     {
-        if (IsBusy)
+        if (RefuseIfBusy())
         {
             return;
         }
