@@ -805,11 +805,21 @@ public partial class ShellCheckWindow : Window
         // geometry and answers a move request for it with nothing, which is what made a maximized bar un-draggable
         // on WSLg while a normal one dragged fine. So a drag has to take the window out of that state first —
         // except on Windows, where DWM does it and the Snap Layouts hook is built on it being done.
-        Check(MainWindow.DragRestoresMaximized(false, WindowState.Maximized)
-              && !MainWindow.DragRestoresMaximized(false, WindowState.Normal)
-              && !MainWindow.DragRestoresMaximized(false, WindowState.FullScreen)
-              && !MainWindow.DragRestoresMaximized(true, WindowState.Maximized),
-            "已最大化的窗口在非 Windows 平台上拖动前必须先还原，否则窗口管理器直接拒绝移动；Windows 那一支交给 DWM");
+        Check(MainWindow.DragRestoresMaximized(false, WindowState.Maximized, false)
+              && MainWindow.DragRestoresMaximized(false, WindowState.Normal, true)
+              && !MainWindow.DragRestoresMaximized(false, WindowState.Normal, false)
+              && !MainWindow.DragRestoresMaximized(false, WindowState.FullScreen, false)
+              && !MainWindow.DragRestoresMaximized(true, WindowState.Maximized, false),
+            "已最大化（或已被壳自己铺满）的窗口在非 Windows 平台上拖动前必须先回到自己的几何，否则窗口管理器直接"
+            + "拒绝移动；Windows 那一支交给 DWM");
+        // Which host fills the work area itself. WSLg is the one where the window manager's maximized window stops
+        // receiving the pointer over its own caption (measured: clicks aimed at the drawn bar arrive ~27-35 px low),
+        // so there the shell sizes the window instead; every other host leaves the job to its window manager.
+        Check(WslWorkAreaFill.Applies(false, true)
+              && !WslWorkAreaFill.Applies(false, false)
+              && !WslWorkAreaFill.Applies(true, false)
+              && !WslWorkAreaFill.Applies(true, true),
+            "只有 WSL 上的 Linux 会话自己铺满工作区，Windows 与普通 Linux/macOS 仍然交给各自的窗口管理器");
         // The placement, on the two arithmetic cases the formula exists for: a flat 1:1 screen with no frame, and
         // one step that only passes if the ratio is computed in DIP while the lengths are written in pixels.
         Check(MainWindow.RestoredOriginForDrag(new PixelPoint(0, 32), new PixelPoint(0, 32), 1920,
@@ -830,13 +840,15 @@ public partial class ShellCheckWindow : Window
         {
             PressTitleBar(dragArea, shell, 2);
             Dispatcher.UIThread.RunJobs();
-            Check(shell.WindowState == WindowState.Maximized && !shell.TitleBarDragArmedForCheck,
-                  "双击标题区域把窗口最大化，并且没有顺手武装一次拖动（实际 " + shell.WindowState + " / 武装 "
+            Check(FillsOrMaximizes(shell) && !shell.TitleBarDragArmedForCheck
+                  && (shell.WindowState == WindowState.Maximized || shell.MaximizeTipForCheck == HubTexts.Get("RestoreWindow", HubStrings.Language)),
+                  "双击标题区域把窗口铺满（WSLg 上由壳自己铺，别处交给窗口管理器），并且没有顺手武装一次拖动"
+                  + "（实际 " + shell.WindowState + " / 自铺 " + shell.FillsWorkAreaForCheck + " / 武装 "
                   + shell.TitleBarDragArmedForCheck + "）");
             PressTitleBar(dragArea, shell, 2);
             Dispatcher.UIThread.RunJobs();
-            Check(shell.WindowState == WindowState.Normal,
-                  "再双击一次还原回来（实际 " + shell.WindowState + "）");
+            Check(!FillsOrMaximizes(shell),
+                  "再双击一次还原回来（实际 " + shell.WindowState + " / 自铺 " + shell.FillsWorkAreaForCheck + "）");
 
             // The first click arms the drag and its release disarms it: the state a double-click has to survive
             // between its two clicks, since the second press is what toggles.
@@ -7853,6 +7865,13 @@ public partial class ShellCheckWindow : Window
            is { } centre
             ? shell.PointToScreen(centre)
             : null;
+
+    /// <summary>Whether the window is covering the screen, whichever of the two ways got it there: the window
+    /// manager's maximized state, or the shell's own work-area fill (WSLg, see <see cref="WslWorkAreaFill"/>). Every
+    /// caption assertion has to ask this instead of reading <c>WindowState</c>, because on that host the state never
+    /// says maximized.</summary>
+    private static bool FillsOrMaximizes(MainWindow shell)
+        => shell.WindowState == WindowState.Maximized || shell.FillsWorkAreaForCheck;
 
     /// <summary>Where a synthesized press on the bar lands: its own centre, expressed in the window's coordinates,
     /// which is the space the event's <c>rootVisualPosition</c> is read in. Fixed rather than followed from the

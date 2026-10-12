@@ -99,8 +99,25 @@ public partial class MainWindow : Window
     /// place against. Avalonia 12.1.3 remembers nothing of the kind for the app (there is no
     /// <c>Window.RestoreBounds</c>), and <c>Width</c>/<c>Height</c> cannot serve: <c>Window.HandleResized</c>
     /// overwrites them with whatever the platform last reported, so while the window is maximized they *are* the
-    /// screen size. Recorded from <c>Resized</c>, and only while the state is not maximized.</summary>
-    private Size? _normalClientSize;
+    /// screen size. Recorded from <c>Resized</c>, and only while the state is neither maximized nor filled.</summary>
+    private NormalGeometry? _normalGeometry;
+
+    /// <summary>Where the window sits and how big its client is when the window manager is not holding it — the
+    /// geometry a restore (from the maximized state or from the work-area fill) goes back to.</summary>
+    internal readonly record struct NormalGeometry(PixelPoint Position, Size ClientSize);
+
+    /// <summary>Whether the shell is filling the work area itself instead of asking the window manager to maximize
+    /// (see <see cref="WslWorkAreaFill"/>: on WSLg a window the window manager maximizes loses the pointer over its
+    /// own caption). Both the caption chrome and the drag read this instead of <c>WindowState</c>, because on this
+    /// host the maximized state is never the filled state.</summary>
+    private bool _fillsWorkArea;
+
+    /// <summary>Armed while the window manager is asked to maximize once, so the rect it chooses can be recorded —
+    /// it is the only number on this host that says where a maximized window really lands.</summary>
+    private bool _learningFillRect;
+
+    /// <summary>The rect the window manager used for a maximized window, in physical pixels, learned once per run.</summary>
+    private PixelRect? _fillRect;
 
     /// <summary>
     /// For the XAML loader and design-time preview (without it Avalonia reports AVLN3001 "not
@@ -256,7 +273,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        WindowState = WindowState.Normal;
+        LeaveMaximizedForActivation();
         Activate();
         NavigateTo("Installs");
         await _workspace.InstallEngineAsync(request.Version, request.Source);
@@ -539,7 +556,7 @@ public partial class MainWindow : Window
         if (string.Equals(conversationId, _attentionDiagnosticConversationId, StringComparison.Ordinal))
         {
             NavigateTo("Assistant");
-            WindowState = WindowState.Normal;
+            LeaveMaximizedForActivation();
             Activate();
             WriteLog("The test notification was activated; the app returned to the Assistant page.");
             return;
@@ -547,7 +564,7 @@ public partial class MainWindow : Window
 
         if (_chat.OpenConversation(conversationId) is null) return;
         NavigateTo("Assistant");
-        WindowState = WindowState.Normal;
+        LeaveMaximizedForActivation();
         Activate();
     }
 
@@ -1661,7 +1678,22 @@ public partial class MainWindow : Window
     /// against. Exposed because the one thing a check cannot assert about a drag is the drag: it ends in
     /// <see cref="Window.BeginMoveDrag"/>. What it can prove is that the geometry the placement is computed from is
     /// the pre-maximize one and not the screen size the platform reports while maximized.</summary>
-    internal Size NormalClientSizeForCheck => _normalClientSize ?? default;
+    internal Size NormalClientSizeForCheck => _normalGeometry?.ClientSize ?? default;
+
+    /// <summary>The position that size belongs to — a restore goes back to the pair, not to a size alone.</summary>
+    internal PixelPoint NormalPositionForCheck => _normalGeometry?.Position ?? default;
+
+    /// <summary>Whether the shell currently holds the work area itself. Read because on WSLg this, not
+    /// <c>WindowState</c>, is the state the caption plate toggles.</summary>
+    internal bool FillsWorkAreaForCheck => _fillsWorkArea;
+
+    /// <summary>The rect the window manager used when it maximized this window once, learned on the first toggle and
+    /// cached for every later one.</summary>
+    internal PixelRect FillRectForCheck => _fillRect ?? default;
+
+    /// <summary>Runs the plate's own flip, so a check can drive the fill and the un-fill through the same door a
+    /// click goes through.</summary>
+    internal void ToggleMaximizedForCheck() => ToggleMaximized();
 
     /// <summary>The half of the restore-drag that does not need a pointer: take the window out of the maximized
     /// state and put it where the formula says. The check drives this with the press point a bar press would have
@@ -2011,11 +2043,10 @@ public partial class MainWindow : Window
         {
             if (e.Property == WindowStateProperty) SyncWindowStateChrome();
         };
-        // The one place the normal geometry is remembered. A tracker rather than a snapshot taken at the maximize
-        // call, because that would only cover this app's three ways in and would miss a window the window manager
-        // maximized by itself — and a restore-drag has to place the window against a size, whatever put it in the
-        // maximized state.
-        Resized += (_, e) => RememberNormalClientSize(e.ClientSize);
+        // The one place the normal geometry is remembered, and the one place the window manager's maximized rect is
+        // picked up. A tracker rather than a snapshot taken at the maximize call, because that would only cover this
+        // app's three ways in and would miss a window the window manager maximized by itself.
+        Resized += (_, e) => OnShellResized(e.ClientSize);
         SyncWindowStateChrome();
     }
 
@@ -2023,10 +2054,87 @@ public partial class MainWindow : Window
     /// Flips the window between maximized and normal. One method for all three of its callers — the plate's own
     /// click, the plate's non-client click (see <see cref="TitleBarSnapHook"/>) and the bar's double-click —
     /// because the window state is what the glyph and the tooltip follow, and a second copy of the flip would be a
-    /// second place for them to fall out of step.
+    /// second place for them to fall out of step. On WSLg the same three callers end in the shell's own work-area
+    /// fill instead (see <see cref="WslWorkAreaFill"/>), because there a window the window manager maximizes stops
+    /// receiving the pointer over its own caption.
     /// </summary>
     private void ToggleMaximized()
-        => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+    {
+        if (WslWorkAreaFill.AppliesHere)
+        {
+            ToggleWorkAreaFill();
+            return;
+        }
+
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+    }
+
+    /// <summary>Enters or leaves the filled work area. The first entry asks the window manager to maximize once and
+    /// records the rect it actually lands on, because that is the only number on this host saying where a maximized
+    /// window really sits — <c>Screen.WorkingArea</c> over-reports it by the band the Windows taskbar costs the
+    /// display (measured: 2560x1440 reported, 2560x1368 used, host at 150%). Every later toggle applies the cached
+    /// rect and the window manager's maximized state is never shown again.</summary>
+    private void ToggleWorkAreaFill()
+    {
+        if (_fillsWorkArea)
+        {
+            LeaveWorkAreaFill();
+            return;
+        }
+
+        if (_fillRect is { } known)
+        {
+            ApplyWorkAreaFill(known);
+            return;
+        }
+
+        _learningFillRect = true;
+        WindowState = WindowState.Maximized;
+    }
+
+    private void ApplyWorkAreaFill(PixelRect rect)
+    {
+        var scaling = RenderScaling <= 0 ? 1 : RenderScaling;
+        _fillsWorkArea = true;
+        Position = new PixelPoint(rect.X, rect.Y);
+        Width = rect.Width / scaling;
+        Height = rect.Height / scaling;
+        SyncWindowStateChrome();
+    }
+
+    private void LeaveWorkAreaFill()
+    {
+        _fillsWorkArea = false;
+        if (_normalGeometry is { } normal)
+        {
+            Position = normal.Position;
+            Width = normal.ClientSize.Width;
+            Height = normal.ClientSize.Height;
+        }
+
+        SyncWindowStateChrome();
+    }
+
+    /// <summary>Takes the window manager's maximized rect from the resize it reports rather than from the state
+    /// change, because the state arrives before the geometry does. Recording it and dropping the state in the same
+    /// breath leaves the window at the same pixels, so the handover to the shell's own fill is invisible — and the
+    /// caption comes back under the pointer, which is the whole reason for the detour.</summary>
+    private void CompleteFillLearning(Size clientSize)
+    {
+        var scaling = RenderScaling <= 0 ? 1 : RenderScaling;
+        // Anything not visibly bigger than the window's own normal size is an intermediate configure on the way to
+        // the maximized one; stay armed and wait for the resize that actually filled the screen.
+        if (_normalGeometry is { } normal && clientSize.Width <= normal.ClientSize.Width + 1)
+        {
+            return;
+        }
+
+        _learningFillRect = false;
+        _fillRect = new PixelRect(Position.X, Position.Y,
+            (int)Math.Round(clientSize.Width * scaling), (int)Math.Round(clientSize.Height * scaling));
+        WindowState = WindowState.Normal;
+        ApplyWorkAreaFill(_fillRect.Value);
+    }
 
     /// <summary>
     /// Whether a press on the bar means "maximize or restore" instead of "start moving the window". Pure, and
@@ -2035,25 +2143,35 @@ public partial class MainWindow : Window
     /// </summary>
     internal static bool TitleBarPressToggles(int clickCount) => clickCount >= 2;
 
-    /// <summary>Records the client size the window has while it is not maximized — the size a restore-drag places
-    /// against. A size under the window's own minimum is filtered out because it is not a geometry a reader ever
-    /// asked for: it is the platform mid-restore, or a configure that landed before the frame was applied, and
-    /// remembering it would restore the next drag to the wrong width.</summary>
-    private void RememberNormalClientSize(Size clientSize)
+    /// <summary>Records where the window sits and how wide its client is while neither the window manager nor the
+    /// shell holds it filled — the geometry both a restore and a restore-drag go back to. A size under the window's
+    /// own minimum is filtered out because it is not a geometry a reader ever asked for: it is the platform
+    /// mid-restore, or a configure that landed before the frame was applied, and remembering it would restore the
+    /// next drag to the wrong width.</summary>
+    private void OnShellResized(Size clientSize)
     {
-        if (WindowState == WindowState.Maximized) return;
+        if (_learningFillRect && WindowState == WindowState.Maximized)
+        {
+            CompleteFillLearning(clientSize);
+            return;
+        }
+
+        if (WindowState == WindowState.Maximized || _fillsWorkArea) return;
         if (clientSize.Width < MinWidth || clientSize.Height < MinHeight) return;
-        _normalClientSize = clientSize;
+        _normalGeometry = new NormalGeometry(Position, clientSize);
     }
 
-    /// <summary>Whether a drag that began on the bar has to take the window out of the maximized state before the
-    /// platform will move it at all. Pure — the platform and the state come in — so the self-check can drive both
-    /// arms, the one that acts ending in <see cref="Window.BeginMoveDrag"/>, which is where a check would hang.
-    /// Windows is excluded on purpose: DWM un-maximizes there by itself and <see cref="TitleBarSnapHook"/> is built
-    /// on that, while everywhere else the window manager owns the geometry and answers a move request for a window
-    /// it has maximized with nothing at all (measured on WSLg, where a maximized bar simply does not drag).</summary>
-    internal static bool DragRestoresMaximized(bool isWindows, WindowState state)
-        => !isWindows && state == WindowState.Maximized;
+    /// <summary>Whether a drag that began on the bar has to put the window back on its own geometry before the
+    /// platform will move it at all. Pure — the platform, the state and the fill come in — so the self-check can
+    /// drive both arms, the one that acts ending in <see cref="Window.BeginMoveDrag"/>, which is where a check would
+    /// hang. Windows is excluded on purpose: DWM un-maximizes there by itself and <see cref="TitleBarSnapHook"/> is
+    /// built on that. Everywhere else the window manager owns the geometry and answers a move request for a window it
+    /// has maximized with nothing at all (measured on WSLg, where a maximized bar simply does not drag) — and a
+    /// window the shell filled counts as maximized here for the reason a reader expects: pulling its caption is how
+    /// you get it off the screen.</summary>
+    internal static bool DragRestoresMaximized(bool isWindows, WindowState state, bool fillsWorkArea)
+        => !isWindows && (state == WindowState.Maximized || fillsWorkArea);
+
 
     /// <summary>Where to put the window once the maximized state is gone so that the bar is still under the pointer,
     /// at the same proportion of its width the pointer was at when the press landed — the semantics DWM gives on
@@ -2085,28 +2203,30 @@ public partial class MainWindow : Window
             (int)Math.Round(cursorY - grabY - frameY, MidpointRounding.AwayFromZero));
     }
 
-    /// <summary>Takes the window out of the maximized state and places it under the pointer, so the
-    /// <see cref="Window.BeginMoveDrag"/> the caller hands the platform right after starts from where the reader's
-    /// cursor already is. Deliberately not <see cref="ToggleMaximized"/>: this is a restore, not a flip, and had the
-    /// state already changed under us a toggle would maximize the window instead. Everything is read before anything
-    /// is written, because setting <see cref="Window.WindowState"/> can re-configure the window from inside the
-    /// call — and the order is the whole point: the state removal and the move request are client messages on one X
-    /// connection, which the window manager answers in send order, so a move handed over first is a move for a
-    /// window it still has maximized.</summary>
+    /// <summary>Takes the window out of the maximized state (or out of the shell's own work-area fill) and places it
+    /// under the pointer, so the <see cref="Window.BeginMoveDrag"/> the caller hands the platform right after starts
+    /// from where the reader's cursor already is. Deliberately not <see cref="ToggleMaximized"/>: this is a restore,
+    /// not a flip, and had the state already changed under us a toggle would maximize the window instead. Everything
+    /// is read before anything is written, because setting <see cref="Window.WindowState"/> can re-configure the
+    /// window from inside the call — and the order is the whole point: the state removal and the move request are
+    /// client messages on one X connection, which the window manager answers in send order, so a move handed over
+    /// first is a move for a window it still has maximized.</summary>
     private void RestoreForDrag(Point press)
     {
-        var remembered = _normalClientSize;
+        var remembered = _normalGeometry;
         var clientOrigin = this.PointToScreen(new Point(0, 0));
         var windowOrigin = Position;
         var barWidth = Bounds.Width;
         var scaling = RenderScaling;
 
+        if (_fillsWorkArea) LeaveWorkAreaFill();
         WindowState = WindowState.Normal;
 
-        // With nothing remembered there is nothing honest to place the window against. The state flip is the part
-        // that makes the window movable at all, so it still happens and the window manager does the placing.
-        if (remembered is not { } size) return;
-        Position = RestoredOriginForDrag(clientOrigin, windowOrigin, barWidth, press, size, scaling);
+        // With nothing remembered there is nothing honest to place the window against. Leaving the maximized state
+        // is the part that makes the window movable at all, so it still happens and the window manager does the
+        // placing.
+        if (remembered is not { } normal) return;
+        Position = RestoredOriginForDrag(clientOrigin, windowOrigin, barWidth, press, normal.ClientSize, scaling);
     }
 
     /// <summary>How far the pointer has to travel before this bar moves the window. The number and the reason for
@@ -2146,7 +2266,7 @@ public partial class MainWindow : Window
 
         // The press is what the placement is measured from, not the current pointer: the two differ by up to the
         // drag threshold, and the window has to end up where the platform's move loop thinks the cursor is.
-        if (DragRestoresMaximized(OperatingSystem.IsWindows(), WindowState)) RestoreForDrag(_titleBarPressOrigin);
+        if (DragRestoresMaximized(OperatingSystem.IsWindows(), WindowState, _fillsWorkArea)) RestoreForDrag(_titleBarPressOrigin);
 
         BeginMoveDrag(press);
     }
@@ -2172,9 +2292,21 @@ public partial class MainWindow : Window
 
     private void SyncWindowStateChrome()
     {
-        var maximized = WindowState == WindowState.Maximized;
+        // Either way the caption says "restore next": the window manager's maximized state, or the shell's own fill
+        // of the work area on a host that must not ask for the first (see WslWorkAreaFill).
+        var maximized = WindowState == WindowState.Maximized || _fillsWorkArea;
         if ((maximized ? _restoreGlyph : _maximizeGlyph) is { } glyph) MaximizeGlyph.Data = glyph;
         ToolTip.SetTip(MaximizeButton, HubStrings.Get(maximized ? "RestoreWindow" : "MaximizeWindow"));
+    }
+
+    /// <summary>Brings the window back onto its own geometry for the routes that ask for a usable window: a
+    /// deeplink, a notification activation. Writing <c>Normal</c> is how the window manager's maximized state is
+    /// left; on a host where the shell holds the work area itself that write changes nothing, so the fill is undone
+    /// here too — otherwise the window would stay covering the screen while the glyph said "maximize".</summary>
+    private void LeaveMaximizedForActivation()
+    {
+        WindowState = WindowState.Normal;
+        if (_fillsWorkArea) LeaveWorkAreaFill();
     }
 
     private void SetSidebarExpanded(bool expanded)
