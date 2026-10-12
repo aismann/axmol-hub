@@ -34,6 +34,7 @@ public sealed class ModelCatalogWindow : Window
         Margin = new Thickness(0, 8, 0, 0),
     };
     private readonly Button _refreshButton;
+    private readonly HubDialogChrome _chrome;
     private readonly bool _canRefresh;
     private IReadOnlyList<string> _models;
 
@@ -58,38 +59,37 @@ public sealed class ModelCatalogWindow : Window
         Height = 580;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
+        // The bar this app draws, so the picker does not arrive wearing the platform's frame on top of the shell
+        // it came out of. Its caption is Window.Title, set just above — the list window used to repeat that
+        // string as a 18px TextBlock inside the body, and the header is what replaced it (one title, one place).
+        // Closing here means the same thing as the dialog's own dismiss button, not the same thing as Cancel:
+        // the caller of this window never branches on the result.
+        _chrome = HubDialogChrome.Attach(this, "CloseWindow", () => Close(HubDialogResult.Ok));
+
         var layout = new Grid
         {
-            Margin = new Thickness(24),
-            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*,Auto,Auto"),
+            Margin = new Thickness(24, 12, 24, 24),
+            RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto,Auto"),
         };
-        var title = new TextBlock
-        {
-            Text = Title,
-            FontSize = 18,
-            FontWeight = FontWeight.SemiBold,
-        };
-        layout.Children.Add(title);
 
         var hint = new TextBlock
         {
             Text = HubStrings.Get("ModelCatalogHint"),
             Classes = { "muted" },
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 10),
+            Margin = new Thickness(0, 0, 0, 10),
         };
-        Grid.SetRow(hint, 1);
         layout.Children.Add(hint);
 
-        Grid.SetRow(_search, 2);
+        Grid.SetRow(_search, 1);
         layout.Children.Add(_search);
         var listArea = new Grid { RowDefinitions = new RowDefinitions("*") };
         listArea.Children.Add(_list);
         listArea.Children.Add(_empty);
-        Grid.SetRow(listArea, 3);
+        Grid.SetRow(listArea, 2);
         layout.Children.Add(listArea);
 
-        Grid.SetRow(_status, 4);
+        Grid.SetRow(_status, 3);
         layout.Children.Add(_status);
 
         var buttons = new StackPanel
@@ -111,9 +111,14 @@ public sealed class ModelCatalogWindow : Window
         close.Click += (_, _) => Close(HubDialogResult.Ok);
         buttons.Children.Add(_refreshButton);
         buttons.Children.Add(close);
-        Grid.SetRow(buttons, 5);
+        Grid.SetRow(buttons, 4);
         layout.Children.Add(buttons);
-        Content = new Border { Child = layout };
+
+        var root = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
+        root.Children.Add(_chrome.Header);
+        Grid.SetRow(layout, 1);
+        root.Children.Add(layout);
+        Content = root;
 
         _list.ItemsPanel = new FuncTemplate<Panel?>(() => new VirtualizingStackPanel());
         _list.ItemTemplate = new FuncDataTemplate<ModelRow>((_, _) => ModelRow.Render(), supportsRecycling: true);
@@ -295,6 +300,9 @@ public sealed class ModelCatalogWindow : Window
         => new(provider.Name, loadModels, isEnabled, enableModel, refresh, canRefresh);
 
     internal void SearchForCheck(string query) => _search.Text = query;
+
+    /// <summary>The drawn header, so the check can measure it and press its one plate.</summary>
+    internal HubDialogChrome ChromeForCheck => _chrome;
 
     internal string[] VisibleModelNamesForCheck
         => _list.Items.OfType<ModelRow>().Select(row => row.Name).ToArray();

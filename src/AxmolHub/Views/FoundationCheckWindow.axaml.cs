@@ -260,16 +260,33 @@ public partial class FoundationCheckWindow : Window
         check(dialog.Result == HubDialogResult.Cancel,
             "未点击时默认结果是 Cancel（点标题栏 X 会被读成 default(T)，所以 Cancel 必须是 0）");
 
-        var card = dialog.GetVisualDescendants().OfType<Border>().FirstOrDefault(b => b.Classes.Contains("card"));
-        check(card is not null && IsToken(card.Background, "Hub.Surface"),
-            "对话框主体复用了 Border.card（背景 = Hub.Surface，实际 " + Describe(card?.Background) + "）");
+        // The body used to be a Border.card standing in for the frame the platform no longer draws. Now the
+        // window asks for that frame itself, so what has to hold is the bar: the client area is extended, the
+        // decorations are BorderOnly, and the header wears the shell's own bar colour.
+        check(dialog.ExtendClientAreaToDecorationsHint
+              && dialog.WindowDecorations == WindowDecorations.BorderOnly,
+            "对话框不再穿平台的标题栏（客户区扩展 + BorderOnly，实际 "
+            + dialog.ExtendClientAreaToDecorationsHint + "、" + dialog.WindowDecorations + "）");
+        var chrome = NamedDescendant<Border>(dialog, "DialogChrome");
+        check(chrome is not null && IsToken(chrome.Background, "Hub.TitleBarBackground"),
+            "对话框的头复用了标题栏底色（实际 " + Describe(chrome?.Background) + "）");
+        // One plate and nothing else. Minimise and maximise belong to the main window: a dialog has no taskbar
+        // slot to minimise into and a maximised confirm box is a worse screen than the one it covered.
+        var plates = dialog.GetVisualDescendants().OfType<Button>()
+            .Where(button => button.Classes.Contains("window-control")).ToList();
+        check(plates.Count == 1 && plates[0].Classes.Contains("close"),
+            "自绘头只有一枚关闭盘，没有最小化与最大化（实际 " + plates.Count + " 枚）");
 
+        // The caption is the window's Title, drawn in the header — the body no longer repeats it, so reading it
+        // back off the bar is what proves the one write reached the one reader.
         check(NamedDescendant<TextBlock>(dialog, "DialogTitle")?.Text == "卸载",
-            "标题写入 DialogTitle");
+            "标题写进了自绘头的题字");
         check(NamedDescendant<TextBlock>(dialog, "DialogMessage")?.Text == "将删除安装目录与快捷方式。",
             "正文写入 DialogMessage");
 
-        var buttons = dialog.GetVisualDescendants().OfType<Button>().ToList();
+        // The action buttons only, never counting the header's plate: what follows is about the answers the
+        // dialog offers, and a window control is not one of them.
+        var buttons = ActionButtons(dialog);
         check(buttons.Count == 2, "OkCancel 生成 2 个按钮（实际 " + buttons.Count + "）");
 
         // The expected copy is **taken from the text table**, not written as literals. Previously this
@@ -311,7 +328,7 @@ public partial class FoundationCheckWindow : Window
         {
             yesNo.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var yesNoButtons = yesNo.GetVisualDescendants().OfType<Button>().ToList();
+            var yesNoButtons = ActionButtons(yesNo);
             var yesNoLabels = string.Join("/", yesNoButtons.Select(b => b.Content?.ToString()));
             check(yesNoLabels == string.Join("/", new[] { "No", "Yes" }.Select(key => HubTexts.Get(key, HubStrings.Language))),
                 "YesNo 生成 否、是，文案来自 HubTexts（实际 " + yesNoLabels + "）");
@@ -328,7 +345,34 @@ public partial class FoundationCheckWindow : Window
         {
             check(false, "YesNo 对话框未能显示");
         }
+
+        // ---- What the header's one plate means ----
+        // The enum at the top of HubDialog is ordered so that "closed without a result" reads as Cancel, and the
+        // drawn bar is now where a reader reaches when they mean exactly that. The plate therefore goes through
+        // Finish(Cancel) rather than a bare Close — the same answer Esc gives, and asserted as one.
+        var crossPending = HubDialog.ShowAsync(null, "关闭", "用右上角的盘关掉。", HubDialogButtons.OkCancel);
+        var cross = lifetime.Windows.OfType<HubDialog>().LastOrDefault();
+        if (cross is not null)
+        {
+            cross.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var plate = NamedDescendant<Button>(cross, "DialogCloseButton");
+            plate?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var crossResult = await crossPending;
+            check(plate is not null && crossResult == HubDialogResult.Cancel,
+                "× 与 Esc 是同一个出口：关掉确认框得到 Cancel（实际 " + crossResult + "）");
+        }
+        else
+        {
+            check(false, "带自绘头的对话框未能显示");
+        }
     }
+
+    /// <summary>A dialog's own answer buttons. The header's window plate is deliberately not one of them: what
+    /// these assertions read is what the box asks the user, and a control that closes the box is not an answer.</summary>
+    private static List<Button> ActionButtons(Window dialog)
+        => NamedDescendant<StackPanel>(dialog, "DialogButtons")
+               ?.GetVisualDescendants().OfType<Button>().ToList() ?? [];
 
     /// <summary>Really capture this window, facing the "non-blank" criterion with one real render.</summary>
     private void CheckRealCapture(Action<bool, string> check)

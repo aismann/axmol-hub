@@ -160,11 +160,12 @@ public partial class ShellCheckWindow : Window
         await CheckInstallsPageAsync(scratchRoot, shell);
         await CheckSettingsPageAsync(scratchRoot, shell);
         CheckSettingsOverlay(shell);
+        await CheckDrawnDialogsAsync(shell);
         CheckHostShellCard(shell);
         await CheckAssistantAsync(scratchRoot, shell);
         CheckWorkspaceGroups(scratchRoot, shell);
         CheckDataRootSwitch(scratchRoot, shell);
-        CheckRealRender(shell);
+        await CheckRealRender(shell);
     }
 
     /// <summary>
@@ -776,9 +777,11 @@ public partial class ShellCheckWindow : Window
         // A move past the threshold is deliberately NOT driven here: that arm calls BeginMoveDrag, which enters
         // the platform's own move loop and does not return until a mouse moves — a check that walked into it would
         // hang the whole suite. The decision is asserted instead, and the drag itself is a manual step.
-        Check(!MainWindow.TitleBarDragExceeded(new Point(100, 16), new Point(102, 18))
-              && MainWindow.TitleBarDragExceeded(new Point(100, 16), new Point(105, 16))
-              && MainWindow.TitleBarDragExceeded(new Point(100, 16), new Point(100, 21)),
+        // The decision is the one the shell's bar and every dialog's drawn header share (HubDialogChrome), so
+        // asserting it here covers both wearers; a dialog's own bar is asserted further down.
+        Check(!HubDialogChrome.DragExceeded(new Point(100, 16), new Point(102, 18))
+              && HubDialogChrome.DragExceeded(new Point(100, 16), new Point(105, 16))
+              && HubDialogChrome.DragExceeded(new Point(100, 16), new Point(100, 21)),
             "指针没挪出阈值之前标题栏不动窗口：这是双击能被认出来的前提（否则第一下就已经进了系统的拖动循环）");
 
         // The double-click, driven through the real event on the real control rather than through the method it
@@ -9929,7 +9932,10 @@ public partial class ShellCheckWindow : Window
               && promptBody is not null && promptBody.Contains(CjkFontNotice.DebianInstallCommand, StringComparison.Ordinal),
             "提示正文写进了对话框，且里面带着那条安装命令（" + CjkFontNotice.DebianInstallCommand + "）");
 
-        var promptButtons = prompt?.GetVisualDescendants().OfType<Button>().ToArray() ?? [];
+        // The answers the box offers — deliberately not every Button in the window, because the drawn header
+        // carries a plate too and a control that closes the box is not an answer to its question. The plate is
+        // asserted with the dialog-chrome group.
+        var promptButtons = prompt is null ? [] : ActionButtons(prompt);
         Check(promptButtons.Length == 1 && promptButtons[0].Content?.ToString() == HubTexts.Get("Ok", HubStrings.Language),
             "提示只有一个按钮，文案跟着界面语言走（实际 "
             + string.Join("/", promptButtons.Select(b => b.Content?.ToString())) + "）");
@@ -9945,6 +9951,12 @@ public partial class ShellCheckWindow : Window
     private static HubDialog[] HubDialogWindows()
         => (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Windows
                .OfType<HubDialog>().ToArray() ?? [];
+
+    /// <summary>A dialog's own answer buttons, read off the body's button row. The drawn header's close plate is
+    /// a window control, not an answer, so it is out of this set by construction — which is what lets the
+    /// "the notice has exactly one button" assertion keep meaning what it meant before the bar was drawn.</summary>
+    private static Button[] ActionButtons(Control dialog)
+        => NamedDescendant<StackPanel>(dialog, "DialogButtons")?.GetVisualDescendants().OfType<Button>().ToArray() ?? [];
 
     // ---------------------------------------------------------------------
     // 2. Every {DynamicResource X} appearing in XAML must resolve
@@ -11072,12 +11084,174 @@ public partial class ShellCheckWindow : Window
             new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed),
             KeyModifiers.None, 1));
 
+    // ---------------------------------------------------------------------
+    // 5.8 The dialogs that draw their own title bar
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// The dialogs that stopped wearing the platform's frame: the shared confirm box, the "add a provider"
+    /// picker, and the model catalog the settings card opens. Each one now has the shell's own 32px bar with
+    /// <b>one</b> plate on it — AGENTS.md's "draw the chrome yourself", narrowed by the owner's ruling that an
+    /// internal popup needs no minimise and no maximise, only a close.
+    ///
+    /// The geometry needs a **shown** window: a dialog that was never laid out has empty bounds, and an
+    /// assertion written against those is the false green this suite keeps having to invent negative controls
+    /// for. So each window is shown non-modally, measured, then closed — the modal path is not an option,
+    /// because <c>ShowDialog</c> does not return.
+    ///
+    /// What no assertion here can see is the platform's own answer: whether a decoration was really dropped
+    /// only exists in a shown window's pixels. The properties that select it are pinned, and the frames land in
+    /// <c>tmp/shell-render/</c> for the eye — the same split the shell's title bar documents.
+    /// </summary>
+    private async Task CheckDrawnDialogsAsync(MainWindow shell)
+    {
+        // ① The confirm box, on the path with no owner at all (the startup-failure route).
+        var dialogsBefore = HubDialogWindows().Length;
+        var pending = HubDialog.ShowAsync(null, "自绘头确认框", "这一张用右上角的盘关掉。", HubDialogButtons.OkCancel);
+        var box = HubDialogWindows().LastOrDefault();
+        Dispatcher.UIThread.RunJobs();
+        Check(box is not null && HubDialogWindows().Length == dialogsBefore + 1,
+            "没有 owner 的确认框也能起来，而且是带着自绘头起来的（弹窗数 " + dialogsBefore + " → "
+            + HubDialogWindows().Length + "）");
+        if (box is not null)
+        {
+            CheckOneDialogChrome(box, "确认框");
+        }
+
+        // What the one plate means, on the box that has to answer a question: closing it is Cancel, the same
+        // answer Esc gives through the IsCancel button. This is the invariant the result enum is *ordered* for,
+        // so it is asserted as behaviour and not left to default(T).
+        var boxPlate = box is null ? null : NamedDescendant<Button>(box, "DialogCloseButton");
+        if (boxPlate is null)
+        {
+            // The plate could not be found, so nothing will close this window and the await below would sit in
+            // front of it until the suite's ceiling. Close it the blunt way and let the assertion say why.
+            box?.Close();
+            Check(false, "确认框的自绘头里没找到关闭盘，无法验证它的出口");
+        }
+        else
+        {
+            boxPlate.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+
+        var boxResult = await pending;
+        Dispatcher.UIThread.RunJobs();
+        Check(boxPlate is not null && boxResult == HubDialogResult.Cancel
+              && HubDialogWindows().Length == dialogsBefore,
+            "确认框的 × 就是它的取消出口：拿到 " + boxResult + "，窗口也真的关了（弹窗数回到 "
+            + HubDialogWindows().Length + "）");
+
+        // ② The picker, built the way --shot-provider-picker builds it. Its × must not be read as a choice.
+        var picker = ProviderPickerWindow.ForCheck(shell.Chat.AvailablePresets());
+        picker.Show();
+        picker.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        CheckOneDialogChrome(picker, "添加提供商");
+        NamedDescendant<Button>(picker, "DialogCloseButton")?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        Check(!picker.IsVisible && picker.SelectedId is null,
+            "选择器的 × 与「取消」同义：关掉窗口，且没有把任何预设当成选中（SelectedId "
+            + (picker.SelectedId ?? "null") + "）");
+
+        // ③ The model catalog, taken through the settings card's own seam so it is the real thing.
+        var settings = OpenSettingsOn(shell, "providers");
+        var catalogId = shell.Chat.Providers.FirstOrDefault()?.Id ?? "";
+        var catalog = settings.ModelCatalogForCheck(catalogId);
+        Check(catalog is not null, "夹具里能构建出模型目录弹窗（provider " + catalogId + "）");
+        if (catalog is not null)
+        {
+            catalog.Show();
+            catalog.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            CheckOneDialogChrome(catalog, "模型目录");
+            NamedDescendant<Button>(catalog, "DialogCloseButton")?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+            Check(!catalog.IsVisible,
+                "模型目录的 × 就是它自己那颗「关闭模型目录」的出口：窗口关掉，不留下一个开着的模态");
+        }
+
+        shell.CloseSettings();
+    }
+
+    /// <summary>
+    /// The five claims every drawn dialog bar has to hold, read off a window that is shown and laid out.
+    /// </summary>
+    private void CheckOneDialogChrome(Window window, string label)
+    {
+        Check(window.ExtendClientAreaToDecorationsHint
+              && window.WindowDecorations == WindowDecorations.BorderOnly
+              && Math.Abs(window.ExtendClientAreaTitleBarHeightHint - HubDialogChrome.Height) <= 0.5,
+            "「" + label + "」不再穿平台的标题栏：客户区扩展、装饰取 BorderOnly、高度提示跟着头的 32（实际 "
+            + window.ExtendClientAreaToDecorationsHint + "、" + window.WindowDecorations + "、"
+            + Fmt(window.ExtendClientAreaTitleBarHeightHint) + "）");
+
+        var header = NamedDescendant<Border>(window, "DialogChrome");
+        var drag = NamedDescendant<Border>(window, "DialogDragArea");
+        var caption = NamedDescendant<TextBlock>(window, "DialogTitle");
+        var plate = NamedDescendant<Button>(window, "DialogCloseButton");
+        Check(header is not null && drag is not null && caption is not null && plate is not null,
+            "「" + label + "」的自绘头四件都在：头、题字、拖动层、一枚关闭盘");
+        if (header is null || drag is null || caption is null || plate is null)
+        {
+            return;
+        }
+
+        var client = window.Bounds;
+        var headerRect = InWindow(window, header);
+        Check(Math.Abs(headerRect.Y) <= 0.5 && Math.Abs(headerRect.Height - HubDialogChrome.Height) <= 0.5
+              && Math.Abs(headerRect.X) <= 0.5 && Math.Abs(headerRect.Width - client.Width) <= 0.5,
+            "「" + label + "」的头占住客户区最顶端、贴住窗口两缘且高 32（实际 " + Fmt(headerRect.Width) + "×"
+            + Fmt(headerRect.Height) + " @ " + Fmt(headerRect.X) + "," + Fmt(headerRect.Y) + "，窗宽 "
+            + Fmt(client.Width) + "）");
+
+        // One plate, and it is the close one. The 46 is read against the pixels rather than trusted from the
+        // style sheet because the styles moved to the app's dictionary this round — if the cascade stopped
+        // reaching a dialog window, the plate would collapse to its content and only this would notice.
+        var plateRect = InWindow(window, plate);
+        var plates = window.GetVisualDescendants().OfType<Button>()
+            .Where(button => button.Classes.Contains("window-control")).ToList();
+        Check(plates.Count == 1 && ReferenceEquals(plates[0], plate) && plate.Classes.Contains("close")
+              && Math.Abs(plateRect.Width - 46) <= 0.5 && Math.Abs(plateRect.Height - HubDialogChrome.Height) <= 0.5
+              && Math.Abs(plateRect.Y) <= 0.5 && plateRect.Right >= client.Width - 0.5,
+            "「" + label + "」的头上只有一枚 46×32 的关闭盘，落在右上角并铺到窗口右缘，没有最小化与最大化（实际 "
+            + plates.Count + " 枚，" + Fmt(plateRect.Width) + "×" + Fmt(plateRect.Height) + "，右缘 "
+            + Fmt(plateRect.Right) + " / 窗宽 " + Fmt(client.Width) + "）");
+
+        // The bar is one press surface: the drag layer has to carry a brush — Avalonia hit-tests drawn geometry,
+        // so a null background would measure, paint nothing, and let every press fall through to whatever is
+        // behind it — and the caption must not answer hit tests, or it punches a dead hole in the middle of the
+        // only region that moves the window.
+        Check(drag.Background is not null && !caption.IsHitTestVisible,
+            "「" + label + "」的头是一整块可压的拖动面，题字不吃命中（拖动层有笔刷 "
+            + (drag.Background is not null) + "，题字可命中 " + caption.IsHitTestVisible + "）");
+
+        // The title is said once. The caption is bound to Window.Title, so one write feeds the drawn bar and the
+        // OS's window list; a body that still carried its own copy would be caught by the echo count.
+        var echoes = window.GetVisualDescendants().OfType<TextBlock>()
+            .Count(text => !ReferenceEquals(text, caption) && text.IsVisible && text.IsEffectivelyVisible
+                           && text.Text == window.Title);
+        Check(caption.Text == window.Title && echoes == 0,
+            "「" + label + "」的标题只说一次：写在头上，正文里没有第二处（题字「" + caption.Text
+            + "」，正文重复 " + echoes + " 处）");
+
+        Check(ToolTip.GetTip(plate) as string == HubTexts.Get("CloseWindow", HubStrings.Language),
+            "「" + label + "」的关闭盘有名字，且跟着界面语言（图标按钮唯一能被叫出的地方，实际「"
+            + ToolTip.GetTip(plate) + "」）");
+    }
+
+    /// <summary>A control's rectangle in its own window's client coordinates — the dialog equivalent of the
+    /// shell's <c>InClient</c>, which is written against <c>ClientRoot</c> and so cannot be reused here.</summary>
+    private static Rect InWindow(Visual window, Visual target)
+        => target.TranslatePoint(new Point(0, 0), window) is { } origin
+            ? new Rect(origin, target.Bounds.Size)
+            : default;
+
     /// <summary>
     /// Really render **every** page and judge the frame as non-blank. The assertions above could all pass while rendering simply isn't up;
     /// and per-page captures have an added value: the PNGs left in the report let a human glance at the layout —
     /// assertions understand "is there content", not "is anything squeezed together or clipped".
     /// </summary>
-    private void CheckRealRender(MainWindow shell)
+    private async Task CheckRealRender(MainWindow shell)
     {
         var directory = ScratchDirectory.Resolve("shell-render");
         foreach (var key in MainWindow.PageKeys)
@@ -11125,6 +11299,48 @@ public partial class ShellCheckWindow : Window
         shell.CloseSettings();
         Check(System.IO.File.Exists(overlayPath),
             "浮层整窗帧留在报告里，遮罩边界与那两条留白能用人眼看（" + overlayPath + "）");
+
+        // ── The dialogs that draw their own bar ──
+        // A frame is the only place a drawn header can be judged: the object graph cannot tell our 32px bar from
+        // the platform's caption, and "the platform's frame is gone" is a claim about pixels. Each dialog is
+        // shown, photographed and closed again, so the sweep leaves no window behind.
+        void FrameOf(Window? window, string name)
+        {
+            if (window is null)
+            {
+                Check(false, "自绘弹窗「" + name + "」没能起来，帧无从可拍");
+                return;
+            }
+
+            if (!window.IsVisible)
+            {
+                window.Show();
+            }
+
+            window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var frame = System.IO.Path.Combine(directory, name);
+            var frameStats = SmokeCapture.Capture(window, frame);
+            var bytes = System.IO.File.Exists(frame) ? new System.IO.FileInfo(frame).Length : 0;
+            Check(bytes > 0 && !frameStats.IsBlank(),
+                "「" + System.IO.Path.GetFileNameWithoutExtension(name) + "」真实渲染出非空白帧（"
+                + frameStats.Width + "x" + frameStats.Height
+                + "，distinct=" + frameStats.DistinctColors
+                + "，variance=" + frameStats.LuminanceVariance.ToString("F2", CultureInfo.InvariantCulture)
+                + "，" + bytes + " 字节）");
+            window.Close();
+        }
+
+        var confirmPending = HubDialog.ShowAsync(null, "确认移除", "会一并删掉这个会话里的全部消息。",
+            HubDialogButtons.OkCancel, danger: true);
+        FrameOf(HubDialogWindows().LastOrDefault(), "dialog-confirm.png");
+        await confirmPending;
+
+        FrameOf(ProviderPickerWindow.ForCheck(shell.Chat.AvailablePresets()), "dialog-provider-picker.png");
+        var catalogSettings = OpenSettingsOn(shell, "providers");
+        FrameOf(catalogSettings.ModelCatalogForCheck(
+                    shell.Chat.Providers.FirstOrDefault()?.Id ?? ""), "dialog-model-catalog.png");
+        shell.CloseSettings();
     }
 
     // ---------------------------------------------------------------------

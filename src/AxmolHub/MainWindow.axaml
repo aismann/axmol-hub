@@ -196,66 +196,9 @@
       <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
 
-    <!-- The three window controls, drawn by this app because the title bar is the app's (see the Window
-         comment). They keep the platform's own proportions - 46x32 plates, flush to the window's top-right
-         corner, square corners - so the bar reads as a title bar and not as an app toolbar. The close plate is
-         the one that turns red, which is the only place in this shell that colour is allowed to mean
-         "destructive". -->
-    <Style Selector="Button.window-control">
-      <Setter Property="Width" Value="46" />
-      <Setter Property="Height" Value="32" />
-      <Setter Property="Padding" Value="0" />
-      <Setter Property="CornerRadius" Value="0" />
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="HorizontalAlignment" Value="Right" />
-      <Setter Property="VerticalAlignment" Value="Top" />
-      <Setter Property="HorizontalContentAlignment" Value="Center" />
-      <Setter Property="VerticalContentAlignment" Value="Center" />
-    </Style>
-    <Style Selector="Button.window-control:pointerover">
-      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonHover}" />
-    </Style>
-    <!-- The maximize plate's own hover, driven from the non-client mouse messages rather than from
-         :pointerover: the Snap Layouts hit test above makes that point non-client, so the client hover never
-         fires there (see TitleBarSnapHook). Same brush as the rule above, so the three plates read identically. -->
-    <Style Selector="Button.window-control.nchover">
-      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonHover}" />
-    </Style>
-    <!-- And its pressed plate, for the same reason and from the same hook: :pressed cannot fire on a point the
-         system hands to the window as a non-client button. Same brush as the rule below so the plate darkens like
-         the two beside it. -->
-    <Style Selector="Button.window-control.ncpressed">
-      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonPressed}" />
-    </Style>
-    <Style Selector="Button.window-control:pressed">
-      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonPressed}" />
-    </Style>
-    <Style Selector="Button.window-control Path.glyph">
-      <Setter Property="Fill" Value="Transparent" />
-      <Setter Property="Stroke" Value="{DynamicResource Hub.TextSecondary}" />
-      <Setter Property="StrokeThickness" Value="1" />
-      <Setter Property="StrokeLineCap" Value="Round" />
-      <Setter Property="StrokeJoin" Value="Round" />
-    </Style>
-    <Style Selector="Button.window-control:pointerover Path.glyph">
-      <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
-    </Style>
-    <Style Selector="Button.window-control.close:pointerover">
-      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonCloseHover}" />
-    </Style>
-    <Style Selector="Button.window-control.close:pressed">
-      <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonCloseHover}" />
-    </Style>
-    <Style Selector="Button.window-control.close Path.glyph">
-      <Setter Property="Stroke" Value="{DynamicResource Hub.TextSecondary}" />
-    </Style>
-    <Style Selector="Button.window-control.close:pointerover Path.glyph">
-      <Setter Property="Stroke" Value="{DynamicResource Hub.WindowButtonCloseForeground}" />
-    </Style>
-    <Style Selector="Button.window-control.close:pressed Path.glyph">
-      <Setter Property="Stroke" Value="{DynamicResource Hub.WindowButtonCloseForeground}" />
-    </Style>
+    <!-- The three window controls are real buttons wired in code (MainWindow.InitializeTitleBar). Their styles
+         live in Theme/HubStyles.axaml under "Drawn window chrome", because an internal dialog's drawn header
+         wears the same plates (Views/HubDialogChrome.cs) — one definition, two wearers. -->
 
     <!-- Small quiet buttons in the status strip. -->
     <Style Selector="Button.strip">

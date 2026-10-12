@@ -68,6 +68,84 @@
     <Setter Property="Padding" Value="20" />
   </Style>
 
+  <!-- ==================== Drawn window chrome ====================
+       The caption plates, shared by the shell's title bar and by every internal dialog's drawn header
+       (Views/HubDialogChrome.cs). They live here rather than in MainWindow.axaml because a dialog has to wear
+       the same bar the shell does — a native frame on a popup next to a self-drawn title bar reads as somebody
+       else's app. They keep the platform's own proportions - 46x32 plates, flush to the window's top-right
+       corner, square corners - so the bar reads as a title bar and not as an app toolbar. The close plate is the
+       one that turns red, which is the only place in this app that colour is allowed to mean "destructive". -->
+  <Style Selector="Button.window-control">
+    <Setter Property="Width" Value="46" />
+    <Setter Property="Height" Value="32" />
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="CornerRadius" Value="0" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="HorizontalAlignment" Value="Right" />
+    <Setter Property="VerticalAlignment" Value="Top" />
+    <Setter Property="HorizontalContentAlignment" Value="Center" />
+    <Setter Property="VerticalContentAlignment" Value="Center" />
+  </Style>
+  <Style Selector="Button.window-control:pointerover">
+    <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonHover}" />
+  </Style>
+  <!-- The maximize plate's own hover, driven from the non-client mouse messages rather than from
+       :pointerover: the Snap Layouts hit test above makes that point non-client, so the client hover never
+       fires there (see TitleBarSnapHook). Same brush as the rule above, so the three plates read identically. -->
+  <Style Selector="Button.window-control.nchover">
+    <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonHover}" />
+  </Style>
+  <!-- And its pressed plate, for the same reason and from the same hook: :pressed cannot fire on a point the
+       system hands to the window as a non-client button. Same brush as the rule below so the plate darkens like
+       the two beside it. -->
+  <Style Selector="Button.window-control.ncpressed">
+    <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonPressed}" />
+  </Style>
+  <Style Selector="Button.window-control:pressed">
+    <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonPressed}" />
+  </Style>
+  <Style Selector="Button.window-control Path.glyph">
+    <Setter Property="Fill" Value="Transparent" />
+    <Setter Property="Stroke" Value="{DynamicResource Hub.TextSecondary}" />
+    <Setter Property="StrokeThickness" Value="1" />
+    <Setter Property="StrokeLineCap" Value="Round" />
+    <Setter Property="StrokeJoin" Value="Round" />
+  </Style>
+  <Style Selector="Button.window-control:pointerover Path.glyph">
+    <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
+  </Style>
+  <Style Selector="Button.window-control.close:pointerover">
+    <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonCloseHover}" />
+  </Style>
+  <Style Selector="Button.window-control.close:pressed">
+    <Setter Property="Background" Value="{DynamicResource Hub.WindowButtonCloseHover}" />
+  </Style>
+  <Style Selector="Button.window-control.close Path.glyph">
+    <Setter Property="Stroke" Value="{DynamicResource Hub.TextSecondary}" />
+  </Style>
+  <Style Selector="Button.window-control.close:pointerover Path.glyph">
+    <Setter Property="Stroke" Value="{DynamicResource Hub.WindowButtonCloseForeground}" />
+  </Style>
+  <Style Selector="Button.window-control.close:pressed Path.glyph">
+    <Setter Property="Stroke" Value="{DynamicResource Hub.WindowButtonCloseForeground}" />
+  </Style>
+
+  <!-- The 32px header an internal dialog draws for itself. Same plate colour as the shell's bar, plus the
+       hairline the shell's bar does not need: the shell's bar sits above the page that belongs to it, while a
+       dialog's body is a separate surface and the two would run into each other. -->
+  <Style Selector="Border.dialog-chrome">
+    <Setter Property="Background" Value="{DynamicResource Hub.TitleBarBackground}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource Hub.TitleBarBorder}" />
+    <Setter Property="BorderThickness" Value="0,0,0,1" />
+  </Style>
+  <Style Selector="TextBlock.dialog-title">
+    <Setter Property="FontSize" Value="13" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    <Setter Property="Margin" Value="14,0,0,0" />
+  </Style>
+
   <!-- ==================== Button variants ==================== -->
   <!-- WPF's Style x:Key="Primary" -->
   <Style Selector="Button.primary">

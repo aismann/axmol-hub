@@ -28,12 +28,26 @@ public enum HubDialogResult
 /// </summary>
 public partial class HubDialog : Window
 {
+    private readonly HubDialogChrome _chrome;
     private TaskCompletionSource<HubDialogResult>? _standalone;
     private bool _finished;
 
     public HubDialogResult Result { get; private set; } = HubDialogResult.Cancel;
 
-    public HubDialog() => InitializeComponent();
+    public HubDialog()
+    {
+        InitializeComponent();
+
+        // The bar this app draws, with one plate: closing a confirmation with the × is its Cancel answer, the
+        // same answer Esc gives through the IsCancel button. That is the invariant the enum above is ordered for,
+        // so the plate goes through Finish rather than Window.Close — a bare Close would still *read* as Cancel
+        // today, and would stop reading as Cancel the moment a caller's default result changed.
+        _chrome = HubDialogChrome.Attach(this, "CloseWindow", () => Finish(HubDialogResult.Cancel));
+        ChromeHost.Content = _chrome.Header;
+    }
+
+    /// <summary>The drawn header, for the self-check's seams.</summary>
+    internal HubDialogChrome ChromeForCheck => _chrome;
 
     /// <summary>Replaces MessageBox.Show. Shows even when owner is null (startup-failure path).</summary>
     public static Task<HubDialogResult> ShowAsync(
@@ -44,7 +58,10 @@ public partial class HubDialog : Window
         bool danger = false)
     {
         var dialog = new HubDialog();
-        dialog.DialogTitle.Text = title;
+
+        // One write, two readers: Window.Title is what the OS's window list reads, and the drawn header's caption
+        // is bound to it (see HubDialogChrome), so the title cannot be said twice and cannot go out of step.
+        dialog.Title = title;
         dialog.DialogMessage.Text = message;
         dialog.Build(buttons, danger);
 

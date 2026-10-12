@@ -15,14 +15,25 @@
        It must be able to **display standalone with no host window** — in the WPF version App.xaml.cs
        used MessageBox to report "startup failed" before the main window was created, and that path
        already worked in the constructor (owner is null). -->
-  <Border Classes="card" Margin="12">
-    <StackPanel Spacing="14">
-      <TextBlock Name="DialogTitle" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
+  <Grid RowDefinitions="Auto,*">
+    <!-- Row 0 is the header this app draws for itself (Views/HubDialogChrome.cs): 32px, the shell's own bar
+         colour, one close plate at the corner. The row is Auto rather than a literal 32 because the height is
+         the chrome's number, not this file's. Its caption is the window's Title, which is why there is no title
+         TextBlock below — a confirm box that wrote its question twice would be chrome saying it twice.
+
+         A ContentControl rather than the control itself, because the header is built in code from a constructor
+         that takes this window; the XAML cannot pass that. -->
+    <ContentControl Grid.Row="0" x:Name="ChromeHost" />
+
+    <!-- The body used to sit inside Border.card, which was a card standing in for the frame the platform no
+         longer draws: the window now has its own drawn edge, so the content goes straight on the window's
+         background and the hairline under the bar is the one separator it needs. -->
+    <StackPanel Grid.Row="1" Spacing="14" Margin="20,14,20,18">
       <!-- Long text (exception stack traces) goes through scrolling, so the dialog never grows off-screen. -->
       <ScrollViewer MaxHeight="320" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <TextBlock Name="DialogMessage" Classes="muted" TextWrapping="Wrap" />
       </ScrollViewer>
       <StackPanel Name="DialogButtons" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" />
     </StackPanel>
-  </Border>
+  </Grid>
 </Window>

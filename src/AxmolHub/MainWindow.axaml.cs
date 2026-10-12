@@ -1610,7 +1610,7 @@ public partial class MainWindow : Window
 
     /// <summary>Whether a press is armed on the bar and has not yet become a drag. Exposed because the arming is
     /// the half of the protocol that cannot be driven to its end in a check (see
-    /// <see cref="TitleBarDragExceeded"/>), so its start is asserted instead.</summary>
+    /// <see cref="HubDialogChrome.DragExceeded"/>), so its start is asserted instead.</summary>
     internal bool TitleBarDragArmedForCheck => _titleBarPress is not null;
 
     /// <summary>Whether the bar's page title takes pointer input. It must not: the title is a label in the middle
@@ -1915,7 +1915,7 @@ public partial class MainWindow : Window
         // The whole bar moves the window; the buttons sit above this layer and take their own input first.
         // BeginMoveDrag is not called here any more, and that is what makes the bar's second click reachable at
         // all: it enters the platform's own modal move loop, so a press that started one would spend the rest of
-        // the double-click moving the window (see TitleBarDragThreshold).
+        // the double-click moving the window (see HubDialogChrome.DragThreshold).
         TitleBarDragArea.PointerPressed += OnTitleBarPressed;
         TitleBarDragArea.PointerMoved += OnTitleBarMoved;
         TitleBarDragArea.PointerReleased += OnTitleBarReleased;
@@ -1971,18 +1971,10 @@ public partial class MainWindow : Window
     /// </summary>
     internal static bool TitleBarPressToggles(int clickCount) => clickCount >= 2;
 
-    /// <summary>How far the pointer has to travel from the press before the bar starts moving the window, in DIPs:
-    /// the system's own caption threshold (<c>SM_CXDRAG</c>/<c>SM_CYDRAG</c> default to 4). It is not a
-    /// preference — a platform move loop is modal, so beginning one on the press would swallow the second click of
-    /// a double-click before anything could recognise it.</summary>
-    private const double TitleBarDragThreshold = 4;
-
-    /// <summary>The same decision for the other half of a press: has the pointer moved far enough to be a drag
-    /// rather than a click. Pure for the same reason, and a check must never drive the arm that acts on it — that
-    /// one calls <c>BeginMoveDrag</c> and would sit in the platform's move loop until a mouse moved.</summary>
-    internal static bool TitleBarDragExceeded(Point origin, Point current)
-        => Math.Abs(current.X - origin.X) >= TitleBarDragThreshold
-           || Math.Abs(current.Y - origin.Y) >= TitleBarDragThreshold;
+    /// <summary>How far the pointer has to travel before this bar moves the window. The number and the reason for
+    /// it live once, on <see cref="HubDialogChrome.DragThreshold"/>, because a dialog's drawn bar has to answer to
+    /// the same platform move loop; the shell's bar and every dialog's bar make the decision through
+    /// <see cref="HubDialogChrome.DragExceeded"/>.</summary>
 
     private void OnTitleBarPressed(object? sender, PointerPressedEventArgs e)
     {
@@ -2007,7 +1999,7 @@ public partial class MainWindow : Window
     private void OnTitleBarMoved(object? sender, PointerEventArgs e)
     {
         if (_titleBarPress is not { } press) return;
-        if (!TitleBarDragExceeded(_titleBarPressOrigin, e.GetPosition(this))) return;
+        if (!HubDialogChrome.DragExceeded(_titleBarPressOrigin, e.GetPosition(this))) return;
 
         // Let go of the press before handing the platform its move loop: that loop runs until the button comes up
         // and nothing after this line in the handler may be relied on, so the state has to be settled first.
