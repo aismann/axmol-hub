@@ -11072,6 +11072,15 @@ public partial class ShellCheckWindow : Window
         Check(detail is not null && detail.Bounds.Height <= shell.SettingsCardBoundsForCheck.Height + 0.5,
             "详情区高不过卡片：滚动条长在卡里，不是把卡撑破（详情 "
             + Fmt(detail?.Bounds.Height ?? 0) + "，卡片 " + Fmt(shell.SettingsCardBoundsForCheck.Height) + "）");
+
+        // The × has to sit in the middle of the plate it is drawn on. The plate only appears under a pointer, so
+        // an off-centre glyph is invisible to every screenshot and to the eye until somebody happens to hover —
+        // which is exactly how the owner found this one. Measured, not looked for.
+        var closePlate = NamedDescendant<Button>(shell, "SettingsCloseButton");
+        var closeOffset = closePlate is null ? new Point(double.NaN, double.NaN) : GlyphOffsetFromCentre(closePlate);
+        Check(closePlate is not null && Math.Abs(closeOffset.X) <= 0.5 && Math.Abs(closeOffset.Y) <= 0.5,
+            "设置卡右上角的 × 居中于它自己那块 hover 盘（偏 " + Fmt(closeOffset.X) + " × "
+            + Fmt(closeOffset.Y) + " DIP）");
         shell.CloseSettings();
     }
 
@@ -11237,6 +11246,13 @@ public partial class ShellCheckWindow : Window
         Check(ToolTip.GetTip(plate) as string == HubTexts.Get("CloseWindow", HubStrings.Language),
             "「" + label + "」的关闭盘有名字，且跟着界面语言（图标按钮唯一能被叫出的地方，实际「"
             + ToolTip.GetTip(plate) + "」）");
+
+        // And the × is in the middle of the plate. A control theme that pads its buttons leaves the glyph hanging
+        // to one side of the hover plate, which is invisible until somebody points at it.
+        var plateOffset = GlyphOffsetFromCentre(plate);
+        Check(Math.Abs(plateOffset.X) <= 0.5 && Math.Abs(plateOffset.Y) <= 0.5,
+            "「" + label + "」的 × 居中于它自己那枚盘（偏 " + Fmt(plateOffset.X) + " × "
+            + Fmt(plateOffset.Y) + " DIP）");
     }
 
     /// <summary>A control's rectangle in its own window's client coordinates — the dialog equivalent of the
@@ -11245,6 +11261,23 @@ public partial class ShellCheckWindow : Window
         => target.TranslatePoint(new Point(0, 0), window) is { } origin
             ? new Rect(origin, target.Bounds.Size)
             : default;
+
+    /// <summary>How far the glyph drawn inside a button sits from the centre of that button's own plate, in DIPs.
+    /// NaN when there is nothing to measure (no glyph, or a button that was never laid out) — an assertion against
+    /// NaN fails, which is the point: "could not tell" must never read as "it is fine".</summary>
+    private static Point GlyphOffsetFromCentre(Control plate)
+    {
+        var glyph = plate.GetVisualDescendants().OfType<Avalonia.Controls.Shapes.Path>().FirstOrDefault();
+        if (glyph is null || plate.Bounds.Width <= 0 || plate.Bounds.Height <= 0)
+        {
+            return new Point(double.NaN, double.NaN);
+        }
+
+        return glyph.TranslatePoint(new Point(glyph.Bounds.Width / 2, glyph.Bounds.Height / 2), plate) is not
+            { } glyphCentre
+            ? new Point(double.NaN, double.NaN)
+            : new Point(glyphCentre.X - plate.Bounds.Width / 2, glyphCentre.Y - plate.Bounds.Height / 2);
+    }
 
     /// <summary>
     /// Really render **every** page and judge the frame as non-blank. The assertions above could all pass while rendering simply isn't up;

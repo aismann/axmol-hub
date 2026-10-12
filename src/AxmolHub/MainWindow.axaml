@@ -280,8 +280,10 @@
       <Setter Property="Opacity" Value="1" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderHover}" />
     </Style>
-    <!-- The viewer's caption-row buttons (copy, close). Quieter than the round nav arrows because they sit
-         beside text, but still visible at rest for the same reason the arrows are. -->
+    <!-- The square caption-row button: the picture viewer's copy and close, the review column's repo refresh, and
+         the settings card's ×. Quieter than the round nav arrows because they sit beside text, but still visible
+         at rest for the same reason the arrows are. All four hold a 14 DIP glyph, which is why the padding below
+         belongs to the class and not to one of them. -->
     <Style Selector="Button.viewer-action">
       <Setter Property="Width" Value="30" />
       <Setter Property="Height" Value="30" />
@@ -289,6 +291,11 @@
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
+      <!-- Padding is stated, not left to the control theme. Fluent's Button pads itself by 12 on each side, which
+           leaves a 6 DIP content box inside a 30 DIP plate: the 14 DIP glyph does not fit, and a ContentPresenter
+           centres the box rather than the child that overflows it — so the × hung out to the right of the hover
+           plate and only looked wrong under a pointer. Same reason Button.window-control says Padding=0. -->
+      <Setter Property="Padding" Value="0" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
