@@ -945,12 +945,8 @@ public partial class MainWindow : Window
         private readonly ProgressBar _bar = new() { Minimum = 0, Maximum = 100, Height = 6 };
         private readonly TextBlock _measure = new() { Classes = { "task-row-measure" } };
         private readonly TextBlock _error = new() { Classes = { "task-row-error" }, IsVisible = false };
-        /// <summary>The row's tooltip body, held rather than re-set: assigning a new tooltip closes the one
-        /// on screen, and a rate that updates every 500 ms would dismiss itself mid-read.</summary>
-        /// <summary>
-        /// The row's tooltip body, held rather than re-set: assigning a new tooltip closes the one on screen,
-        /// and a rate that updates every 500 ms would dismiss itself mid-read.
-        /// </summary>
+        /// <summary>The row's tooltip body, held rather than re-set: assigning a new tooltip closes the one on
+        /// screen, and a rate that updates every 500 ms would dismiss itself mid-read.</summary>
         private readonly TextBlock _tip = new();
         private readonly Button _cancel = StripButton();
         private readonly Button _retry = StripButton();
@@ -1005,8 +1001,11 @@ public partial class MainWindow : Window
         {
             _title.Text = _item.Title + " · " + _item.PhaseText;
             // An unmeasurable phase gets the indeterminate bar rather than a number held at 99: the local
-            // work after the bytes (unzipping, patching) is real work with no percentage in it.
-            _bar.IsIndeterminate = _item.State == TaskQueue.Phase.Finalizing;
+            // work after the bytes (unzipping, patching) is real work with no percentage in it. A change that
+            // is running but cannot name a percentage is the same case — a determinate bar sitting at zero
+            // reads as work that stopped, which is the one thing a row must never say about a live process.
+            _bar.IsIndeterminate = _item.State == TaskQueue.Phase.Finalizing
+                                   || (_item.Kind == TaskQueue.TaskKind.Mutating && _item.IsMoving && _item.Fill is null);
             _bar.Value = _item.Fill ?? 0;
             _measure.Text = _item.MeasureText;
             // The estimate reaches the user through the tooltip and nowhere else: the measure column is kept
