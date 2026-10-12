@@ -141,7 +141,22 @@ public sealed class PlatformBuildService(ProcessRunner runner)
         if (!target.CanBuildOn(BuildTargets.Host)) throw new PlatformNotSupportedException("Run requires the matching build host.");
         ProjectService.ValidateBuildReceipt(project, engine);
 
-        if (target.Family == "wasm") return await PreviewWebAsync(project, engine, openBrowser, cancellation);
+        if (target.Family == "wasm")
+        {
+            // A caller that wants an answer rather than a handle: serve, wait for the session to end, then
+            // take the server down. The shell does not come here — it holds the preview open with
+            // <see cref="StartWebPreviewAsync"/> and stops it from the 运行 button.
+            var preview = await StartWebPreviewAsync(project, engine, openBrowser, cancellation);
+            try
+            {
+                return await preview.Server;
+            }
+            finally
+            {
+                StopWebPreview(preview);
+                preview.Stop.Dispose();
+            }
+        }
 
         var overrides = new Dictionary<string, string>(StringComparer.Ordinal);
         if (target.Family == "android")
@@ -163,7 +178,21 @@ public sealed class PlatformBuildService(ProcessRunner runner)
     /// address → wait for readiness → let the caller decide whether to open". Aside from that, it uses the
     /// engine tree's emsdk.
     /// </summary>
-    private async Task<ProcessResult> PreviewWebAsync(ProjectEntry project, EngineEntry engine, bool openBrowser, CancellationToken cancellation)
+    /// <summary>
+    /// A local wasm server Hub is running on somebody else's behalf. The stop handle travels with it because
+    /// the request outlives this call: <c>serve my wasm build</c> is not a command that finishes, and a
+    /// <c>using</c> on the token source disposed the moment the method returned, leaving the browser pointed at
+    /// a server nobody could stop. Whoever holds this owns killing it — see <see cref="StopWebPreview"/>.
+    /// </summary>
+    public sealed record WebPreview(Task<ProcessResult> Server, string Url, CancellationTokenSource Stop);
+
+    /// <summary>
+    /// Start the local WebAssembly preview and hand back the handle as soon as the server has proven it can
+    /// serve the artifact. Deliberately does **not** go through <c>axmol run</c>: the engine's run launches the
+    /// browser directly, whereas the Hub's <c>serve</c> wants "start the server → print the address → wait for
+    /// readiness → let the caller decide whether to open". Aside from that it uses the engine tree's emsdk.
+    /// </summary>
+    public async Task<WebPreview> StartWebPreviewAsync(ProjectEntry project, EngineEntry engine, bool openBrowser, CancellationToken cancellation)
     {
         var artifact = FindArtifact(project);
         var emscripten = Path.Combine(EngineToolchain.ToolRoot(engine), "emsdk", "upstream", "emscripten");
@@ -171,7 +200,7 @@ public sealed class PlatformBuildService(ProcessRunner runner)
         var environment = CreateEnvironment(engine, BuildTargets.Get(project.Platform));
 
         // emrun officially provides the wasm MIME type and COOP/COEP; the browser is opened by the OS, and cancel only stops our own server.
-        using var serverStop = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        var serverStop = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         var socket = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
         socket.Start();
         var port = ((System.Net.IPEndPoint)socket.LocalEndpoint).Port;
@@ -201,12 +230,28 @@ public sealed class PlatformBuildService(ProcessRunner runner)
 
             runner.Write("Web preview ready: " + url);
             if (openBrowser) runner.Open(url);
-            return await server;
+            return new WebPreview(server, url, serverStop);
         }
-        finally
+        catch
         {
+            // Nothing was handed back, so nobody else can reach this server. It must not stay running.
             serverStop.Cancel();
-            try { await server; } catch (OperationCanceledException) { }
+            serverStop.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Stop a preview this service started. Idempotent: the button that calls it may be pressed twice,
+    /// and a second <c>Cancel</c> on a disposed source must not look like a failed shutdown.</summary>
+    public static void StopWebPreview(WebPreview preview)
+    {
+        try
+        {
+            preview.Stop.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Already stopped by whoever got here first.
         }
     }
 }

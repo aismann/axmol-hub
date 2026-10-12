@@ -291,6 +291,12 @@ public static class HubTexts
         ["Select an engine first."] = ("请先选择引擎。", "Select an engine first."),
         ["Install or import an engine first."] = ("请先安装或导入引擎。", "Install or import an engine first."),
         ["Build successfully before Run."] = ("请先成功构建，再运行。", "Build successfully before Run."),
+        // The game holds its own output directory open, so the compiler's sharing-conflict sentence is really
+        // about a window the user can just close. Say which, and say it before the build fails.
+        ["ProjectStillRunning"] = ("项目还在运行，先关掉它再构建。", "The project is still running. Close it before building."),
+        // The only two run failures Hub reports: the process never came up (an exception), and this — it came
+        // up and dropped immediately. A game the user closed later is not an error.
+        ["GameExitedEarly"] = ("{0} 启动后立即退出，没有真正跑起来。", "{0} exited right after it started and never came up."),
         ["Select VS Code executable in Settings first."] = ("请先在设置中选择 VS Code。", "Select VS Code executable in Settings first."),
         ["Select Visual Studio devenv.exe in Settings first."] = ("请先在设置中选择 Visual Studio。", "Select Visual Studio devenv.exe in Settings first."),
         ["Verify toolchains"] = ("检测工具链", "Verify toolchains"),

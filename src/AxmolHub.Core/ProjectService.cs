@@ -97,13 +97,58 @@ public sealed class ProjectService(ProcessRunner runner, EngineCommandLine comma
         => EngineBuildLayout.FindBuildDirectory(project)
            ?? throw new DirectoryNotFoundException($"No build directory was produced under {project.Path}. Build this target first.");
 
-    public Task<ProcessResult> RunAsync(ProjectEntry project, EngineEntry engine, CancellationToken cancellation = default, string? androidDevice = null)
+    /// <summary>
+    /// The waiting contract: start the target and answer with a process's exit code. <c>axmolhub-cli run</c>
+    /// uses it because a script piping the verb wants the number the game exited with, and every non-Windows
+    /// target uses it because there the command finishing <b>is</b> the answer — a deploy that returned 0 put
+    /// the app on the phone. The shell's 运行 is not in this set: it launches a Windows game with
+    /// <see cref="LaunchAsync"/> and lets go.
+    /// </summary>
+    public async Task<ProcessResult> RunAsync(ProjectEntry project, EngineEntry engine, CancellationToken cancellation = default, string? androidDevice = null)
     {
-        if (BuildTargets.Get(project.Platform).Family != "windows") return new PlatformBuildService(runner).RunAsync(project, engine, commandLine, cancellation, deviceSerial: androidDevice);
-        return RunWindowsAsync(project, engine, cancellation);
+        if (BuildTargets.Get(project.Platform).Family != "windows")
+        {
+            return await new PlatformBuildService(runner).RunAsync(project, engine, commandLine, cancellation, deviceSerial: androidDevice);
+        }
+
+        using var process = await StartWindowsAsync(project, engine, cancellation);
+        await process.WaitForExitAsync(cancellation);
+        runner.Write($"Exit code: {process.ExitCode}");
+        return new ProcessResult(process.ExitCode, "", "");
     }
 
-    private async Task<ProcessResult> RunWindowsAsync(ProjectEntry project, EngineEntry engine, CancellationToken cancellation)
+    /// <summary>
+    /// Validate the artifact, prepare the runtime and hand the game over. Returns the pid of the process Hub
+    /// started and does not wait for it: pressing 运行 is not the start of a debugging session, and once the
+    /// window is on screen Hub has no answer left to give back. The pid serves the two questions that stay
+    /// honest — did it die on contact, and is it still holding the output directory a rebuild wants.
+    /// </summary>
+    public async Task<int> LaunchAsync(ProjectEntry project, EngineEntry engine, CancellationToken cancellation = default)
+    {
+        using var process = await StartWindowsAsync(project, engine, cancellation);
+        return process.Id;
+    }
+
+    private async Task<System.Diagnostics.Process> StartWindowsAsync(ProjectEntry project, EngineEntry engine, CancellationToken cancellation)
+    {
+        var executable = ResolveLaunchable(project, engine);
+        var target = BuildTargets.Get(project.Platform);
+        // The engine artifact directory (bin/&lt;App&gt;/&lt;Config&gt;/) is already fully runnable: exe, dll, axslc
+        // shaders and Content all sit at the same level. The Hub no longer copies out a separate run
+        // directory; it only fills in the app-local runtime library and then launches the exe in the
+        // artifact directory directly.
+        await PrepareRuntime(Path.GetDirectoryName(executable)!, project.Configuration, target.Architecture, cancellation);
+        // Launch detached, as if double-clicked: the exe's own AllocConsole gives it a real console with the
+        // log colors a direct launch has, and nothing is piped back — a game's output belongs to its own
+        // console or its own log file. FileUtils treats the working directory as the resource root, so Content
+        // is stated explicitly and the launch location does not affect resource resolution.
+        return runner.StartDetached(executable, Path.Combine(Path.GetDirectoryName(executable)!, "Content"));
+    }
+
+    /// <summary>Every check a Windows run needs before anything is started, in one place so the launch and the
+    /// rebuild ask the same question about the same artifact. Throws the engine's own English sentences, which
+    /// <c>HubStrings</c> turns back into the user's language in the error dialog.</summary>
+    private string ResolveLaunchable(ProjectEntry project, EngineEntry engine)
     {
         var target = BuildTargets.Get(project.Platform);
         // Windows can cross-compile arm64, but an arm64 native image can only be launched by an arm64 host.
@@ -115,19 +160,8 @@ public sealed class ProjectService(ProcessRunner runner, EngineCommandLine comma
         if (project.Version != engine.Version || project.Channel != engine.Channel) throw new InvalidOperationException("Required Axmol version/channel is not installed.");
         ValidateBuildReceipt(project, engine);
         var build = BuildDirectory(project);
-        var executable = EngineBuildLayout.FindArtifact(build, project.Name, project.Configuration, "windows")
+        return EngineBuildLayout.FindArtifact(build, project.Name, project.Configuration, "windows")
             ?? throw new FileNotFoundException("Build " + project.Configuration + " successfully before Run.");
-        // The engine artifact directory (bin/<App>/<Config>/) is already fully runnable: exe, dll, axslc
-        // shaders and Content all sit at the same level. The Hub no longer copies out a separate run
-        // directory; it only fills in the app-local runtime library and then launches the exe in the
-        // artifact directory directly.
-        await PrepareRuntime(Path.GetDirectoryName(executable)!, project.Configuration, target.Architecture, cancellation);
-        // The official FileUtils treats the working directory as the resource root; explicitly use Content
-        // so the launch location doesn't affect resolution.
-        // Running the game = a long-running process. Use a detached launch (equivalent to double-clicking):
-        // the exe's own AllocConsole gets a real console and log colors match a direct double-click; the Hub
-        // doesn't redirect its output (a long-running process's logs go to a file / its own console anyway).
-        return await runner.RunDetachedAsync(executable, Path.Combine(Path.GetDirectoryName(executable)!, "Content"), cancellation);
     }
 
     /// <summary>When the build receipt is missing or doesn't match the current engine installation, the previous artifacts must not be used to enter Run.</summary>

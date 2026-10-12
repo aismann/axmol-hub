@@ -60,6 +60,17 @@ public sealed class HubWorkspace : IDisposable
     /// </summary>
     private readonly TaskQueue _tasks = TaskQueue.Instance;
     private BuildProgressWindow? _buildProgress;
+    /// <summary>
+    /// The wasm preview Hub is serving, if any. A named field rather than an awaited call because that server
+    /// outlives the request that started it, and the 运行 button has to find it again as 停止.
+    /// </summary>
+    private PlatformBuildService.WebPreview? _webPreview;
+    /// <summary>
+    /// The pid of a game Hub launched, per project path — and the only thing kept about a process it does not
+    /// own. It answers two questions and nothing else: did it die on contact, and is it still holding the
+    /// output directory a rebuild wants to write into.
+    /// </summary>
+    private readonly Dictionary<string, int> _launchedGames = new(StringComparer.OrdinalIgnoreCase);
     private readonly TaskCompletionSource _engineIndexReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>
@@ -372,17 +383,7 @@ public sealed class HubWorkspace : IDisposable
         var title = HubStrings.Get(titleKey);
         if (item.Fault is { } error)
         {
-            LastError = error.ToString();
-            Log.Write(LastError);
-            SetStatus(HubStrings.Get("ErrorHint") + " " + HubStrings.Get(error.Message.Split('\n')[0]));
-            Failed?.Invoke();
-            // In verification mode don't pop up: ExpectedFailure is the norm for this group (e.g.
-            // importing an incomplete engine), and a dialog would make the await never return (see
-            // SuppressDialogs).
-            if (!SuppressDialogs)
-            {
-                _ = ShowOperationErrorAsync(error);
-            }
+            _ = ReportFailureAsync(error);
         }
         else if (item.State == TaskQueue.Phase.Done)
         {
@@ -398,6 +399,26 @@ public sealed class HubWorkspace : IDisposable
         CloseBuildProgress();
         BusyChanged?.Invoke(false);
         Refresh();
+    }
+
+    /// <summary>
+    /// The one way a failure reaches the user: the status line, the log, the typed advice. Shared by the
+    /// gated operations and by the launch path, which runs outside the gate and so has no <c>catch</c> above
+    /// it — a refusal must not be able to land quieter than an operation.
+    /// </summary>
+    private async Task ReportFailureAsync(Exception error)
+    {
+        LastError = error.ToString();
+        Log.Write(LastError);
+        SetStatus(HubStrings.Get("ErrorHint") + " " + HubStrings.Get(error.Message.Split('\n')[0]));
+        Failed?.Invoke();
+        // In verification mode don't pop up: ExpectedFailure is the norm for this group (e.g.
+        // importing an incomplete engine), and a dialog would make the await never return (see
+        // SuppressDialogs).
+        if (!SuppressDialogs)
+        {
+            await ShowOperationErrorAsync(error);
+        }
     }
 
     public void Cancel()
@@ -990,6 +1011,16 @@ public sealed class HubWorkspace : IDisposable
             return;
         }
 
+        // A running game holds its own output directory open, so a rebuild started now would fail in a minute
+        // with a Windows sharing-conflict sentence from inside the compiler. Hub launched that process, so it
+        // says which file is really the reason — and says it before asking for a target, not after the user
+        // has answered a dialog for nothing.
+        if (_launchedGames.TryGetValue(selected.Path, out var gamePid) && ProcessRunner.IsRunning(gamePid))
+        {
+            await ReportFailureAsync(new InvalidOperationException("ProjectStillRunning"));
+            return;
+        }
+
         var chosen = selection ?? await BuildTargetDialog.PickAsync(Owner, selected);
         if (chosen is null)
         {
@@ -1072,9 +1103,22 @@ public sealed class HubWorkspace : IDisposable
         });
     }
 
+    /// <summary>
+    /// Launch the game. This is neither a task nor an operation: no row, no gate, nothing to cancel, no exit
+    /// code to report. The ruling was 「Hub 不做调试器」 — Hub starts the artifact and lets go — so a game left
+    /// running for an hour must not grey out a page, hold the exclusive slot, or turn "the user closed the
+    /// window" into an error dialog. Two things stay Hub's own failures: the process that never came up, and
+    /// the one that died on contact.
+    /// </summary>
     public async Task RunAsync()
     {
-        await ExecuteAsync("Run project", async token =>
+        if (_webPreview is not null)
+        {
+            StopWebPreview();
+            return;
+        }
+
+        try
         {
             var project = RequiredProject();
             if (project.BuildStatus != "Succeeded")
@@ -1082,24 +1126,119 @@ public sealed class HubWorkspace : IDisposable
                 throw new InvalidOperationException("Build successfully before Run.");
             }
 
-            if (project.Platform == "windows-x64")
+            var family = BuildTargets.Get(project.Platform).Family;
+            if (family == "windows")
             {
-                UpdateTools(await DetectAsync(token));
+                UpdateTools(await DetectAsync(CancellationToken.None));
             }
-
-            if (BuildTargets.Get(project.Platform).Family == "android" && SelectedDevice?.State != "device")
+            else if (family == "android" && SelectedDevice?.State != "device")
             {
                 throw new InvalidOperationException(HubStrings.Get("SelectAndroidDevice"));
             }
 
             project.LastOpened = DateTimeOffset.Now;
             Store.Save(State);
-            var result = await _projects.RunAsync(project, RequiredEngine(project), token, SelectedDevice?.Serial);
-            if (result.ExitCode != 0)
+            var engine = RequiredEngine(project);
+
+            if (family == "windows")
             {
-                throw new InvalidOperationException($"Game exited with code {result.ExitCode}.");
+                var pid = await _projects.LaunchAsync(project, engine);
+                _launchedGames[project.Path] = pid;
+                Log.Write($"{project.Name} launched (pid {pid}).");
+                SetStatus(HubStrings.Get("Run project") + " · " + project.Name);
+                WatchEarlyExit(project, pid);
+                return;
             }
-        });
+
+            if (family == "wasm")
+            {
+                await StartWebPreviewAsync(project, engine);
+                return;
+            }
+
+            // Every other target goes through the engine's own command, and that one is awaited: for a deploy,
+            // the command returning is the answer rather than the app exiting, so the exit code still means
+            // something Hub can act on.
+            await ExecuteAsync("Run project", async token =>
+            {
+                var result = await _projects.RunAsync(project, engine, token, SelectedDevice?.Serial);
+                if (result.ExitCode != 0)
+                {
+                    throw new InvalidOperationException($"Game exited with code {result.ExitCode}.");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            // Not on the gate, so nothing upstream catches this: the launch path has to be as loud as the
+            // operations that still run under it.
+            await ReportFailureAsync(ex);
+        }
+    }
+
+    /// <summary>
+    /// A game that is gone after three seconds never got going; anything later is the user finishing play,
+    /// which is not an event Hub reports. The pid is polled rather than waited on precisely because no handle
+    /// is kept: Hub asked for a launch, not for a session.
+    /// </summary>
+    private async void WatchEarlyExit(ProjectEntry project, int pid)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        if (ProcessRunner.IsRunning(pid))
+        {
+            return;
+        }
+
+        _launchedGames.Remove(project.Path);
+        var sentence = string.Format(HubStrings.Get("GameExitedEarly"), project.Name);
+        Log.Write(sentence);
+        SetStatus(sentence);
+        if (!SuppressDialogs)
+        {
+            await HubDialog.ShowAsync(Owner, HubStrings.Get("OperationFailed"), sentence);
+        }
+    }
+
+    /// <summary>Whether the wasm preview server is up — the answer the 运行 button needs in order to say
+    /// 停止 instead, and the reason this is a property rather than a local in <see cref="RunAsync"/>.</summary>
+    public bool WebPreviewRunning => _webPreview is not null;
+
+    public string WebPreviewUrl => _webPreview?.Url ?? "";
+
+    private async Task StartWebPreviewAsync(ProjectEntry project, EngineEntry engine)
+    {
+        var preview = await _platformBuilds.StartWebPreviewAsync(project, engine, openBrowser: true, CancellationToken.None);
+        _webPreview = preview;
+        SetStatus(HubStrings.Get("Run project") + " · " + preview.Url);
+        Changed?.Invoke();
+
+        // The server going away — a crash, a Ctrl+C in its console, the browser tab ending the session — has to
+        // put the button back by itself. Guarded on identity because stopping one preview must not erase a
+        // newer one that already replaced it.
+        _ = preview.Server.ContinueWith(_ =>
+        {
+            if (!ReferenceEquals(_webPreview, preview))
+            {
+                return;
+            }
+
+            _webPreview = null;
+            preview.Stop.Dispose();
+            Dispatcher.UIThread.Post(() => Changed?.Invoke());
+        }, TaskScheduler.Default);
+    }
+
+    /// <summary>Take the preview server down. The token source is disposed by the continuation that notices the
+    /// server came down, so the repaint and the cleanup ride the same event whoever pressed the button.</summary>
+    public void StopWebPreview()
+    {
+        if (_webPreview is not { } preview)
+        {
+            return;
+        }
+
+        PlatformBuildService.StopWebPreview(preview);
+        SetStatus(HubStrings.Get("Stop") + " · " + preview.Url);
     }
 
     private string BuildOutputDirectory(ProjectEntry project)
@@ -1610,6 +1749,13 @@ public sealed class HubWorkspace : IDisposable
 
     public void Dispose()
     {
+        // A preview server outlives the page that started it, so shutdown has to take it with the rest of the
+        // things this class leaves no orphans in.
+        if (_webPreview is { } preview)
+        {
+            PlatformBuildService.StopWebPreview(preview);
+        }
+
         _http.Dispose();
     }
 }

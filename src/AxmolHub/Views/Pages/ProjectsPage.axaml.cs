@@ -222,6 +222,11 @@ public partial class ProjectsPage : UserControl
         BuildTargetName.Text = target?.Name ?? "";
         BuildHostHint.Text = _workspace.BuildHostHint;
 
+        // 运行 doubles as 停止 for the one thing Hub keeps hold of: the wasm preview server it started itself.
+        // A launched game is left alone, so that button keeps saying 运行 — the label is the difference between
+        // "you may close it whenever you like" and "this is still running and here is how to stop it".
+        RunButton.Content = HubStrings.Get(_workspace.WebPreviewRunning ? "Stop" : "Run");
+
         AndroidDevicePanel.IsVisible = target?.Family == "android";
         ReloadDevices();
 

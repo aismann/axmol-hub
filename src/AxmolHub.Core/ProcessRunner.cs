@@ -257,14 +257,46 @@ public sealed class ProcessRunner(Action<string> log)
     /// so axmol's log colors match a direct double-click. The cost is that stdout/stderr cannot be captured —
     /// which doesn't matter for long-running processes (games): logs go to a file / their own console anyway.
     /// </summary>
-    public async Task<ProcessResult> RunDetachedAsync(string executable, string workingDirectory, CancellationToken cancellation = default)
+    /// <summary>
+    /// Detached launch: equivalent to the user double-clicking the exe in Explorer. Uses <c>UseShellExecute</c>,
+    /// no redirection, no hidden window; the child process gets a real console (<c>AllocConsole</c> + VT mode),
+    /// so axmol's log colors match a direct double-click. The cost is that stdout/stderr cannot be captured —
+    /// which doesn't matter for long-running processes (games): logs go to a file / their own console anyway.
+    ///
+    /// <para><b>It returns the moment the child is running.</b> Work that must be awaited has its own method
+    /// (<see cref="RunAsync"/>, <see cref="RunElevatedAsync"/>); a launched game does not. Holding it open is
+    /// what turned "the user closed the window" into an error dialog and greyed the whole client for as long as
+    /// it played. The caller disposes the handle: the shell takes the pid and lets go, while a caller that
+    /// really does need the exit code (<c>axmolhub-cli run</c>) waits on the handle it was handed, which is
+    /// the one race a pid cannot answer — a process that exits before anyone looks it up.</para>
+    /// </summary>
+    public Process StartDetached(string executable, string workingDirectory)
     {
         var start = new ProcessStartInfo(executable) { WorkingDirectory = workingDirectory, UseShellExecute = true };
         log($"Detached: {executable}; cwd={workingDirectory}");
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("Game process did not start.");
-        await process.WaitForExitAsync(cancellation);
-        log($"Exit code: {process.ExitCode}");
-        return new ProcessResult(process.ExitCode, "", "");
+        return Process.Start(start) ?? throw new InvalidOperationException("Game process did not start.");
+    }
+
+    /// <summary>Whether a process Hub started is still on the machine. Reads the process table by pid rather
+    /// than keeping a handle, so "still running" stays answerable after the launcher has let go — which is the
+    /// whole point of letting go.</summary>
+    public static bool IsRunning(int pid)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            // Not in the table: it exited, and the pid was recycled or the entry dropped.
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            // Exited between the lookup and the check — the answer to the question being asked.
+            return false;
+        }
     }
 
     public async Task<int> RunElevatedAsync(string executable, IEnumerable<string> arguments, string workingDirectory)
