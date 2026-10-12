@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 using System.Threading;
 using Avalonia;
 using Avalonia.Controls;
@@ -131,68 +130,40 @@ public sealed class BuildProgressWindow : Window
             return;
         }
 
-        var line = message.StartsWith("stderr: ") ? message[8..] : message;
-        if (line.StartsWith("Command: "))
-        {
-            if (line.Contains("--build"))
-            {
-                SetStage("BuildCompiling");
-            }
-            else if (line.Contains("org.gradle.launcher.GradleMain"))
-            {
-                SetStage("BuildPackaging");
-            }
-            else if (line.Contains("apksigner") || line.Contains("jarsigner") || line.Contains("zipalign")
-                     || line.Contains("keytool") || line.Contains("aapt2"))
-            {
-                SetStage("BuildVerifying");
-            }
-            else if (line.Contains("\"-S\""))
-            {
-                SetStage("BuildConfiguring");
-            }
+        // One reader of the build's own output, shared with the queue's row: these patterns were tuned against
+        // real CMake / Gradle / apksigner output, and a copy of them in each surface is how the two start
+        // disagreeing about which stage the build is in.
+        var reading = TaskQueue.TaskFeed.Parse(message);
 
-            // The full command stays in the main window's log; don't crowd the current step.
-            return;
+        if (reading.StageKey is { } stage
+            && (!reading.OnlyAfterDeterminateProgress || !_progress.IsIndeterminate))
+        {
+            _stage.Text = HubStrings.Get(stage);
+            // A stage arriving on its own retires the number the previous stage produced: signing an APK is not
+            // 16% of anything.
+            if (reading.StepTotal is null && reading.Percent is null)
+            {
+                _progress.IsIndeterminate = true;
+                _count.Text = "";
+            }
         }
 
-        if (line.StartsWith("Exit code:"))
+        if (reading.StepTotal is { } total && total > 0)
         {
-            if (!_progress.IsIndeterminate)
-            {
-                SetStage("BuildVerifying");
-            }
-
-            return;
-        }
-
-        if (line.Length == 0)
-        {
-            return;
-        }
-
-        _detail.Text = line.Length > 220 ? line[..217] + "…" : line;
-
-        var step = Regex.Match(line, @"(?:^|\s)\[(\d+)/(\d+)\]");
-        if (step.Success && long.TryParse(step.Groups[1].Value, out var current)
-            && long.TryParse(step.Groups[2].Value, out var total) && total > 0 && current <= total)
-        {
-            _stage.Text = HubStrings.Get("BuildCompiling");
             _progress.IsIndeterminate = false;
-            _progress.Value = 100.0 * current / total;
-            _count.Text = $"{current} / {total} · {_progress.Value:0}%";
+            _progress.Value = 100.0 * (reading.StepCurrent ?? 0) / total;
+            _count.Text = $"{reading.StepCurrent} / {total} · {_progress.Value:0}%";
         }
-        else if (Regex.Match(line, @"\[\s*(\d{1,3})%\]") is { Success: true } percentage
-                 && int.Parse(percentage.Groups[1].Value) <= 100)
+        else if (reading.Percent is { } percent)
         {
-            _stage.Text = HubStrings.Get("BuildCompiling");
             _progress.IsIndeterminate = false;
-            _progress.Value = int.Parse(percentage.Groups[1].Value);
-            _count.Text = $"{_progress.Value:0}%";
+            _progress.Value = percent;
+            _count.Text = $"{percent:0}%";
         }
-        else if (line.StartsWith("> Task "))
+
+        if (reading.Detail is { } line)
         {
-            SetStage("BuildPackaging");
+            _detail.Text = line.Length > 220 ? line[..217] + "…" : line;
         }
     }
 

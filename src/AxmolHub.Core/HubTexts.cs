@@ -442,6 +442,8 @@ public static class HubTexts
         ["QuitDuringDownloadsBody"] = ("还有 {0} 个下载在跑。现在退出会中断它们。", "{0} download(s) are still running. Quitting now stops them."),
         ["TaskQueued"] = ("等待中", "Queued"),
         ["TaskTransferring"] = ("下载中", "Downloading"),
+        // A change that is running but has not named a stage yet. Not 下载中: a compile is running nothing down.
+        ["TaskRunning"] = ("进行中", "In progress"),
         // The bytes have arrived and the rest is local work — unzipping an engine, patching an update. One
         // word covers both because the row cannot promise which it is doing.
         ["TaskApplying"] = ("正在处理", "Applying"),

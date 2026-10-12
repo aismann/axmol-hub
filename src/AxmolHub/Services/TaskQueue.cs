@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using AxmolHub.Core;
@@ -54,6 +55,20 @@ internal sealed class TaskQueue
     }
 
     /// <summary>
+    /// The two kinds of work the list holds, told apart by <b>what they are allowed to run next to</b>, not by
+    /// how they look: a <see cref="Transfer"/> moves bytes to disk and several can share the pipe, a
+    /// <see cref="Mutating"/> change rewrites state the user may be looking at and runs alone. Both get one
+    /// identity, one row, one cancel, and one retry, which is the whole reason they live in one list.
+    /// </summary>
+    public enum TaskKind
+    {
+        /// <summary>Bytes arriving. Several may share the pipe.</summary>
+        Transfer,
+        /// <summary>Work that changes something on disk. One at a time.</summary>
+        Mutating,
+    }
+
+    /// <summary>
     /// Where one task is. Six phases, and each is something a transport can report truthfully:
     /// there is deliberately no "verifying" phase, because the SHA-256 pass runs inside
     /// <see cref="DownloadManager.DownloadAsync"/> and cannot be observed from here.
@@ -103,6 +118,26 @@ internal sealed class TaskQueue
         public string? Subject { get; } = subject;
 
         public Phase State { get; private set; } = Phase.Queued;
+
+        /// <summary>Which gate this runs under. Defaults to <see cref="TaskKind.Transfer"/> because that is
+        /// all the list has ever held; a mutating change says so when it enqueues.</summary>
+        public TaskKind Kind { get; init; } = TaskKind.Transfer;
+
+        /// <summary>
+        /// The stage the work itself named, as a copy key — a compile saying 编译代码 or 打包应用. Set from
+        /// <see cref="ApplyProgress"/> out of the task's own output, and it outranks the phase word in
+        /// <see cref="PhaseText"/> because it is the worker's answer rather than my guess about it.
+        /// </summary>
+        public string? StageKey { get; private set; }
+
+        /// <summary>Where the build tool is in its own step list, when it prints one (`[7/42]`).</summary>
+        public long? StepCurrent { get; private set; }
+
+        public long? StepTotal { get; private set; }
+
+        /// <summary>When the work actually started moving, or null while it still waits for a slot. Set by
+        /// <see cref="BeginRunning"/> and moved by the suite's clock hook, so it is written from outside.</summary>
+        public DateTimeOffset? StartedAt { get; internal set; }
 
         public Progress Report { get; private set; } = Progress.Unknown;
 
@@ -211,32 +246,92 @@ internal sealed class TaskQueue
             OnProgress?.Invoke();
         }
 
-        /// <summary>The phase as the row words it. Said here so every surface uses one word for one
-        /// state, the same reason <see cref="UpdateService.PendingVersion"/> is read rather than rebuilt.</summary>
-        public string PhaseText => HubStrings.Get(State switch
-        {
-            Phase.Queued => "TaskQueued",
-            Phase.Running => "TaskTransferring",
-            Phase.Finalizing => "TaskApplying",
-            Phase.Done => "TaskDone",
-            Phase.Cancelled => "TaskCancelled",
-            _ => "TaskFailed",
-        });
+        /// <summary>
+        /// The phase as the row words it. Said here so every surface uses one word for one state, the same
+        /// reason <see cref="UpdateService.PendingVersion"/> is read rather than rebuilt.
+        ///
+        /// <para>A stage the work named itself wins over the phase word, because it is the worker's answer
+        /// rather than an inference from how many bytes arrived. And the phase words split by kind: 下载中 is
+        /// true of a transfer and a lie about a compile that is also running.</para>
+        /// </summary>
+        public string PhaseText => StageKey is { Length: > 0 } stage
+            ? HubStrings.Get(stage)
+            : HubStrings.Get(State switch
+            {
+                Phase.Queued => "TaskQueued",
+                Phase.Running => Kind == TaskKind.Transfer ? "TaskTransferring" : "TaskRunning",
+                Phase.Finalizing => "TaskApplying",
+                Phase.Done => "TaskDone",
+                Phase.Cancelled => "TaskCancelled",
+                _ => "TaskFailed",
+            });
 
         /// <summary>
-        /// What the transport can prove, in words. Bytes for a transport that counts them, a percentage
-        /// for one that only has that (Velopack), and an em-dash for a phase that cannot be measured —
-        /// never a zero, which would read as a download that stopped.
+        /// What the work can prove, in words. Bytes for a transport that counts them, a percentage for one
+        /// that only has that (Velopack), a step count for a build that says which of its own steps this is,
+        /// an elapsed clock for a change that can prove only that it is still going — and an em-dash when even
+        /// that would be a guess. Never a zero, which reads as work that stopped.
         /// </summary>
-        public string MeasureText => Report switch
+        public string MeasureText => this switch
         {
-            { Bytes: { } bytes } => FormatBytes(bytes) + " / " + FormatBytes(Report.Total)
+            { Report.Bytes: { } bytes } => FormatBytes(bytes) + " / " + FormatBytes(Report.Total)
                 + (Report.BytesPerSecond is { } rate && rate > 0 ? " · " + UpdateService.FormatSpeed(rate) : ""),
-            { Percent: { } percent } => percent + "%",
+            { StepTotal: > 0 } => StepCurrent + " / " + StepTotal
+                + (Report.Percent is { } measured ? " · " + measured + "%" : ""),
+            { Report.Percent: { } percent } => percent + "%",
+            { Kind: TaskKind.Mutating, StartedAt: { } started } => ElapsedText(started),
             _ => HubStrings.Get("TaskNoMeasure"),
         };
 
-        internal void BeginRunning() => State = Phase.Running;
+        /// <summary>
+        /// Records what one line of this task's <b>own</b> output said about where it is. Nothing is inferred
+        /// from a line that did not arrive, and a line the parser does not know leaves the stage where it was:
+        /// "still compiling" stays honest a little longer than "no idea" helps anyone.
+        /// </summary>
+        public void ApplyProgress(TaskFeed.Reading reading)
+        {
+            if (reading.StageKey is { } stage
+                && (!reading.OnlyAfterDeterminateProgress || Report.Percent is not null))
+            {
+                StageKey = stage;
+
+                // A stage named on its own — signing started, packaging started — retires the number the
+                // previous stage produced. Holding 16% while the tool signs an APK reports the compile that
+                // already finished; the bar goes back to "unmeasurable", which is the truth.
+                if (reading.StepTotal is null && reading.Percent is null)
+                {
+                    Report = Progress.Unknown;
+                    StepCurrent = null;
+                    StepTotal = null;
+                }
+            }
+
+            if (reading.StepTotal is { } total && total > 0)
+            {
+                StepCurrent = reading.StepCurrent;
+                StepTotal = total;
+                Report = Report with { Percent = (int)Math.Clamp(100.0 * (reading.StepCurrent ?? 0) / total, 0, 100) };
+            }
+            else if (reading.Percent is { } percent)
+            {
+                Report = Report with { Percent = percent };
+            }
+
+            OnProgress?.Invoke();
+        }
+
+        /// <summary>How long the running work has been going, in the shape the build window used.</summary>
+        private static string ElapsedText(DateTimeOffset started)
+            => HubStrings.Get("BuildElapsed") + " " + (DateTimeOffset.Now - started).ToString(@"hh\:mm\:ss");
+
+        internal void BeginRunning()
+        {
+            // The clock starts when the work starts, not when it was asked for: a task that waited four
+            // minutes behind two downloads has not been running for four minutes, and saying so would be the
+            // kind of invented number this list refuses to show.
+            StartedAt ??= DateTimeOffset.Now;
+            State = Phase.Running;
+        }
 
         internal void Succeed() => State = Phase.Done;
         internal void Abort() => State = Phase.Cancelled;
@@ -269,10 +364,87 @@ internal sealed class TaskQueue
             Report = Progress.Unknown;
             EstimatedTotal = null;
             EstimatedRate = null;
+            StageKey = null;
+            StepCurrent = null;
+            StepTotal = null;
+            StartedAt = null;
             _completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         internal void Complete() => _completion.TrySetResult();
+    }
+
+    /// <summary>
+    /// Reads one line of a build's own output and says what it proves. These patterns were tuned against real
+    /// CMake / Gradle / apksigner output back in the WPF client, so they live in exactly one place now: a row
+    /// and a window that each kept their own copy would drift, and the drift would show up as a progress bar
+    /// that lies about which stage it is in.
+    /// </summary>
+    internal static class TaskFeed
+    {
+        /// <summary>What a line said. Every field null unless that line earned it.</summary>
+        internal readonly record struct Reading(
+            string? StageKey,
+            int? Percent,
+            long? StepCurrent,
+            long? StepTotal,
+            bool OnlyAfterDeterminateProgress,
+            string? Detail)
+        {
+            internal static readonly Reading Nothing = new(null, null, null, null, false, null);
+        }
+
+        internal static Reading Parse(string message)
+        {
+            // stderr arrives tagged; the tag is transport noise, not part of the build's own words.
+            var line = message.StartsWith("stderr: ") ? message[8..] : message;
+
+            if (line.StartsWith("Command: "))
+            {
+                // The full command belongs in the log, never on the row: what the user wants from this line is
+                // which stage we are in, and a 300-character cmake invocation is not that.
+                if (line.Contains("--build")) return new Reading("BuildCompiling", null, null, null, false, null);
+                if (line.Contains("org.gradle.launcher.GradleMain")) return new Reading("BuildPackaging", null, null, null, false, null);
+                if (line.Contains("apksigner") || line.Contains("jarsigner") || line.Contains("zipalign")
+                    || line.Contains("keytool") || line.Contains("aapt2"))
+                {
+                    return new Reading("BuildVerifying", null, null, null, false, null);
+                }
+
+                if (line.Contains("\"-S\"")) return new Reading("BuildConfiguring", null, null, null, false, null);
+
+                return new Reading(null, null, null, null, false, null);
+            }
+
+            if (line.StartsWith("Exit code:"))
+            {
+                // Only worth a stage once a percentage has actually been shown: a build that never got to
+                // printing steps did not verify anything, it just failed early.
+                return new Reading("BuildVerifying", null, null, null, true, null);
+            }
+
+            if (line.Length == 0) return Reading.Nothing;
+
+            var step = Regex.Match(line, @"(?:^|\s)\[(\d+)/(\d+)\]");
+            if (step.Success && long.TryParse(step.Groups[1].Value, out var current)
+                && long.TryParse(step.Groups[2].Value, out var total) && total > 0 && current <= total)
+            {
+                return new Reading("BuildCompiling", null, current, total, false, line);
+            }
+
+            if (Regex.Match(line, @"\[\s*(\d{1,3})%\]") is { Success: true } percentage
+                && int.Parse(percentage.Groups[1].Value) <= 100)
+            {
+                return new Reading("BuildCompiling", int.Parse(percentage.Groups[1].Value), null, null, false, line);
+            }
+
+            if (line.StartsWith("> Task "))
+            {
+                return new Reading("BuildPackaging", null, null, null, false, line);
+            }
+
+            return new Reading(null, null, null, null, false, line);
+        }
     }
 
     private readonly List<Item> _items = [];
@@ -313,7 +485,8 @@ internal sealed class TaskQueue
         string titleKey,
         string? subject,
         Func<Item, CancellationToken, Task> work,
-        Action<Item>? onFinished = null)
+        Action<Item>? onFinished = null,
+        TaskKind kind = TaskKind.Transfer)
     {
         if (FindActive(identity) is not null)
         {
@@ -337,6 +510,7 @@ internal sealed class TaskQueue
         {
             Work = work,
             OnFinished = onFinished,
+            Kind = kind,
         };
         _items.Add(item);
         Items = _items.ToArray();
@@ -424,8 +598,38 @@ internal sealed class TaskQueue
     /// for a download the suite cannot really run. Settle it with
     /// <see cref="FinishTaskForCheck"/>; <see cref="ClearForCheck"/> takes it away.
     /// </summary>
-    internal Item? EnqueueForCheck(string identity, string titleKey, string? subject = null)
-        => Enqueue(identity, titleKey, subject, (_, token) => Task.Delay(Timeout.Infinite, token));
+    internal Item? EnqueueForCheck(string identity, string titleKey, string? subject = null,
+        TaskKind kind = TaskKind.Transfer)
+        => Enqueue(identity, titleKey, subject, (_, token) => Task.Delay(Timeout.Infinite, token), kind: kind);
+
+    /// <summary>
+    /// Verification hook: feeds one line through <see cref="TaskFeed"/>, the way the task's own process would.
+    /// The suite drives a build this way instead of running a compiler, so what it asserts is the reading, not
+    /// the presence of a toolchain on this machine.
+    /// </summary>
+    internal void ReportLineForCheck(string identity, string line)
+    {
+        if (_items.FirstOrDefault(item => item.Identity == identity) is not { } item)
+        {
+            return;
+        }
+
+        item.ApplyProgress(TaskFeed.Parse(line));
+        Changed?.Invoke();
+    }
+
+    /// <summary>Verification hook: puts a running task's clock back, so an elapsed-time assertion is
+    /// deterministic instead of whatever the suite happened to take.</summary>
+    internal void AgeForCheck(string identity, TimeSpan by)
+    {
+        if (_items.FirstOrDefault(item => item.Identity == identity) is not { } item)
+        {
+            return;
+        }
+
+        item.StartedAt = item.StartedAt?.Add(-by);
+        Changed?.Invoke();
+    }
 
     /// <summary>Verification hook: settles a scripted transfer without touching its cancellation.</summary>
     internal void FinishTaskForCheck(string identity, Phase state, string? error = null)
