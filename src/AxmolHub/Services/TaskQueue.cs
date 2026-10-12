@@ -10,7 +10,7 @@ using AxmolHub.Core;
 namespace AxmolHub;
 
 /// <summary>
-/// The app's downloads, as a list rather than as one exclusive operation.
+/// The app's long-running work, as a list rather than as one exclusive operation.
 ///
 /// Before this there was no queue at all: <see cref="HubWorkspace.ExecuteAsync"/> held a single
 /// <c>_operation</c> slot, so a second download was **dropped** instead of waiting, and the whole
@@ -18,17 +18,19 @@ namespace AxmolHub;
 /// nothing on screen depends on the bytes arriving, and the transport already survives a quit
 /// (<c>DownloadManager</c> keeps a <c>.partial</c> and resumes with a Range request). This service is
 /// what makes that visible: several transfers, each with its own identity and progress, at most
-/// <see cref="MaxConcurrent"/> moving at once, the rest waiting.
+/// <see cref="MaxConcurrentTransfers"/> moving at once, the rest waiting.
 ///
-/// **What goes in**: work whose only job is moving bytes to disk — an engine package, the host shell's
-/// MSI, Hub's own update. **What stays on <see cref="HubWorkspace.ExecuteAsync"/>**: work that mutates
-/// state the user is looking at and must not interleave — builds, uninstall, project import. The test
-/// is "can I keep using the app while this runs", and for a download the answer is yes.
+/// **Two kinds of work, two gates, one list** — see <see cref="TaskKind"/>. A <see cref="TaskKind.Transfer"/>
+/// moves bytes to disk: an engine package, the host shell's MSI, Hub's own update. A
+/// <see cref="TaskKind.Mutating"/> change rewrites something the user may be looking at — a build, an
+/// uninstall, the engine's setup script — and runs alone. The test for which one it is stays "can this
+/// legitimately run next to something else", not "does it look like a download".
 ///
-/// **Progress is whatever the transport can actually measure**, never an invented number. A
+/// **Progress is whatever the work can actually measure**, never an invented number. A
 /// <see cref="DownloadManager"/> transfer reports bytes and a total only when the server said so;
-/// Velopack reports a percentage and no bytes at all. Both fit here, and a row renders <c>—</c> where a
-/// transport has nothing to say rather than guessing a size from a tooltip estimate.
+/// Velopack reports a percentage and no bytes at all; a compile says which of its own steps it is on, and
+/// when it cannot say that either the row shows the clock rather than a guess. A row renders <c>—</c>
+/// where there is nothing to report.
 ///
 /// **Threading**: call from the UI thread, and do not <c>ConfigureAwait(false)</c> inside the work
 /// delegate — completion runs the caller's <c>onFinished</c> (which saves state) and raises
@@ -39,12 +41,21 @@ internal sealed class TaskQueue
 {
     /// <summary>
     /// Transfers allowed to move at once. Two, not more: a GB-scale engine package off a mirror is the
-    /// common case, and past two the items only slow each other down while the list gets hard to read.
-    /// Hub's own update goes through this same gate, which is the point of having one — it used to run
-    /// on its own cancellation token and could race an engine install for bandwidth with neither side
-    /// knowing the other existed.
+    /// common case, and past two the items only slow each other down while the list gets hard to read —
+    /// and <c>DownloadManager</c> puts a 20-minute deadline on each attempt, so wider parallelism turns a
+    /// download that would have finished into one that failed. Hub's own update goes through this same
+    /// gate, which is the point of having one — it used to run on its own cancellation token and could race
+    /// an engine install for bandwidth with neither side knowing the other existed.
     /// </summary>
-    public const int MaxConcurrent = 2;
+    public const int MaxConcurrentTransfers = 2;
+
+    /// <summary>
+    /// Mutating changes allowed at once. One, because two of them can leave the disk in a state no
+    /// sentence describes: a build writing into a directory an uninstall is deleting is not a slow case,
+    /// it is a corrupt one. Unlike transfers this is not a throughput limit, so overflowing it is a
+    /// **refusal** rather than a wait — see <see cref="HubWorkspace.ExecuteAsync"/>.
+    /// </summary>
+    public const int MaxConcurrentMutating = 1;
 
     private static readonly Lazy<TaskQueue> Shared = new(() => new TaskQueue());
 
@@ -124,6 +135,15 @@ internal sealed class TaskQueue
         public TaskKind Kind { get; init; } = TaskKind.Transfer;
 
         /// <summary>
+        /// Whether this shows a row. True for work the user should be able to see and act on; false for the
+        /// second-scale changes that still need the exclusive gate — opening a folder, re-detecting a
+        /// toolchain — where a row would be gone before the popover could open, and a list full of flashes is
+        /// worse than no list. An unlisted item holds the gate exactly like a listed one and drops out of the
+        /// table the moment it settles.
+        /// </summary>
+        public bool Listed { get; init; } = true;
+
+        /// <summary>
         /// The stage the work itself named, as a copy key — a compile saying 编译代码 or 打包应用. Set from
         /// <see cref="ApplyProgress"/> out of the task's own output, and it outranks the phase word in
         /// <see cref="PhaseText"/> because it is the worker's answer rather than my guess about it.
@@ -189,7 +209,9 @@ internal sealed class TaskQueue
 
         public bool IsActive => State is Phase.Queued or Phase.Running or Phase.Finalizing;
 
-        /// <summary>Whether this item occupies one of the <see cref="MaxConcurrent"/> slots right now.</summary>
+        /// <summary>Whether this item occupies a slot in its own gate right now — one of
+        /// <see cref="MaxConcurrentTransfers"/> for a transfer, one of <see cref="MaxConcurrentMutating"/>
+        /// for a change.</summary>
         public bool IsMoving => State is Phase.Running or Phase.Finalizing;
 
         /// <summary>0-100 for the row's track: the measured percentage, full once done, and nothing while
@@ -450,16 +472,27 @@ internal sealed class TaskQueue
     private readonly List<Item> _items = [];
 
     /// <summary>The list as the UI should read it — a snapshot, so an item settling mid-render cannot
-    /// shift the rows under the popover that is drawing them.</summary>
+    /// shift the rows under the popover that is drawing them. Items that hold a gate without showing a
+    /// row are in <see cref="_items"/> and deliberately not here.</summary>
     public IReadOnlyList<Item> Items { get; private set; } = [];
+
+    /// <summary>Republish the visible list. One place, because "what the shell can see" and "what is
+    /// running" are not the same set, and a site that forgot to filter would flash a row for a folder open.</summary>
+    private void Publish() => Items = _items.Where(item => item.Listed).ToArray();
 
     /// <summary>Raised whenever the list or any item's state changes. Handlers marshal to their own
     /// thread before touching a control, exactly like <see cref="UpdateService.Changed"/>.</summary>
     public event Action? Changed;
 
-    public int ActiveCount => _items.Count(item => item.IsActive);
+    /// <summary>The work the strip counts: active, and visible enough to be worth counting.</summary>
+    public int ActiveCount => _items.Count(item => item.Listed && item.IsActive);
 
-    public int FailedCount => _items.Count(item => item.State == Phase.Failed);
+    public int FailedCount => _items.Count(item => item.Listed && item.State == Phase.Failed);
+
+    /// <summary>The change currently holding the exclusive gate, listed or not. This is the one place
+    /// that answers "is Hub busy", so <see cref="HubWorkspace.IsBusy"/> cannot disagree with what the
+    /// scheduler is actually doing.</summary>
+    public Item? ActiveMutating => _items.FirstOrDefault(item => item.Kind == TaskKind.Mutating && item.IsActive);
 
     /// <summary>Mebibytes to one decimal, the same reading the status line printed before there were rows.
     /// A null size stays an em-dash: a download whose total the server never said is not a zero-byte one.</summary>
@@ -473,7 +506,7 @@ internal sealed class TaskQueue
         => _items.FirstOrDefault(item => item.Identity == identity && item.IsActive);
 
     /// <summary>
-    /// Adds a transfer and starts it when a slot is free. Returns null when that identity is already
+    /// Adds a task and starts it when its gate has room. Returns null when that identity is already
     /// running: the caller's answer there is "nothing to do", not an exception, because the duplicate is
     /// a normal click once the picker is out of the way (a deep link, or two clicks in one frame).
     /// Finished rows are dropped first, so the list is about this batch rather than every download since
@@ -486,7 +519,8 @@ internal sealed class TaskQueue
         string? subject,
         Func<Item, CancellationToken, Task> work,
         Action<Item>? onFinished = null,
-        TaskKind kind = TaskKind.Transfer)
+        TaskKind kind = TaskKind.Transfer,
+        bool listed = true)
     {
         if (FindActive(identity) is not null)
         {
@@ -511,9 +545,10 @@ internal sealed class TaskQueue
             Work = work,
             OnFinished = onFinished,
             Kind = kind,
+            Listed = listed,
         };
         _items.Add(item);
-        Items = _items.ToArray();
+        Publish();
         Pump();
         return item;
     }
@@ -570,7 +605,7 @@ internal sealed class TaskQueue
             return;
         }
 
-        Items = _items.ToArray();
+        Publish();
         Changed?.Invoke();
     }
 
@@ -589,7 +624,7 @@ internal sealed class TaskQueue
             _items.Remove(item);
         }
 
-        Items = _items.ToArray();
+        Publish();
         Changed?.Invoke();
     }
 
@@ -672,27 +707,37 @@ internal sealed class TaskQueue
         }
 
         _items.Clear();
-        Items = [];
+        Publish();
         Changed?.Invoke();
     }
 
-    /// <summary>Starts as many waiting transfers as the gate allows. Every state change ends here, so a
-    /// finished transfer hands its slot to the next one with no timer involved.</summary>
+    /// <summary>Starts as many waiting tasks as their own gate allows. Every state change ends here, so a
+    /// finished task hands its place to the next one with no timer involved.</summary>
     private void Pump()
     {
-        var free = MaxConcurrent - _items.Count(item => item.IsMoving);
+        // Two caps over one list, each counting only its own kind. A transfer never waits for a change and a
+        // change never waits for a transfer, because that is how the app already behaved: the download path
+        // never asked whether an operation was running, and making them queue behind each other would turn
+        // "the page is grey" into "the download is stuck" without changing anything a user can do.
+        Start(TaskKind.Transfer, MaxConcurrentTransfers);
+        Start(TaskKind.Mutating, MaxConcurrentMutating);
+    }
+
+    private void Start(TaskKind kind, int cap)
+    {
+        var free = cap - _items.Count(item => item.Kind == kind && item.IsMoving);
         if (free <= 0)
         {
             return;
         }
 
-        foreach (var item in _items.Where(item => item.State == Phase.Queued).Take(free))
+        foreach (var item in _items.Where(item => item.Kind == kind && item.State == Phase.Queued).Take(free))
         {
-            Start(item);
+            Begin(item);
         }
     }
 
-    private void Start(Item item)
+    private void Begin(Item item)
     {
         item.Cancellation = new CancellationTokenSource();
         item.CancelAction = () => item.Cancellation?.Cancel();
@@ -741,7 +786,16 @@ internal sealed class TaskQueue
                 }
             }
 
+            // A gate-holder that never showed a row leaves the table as soon as it settles: nothing can act
+            // on it, and <see cref="Retry"/> has no row to offer the press from. The object itself stays
+            // alive for whoever awaited its Completion.
+            if (!item.Listed)
+            {
+                _items.Remove(item);
+            }
+
             item.Complete();
+            Publish();
             Changed?.Invoke();
             Pump();
         }

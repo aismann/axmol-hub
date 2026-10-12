@@ -51,12 +51,12 @@ public sealed class HubWorkspace : IDisposable
     /// because <c>setup.ps1</c> cannot run without it. Detection lives in <see cref="HostPowerShell"/>.</summary>
     private readonly HostPowerShellInstaller _hostShellInstaller;
 
-    private CancellationTokenSource? _operation;
-
     /// <summary>
-    /// The downloads. Deliberately not under <see cref="ExecuteAsync"/>: a transfer must not grey out the
-    /// page it was started from, and two of them must not crowd each other out. See
-    /// <see cref="TaskQueue"/> for where the line is drawn.
+    /// The downloads and the changes, in one list. The transfers deliberately do not go through
+    /// <see cref="ExecuteAsync"/>: a transfer must not grey out the page it was started from, and two of
+    /// them must not crowd each other out. The changes do, because the exclusive gate is now a slot in that
+    /// list rather than a field this class held beside it. See <see cref="TaskQueue"/> for where the line
+    /// between the two is drawn.
     /// </summary>
     private readonly TaskQueue _tasks = TaskQueue.Instance;
     private BuildProgressWindow? _buildProgress;
@@ -290,7 +290,7 @@ public sealed class HubWorkspace : IDisposable
 
     public IReadOnlyList<AndroidDevice> Devices { get; private set; } = [];
     public string LastError { get; private set; } = "";
-    public bool IsBusy => _operation is not null;
+    public bool IsBusy => _tasks.ActiveMutating is not null;
     public string StatusText { get; private set; } = "";
 
     /// <summary>The second line of the "recent build platform" card at the top of the projects page.</summary>
@@ -312,63 +312,104 @@ public sealed class HubWorkspace : IDisposable
             $"{HubStrings.Get("Download")} {p.Bytes / 1048576.0:F1} / {(p.Total.HasValue ? (p.Total.Value / 1048576.0).ToString("F1", CultureInfo.InvariantCulture) : "?")} MB · {p.BytesPerSecond / 1048576.0:F1} MB/s")));
 
     /// <summary>
-    /// The full lifecycle of one operation: lock against reentry, set busy, log, persist on
-    /// success, and expand the log plus pop up a dialog on failure.
-    /// Maps sentence-by-sentence to the WPF version, just swapping <c>Pages.IsEnabled</c> for the
-    /// <see cref="BusyChanged"/> event.
+    /// The full lifecycle of one gated change: the exclusive slot, the busy flag, the status line, the log,
+    /// the state save on success, and the typed error dialog on failure. It runs as a
+    /// <see cref="TaskQueue.TaskKind.Mutating"/> <see cref="TaskQueue"/> item, so "is Hub busy" has exactly one
+    /// answer — the scheduler — instead of a field here that the list of running work knew nothing about.
+    ///
+    /// <para>The signature is unchanged because twenty call sites use it and none of them should have to care
+    /// about scheduling. Second-scale work holds the gate without taking a row: a task that finished before
+    /// the popover could open is noise, not information, and the page already shows its own result.</para>
     /// </summary>
-    public async Task ExecuteAsync(string title, Func<CancellationToken, Task> action)
+    public Task ExecuteAsync(string title, Func<CancellationToken, Task> action)
+        => RunGated(title, title, null, (_, token) => action(token), listed: false);
+
+    /// <summary>
+    /// The same lifecycle with a row, for the minute-scale work the user is entitled to watch and to cancel
+    /// from the status strip rather than from the page it happened to be started on: a project build, an
+    /// engine host build, the engine's setup script.
+    /// </summary>
+    private Task RunTaskAsync(string identity, string titleKey, string? subject,
+        Func<TaskQueue.Item, CancellationToken, Task> work)
+        => RunGated(identity, titleKey, subject, work, listed: true);
+
+    private async Task RunGated(string identity, string titleKey, string? subject,
+        Func<TaskQueue.Item, CancellationToken, Task> work, bool listed)
     {
-        if (_operation is not null)
+        // A change does not queue behind another change: two of them interleaving can leave the disk in a
+        // state no sentence describes. It is refused. Today that refusal is silent — the same silent return
+        // the download queue was built to stop — and it becomes a spoken one in the step that also stops
+        // greying the page, because a page that no longer goes grey has to say something else.
+        if (_tasks.ActiveMutating is not null)
         {
             return;
         }
 
-        using var cancellation = new CancellationTokenSource();
-        _operation = cancellation;
         LastError = "";
         BusyChanged?.Invoke(true);
-        SetStatus(HubStrings.Get(title));
-        Log.Write(title);
+        SetStatus(HubStrings.Get(titleKey));
+        Log.Write(titleKey);
 
-        try
+        var item = _tasks.Enqueue(identity, titleKey, subject, work,
+            onFinished: settled => FinishGated(settled, titleKey), kind: TaskQueue.TaskKind.Mutating, listed: listed);
+        if (item is null)
         {
-            await action(cancellation.Token);
-            Store.Save(State);
-            SetStatus(HubStrings.Get(title) + " · " + HubStrings.Get("Done"));
+            // Already running under this identity: the row on screen is the answer, and the busy flag the
+            // first one set must not be dropped by the second request.
+            BusyChanged?.Invoke(false);
+            Refresh();
+            return;
         }
-        catch (OperationCanceledException)
+
+        await item.Completion;
+    }
+
+    /// <summary>What a settled change leaves behind. Mirrors the success / cancel / failure arms the WPF
+    /// port carried sentence-for-sentence, including the reason a failure keeps its exception <b>type</b>:
+    /// <see cref="ShowOperationErrorAsync"/> chooses the advice the user can act on from that type.</summary>
+    private void FinishGated(TaskQueue.Item item, string titleKey)
+    {
+        var title = HubStrings.Get(titleKey);
+        if (item.Fault is { } error)
         {
-            SetStatus(HubStrings.Get(title) + " · " + HubStrings.Get("Cancelled"));
-            Log.Write(StatusText);
-        }
-        catch (Exception ex)
-        {
-            LastError = ex.ToString();
+            LastError = error.ToString();
             Log.Write(LastError);
-            SetStatus(HubStrings.Get("ErrorHint") + " " + HubStrings.Get(ex.Message.Split('\n')[0]));
+            SetStatus(HubStrings.Get("ErrorHint") + " " + HubStrings.Get(error.Message.Split('\n')[0]));
             Failed?.Invoke();
             // In verification mode don't pop up: ExpectedFailure is the norm for this group (e.g.
             // importing an incomplete engine), and a dialog would make the await never return (see
             // SuppressDialogs).
             if (!SuppressDialogs)
             {
-                await ShowOperationErrorAsync(ex);
+                _ = ShowOperationErrorAsync(error);
             }
         }
-        finally
+        else if (item.State == TaskQueue.Phase.Done)
         {
-            CloseBuildProgress();
-            _operation = null;
-            BusyChanged?.Invoke(false);
-            Refresh();
+            Store.Save(State);
+            SetStatus(title + " · " + HubStrings.Get("Done"));
+        }
+        else
+        {
+            SetStatus(title + " · " + HubStrings.Get("Cancelled"));
+            Log.Write(StatusText);
+        }
+
+        CloseBuildProgress();
+        BusyChanged?.Invoke(false);
+        Refresh();
+    }
+
+    public void Cancel()
+    {
+        if (_tasks.ActiveMutating is { } item)
+        {
+            _tasks.Cancel(item.Identity);
         }
     }
 
-    public void Cancel() => _operation?.Cancel();
-
-    /// <summary>Cancellable while an operation is running (previously had to avoid non-interruptible steps like the MSVC installer; that path has been handed back to the engine).</summary>
-    public bool CanCancel => _operation is not null;
+    /// <summary>Cancellable while a change is running (previously had to avoid non-interruptible steps like the MSVC installer; that path has been handed back to the engine).</summary>
+    public bool CanCancel => _tasks.ActiveMutating is not null;
 
     /// <summary>
     /// Runs one download on <see cref="TaskQueue"/> instead of under the exclusive lock, and gives it
@@ -939,7 +980,7 @@ public sealed class HubWorkspace : IDisposable
     /// </summary>
     public async Task BuildAsync(bool configureOnly, (BuildTarget Target, string Configuration)? selection = null)
     {
-        if (_operation is not null)
+        if (IsBusy)
         {
             return;
         }
@@ -963,13 +1004,19 @@ public sealed class HubWorkspace : IDisposable
             return;
         }
 
-        await ExecuteAsync(configureOnly ? "Configure CMake" : "Build project", async token =>
+        // A build is the one thing the user waits on with the app open, so it takes a row: an identity that
+        // says which project and which target, and a title that reads the same way in the popover as the
+        // status line used to.
+        await RunTaskAsync($"project:build:{selected.Name}:{target.Id}",
+            configureOnly ? "Configure CMake" : "Build project",
+            selected.Name + " · " + target.Name,
+            async (_, token) =>
         {
             var project = RequiredProject();
             BuildTargets.Select(project, target.Id, configuration);
             var engine = RequiredEngine(project);
 
-            _buildProgress = new BuildProgressWindow(project.Name, target.Name, configuration, () => _operation?.Cancel());
+            _buildProgress = new BuildProgressWindow(project.Name, target.Name, configuration, Cancel);
             if (Owner is null)
             {
                 _buildProgress.Show();
@@ -1150,7 +1197,7 @@ public sealed class HubWorkspace : IDisposable
     /// </summary>
     public async Task BuildEngineAsync()
     {
-        if (_operation is not null)
+        if (IsBusy)
         {
             return;
         }
@@ -1164,16 +1211,20 @@ public sealed class HubWorkspace : IDisposable
             return;
         }
 
-        await ExecuteAsync("Build engine", async token =>
+        // Compiling the engine is the longest thing Hub does and the one whose output the user cannot watch
+        // any other way, so it is the change that earns a row — and an identity per engine and host, so
+        // pressing build twice on two targets shows two rows rather than a second copy of one.
+        await RunTaskAsync($"engine:hostbuild:{engine.Version}:{host.Id}", "Build engine",
+            engine.Version + " · " + host.Name, async (_, token) =>
         {
             if (Owner is null)
             {
-                _buildProgress = new BuildProgressWindow("Axmol " + engine.Version, host.Name, configuration, () => _operation?.Cancel());
+                _buildProgress = new BuildProgressWindow("Axmol " + engine.Version, host.Name, configuration, Cancel);
                 _buildProgress.Show();
             }
             else
             {
-                _buildProgress = new BuildProgressWindow("Axmol " + engine.Version, host.Name, configuration, () => _operation?.Cancel());
+                _buildProgress = new BuildProgressWindow("Axmol " + engine.Version, host.Name, configuration, Cancel);
                 _buildProgress.Show(Owner);
             }
 
@@ -1352,7 +1403,11 @@ public sealed class HubWorkspace : IDisposable
     /// </summary>
     public async Task RunEngineSetupAsync(string? platform = null)
     {
-        await ExecuteAsync("Run engine setup", async token =>
+        // The engine's own setup.ps1 is minutes of installs, and Hub cannot say how long: it is the third
+        // change that takes a row. The identity is per engine version because that is what the row is about,
+        // and pressing it again for the same version must not stack a second row.
+        await RunTaskAsync($"engine:setup:{ToolEngine?.Version ?? "none"}", "Run engine setup",
+            ToolEngine?.Version, async (_, token) =>
         {
             var engine = ToolEngine ?? throw new InvalidOperationException("Import an Axmol engine first.");
             var target = ToolTarget ?? BuildTargets.All[0];

@@ -301,6 +301,9 @@ public static class HubTexts
         ["Configure CMake"] = ("配置 CMake", "Configure CMake"),
         ["Build project"] = ("构建项目", "Build project"),
         ["Run project"] = ("运行项目", "Run project"),
+        // The setup script's own row title. The key was missing, so the status line printed it raw — a row in
+        // the popover makes that user-visible instead of a glance at the strip, so it gets its copy here.
+        ["Run engine setup"] = ("运行引擎 setup", "Run engine setup"),
         ["Install managed tools"] = ("安装基础工具", "Install tools"),
         ["Install Windows SDK"] = ("安装 Windows SDK", "Install Windows SDK"),
         ["Install MSVC Build Tools"] = ("安装 MSVC", "Install MSVC"),
