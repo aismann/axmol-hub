@@ -36,7 +36,6 @@ public sealed class ProviderPickerWindow : Window
     private const string CustomId = "\u0000custom";
 
     private readonly List<ModelProvider> _presets;
-    private readonly HubDialogChrome _chrome;
     private readonly TextBox _search = new() { PlaceholderText = HubStrings.Get("ProviderSearchHint") };
     private readonly ListBox _list = new() { Margin = new Thickness(0, 10, 0, 0) };
     private readonly TextBlock _empty = new() { Classes = { "muted" }, TextWrapping = TextWrapping.Wrap, IsVisible = false, Margin = new Thickness(0, 10, 0, 0) };
@@ -58,7 +57,7 @@ public sealed class ProviderPickerWindow : Window
         // The bar this app draws. Its caption is Window.Title above, which is also why the body no longer opens
         // with a copy of "添加提供商" in 18px — the name is said once. The × means what the Cancel button means:
         // ShowAsync hands the caller a null, i.e. "the user did not pick one".
-        _chrome = HubDialogChrome.Attach(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
 
         var panel = new StackPanel { Margin = new Thickness(24, 12, 24, 24), Spacing = 0 };
         panel.Children.Add(new TextBlock
@@ -88,7 +87,7 @@ public sealed class ProviderPickerWindow : Window
         panel.Children.Add(buttons);
 
         var root = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
-        root.Children.Add(_chrome.Header);
+        root.Children.Add(chrome.Header);
         Grid.SetRow(panel, 1);
         root.Children.Add(panel);
         Content = root;
@@ -250,9 +249,6 @@ public sealed class ProviderPickerWindow : Window
 
     /// <summary>Builds the dialog without showing it, for the self-check.</summary>
     internal static ProviderPickerWindow ForCheck(IReadOnlyList<ModelProvider> presets) => new(presets);
-
-    /// <summary>The drawn header, so the check can measure it and press its one plate.</summary>
-    internal HubDialogChrome ChromeForCheck => _chrome;
 
     /// <summary>Types a query into the search box, exactly as a person would (the TextChanged handler is what
     /// re-filters, so writing the property directly would test nothing).</summary>

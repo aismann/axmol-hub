@@ -146,17 +146,11 @@ internal sealed class HubDialogChrome
         window.Opened += (_, _) => ApplyCaptionInset();
     }
 
-    /// <summary>The header, for the caller to put in row 0 of its <c>RowDefinitions="32,*"</c> grid.</summary>
+    /// <summary>The header, for the caller to put in row 0 of its <c>RowDefinitions="Auto,*"</c> grid — the row
+    /// is Auto because this is the one place the 32 lives. Nothing else is exposed: the self-check reads the bar
+    /// by its named parts (<c>DialogChrome</c> / <c>DialogDragArea</c> / <c>DialogTitle</c> /
+    /// <c>DialogCloseButton</c>), which is also how a person's click reaches it.</summary>
     internal Control Header { get; }
-
-    /// <summary>Whether a press on the bar is currently armed to become a drag. A check reads this: it proves
-    /// the press reached the drag layer without driving the arm that enters the platform's move loop.</summary>
-    internal bool IsDragArmed => _press is not null;
-
-    internal Rect HeaderBounds => Header.Bounds;
-    internal Rect ClosePlateBounds => _closeButton.Bounds;
-    internal Button CloseButton => _closeButton;
-    internal Border DragArea => _dragArea;
 
     /// <summary>Pushes the plate out over the window's own frame (see the constructor). On a non-Windows host,
     /// or where the frame is not a Win32 one, the width is zero and nothing moves.</summary>
@@ -215,11 +209,4 @@ internal sealed class HubDialogChrome
         _press = null;
         e.Pointer.Capture(null);
     }
-
-    /// <summary>
-    /// Attaches a drawn header to a dialog and hands it back for the caller's check seams. Split from the
-    /// constructor only so the call site reads as "this window has a header", next to the row it occupies.
-    /// </summary>
-    internal static HubDialogChrome Attach(Window window, string closeTipResourceKey, Action close)
-        => new(window, closeTipResourceKey, close);
 }

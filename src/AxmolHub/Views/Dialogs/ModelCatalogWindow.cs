@@ -34,7 +34,6 @@ public sealed class ModelCatalogWindow : Window
         Margin = new Thickness(0, 8, 0, 0),
     };
     private readonly Button _refreshButton;
-    private readonly HubDialogChrome _chrome;
     private readonly bool _canRefresh;
     private IReadOnlyList<string> _models;
 
@@ -64,7 +63,7 @@ public sealed class ModelCatalogWindow : Window
         // string as a 18px TextBlock inside the body, and the header is what replaced it (one title, one place).
         // Closing here means the same thing as the dialog's own dismiss button, not the same thing as Cancel:
         // the caller of this window never branches on the result.
-        _chrome = HubDialogChrome.Attach(this, "CloseWindow", () => Close(HubDialogResult.Ok));
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Ok));
 
         var layout = new Grid
         {
@@ -115,7 +114,7 @@ public sealed class ModelCatalogWindow : Window
         layout.Children.Add(buttons);
 
         var root = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
-        root.Children.Add(_chrome.Header);
+        root.Children.Add(chrome.Header);
         Grid.SetRow(layout, 1);
         root.Children.Add(layout);
         Content = root;
@@ -300,9 +299,6 @@ public sealed class ModelCatalogWindow : Window
         => new(provider.Name, loadModels, isEnabled, enableModel, refresh, canRefresh);
 
     internal void SearchForCheck(string query) => _search.Text = query;
-
-    /// <summary>The drawn header, so the check can measure it and press its one plate.</summary>
-    internal HubDialogChrome ChromeForCheck => _chrome;
 
     internal string[] VisibleModelNamesForCheck
         => _list.Items.OfType<ModelRow>().Select(row => row.Name).ToArray();

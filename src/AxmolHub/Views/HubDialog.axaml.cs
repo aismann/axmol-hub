@@ -28,7 +28,6 @@ public enum HubDialogResult
 /// </summary>
 public partial class HubDialog : Window
 {
-    private readonly HubDialogChrome _chrome;
     private TaskCompletionSource<HubDialogResult>? _standalone;
     private bool _finished;
 
@@ -42,12 +41,8 @@ public partial class HubDialog : Window
         // same answer Esc gives through the IsCancel button. That is the invariant the enum above is ordered for,
         // so the plate goes through Finish rather than Window.Close — a bare Close would still *read* as Cancel
         // today, and would stop reading as Cancel the moment a caller's default result changed.
-        _chrome = HubDialogChrome.Attach(this, "CloseWindow", () => Finish(HubDialogResult.Cancel));
-        ChromeHost.Content = _chrome.Header;
+        ChromeHost.Content = new HubDialogChrome(this, "CloseWindow", () => Finish(HubDialogResult.Cancel)).Header;
     }
-
-    /// <summary>The drawn header, for the self-check's seams.</summary>
-    internal HubDialogChrome ChromeForCheck => _chrome;
 
     /// <summary>Replaces MessageBox.Show. Shows even when owner is null (startup-failure path).</summary>
     public static Task<HubDialogResult> ShowAsync(
