@@ -152,18 +152,23 @@ internal sealed class HubDialogChrome
     /// <c>DialogCloseButton</c>), which is also how a person's click reaches it.</summary>
     internal Control Header { get; }
 
-    /// <summary>Pushes the plate out over the window's own frame (see the constructor). On a non-Windows host,
-    /// or where the frame is not a Win32 one, the width is zero and nothing moves.</summary>
+    /// <summary>Pushes the plate out over the window's own frame (see the constructor).
+    ///
+    /// <para>The margin is always written, including where the frame is zero. The base <c>Button</c> theme
+    /// carries a right gutter of 8 so a row of buttons does not touch, and a dialog holds exactly one plate —
+    /// for it that gutter is pure error, eight pixels short of the corner the hover highlight is supposed to
+    /// fill. Returning early on a host with no frame left the inherited value standing, which is why the plate
+    /// reached the edge on Windows (where the negative inset overwrote it) and stopped short everywhere else.
+    /// Writing zero here is also what makes the negative case below a replacement rather than an accident.</para>
+    ///
+    /// <para>Only this plate is touched: the main window's three buttons keep the gutter as their spacing, and
+    /// that bar pulls its own negative inset on the whole panel instead.</para>
+    /// </summary>
     private void ApplyCaptionInset()
     {
-        var frame = TitleBarSnapHook.ResizeFrameWidth;
-        if (frame <= 0)
-        {
-            return;
-        }
-
         var scaling = _window.RenderScaling <= 0 ? 1 : _window.RenderScaling;
-        _closeButton.Margin = new Thickness(0, 0, -(frame / scaling), 0);
+        var frame = TitleBarSnapHook.ResizeFrameWidth;
+        _closeButton.Margin = new Thickness(0, 0, frame > 0 ? -(frame / scaling) : 0, 0);
     }
 
     private void OnDragPressed(object? sender, PointerPressedEventArgs e)
