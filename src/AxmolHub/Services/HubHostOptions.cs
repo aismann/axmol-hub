@@ -22,7 +22,11 @@ internal sealed record HubHostOptions(
     string? VerifyOpsReport,
     string[] VerifyOpsEngines,
     bool Gallery,
-    bool TestSystemAttention)
+    bool TestSystemAttention,
+    // Directory for the diagnostic wire recording, or null to record nothing. Deliberately not part of
+    // IsAutomation: it is meant to be used while a person is really driving the assistant, which is the only way
+    // to reach a failure that shows up after thirty tool rounds.
+    string? WireLogDirectory)
 {
     /// <summary>
     /// Verification / screenshot modes. They run the **product window** (<c>--smoke</c>,
@@ -148,7 +152,8 @@ internal sealed record HubHostOptions(
             Value(args, "--verify-ops"),
             Trailing(args, "--verify-ops"),
             args.Any(a => string.Equals(a, "--gallery", StringComparison.OrdinalIgnoreCase)),
-            args.Any(a => string.Equals(a, "--test-system-attention", StringComparison.OrdinalIgnoreCase)));
+            args.Any(a => string.Equals(a, "--test-system-attention", StringComparison.OrdinalIgnoreCase)),
+            Value(args, "--wire-log"));
     }
 
     /// <summary>

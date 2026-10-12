@@ -52,6 +52,15 @@ public partial class App : Application
         var preferencesStore = new PreferencesStore(Options.PreferencesPath);
         var preferences = preferencesStore.Load();
 
+        // Opt-in diagnostic recording of the bytes that actually leave on each model request. Set before any
+        // client is built so the first request of the run is already covered. A relative name lands under the
+        // data root, because a recording whose location depends on where the app happened to be started from is
+        // a recording that cannot be found afterwards.
+        if (Options.WireLogDirectory is { Length: > 0 } wireLog)
+            Agent.WireLog.Directory = System.IO.Path.IsPathRooted(wireLog)
+                ? wireLog
+                : System.IO.Path.Combine(Options.ResolveDataRoot(preferences), wireLog);
+
         // Verification mode must be closed: assertions and reports contain concrete copy, so if it
         // followed the user's language setting, the same binary would pass on one machine and fail
         // on another. That's why verification mode forces Chinese from the start (the shell
