@@ -75,7 +75,7 @@ public partial class MainWindow : Window
     private const double SidebarCollapseThreshold = 200;
 
     /// <summary>
-    /// The download slot's tooltip content. Installed once and rewritten **in place**: re-assigning
+    /// The task slot's tooltip content. Installed once and rewritten **in place**: re-assigning
     /// <c>ToolTip.Tip</c> closes an open tooltip, and a new value assigned while it is closed does not
     /// re-open it (the update dot used this same holder, and the settings page's progress tip still does).
     /// The slot's tip moves on every progress tick, so a fresh string each time would make the tooltip
@@ -650,7 +650,7 @@ public partial class MainWindow : Window
     internal bool RepoIndicatorVisibleForCheck => RepoIndicator.IsVisible;
     internal string RepoIndicatorTextForCheck => RepoIndicatorText.Text ?? "";
 
-    // ───────────────────────── The download queue's slot ─────────────────────────
+    // ───────────────────────── The task queue's slot ─────────────────────────
 
     /// <summary>
     /// Whether the strip may offer a download: the user turned auto-download off, so nothing is coming by
@@ -666,7 +666,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Repaints the strip's download slot, and the popover's rows while that popover is open.
+    /// Repaints the strip's task slot, and the popover's rows while that popover is open.
     ///
     /// The rows are only rebuilt when the *set* of transfers changes; a progress tick repainting the handful
     /// of numbers it moved. Re-creating the row controls on every 80 KB report is how a list that works in a
@@ -1491,7 +1491,7 @@ public partial class MainWindow : Window
         // The strip's repository slot is composed copy, not a DynamicResource, so a language switch has to be
         // told or the row keeps the previous tongue while everything around it changes.
         UpdateRepoIndicator();
-        // Same for the download slot, and for the rows if the popover happens to be open: every one of those
+        // Same for the task slot, and for the rows if the popover happens to be open: every one of those
         // strings is composed in code from a key.
         UpdateTaskSlot();
 
@@ -1841,7 +1841,7 @@ public partial class MainWindow : Window
 
     private void WireChrome()
     {
-        // The download slot mirrors the queue. Marshalled because a transfer reports from whatever thread
+        // The task slot mirrors the queue. Marshalled because a transfer reports from whatever thread
         // its transport reports on, and the strip is owned by this one. Subscribed once — WireChrome only
         // runs from the constructor.
         TaskQueue.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTaskSlot);

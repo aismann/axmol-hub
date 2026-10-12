@@ -733,7 +733,7 @@
           <TextBlock x:Name="RepoIndicatorText" TextTrimming="CharacterEllipsis"
                      VerticalAlignment="Center" />
         </Button>
-        <!-- The download queue's one line. It stays dark unless something is moving, failed and unread, or
+        <!-- The task queue's one line. It stays dark unless something is moving, failed and unread, or
              waiting on a decision, because the strip's job is what needs acting on and nothing else — a
              progress bar for its own sake would be chrome. Pressing it lifts the popover that holds the
              rows, the measurements and the per-item cancel: the list does not live in the strip, only its

@@ -10489,13 +10489,13 @@ public partial class ShellCheckWindow : Window
               && shell.TaskSlotTipForCheck == HubTexts.Get("TaskSlotTip", HubStrings.Language),
             "清掉脚本更新后卡片与槽位都回到未检查的初始态（状态行 " + settings.UpdateStatusText + "）");
 
-        // --- 5.1b The download queue's own surface ---
+        // --- 5.1b The task queue's own surface ---
         // The queue's contract with the shell, read off the shell. The label matrix goes through the pure
         // function rather than a live transfer because the branches are about *counting*, and counting can
         // be asserted without parking three real downloads behind it. What then runs live is the one thing
         // a pure function cannot prove: that the slot, the popover and the strip's geometry really move.
         Check(!shell.TaskSlotVisibleForCheck,
-            "没有下载在跑时状态条的下载槽是暗的");
+            "没有任何任务在跑时状态条的任务槽是暗的");
 
         static TaskQueue.Item Moving(string version, int? percent = null, long? bytes = null)
         {
@@ -10515,7 +10515,7 @@ public partial class ShellCheckWindow : Window
         Check(twoMovingState.Visible && twoMovingState.Action == MainWindow.TaskSlotAction.OpenQueue
               && twoMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubTexts.Get("TaskSlotFormat", HubStrings.Language), 2, 3),
-            "两路在跑、第三路等待时槽说 下载 2/3，并且它不是一个动作（实际 " + twoMovingState.Label + "）");
+            "两路在跑、第三路等待时槽说 任务 2/3，并且它不是一个动作（实际 " + twoMovingState.Label + "）");
 
         // One number per download, never an average of two: with a single transfer moving its own
         // percentage is the honest aggregate, and with two the count stands alone.
@@ -10540,7 +10540,7 @@ public partial class ShellCheckWindow : Window
         var allFailed = new[] { Waiting("9.9.9") };
         allFailed[0].Fail("fixture: digest mismatch");
         Check(MainWindow.TaskSlotStateFor(allFailed, UpdateService.DownloadState.None, canStartDownload: false, armed: false).Visible,
-            "没有下载在跑、只留下一次失败时槽仍然亮着");
+            "没有任何任务在跑、只留下一次失败时槽仍然亮着");
         Check(!MainWindow.TaskSlotStateFor(
                   Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.None, canStartDownload: false, armed: false).Visible,
             "队列空且没有待更新时槽保持沉默");
@@ -10564,13 +10564,13 @@ public partial class ShellCheckWindow : Window
         Check(shell.TaskSlotVisibleForCheck
               && shell.TaskSlotTextForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubTexts.Get("TaskSlotFormat", HubStrings.Language), 1, 1),
-            "脚本下载在跑时状态条真的亮着并写着 下载 1/1（实际 " + shell.TaskSlotTextForCheck + "）");
+            "脚本下载在跑时状态条真的亮着并写着 任务 1/1（实际 " + shell.TaskSlotTextForCheck + "）");
 
         shell.OpenTaskPopupForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(shell.TaskPopupOpenForCheck && shell.TaskRowCountForCheck == 1,
-            "点下载槽弹出队列面板，跑着的那一项有一行（实际 " + shell.TaskRowCountForCheck + " 行）");
+            "点任务槽弹出任务面板，跑着的那一项有一行（实际 " + shell.TaskRowCountForCheck + " 行）");
         // The frame, not just the tree: a Popup that opens with nothing in it passes every object-graph
         // check above, and it is exactly the failure the reader would see. It has to be captured as its own
         // visual because a popup presents in its own PopupRoot, outside the window's pixels.
@@ -10660,7 +10660,7 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(!shell.TaskSlotVisibleForCheck && !shell.TaskPopupOpenForCheck,
-            "清掉脚本队列与脚本更新后下载槽熄灭、面板收起");
+            "清掉脚本队列与脚本更新后任务槽熄灭、面板收起");
 
         // --- 5.1c Retry, dismiss, and the download the settings card used to own ---
         // The three things this round added, asserted where they are decided: the pure function for which
@@ -11070,7 +11070,7 @@ public partial class ShellCheckWindow : Window
         // point: a layer that merely *looks* clear of the title bar but still hit-tests across it would freeze
         // the window, and a layer that stops short of the strip but painted over it would hide the queue slot.
         Check(!overlay.Intersects(titleBar) && overlay.Bottom <= strip.Top + 0.5,
-            "浮层不碰标题栏、也不越过状态条上沿：设置开着时窗口照样能拖、下载槽照样能点（浮层 "
+            "浮层不碰标题栏、也不越过状态条上沿：设置开着时窗口照样能拖、任务槽照样能点（浮层 "
             + Fmt(overlay.Bottom) + "，状态条上沿 " + Fmt(strip.Top) + "）");
         Check(overlay.Intersects(strip) == false && strip.Top - overlay.Bottom <= 28.5,
             "遮罩停在状态条之上而不是靠透明度糊过去，留出的那条正好是状态条自己的高度（差 "

@@ -403,7 +403,7 @@ public static class HubTexts
         // card keeps only the line above — which therefore stays true through every phase and no longer needs
         // a prefix composed per phase.
         ["UpdateRestartActionTip"] = ("重启并安装 {0}", "Restart and install {0}"),
-        // ── Download queue ──
+        // ── Task queue ──
         // A queue row names the thing it is fetching, and the version rides behind that name **unformatted**:
         // a version number is not a localized word, and a format key would print a bare "{0}" on the one path
         // that has no version yet (install the latest). See TaskQueue.Item.Subject.
@@ -447,8 +447,11 @@ public static class HubTexts
         // stopping the transfers. That the bytes already down survive is a property of DownloadManager's
         // .partial + Range transport, not something the app acts on by itself — a restart empties the list
         // and the next install is what picks the bytes back up — so the dialog does not hint at one.
-        ["QuitDuringDownloadsTitle"] = ("下载还没结束", "Downloads still running"),
-        ["QuitDuringDownloadsBody"] = ("还有 {0} 个下载在跑。现在退出会中断它们。", "{0} download(s) are still running. Quitting now stops them."),
+        ["QuitDuringDownloadsTitle"] = ("任务还没结束", "Tasks still running"),
+        // Says only that quitting now stops the work — never that a later launch resumes it, which is the
+        // ruling this copy carries. The noun is 任务 because the slot counts tasks; the transfers remain the
+        // only thing that can bring this dialog up, a change being cancelled rather than asked about.
+        ["QuitDuringDownloadsBody"] = ("还有 {0} 个任务在跑。现在退出会中断它们。", "{0} task(s) are still running. Quitting now stops them."),
         ["TaskQueued"] = ("等待中", "Queued"),
         ["TaskTransferring"] = ("下载中", "Downloading"),
         // A change that is running but has not named a stage yet. Not 下载中: a compile is running nothing down.

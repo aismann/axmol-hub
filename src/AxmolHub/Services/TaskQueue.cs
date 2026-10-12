@@ -178,13 +178,13 @@ internal sealed class TaskQueue
         public Exception? Fault { get; private set; }
 
         /// <summary>
-        /// Completes when the transfer settles — success, failure, or cancel — after the caller's
+        /// Completes when the task settles — success, failure, or cancel — after the caller's
         /// completion work has run. A download no longer blocks the UI, but a caller that genuinely
         /// needs "is it installed yet" (the deep-link path, the version picker) still awaits this, so
         /// moving onto the queue does not quietly change what <c>await</c> means.
         ///
         /// <para>Replaced rather than reused by <see cref="ResetForRetry"/>: a task is single-shot, so a
-        /// retried transfer still holding the first attempt's completed task would let an awaiting caller
+        /// retried task still holding the first attempt's completed task would let an awaiting caller
         /// read "the download is running" as "it is installed" the instant it re-asked.</para>
         /// </summary>
         public Task Completion => _completion.Task;
@@ -194,11 +194,11 @@ internal sealed class TaskQueue
         internal CancellationTokenSource? Cancellation { get; set; }
         internal Action? CancelAction { get; set; }
         internal Task? Running { get; set; }
-        /// <summary>The transfer itself. Gets its own row so it can report what it is doing.</summary>
+        /// <summary>The work itself. Gets its own row so it can report what it is doing.</summary>
         internal Func<Item, CancellationToken, Task> Work { get; init; } = (_, _) => Task.CompletedTask;
         internal Action<Item>? OnFinished { get; init; }
 
-        /// <summary>Wired when the transfer starts. A measurement is a state change as far as the strip is
+        /// <summary>Wired when the task starts. A measurement is a state change as far as the strip is
         /// concerned: without this the row would only ever repaint on a phase change, which for a download
         /// is once at the start and once at the end.</summary>
         internal Action? OnProgress { get; set; }
@@ -373,7 +373,7 @@ internal sealed class TaskQueue
         }
 
         /// <summary>
-        /// Puts a failed transfer back at the front of the gate, as the same row: same identity, same work
+        /// Puts a failed task back at the front of the gate, as the same row: same identity, same work
         /// delegate, same place in the list the user is looking at. The work runs again from the top — which
         /// is honest for both transports here, since <see cref="DownloadManager"/> resumes from the
         /// <c>.partial</c> it already wrote and an unzipped package lands in a fresh staging directory.
@@ -553,8 +553,8 @@ internal sealed class TaskQueue
         return item;
     }
 
-    /// <summary>Asks one transfer to stop. For a running transfer this cancels the token its work runs on,
-    /// and the work then lands in <see cref="OperationCanceledException"/>. A transfer still waiting has no
+    /// <summary>Asks one task to stop. For a running task this cancels the token its work runs on,
+    /// and the work then lands in <see cref="OperationCanceledException"/>. A task still waiting has no
     /// token to cancel — and settling it here is what keeps "cancel" from meaning "start as soon as a slot
     /// frees", which is what dropping the request on the floor would turn into.</summary>
     public void Cancel(string identity)
@@ -576,7 +576,7 @@ internal sealed class TaskQueue
     }
 
     /// <summary>
-    /// Runs a failed transfer again, as the same row. It takes the item rather than an identity because the
+    /// Runs a failed task again, as the same row. It takes the item rather than an identity because the
     /// row offering the press already holds the one it means, and an identity would have to answer "which
     /// of the rows with this identity" — a question that only exists once a superseded failure lingers.
     /// </summary>
@@ -593,10 +593,10 @@ internal sealed class TaskQueue
     }
 
     /// <summary>
-    /// Forgets one settled transfer. A failure the user has read and declined to retry is no longer a thing
+    /// Forgets one settled task. A failure the user has read and declined to retry is no longer a thing
     /// the strip may light for, and it has to be removable for that reason: with retry as the only exit, the
     /// slot would go on reporting a download nobody wants any more until the app closed. Only settled work,
-    /// because dropping a running transfer would leave it writing into a staging directory no row tracks.
+    /// because dropping a running task would leave it writing into a staging directory no row tracks.
     /// </summary>
     public void Dismiss(Item item)
     {
@@ -609,7 +609,7 @@ internal sealed class TaskQueue
         Changed?.Invoke();
     }
 
-    /// <summary>Forgets the transfers that ended quietly. A failure stays: it is still something the user
+    /// <summary>Forgets the tasks that ended quietly. A failure stays: it is still something the user
     /// has to see and act on.</summary>
     public void ClearFinished()
     {
@@ -629,7 +629,7 @@ internal sealed class TaskQueue
     }
 
     /// <summary>
-    /// Verification hook (<c>--verify-shell</c>): a transfer that never finishes on its own, standing in
+    /// Verification hook (<c>--verify-shell</c>): a task that never finishes on its own, standing in
     /// for a download the suite cannot really run. Settle it with
     /// <see cref="FinishTaskForCheck"/>; <see cref="ClearForCheck"/> takes it away.
     /// </summary>
@@ -667,7 +667,7 @@ internal sealed class TaskQueue
         Changed?.Invoke();
     }
 
-    /// <summary>Verification hook: settles a scripted transfer without touching its cancellation.</summary>
+    /// <summary>Verification hook: settles a scripted task without touching its cancellation.</summary>
     internal void FinishTaskForCheck(string identity, Phase state, string? error = null)
     {
         if (_items.FirstOrDefault(item => item.Identity == identity) is not { } item)
