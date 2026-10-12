@@ -214,7 +214,11 @@ public partial class App : Application
             {
                 try
                 {
-                    var settings = (SettingsPage)authWindow.NavigateTo("Settings");
+                    // Settings is the overlay card now, so the shot opens the card on the category it means to
+                    // photograph instead of navigating to a page that no longer exists.
+                    authWindow.OpenSettingsForCheck("providers");
+                    var settings = authWindow.SettingsPageForCheck
+                        ?? throw new InvalidOperationException("The settings card did not build.");
                     settings.UpdateLayout();
                     Dispatcher.UIThread.RunJobs();
 
@@ -234,14 +238,11 @@ public partial class App : Application
                     authWindow.Chat.AddModel("orcarouter", "o4-mini");
                     settings.RefreshProviderGroupsForCheck();
                     // A second shot scrolls to the next group, so the "all groups expanded" claim is visible
-                    // rather than inferred from one card.
+                    // rather than inferred from one card. The first shot needs no scroll at all: opening the
+                    // providers category already lands the detail pane on its top.
                     if (authShot.Contains("second", StringComparison.OrdinalIgnoreCase))
                     {
                         settings.ScrollToSecondGroupForCheck();
-                    }
-                    else
-                    {
-                        settings.ScrollToProviderCardForCheck();
                     }
 
                     authWindow.UpdateLayout();
@@ -312,10 +313,10 @@ public partial class App : Application
         {
             // --shot-bottom-menu <png>: the sidebar's bottom entry is a popup menu, and a popup is
             // its own top-level — --smoke-pages (which photographs the shell window) can never see
-            // it, so it gets the same dedicated switch as the picker/auth dialogs above. A file name
-            // containing "sub" opens the Appearance submenu and photographs that flyout instead
-            // (same trick the auth dialog shot uses with "key"), because a submenu is yet another
-            // popup and never appears inside its parent's frame.
+            // it, so it gets the same dedicated switch as the picker/auth dialogs above. It used to
+            // carry a second mode keyed on "sub" in the file name, which opened the Appearance
+            // submenu and photographed that flyout instead; the theme values moved up to first-level
+            // rows, so there is no second popup left to reach and the branch went with it.
             window.Opened += (_, _) => Dispatcher.UIThread.Post(() =>
             {
                 try
@@ -327,16 +328,7 @@ public partial class App : Application
 
                     // The flyout presents in its own PopupRoot, so the capture must target that
                     // top-level, not the shell window: walk up from a menu item to it.
-                    var menu = window.BottomMenuForCheck;
-                    var anchor = menu?.Items.OfType<MenuItem>().FirstOrDefault();
-                    if (menuShot.Contains("sub", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var appearance = menu!.Items.OfType<MenuItem>().ElementAt(1);
-                        appearance.IsSubMenuOpen = true;
-                        Dispatcher.UIThread.RunJobs();
-                        anchor = appearance.Items.OfType<MenuItem>().FirstOrDefault();
-                    }
-
+                    var anchor = window.BottomMenuForCheck?.Items.OfType<MenuItem>().FirstOrDefault();
                     var popupRoot = anchor?.GetSelfAndVisualAncestors().OfType<TopLevel>().FirstOrDefault();
                     if (popupRoot is null)
                     {

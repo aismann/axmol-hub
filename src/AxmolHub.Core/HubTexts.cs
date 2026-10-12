@@ -225,7 +225,13 @@ public static class HubTexts
         ["OpenEnginesPage"] = ("打开引擎页", "Open Engines page"),
         ["InstallSdk"] = ("安装 Windows SDK", "Install Windows SDK"),
         ["InstallMsvc"] = ("安装 MSVC", "Install MSVC"),
-        ["SettingsHint"] = ("按你的习惯设置语言、存储目录与编辑器。", "Choose your language, storage and editors."),
+        // The settings card's rail. Six of the seven rows are copy keys that already existed as card titles:
+        // a category that holds one section has no title inside it any more (the rail row IS the heading), so
+        // the row took the old title's key rather than the title's text being written a second time under a
+        // new name. Only 外观与语言 needed a key of its own, because it is the one group that holds two
+        // sections and so needs a name that is neither of them.
+        ["SettingsCatAppearance"] = ("外观与语言", "Appearance & language"),
+        ["SettingsOverlayClose"] = ("关闭设置", "Close settings"),
         ["Language"] = ("界面语言", "Interface language"),
         ["LanguageHint"] = ("切换立即生效，重启后保留。", "Applies immediately and is remembered."),
         ["Appearance"] = ("外观", "Appearance"),
@@ -234,6 +240,12 @@ public static class HubTexts
         ["ThemeSystem"] = ("跟随系统", "Follow system"),
         ["ThemeLight"] = ("浅色", "Light"),
         ["ThemeDark"] = ("深色", "Dark"),
+        // One line per theme value and one for the settings row, for the bottom menu's rows: a row says what it
+        // decides, not just what it is called.
+        ["ThemeSystemHint"] = ("系统浅就用浅，系统深就用深", "Light when the system is, dark when it is not"),
+        ["ThemeLightHint"] = ("一直用浅色，不看系统", "Always light, whatever the system says"),
+        ["ThemeDarkHint"] = ("一直用深色，不看系统", "Always dark, whatever the system says"),
+        ["SettingsRowHint"] = ("语言、外观、模型与存储", "Language, appearance, models and storage"),
         ["Storage"] = ("存储与项目", "Storage and projects"),
         ["DataDirectory"] = ("Hub 数据目录", "Hub data directory"),
         ["DataHint"] = ("引擎、工具链、缓存与日志存放于此。切换目录不会移动现有文件。", "Engines, tools, cache and logs. Changing directories does not move existing files."),
@@ -565,7 +577,7 @@ public static class HubTexts
         ["ChatToolCompletedFormat"] = ("已读取{0}，正在继续", "Read {0}; continuing"),
         ["Provider"] = ("模型提供商", "Provider"),
         // Title and description of the AI model provider management card on the Settings page.
-        ["ModelProviders"] = ("AI 模型提供商", "AI Model providers"),
+        ["ModelProviders"] = ("模型提供商", "Model providers"),
         ["ModelProvidersHint"] = ("助手使用的模型接口。「添加提供商」可从内置预设中挑选（OrcaRouter、OpenAI、DeepSeek、Ollama…），已配置的提供商在此管理密钥与模型；助手页只负责选择用哪一个。", "The endpoints the assistant can use. \"Add provider\" picks from built-in presets (OrcaRouter, OpenAI, DeepSeek, Ollama …); keys and models for the ones you configured are managed here, while the assistant page only chooses between them."),
         // Model hint on the assistant page; {0} = provider name, {1} = model name.
         ["ActiveModelFormat"] = ("当前模型：{0} · {1}", "Current model: {0} · {1}"),
@@ -1075,7 +1087,7 @@ public static class HubTexts
         ["MaximizeWindow"] = ("最大化", "Maximize"),
         ["RestoreWindow"] = ("向下还原", "Restore"),
         ["CloseWindow"] = ("关闭", "Close"),
-        ["BottomMenuTip"] = ("设置与外观", "Settings and appearance"),
+        ["BottomMenuTip"] = ("设置、外观与语言", "Settings, appearance and language"),
         ["SearchConversationsTip"] = ("搜索对话", "Search conversations"),
         ["NewConversationTip"] = ("新建对话", "New conversation"),
         ["AssistantGreeting"] = ("你好，我是 Axmol 助手", "Hi, I'm your Axmol assistant"),

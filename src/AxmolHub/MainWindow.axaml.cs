@@ -9,6 +9,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
+using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -143,6 +144,7 @@ public partial class MainWindow : Window
         InitializeTitleBar();
         InitializeInspector();
         InitializePictureViewer();
+        InitializeSettings();
         InitializeChrome();
         WireWorkspace();
         WireChrome();
@@ -162,13 +164,14 @@ public partial class MainWindow : Window
         ToolTip.SetTip(AssistantSearchButton, HubStrings.Get("SearchConversationsTip"));
         ToolTip.SetTip(AssistantNewButton, HubStrings.Get("NewConversationTip"));
 
-        // Settings is no longer a nav item: it is the gear at the bottom of the rail. It still navigates like
-        // one, so the page keeps its cached instance and ScrollViewer position.
-        SettingsButton.Click += (_, _) => NavigateTo("Settings");
+        // Settings is no longer a nav item and no longer a page: the gear at the bottom of the rail lifts the
+        // overlay card. It toggles rather than only opens, because the gear is the one control that stays on
+        // screen whatever the card is doing, and a button that can never undo itself invites a second way out.
+        SettingsButton.Click += (_, _) => ToggleSettings();
 
-        // The brand/host text block beside the gear opens the popup menu (Settings + Appearance). The
-        // menu is rebuilt on every open, so its labels and theme checkmarks are always current without
-        // any sync machinery.
+        // The brand/host text block beside the gear opens the popup menu (Settings + Appearance + language).
+        // The menu is rebuilt on every open, so its labels and ticks are always current without any sync
+        // machinery.
         BottomMenuButton.Click += (_, _) => ToggleBottomMenu();
 
         // Default to the "Projects" page, matching the WPF version (WPF uses NavProjects IsChecked="True").
@@ -289,8 +292,10 @@ public partial class MainWindow : Window
     }
 
     /// <summary>The assembled page keys. Verification programs rely on it to confirm every navigation
-    /// destination has a real page. <c>Assistant</c> is included: it is a full page now, not a drawer.</summary>
-    internal static string[] PageKeys => ["Projects", "Installs", "Toolchains", "Assistant", "Settings"];
+    /// destination has a real page. <c>Assistant</c> is included: it is a full page now, not a drawer.
+    /// <c>Settings</c> is not: it left the page system for the overlay layer, which no navigation lands on and
+    /// which the page-shot sweep therefore no longer photographs — see <see cref="OpenSettings"/>.</summary>
+    internal static string[] PageKeys => ["Projects", "Installs", "Toolchains", "Assistant"];
 
     internal HubWorkspace Workspace => _workspace;
 
@@ -309,7 +314,6 @@ public partial class MainWindow : Window
                 "Installs" => new InstallsPage(_workspace),
                 "Toolchains" => new ToolchainsPage(_workspace),
                 "Assistant" => _chatPanel ??= CreateChatPanel(),
-                "Settings" => new SettingsPage(_workspace, _preferencesStore, _preferences, _chat, OpenFolder, ApplyLanguage, SwitchDataRoot, UseTheme),
                 _ => throw new ArgumentException("Unknown page: " + name, nameof(name)),
             };
             _pages[name] = page;
@@ -325,7 +329,11 @@ public partial class MainWindow : Window
         // The inspector belongs to the assistant too, and a picture left open over a page you navigated away
         // from is a picture you can no longer reach the transcript of — so navigating closes it.
         SyncInspectorForPage();
+        // Both window-level layers are answers about the page underneath them: a picture left open over a page
+        // you navigated away from is a picture you can no longer reach the transcript of, and a settings card
+        // that outlives a navigation is a scrim sitting over the page the reader just asked for.
         if (PictureViewerHost.IsVisible) ClosePictureViewer();
+        CloseSettings();
         UpdatePageTitle();
         return page;
     }
@@ -394,8 +402,9 @@ public partial class MainWindow : Window
     /// Skipping it yields "showing page A but highlighting page B" — invisible at compile time and
     /// at binding time, only catchable by screenshot review.
     ///
-    /// Settings is not a nav item, so it has no highlight to sync: landing on it simply clears the four
-    /// radio buttons. That is why the loop below can omit it while <see cref="PageKeys"/> still lists it.
+    /// Settings is not in this loop because it is not a page any more — it is the overlay layer, and an overlay
+    /// has no nav item to light up. The four radio buttons are the whole navigation, and exactly one of them is
+    /// ever checked.
     /// </summary>
     private void SyncNavigation(string name)
     {
@@ -442,6 +451,14 @@ public partial class MainWindow : Window
 
     private void OnChatAttentionRequired(string conversationId, ChatAttentionKind kind)
     {
+        // A question that arrives underneath an answer surface is a question nobody sees. The settings card
+        // covers the chat column, so it steps aside the moment anything needs a decision — and stepping aside
+        // is lossless here, because every picker in the card commits as it changes and there is no half-typed
+        // state to lose. This runs ahead of the automation and visibility gates below on purpose: those decide
+        // whether to bother the user with a *notification*, and a card that keeps covering the approval has
+        // the same problem whether or not anyone is watching the window.
+        CloseSettings();
+
         if (App.Options.IsAutomation) return;
         if (!SystemAttentionService.ShouldNotifyApproval(
                 conversationId, _chat.ViewedConversationId, AttentionNow))
@@ -1149,6 +1166,13 @@ public partial class MainWindow : Window
         // Events are wired on the new instance, so re-subscribing here won't append the log twice.
         WireWorkspace();
 
+        // The settings card is not in the page cache, so the line below would not drop it — and a card built
+        // against the old workspace would keep answering for a data root nobody is looking at. Close it and let
+        // the next gear press rebuild it against the new one. The category is the shell's to keep: which row
+        // you were reading is a fact about the reader, not about the directory.
+        CloseSettings();
+        _settings = null;
+
         // Old pages hold the old workspace and must be dropped wholesale; the next NavigateTo will
         // reconstruct them.
         _pages.Clear();
@@ -1264,51 +1288,161 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The bottom entry's popup: Settings (navigates like the gear click used to) and an Appearance
-    /// submenu holding the three theme values as radio items. <see cref="SettingsPage.ThemeTextKey"/>
-    /// stays the theme→copy-key mapping so a new theme can't leave its label behind. (Avalonia 12 has
-    /// no MenuFlyoutItem family: the flyout hosts <see cref="MenuItem"/>s directly, and a MenuItem with
-    /// children is the submenu.)
+    /// The bottom entry's popup: settings, the three theme values and the two interface languages, each as a row
+    /// of its own. Built fresh on every open, so the labels follow the UI language and exactly one row per
+    /// choice is ticked without any sync machinery.
+    ///
+    /// The theme values are rows rather than a submenu because that is what they are: the three answers to one
+    /// question, and the question is asked often enough that a second hover to reach the common one was the
+    /// cost this menu used to charge. (Avalonia 12 has no <c>MenuFlyoutItem</c> family: the flyout hosts
+    /// <see cref="MenuItem"/>s directly, which is also why a row can carry a composed header.)
+    ///
+    /// Ticks are drawn inside the row rather than by a toggle column — the column parks its marker left of the
+    /// row's own icon and the two read as one glyph doing a job twice. Same reasoning, and the same shape, as
+    /// the composer's permission menu (<c>ChatPanel.BuildPermissionHeader</c>). <c>IsChecked</c> is still set, so
+    /// the state lives on the item and not only in its pixels, and no radio group has to be re-synced by hand.
     /// </summary>
     internal MenuFlyout BuildBottomMenu()
     {
         var menu = new MenuFlyout { Placement = PlacementMode.TopEdgeAlignedLeft };
 
-        var settings = new MenuItem { Header = HubStrings.Get("Settings") };
-        settings.Click += (_, _) => NavigateTo("Settings");
+        var settings = new MenuItem
+        {
+            Header = BuildMenuRow("Hub.Icon.Settings", HubStrings.Get("Settings"),
+                HubStrings.Get("SettingsRowHint"), current: false),
+        };
+        settings.Click += (_, _) =>
+        {
+            menu.Hide();
+            OpenSettings();
+        };
         menu.Items.Add(settings);
 
-        var appearance = new MenuItem { Header = HubStrings.Get("Appearance") };
         foreach (var theme in HubTheme.All)
         {
+            var current = theme == ThemeService.Current;
             var item = new MenuItem
             {
-                Header = HubStrings.Get(SettingsPage.ThemeTextKey(theme)),
-                ToggleType = MenuItemToggleType.Radio,
-                IsChecked = theme == ThemeService.Current,
+                Header = BuildMenuRow(SettingsPage.ThemeIconKey(theme),
+                    HubStrings.Get(SettingsPage.ThemeTextKey(theme)),
+                    HubStrings.Get(SettingsPage.ThemeHintKey(theme)), current),
+                IsChecked = current,
                 Tag = theme,
             };
             item.Click += (_, _) =>
             {
                 var error = UseTheme(theme);
-                if (error is not null)
+                if (error is null)
                 {
-                    SetStatus(error);
+                    menu.Hide();
+                    return;
                 }
 
-                // Re-sync every checkmark: a radio click checks itself but the group's behaviour is
-                // left to us, so without this the user could end up with no theme checked (clicking
-                // the already-checked one) while the theme itself didn't move.
-                foreach (var other in appearance.Items.OfType<MenuItem>())
-                {
-                    other.IsChecked = other.Tag as string == ThemeService.Current;
-                }
+                // A switch that failed and rolled back must leave the menu up: the reader asked for something
+                // that did not happen, and closing the surface they asked from hides the reason. The tick stays
+                // on the theme that is actually current, because this whole menu is rebuilt on the next open.
+                SetStatus(error);
             };
-            appearance.Items.Add(item);
+            menu.Items.Add(item);
         }
 
-        menu.Items.Add(appearance);
+        foreach (var (tag, display) in SettingsPage.LanguageChoices)
+        {
+            var current = tag == HubStrings.Language;
+            var item = new MenuItem
+            {
+                // No hint line: the name is written in its own script, which is the whole sentence, and the
+                // tick says which one is in force.
+                Header = BuildMenuRow("Hub.Icon.Globe", display, null, current),
+                IsChecked = current,
+                Tag = tag,
+            };
+            item.Click += (_, _) =>
+            {
+                // Hide first: UseLanguage repaints the trigger block this popup is anchored to, and a flyout
+                // whose anchor was rewritten underneath it is a flyout that has to be dismissed by hand.
+                menu.Hide();
+                UseLanguage(tag);
+            };
+            menu.Items.Add(item);
+        }
+
         return menu;
+    }
+
+    /// <summary>One row of the bottom menu: icon, name, what it decides, and a tick when this is the answer in
+    /// force. The width is fixed across rows so the ticks land in a column rather than wherever each hint
+    /// happens to end.</summary>
+    private static Control BuildMenuRow(string iconKey, string title, string? hint, bool current)
+    {
+        var icon = new Avalonia.Controls.Shapes.Path
+        {
+            Width = 15,
+            Height = 15,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.7,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
+        icon.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension(iconKey));
+        icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+
+        var text = new StackPanel
+        {
+            Spacing = 2,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 0, 0),
+        };
+        // Named rather than positional: a row's parts are read back by the self-check, and "the first TextBlock
+        // in the panel" is a description of where a label sits, not of what it is — the same reason the
+        // provider groups carry role tags.
+        text.Children.Add(new TextBlock
+        {
+            Name = "MenuRowTitle",
+            Text = title,
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+        });
+        if (hint is { Length: > 0 })
+        {
+            var hintBlock = new TextBlock
+            {
+                Name = "MenuRowHint",
+                Text = hint,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+            };
+            hintBlock.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextTertiary"));
+            text.Children.Add(hintBlock);
+        }
+
+        var tick = new Avalonia.Controls.Shapes.Path
+        {
+            Name = "MenuRowTick",
+            Width = 14,
+            Height = 14,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.8,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 0, 0),
+            IsVisible = current,
+        };
+        tick.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Tick"));
+        tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), MinWidth = 300 };
+        Grid.SetColumn(icon, 0);
+        Grid.SetColumn(text, 1);
+        Grid.SetColumn(tick, 2);
+        header.Children.Add(icon);
+        header.Children.Add(text);
+        header.Children.Add(tick);
+        return header;
     }
 
     /// <summary>Recomputes all **imperatively** written copy after a language change (DynamicResource
@@ -1328,18 +1462,18 @@ public partial class MainWindow : Window
         // strings is composed in code from a key.
         UpdateTransferSlot();
 
+        // The settings card is not in the page cache any more, so it gets told on its own — and told even while
+        // it is closed, because its ComboBox labels are written in code and a stale English dropdown would be
+        // waiting there the moment the gear is pressed again.
+        _settings?.Reload();
+
         foreach (var page in _pages.Values)
         {
-            switch (page)
+            // The assistant's copy is written in code (it composes values), so it only follows a language
+            // switch if it is told to — the same reason the settings card reloads above.
+            if (page is ChatPanel chat)
             {
-                case SettingsPage settings:
-                    settings.Reload();
-                    break;
-                // The assistant's copy is written in code (it composes values), so it only follows a language
-                // switch if it is told to — the same reason the settings page reloads here.
-                case ChatPanel chat:
-                    chat.Reload();
-                    break;
+                chat.Reload();
             }
         }
 
@@ -1384,6 +1518,9 @@ public partial class MainWindow : Window
         _workspace.BusyChanged += busy =>
         {
             PageHost.IsEnabled = !busy;
+            // The settings card sits outside PageHost now, so the gate that used to cover it by inheritance has
+            // to be stated here: an engine build in flight must not leave a clickable 卸载 or 切换目录 behind.
+            SettingsHost.IsEnabled = !busy;
             CancelButton.IsEnabled = busy && _workspace.CanCancel;
         };
 
@@ -1393,6 +1530,13 @@ public partial class MainWindow : Window
         // page navigation is forwarded here through the workspace.
         _workspace.NavigateRequested += key =>
         {
+            // Settings still answers the name, but it is no longer a page: whoever asks gets the overlay.
+            if (key == "Settings")
+            {
+                OpenSettings();
+                return;
+            }
+
             if (PageKeys.Contains(key))
             {
                 NavigateTo(key);
@@ -1646,7 +1790,7 @@ public partial class MainWindow : Window
     internal string SettingsLabel => ToolTip.GetTip(SettingsButton) as string ?? "";
 
     /// <summary>Raises the gear's click path as a real click would — the self-check walks the same code the
-    /// user's click does instead of calling <see cref="NavigateTo"/> directly.</summary>
+    /// user's click does instead of calling <see cref="OpenSettings"/> directly.</summary>
     internal void ClickSettingsGearForCheck() => SettingsButton.RaiseEvent(
         new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
 
@@ -1973,7 +2117,6 @@ public partial class MainWindow : Window
             "Projects" => HubStrings.Get("Projects"),
             "Installs" => HubStrings.Get("Installs"),
             "Toolchains" => HubStrings.Get("Toolchains"),
-            "Settings" => HubStrings.Get("Settings"),
             _ => "",
         };
     }

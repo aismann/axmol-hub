@@ -159,6 +159,7 @@ public partial class ShellCheckWindow : Window
         var shell = CheckShell(scratchRoot);
         await CheckInstallsPageAsync(scratchRoot, shell);
         await CheckSettingsPageAsync(scratchRoot, shell);
+        CheckSettingsOverlay(shell);
         CheckHostShellCard(shell);
         await CheckAssistantAsync(scratchRoot, shell);
         CheckWorkspaceGroups(scratchRoot, shell);
@@ -3398,7 +3399,7 @@ public partial class ShellCheckWindow : Window
               && shell.InspectorWidthForCheck is >= 300 and <= 520,
             "打开审阅面板：它是聊天右边真实的一列，宽度落在可读区间里（实际 "
             + shell.InspectorWidthForCheck + "）");
-        shell.NavigateTo("Settings");
+        shell.NavigateTo("Projects");
         Check(!shell.InspectorVisibleForCheck, "离开助手页，审阅面板跟着收起：它是助手的，不是每页的");
         shell.NavigateTo("Assistant");
         Check(shell.InspectorVisibleForCheck, "回到助手页，之前打开的面板还在");
@@ -3642,7 +3643,7 @@ public partial class ShellCheckWindow : Window
         // The two ways out that are not the arrow: leaving the page it belongs to, and closing it. Either one
         // leaving a lifted pane behind would cover a page that cannot produce one.
         shell.ClickInspectorExpandToggleForCheck();
-        shell.NavigateTo("Settings");
+        shell.NavigateTo("Projects");
         Check(!shell.InspectorExpandedForCheck && !shell.InspectorOverlayVisibleForCheck,
             "离开助手页时撑开状态一起没有：不会留下一整片盖住别的页面");
         shell.NavigateTo("Assistant");
@@ -4730,7 +4731,7 @@ public partial class ShellCheckWindow : Window
                   && shell.InspectorPlanMarkdownForCheck.Contains("Reviewed plan", StringComparison.Ordinal),
                 "点计划卡即打开右栏，全文只在那里：卡片是正文的入口而不是正文的替代品（面板 "
                 + shell.InspectorVisibleForCheck + "，面板里 " + shell.InspectorPlanMarkdownForCheck.Length + " 字）");
-            shell.NavigateTo("Settings");
+            shell.NavigateTo("Projects");
             Check(chat.PendingBackgroundApprovalCount(null) == 2
                   && chat.PendingApprovalConversationCount() == 2,
                 "离开助手页不会改变所有未解决计划审批的任务栏数字");
@@ -6499,8 +6500,7 @@ public partial class ShellCheckWindow : Window
 
             // The app-wide default is a standing policy, so it lives in Settings — and changing it has to reach
             // the cached assistant page, which navigation alone does not reload.
-            var settings = (SettingsPage)shell.NavigateTo("Settings");
-            Dispatcher.UIThread.RunJobs();
+            var settings = OpenSettingsOn(shell, "permission");
             Check(settings.DeclaredToolApprovalModesForCheck.SequenceEqual(new[]
                       { ToolApprovalModes.Ask, ToolApprovalModes.Auto, ToolApprovalModes.Full }, StringComparer.Ordinal)
                   && settings.SelectedToolApprovalModeForCheck == ToolApprovalModes.Ask
@@ -7948,9 +7948,7 @@ public partial class ShellCheckWindow : Window
     /// </summary>
     private async Task CheckProvidersInSettingsAsync(string scratchRoot, MainWindow shell)
     {
-        var settings = (SettingsPage)shell.NavigateTo("Settings");
-        settings.UpdateLayout();
-        Dispatcher.UIThread.RunJobs();
+        var settings = OpenSettingsOn(shell, "providers");
 
         Check(settings.ProviderCount >= 1, "设置页列出了内置 provider（实际 " + settings.ProviderCount + " 个）");
         // Every configured provider gets its own group, so the count on screen must match the model — a group
@@ -9610,9 +9608,7 @@ public partial class ShellCheckWindow : Window
     private void CheckDataRootSwitch(string scratchRoot, MainWindow shell)
     {
         var preferencesPath = PreferencesPathFor(scratchRoot);
-        var settings = (SettingsPage)shell.NavigateTo("Settings");
-        settings.UpdateLayout();
-        Dispatcher.UIThread.RunJobs();
+        var settings = OpenSettingsOn(shell, "storage");
 
         Check(NamedDescendant<Button>(settings, "ChooseDataDirectoryButton") is not null,
             "设置页提供切换数据目录的按钮（而不是一行「尚未迁移」说明）");
@@ -9640,13 +9636,18 @@ public partial class ShellCheckWindow : Window
         Check(new PreferencesStore(preferencesPath).Load().DataRoot == nextRoot,
             "新数据根已写入设置文件（下次启动仍指向它）");
 
-        var rebuilt = shell.CurrentPage as SettingsPage;
-        Check(rebuilt is not null && !ReferenceEquals(rebuilt, settings),
-            "切换后当前页是**新建**的设置页（旧页面持有旧工作区，必须整批丢弃）");
+        // The card is not in the page cache, so the sweep that drops the old pages would leave it standing on a
+        // disposed workspace. Two facts to prove: the switch closed it, and reopening built a different page.
+        Check(!shell.SettingsOverlayVisibleForCheck,
+            "切换数据根时设置浮层一起关掉：留在屏上的会是一张指向已释放工作区的卡");
 
-        Check(rebuilt is { } page && NamedDescendant<TextBox>(page, "DataLocation")?.Text == nextRoot,
+        var rebuilt = OpenSettingsOn(shell, "storage");
+        Check(!ReferenceEquals(rebuilt, settings),
+            "重新打开后是**新建**的设置页（旧页面持有旧工作区，必须整批丢弃）");
+
+        Check(NamedDescendant<TextBox>(rebuilt, "DataLocation")?.Text == nextRoot,
             "重建出的设置页显示新数据根（实际 "
-            + (rebuilt is null ? "页面为空" : NamedDescendant<TextBox>(rebuilt, "DataLocation")?.Text) + "）");
+            + (NamedDescendant<TextBox>(rebuilt, "DataLocation")?.Text ?? "页面为空") + "）");
 
         var logAfterSwitch = NamedDescendant<TextBox>(shell, "ActivityLog")?.Text ?? "";
         var survived = previousLogLines.Where(line => logAfterSwitch.Contains(line, StringComparison.Ordinal)).ToArray();
@@ -10060,29 +10061,32 @@ public partial class ShellCheckWindow : Window
             "再次导航到同一页拿回同一实例（页面被缓存而不是每次重建）");
 
         // Every page must be a real page: any pre-P5 "not migrated" placeholder page gets caught right here.
-        // Settings is included even though it is not a nav item — it is reached through the gear.
         Check(shell.NavigateTo("Projects") is ProjectsPage, "项目页由 ProjectsPage 承载");
         Check(shell.NavigateTo("Installs") is InstallsPage, "引擎页由 InstallsPage 承载");
         Check(shell.NavigateTo("Toolchains") is ToolchainsPage, "工具链页由 ToolchainsPage 承载");
         Check(shell.NavigateTo("Assistant") is ChatPanel, "AI 助手页由 ChatPanel 承载");
-        Check(shell.NavigateTo("Settings") is SettingsPage, "设置页由 SettingsPage 承载");
+        Check(shell.OpenSettingsForCheck("appearance") is SettingsPage, "设置由 SettingsPage 承载，摆在浮层上");
 
-        // The gear stays an independent shortcut to the settings page (it did not move into the popup).
-        // Two silent failures: the gear stops navigating, or it keeps a stale nav highlight.
+        // The gear stays an independent shortcut to settings (it did not move into the popup). The silent
+        // failures it guards: the gear stops opening the card, or opening the card pretends to be a navigation
+        // and takes the reader somewhere they did not ask to go.
         Check(shell.SettingsLabel == HubTexts.Get("Settings", HubStrings.Language),
             "齿轮按钮的提示文案来自 HubTexts（图标按钮没有文字，提示是它唯一的名称，实际「" + shell.SettingsLabel + "」）");
         shell.NavigateTo("Toolchains");
         shell.ClickSettingsGearForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.CurrentPage is SettingsPage, "点底部齿轮真的打开设置页（事件接线有效）");
-        Check(navs.All(nav => nav.Button.IsChecked != true),
-            "设置页不是导航项，打开它时左侧不再有任何高亮（不会出现「设置亮着但当前不是设置页」）");
+        Check(shell.SettingsOverlayVisibleForCheck, "点底部齿轮真的升起设置浮层（事件接线有效）");
+        Check(shell.CurrentPage is ToolchainsPage
+              && navs.Single(nav => nav.Page == "Toolchains").Button.IsChecked == true,
+            "浮层是一次覆盖而不是一次导航：底下那页和它的高亮都不动（当前页 "
+            + shell.CurrentPage?.GetType().Name + "）");
 
-        // Beside the gear, the brand/host text block opens the bottom popup menu (Settings + an
-        // Appearance submenu). The silent failures: the block stops opening the menu, the menu loses
-        // an item or its copy drifts from HubTexts/HubTheme, a theme item stops switching, or the
-        // menu's "设置" stops navigating. All are asserted here.
+        // Beside the gear, the brand/host text block opens the bottom popup menu.
+        // The bottom entry's popup: settings, three theme rows, two language rows, each drawn as one row of its
+        // own. The silent failures: the block stops opening the menu, a row goes missing or its copy drifts from
+        // HubTexts/HubTheme, a row stops switching what it claims to switch, the tick disagrees with the state
+        // it is supposed to show, or the "设置" row stops lifting the card. All are asserted here.
         Check(shell.BottomMenuLabel == HubTexts.Get("BottomMenuTip", HubStrings.Language),
             "底部文字块的提示文案来自 HubTexts（文字命名的是机器，提示才说明它打开什么，实际「" + shell.BottomMenuLabel + "」）");
 
@@ -10092,44 +10096,113 @@ public partial class ShellCheckWindow : Window
         Dispatcher.UIThread.RunJobs();
         var bottomMenu = shell.BottomMenuForCheck;
         Check(bottomMenu is { IsOpen: true }, "点底部入口真的弹出菜单（事件接线有效）");
-        Check(bottomMenu!.Items.Count == 2,
-            "弹出菜单初版只有「设置」与「外观」两项（实际 " + bottomMenu.Items.Count + " 项）");
+        Check(bottomMenu!.Items.Count == 6 && bottomMenu.Items.OfType<MenuItem>().All(item => item.Items.Count == 0),
+            "弹出菜单是六条平铺的行，主题不再藏在二级子菜单里（实际 " + bottomMenu.Items.Count + " 项，"
+            + bottomMenu.Items.OfType<MenuItem>().Count(item => item.Items.Count > 0) + " 项带子菜单）");
 
-        var menuSettings = bottomMenu.Items.ElementAt(0) as MenuItem;
-        Check(menuSettings is not null
-              && string.Equals(menuSettings.Header?.ToString(), HubTexts.Get("Settings", HubStrings.Language), StringComparison.Ordinal),
-            "弹出菜单第一项是「设置」（实际「" + (menuSettings?.Header?.ToString() ?? "<null>") + "」）");
+        var rows = bottomMenu.Items.OfType<MenuItem>().ToArray();
+        string RowTitle(int index) => NamedDescendant<TextBlock>(rows[index], "MenuRowTitle")?.Text ?? "<null>";
+        string RowHint(int index) => NamedDescendant<TextBlock>(rows[index], "MenuRowHint")?.Text ?? "";
+        bool RowTicked(int index) => NamedDescendant<Avalonia.Controls.Shapes.Path>(rows[index], "MenuRowTick")?.IsVisible == true;
 
-        var appearance = bottomMenu.Items.ElementAt(1) as MenuItem;
-        Check(appearance is not null
-              && string.Equals(appearance.Header?.ToString(), HubTexts.Get("Appearance", HubStrings.Language), StringComparison.Ordinal),
-            "弹出菜单第二项是「外观」子菜单（实际「" + (appearance?.Header?.ToString() ?? "<null>") + "」）");
+        // The glyphs the new rows carry are measured, not eyeballed: a non-square box sits off-centre in the
+        // square slot the row gives it.
+        Check(FitsItsSquareSlot("Hub.Icon.Sun") && FitsItsSquareSlot("Hub.Icon.Moon")
+              && FitsItsSquareSlot("Hub.Icon.Monitor") && FitsItsSquareSlot("Hub.Icon.Globe"),
+            "主题与语言四枚新字形都是正方形且居中于 24 格，Uniform 拉伸不会把余量甩到一边");
 
-        var themeItems = appearance!.Items.OfType<MenuItem>().ToArray();
-        var themeLabels = themeItems.Select(item => item.Header?.ToString() ?? "<null>").ToArray();
-        var expectedThemeLabels = HubTheme.All.Select(theme => HubTexts.Get(SettingsPage.ThemeTextKey(theme), HubStrings.Language)).ToArray();
-        Check(themeLabels.SequenceEqual(expectedThemeLabels),
-            "外观子菜单按 HubTheme.All 的顺序列出三个主题项，文案来自 HubTexts（期望 "
-            + string.Join("/", expectedThemeLabels) + "，实际 " + string.Join("/", themeLabels) + "）");
-        Check(themeItems.Count(item => item.IsChecked) == 1
-              && themeItems.Single(item => item.IsChecked).Tag as string == ThemeService.Current,
-            "外观子菜单恰好勾选当前主题（" + ThemeService.Current + "）");
+        Check(RowTitle(0) == HubTexts.Get("Settings", HubStrings.Language)
+              && RowHint(0) == HubTexts.Get("SettingsRowHint", HubStrings.Language)
+              && !RowTicked(0) && rows[0].Items.Count == 0,
+            "第一行是「设置」，带一句它管什么，自己不勾选任何东西（实际「" + RowTitle(0) + "」）");
 
-        // The theme items drive the shell's UseTheme — the same path the settings picker goes through
-        // (its end-to-end coverage is in 5.6). Click the theme that is **not** current, then come back,
-        // so the run ends dark and the render captures below keep their expected look.
+        var themeRows = rows.Skip(1).Take(3).ToArray();
+        var expectedThemeLabels = HubTheme.All
+            .Select(theme => HubTexts.Get(SettingsPage.ThemeTextKey(theme), HubStrings.Language)).ToArray();
+        Check(themeRows.Select((item, index) => NamedDescendant<TextBlock>(item, "MenuRowTitle")?.Text)
+                  .SequenceEqual(expectedThemeLabels, StringComparer.Ordinal),
+            "三行主题按 HubTheme.All 的顺序平铺在一级，文案来自 HubTexts（期望 "
+            + string.Join("/", expectedThemeLabels) + "，实际 "
+            + string.Join("/", themeRows.Select(item => NamedDescendant<TextBlock>(item, "MenuRowTitle")?.Text)) + "）");
+        Check(themeRows.Select((item, index) => NamedDescendant<TextBlock>(item, "MenuRowHint")?.Text)
+                  .SequenceEqual(HubTheme.All.Select(theme => HubTexts.Get(SettingsPage.ThemeHintKey(theme), HubStrings.Language)),
+                      StringComparer.Ordinal),
+            "每行主题都说出它实际决定什么，而不是只报名字");
+        Check(themeRows.Count(item => item.IsChecked) == 1
+              && themeRows.Single(item => item.IsChecked).Tag as string == ThemeService.Current
+              && themeRows.Select((_, index) => RowTicked(index + 1)).SequenceEqual(themeRows.Select(item => item.IsChecked)),
+            "恰好一行主题被勾选且就是当前主题，画出来的勾号与 IsChecked 说的是同一件事（当前 "
+            + ThemeService.Current + "）");
+
+        var languageRows = rows.Skip(4).Take(2).ToArray();
+        Check(languageRows.Select(item => NamedDescendant<TextBlock>(item, "MenuRowTitle")?.Text)
+                  .SequenceEqual(SettingsPage.LanguageChoices.Select(choice => choice.Display), StringComparer.Ordinal),
+            "两行语言用各自语言的写法标出，不随界面语言翻译（否则读不懂当前界面的人正好看不见它）");
+        Check(languageRows.Count(item => item.IsChecked) == 1
+              && languageRows.Single(item => item.IsChecked).Tag as string == HubStrings.Language,
+            "恰好一行语言被勾选且就是当前语言（当前 " + HubStrings.Language + "）");
+        Check(SettingsPage.LanguageChoices.Select(choice => choice.Tag).SequenceEqual(
+                  shell.SettingsPageForCheck?.DeclaredLanguages ?? []),
+            "底部菜单的语言行与设置页下拉声明的是同一批语言（两处各存一份就是漂移的开始）");
+
+        // The theme rows drive the shell's UseTheme — the same path the settings picker goes through (its
+        // end-to-end coverage is in 5.6). Click the theme that is **not** current, then come back, so the run
+        // ends dark and the render captures below keep their expected look.
         var menuTarget = ThemeService.Current == HubTheme.Dark ? HubTheme.Light : HubTheme.Dark;
-        themeItems.Single(item => item.Tag as string == menuTarget)!.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-        Check(ThemeService.Current == menuTarget && themeItems.Single(item => item.IsChecked).Tag as string == menuTarget,
-            "点外观子菜单里未勾选的主题真的切过去，勾选跟着移动（当前 " + ThemeService.Current + "）");
-        themeItems.Single(item => item.Tag as string == HubTheme.Dark)!.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        themeRows.Single(item => item.Tag as string == menuTarget)
+            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        Check(ThemeService.Current == menuTarget,
+            "点未勾选的主题行真的切过去（当前 " + ThemeService.Current + "）");
+        // The menu is rebuilt on every open, so the tick the reader sees next is read from the state rather
+        // than from a group anyone has to re-sync — which is the machinery this shape deleted.
+        shell.ClickBottomMenuForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var reopened = shell.BottomMenuForCheck!.Items.OfType<MenuItem>().Skip(1).Take(3).ToArray();
+        Check(reopened.Count(item => item.IsChecked) == 1
+              && reopened.Single(item => item.IsChecked).Tag as string == menuTarget
+              && NamedDescendant<Avalonia.Controls.Shapes.Path>(reopened[menuTarget == HubTheme.Light ? 1 : 2], "MenuRowTick")?.IsVisible == true,
+            "重开菜单，勾落在新主题那一行上，画出来的勾也是那一行（当前 " + menuTarget + "）");
+        reopened.Single(item => item.Tag as string == HubTheme.Dark)
+            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         Check(ThemeService.Current == HubTheme.Dark, "收尾切回深色（后面的渲染断言都在深色下拍）");
 
-        bottomMenu.Hide();
-        menuSettings!.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-        Check(shell.CurrentPage is SettingsPage, "弹出菜单里的「设置」真的打开设置页（事件接线有效）");
-        Check(navs.All(nav => nav.Button.IsChecked != true),
-            "设置页不是导航项，打开它时左侧不再有任何高亮（不会出现「设置亮着但当前不是设置页」）");
+        // The language rows go through UseLanguage, which repaints the whole shell. Round-tripped so the suite
+        // keeps running in the language every assertion below is written in. Rows are found by the tag they
+        // carry rather than by position, because "the first language row" is the one already in force.
+        shell.ClickBottomMenuForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+            .Single(item => item.Tag as string == HubTexts.EnglishLanguage)
+            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(HubStrings.Language == HubTexts.EnglishLanguage
+              && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().Language == HubTexts.EnglishLanguage,
+            "点语言行真的换过去并落了盘（当前 " + HubStrings.Language + "）");
+        shell.ClickBottomMenuForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(NamedDescendant<Avalonia.Controls.Shapes.Path>(shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+                  .Single(item => item.Tag as string == HubTexts.EnglishLanguage), "MenuRowTick")?.IsVisible == true,
+            "重开菜单，勾落在英文那一行了：语言行的勾和主题行一样跟着当前状态重建");
+        shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+            .Single(item => item.Tag as string == HubTexts.ChineseLanguage)
+            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(HubStrings.Language == HubTexts.ChineseLanguage,
+            "再点另一行换回中文：菜单每开一次都是按当前状态重建的，反向也一样走得通");
+
+        shell.ClickBottomMenuForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var menuSettings = shell.BottomMenuForCheck!.Items.OfType<MenuItem>().First();
+        menuSettings.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        Check(shell.SettingsOverlayVisibleForCheck, "弹出菜单里的「设置」真的升起设置浮层（事件接线有效）");
+        Check(shell.CurrentPage is ToolchainsPage,
+            "从菜单进浮层也不换底下那页：浮层是一次覆盖，不是一次导航");
 
         // The projects page's action bar is a deliberate two-row layout: row 1 = build/run/configure plus
         // the two project-setting dialogs, row 2 = the open/launch commands with the destructive "remove"
@@ -10256,6 +10329,22 @@ public partial class ShellCheckWindow : Window
     // 5. Settings page: a **live** localization verification
     // ---------------------------------------------------------------------
     /// <summary>
+    /// Opens the settings card on one category and hands back the page behind it. Every settings check goes
+    /// through here rather than reaching for a page, because the card shows one group at a time: a check that
+    /// read a control inside a hidden group would pass on a surface nobody can see, since an
+    /// <c>IsVisible = false</c> subtree stays in the visual tree and a walk still finds it. Naming the category
+    /// is what makes the read an honest one.
+    /// </summary>
+    private static SettingsPage OpenSettingsOn(MainWindow shell, string? category)
+    {
+        var settings = shell.OpenSettingsForCheck(category) ?? throw new InvalidOperationException(
+            "设置浮层没有构建出页面：" + (category ?? "<last>"));
+        settings.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        return settings;
+    }
+
+    /// <summary>
     /// The one hard question in this group: **does Avalonia's DynamicResource re-resolve when the
     /// resource dictionary changes?** Code reading can't tell, and style/resource failures are all
     /// silent. So here we really switch the language once, then read the text on controls that were
@@ -10264,9 +10353,7 @@ public partial class ShellCheckWindow : Window
     private async Task CheckSettingsPageAsync(string scratchRoot, MainWindow shell)
     {
         var preferencesPath = PreferencesPathFor(scratchRoot);
-        var settings = (SettingsPage)shell.NavigateTo("Settings");
-        settings.UpdateLayout();
-        Dispatcher.UIThread.RunJobs();
+        var settings = OpenSettingsOn(shell, "appearance");
 
         // --- 5.1 Readings when the page opens ---
         Check(settings.DeclaredLanguages.SequenceEqual(new[] { HubTexts.ChineseLanguage, HubTexts.EnglishLanguage }),
@@ -10275,6 +10362,10 @@ public partial class ShellCheckWindow : Window
         Check(settings.SelectedLanguage == HubStrings.Language,
             "设置页打开时选中的就是当前语言（" + settings.SelectedLanguage + "）");
 
+        // The card shows one group at a time, so a check that reads another group has to ask for it first.
+        // Nothing below would notice — an IsVisible=false subtree is still in the tree and a walk still finds
+        // it — which is precisely why the read has to name the group it is looking at.
+        settings.SelectCategoryForCheck("updates");
         var expectedUpdateChannel = HubReleaseInfo.IsPrereleaseBuild ? UpdateChannels.Preview : UpdateChannels.Stable;
         Check(settings.DeclaredUpdateChannels.SequenceEqual(UpdateChannels.All)
               && settings.SelectedUpdateChannel == expectedUpdateChannel
@@ -10299,6 +10390,7 @@ public partial class ShellCheckWindow : Window
                 "切回 Stable 会持久化且保持自动化自检离线");
         }
 
+        settings.SelectCategoryForCheck("storage");
         Check(NamedDescendant<TextBox>(settings, "DataLocation")?.Text == new StateStore(scratchRoot).Root,
             "数据目录显示的是实际数据根而不是默认目录");
 
@@ -10350,6 +10442,8 @@ public partial class ShellCheckWindow : Window
         };
         var pendingUpdate = new UpdateInfo(pendingAsset, false);
 
+        // Back to the group the status line lives in: the storage reads above moved the card away from it.
+        settings.SelectCategoryForCheck("updates");
         UpdateService.Instance.SetPendingForCheck(pendingUpdate);
         settings.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -10692,6 +10786,7 @@ public partial class ShellCheckWindow : Window
         // shell construction time, so its text changing proves DynamicResource re-resolves in place. Settings
         // itself is no longer a nav item (it is the gear), so it can't serve as this probe any more.
         var navBefore = NavLabel(shell.NavToolchains);
+        settings.SelectCategoryForCheck("storage");
         var noteBefore = NamedDescendant<TextBlock>(settings, "DataHintLabel")?.Text;
         Check(navBefore == HubTexts.Get("Toolchains", HubTexts.ChineseLanguage)
               && noteBefore == HubTexts.Get("DataHint", HubTexts.ChineseLanguage),
@@ -10719,9 +10814,16 @@ public partial class ShellCheckWindow : Window
         Check(new PreferencesStore(preferencesPath).Load().Language == HubTexts.EnglishLanguage,
             "语言切换已写入设置文件（" + preferencesPath + "）");
 
+        // The card is a layer, not a page, and a language switch repaints it in place rather than routing
+        // through navigation — so it is still up, on the same group, after the switch. If it came back on the
+        // first row every time, this is where the reader would notice.
+        Check(shell.SettingsOverlayVisibleForCheck && settings.SelectedCategory == "storage",
+            "换语言不关浮层也不把你送回第一栏（当前栏 " + settings.SelectedCategory + "）");
+
         // The theme labels are copy written in code rather than DynamicResource, so they only follow
         // if the language switch really reloads the page — the failure mode is "the settings page is
         // half English, half Chinese".
+        settings.SelectCategoryForCheck("appearance");
         Check(ThemeLabels(settings) == string.Join("/", new[] { "ThemeSystem", "ThemeLight", "ThemeDark" }
                   .Select(key => HubTexts.Get(key, HubTexts.EnglishLanguage))),
             "切到英文后主题三项的文案也是英文（实际 " + ThemeLabels(settings) + "）");
@@ -10738,7 +10840,9 @@ public partial class ShellCheckWindow : Window
             "切到英文后引擎页表头是英文（实际 " + englishHeaders + "）");
 
         // --- 5.5 Switch back to Chinese: prove it's reversible, not one-shot ---
-        shell.NavigateTo("Settings");
+        Check(!shell.SettingsOverlayVisibleForCheck,
+            "导航到别的页时设置浮层一起收掉：不会留一层遮罩盖住刚要看的页面");
+        OpenSettingsOn(shell, "storage");
         settings.SelectLanguage(HubTexts.ChineseLanguage);
         shell.UpdateLayout();
         settings.UpdateLayout();
@@ -10763,6 +10867,7 @@ public partial class ShellCheckWindow : Window
         // --- 5.6 Three-state theme picker ---
         // Same three silent failure modes as 5.2, for the theme: the dropdown's Tag values drifting
         // from HubTheme, "saved but never applied", and "applied but the tokens didn't follow".
+        settings.SelectCategoryForCheck("appearance");
         Check(settings.DeclaredThemes.SequenceEqual(HubTheme.All),
             "主题下拉项通过 Tag 声明的取值与 HubTheme 一致（实际 " + string.Join(", ", settings.DeclaredThemes) + "）");
 
@@ -10812,6 +10917,162 @@ public partial class ShellCheckWindow : Window
     }
 
     /// <summary>
+    /// The settings overlay's own contract with the shell. Everything here is a failure mode that is invisible
+    /// at build time and invisible in a screenshot of the card alone: the layer sitting in the wrong slot, the
+    /// scrim covering the title bar so the window cannot be dragged, the scrim losing its brush so the shell
+    /// behind it becomes clickable again, two categories on screen at once, a scroll carried over from the
+    /// group the reader left, Escape going to the wrong surface.
+    /// </summary>
+    private void CheckSettingsOverlay(MainWindow shell)
+    {
+        var settings = OpenSettingsOn(shell, "appearance");
+        var overlay = shell.SettingsOverlayBoundsForCheck;
+        var card = shell.SettingsCardBoundsForCheck;
+        var scrim = shell.SettingsScrimBoundsForCheck;
+        var client = shell.ClientBoundsForCheck;
+        var titleBar = shell.TitleBarBoundsForCheck;
+        var strip = shell.StatusStripBoundsForCheck;
+
+        // Stacking is document order — nothing in this app sets ZIndex — and a layer in the wrong slot covers
+        // the shell just as well, so no geometry check below can see it. Same argument the expanded inspector
+        // makes about itself.
+        Check(shell.SettingsOverlayOrderForCheck,
+            "设置浮层是壳、审阅撑开层、图片预览之上的最外层（层序写死在文档顺序里）");
+
+        // The two facts that make the window still draggable and the strip still pressable, and the pair is the
+        // point: a layer that merely *looks* clear of the title bar but still hit-tests across it would freeze
+        // the window, and a layer that stops short of the strip but painted over it would hide the queue slot.
+        Check(!overlay.Intersects(titleBar) && overlay.Bottom <= strip.Top + 0.5,
+            "浮层不碰标题栏、也不越过状态条上沿：设置开着时窗口照样能拖、下载槽照样能点（浮层 "
+            + Fmt(overlay.Bottom) + "，状态条上沿 " + Fmt(strip.Top) + "）");
+        Check(overlay.Intersects(strip) == false && strip.Top - overlay.Bottom <= 28.5,
+            "遮罩停在状态条之上而不是靠透明度糊过去，留出的那条正好是状态条自己的高度（差 "
+            + Fmt(strip.Top - overlay.Bottom) + "）");
+        Check(scrim.Width >= overlay.Width - 0.5 && scrim.Height >= overlay.Height - 0.5
+              && shell.SettingsScrimBlocksForCheck,
+            "遮罩铺满浮层并且真的画了东西：一块没有笔刷的 Border 不接受命中，壳会悄悄变得可点");
+        Check(card.Width > 0 && overlay.Contains(card) && client.Contains(overlay),
+            "卡片在浮层之内、浮层在客户区之内（卡片 " + Fmt(card.Width) + "x" + Fmt(card.Height) + "）");
+        // The window is 1280x880 when the self-check builds it, so a card that merely sat at its own floor would
+        // be 720x420 here. Measured against the parent is the whole point of the sizing rule.
+        Check(card.Width >= 1100 && card.Height >= 700
+              && card.Width <= overlay.Width - 40 && card.Height <= overlay.Height - 20,
+            "卡片尺寸跟着父窗走：既不是塌回下限的小卡，也没有把遮罩铺满到不留边（"
+            + Fmt(card.Width) + "x" + Fmt(card.Height) + "，浮层 "
+            + Fmt(overlay.Width) + "x" + Fmt(overlay.Height) + "）");
+
+        // One group on screen. The count, not "the right one is visible": a second pane left showing is the
+        // bug, and it is the one an object-graph read of the intended pane cannot see.
+        var panes = settings.GetLogicalDescendants().OfType<Panel>()
+            .Where(node => node.Name is not null && node.Name.StartsWith("Pane", StringComparison.Ordinal))
+            .ToList();
+        Check(panes.Count == SettingsPage.CategoryKeys.Length
+              && panes.Count(node => node.IsVisible) == 1
+              && panes.Single(node => node.IsVisible).Name == "PaneAppearance",
+            "七类容器都在，恰好一类可见且就是选中的那一类（可见 "
+            + panes.Count(node => node.IsVisible) + " 个）");
+
+        // A long group scrolled to the bottom, then a switch: the next group must open at its own top, not
+        // somewhere in the middle of a list the reader has already left. The length is grown from the trust
+        // entries rather than hoped for from the fixture's providers, so the overflow is the thing under test
+        // and not a coincidence of how many models happen to be configured on this machine.
+        OpenSettingsOn(shell, "permission");
+        var scroll = NamedDescendant<ScrollViewer>(settings, "DetailScroll")
+                     ?? throw new InvalidOperationException("自检夹具：详情区没有命名，滚动断言无从读起");
+        for (var index = 1; index <= 30; index++)
+        {
+            settings.TrustToolForCheck($"fixture_tool_{index}");
+        }
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(scroll.Extent.Height > scroll.Viewport.Height + 40,
+            "信任清单长到详情区装不下，滚动这才真的在测（内容 " + Fmt(scroll.Extent.Height)
+            + "，可视 " + Fmt(scroll.Viewport.Height) + "）");
+        scroll.Offset = new Vector(0, 300);
+        settings.SelectCategoryForCheck("editors");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(scroll.Offset.Y == 0,
+            "换栏时详情滚动回到顶部，不把上一栏的位置带过来（实际偏移 " + Fmt(scroll.Offset.Y) + "）");
+        Check(settings.RevokeAllTrustedToolsForCheck() && settings.TrustedToolsForCheck.Length == 0,
+            "夹具留下的信任项收干净了：这一格不该把 30 个假工具留在用户的设置里");
+
+        // Deep link and the answer to "where was I": a caller that knows which group answers its question gets
+        // that group, and a caller that does not gets the one the reader left.
+        OpenSettingsOn(shell, "updates");
+        Check(settings.SelectedCategory == "updates" && shell.SettingsCategoryForCheck == "updates",
+            "按类别深链落到那一栏，不是开完再跳回第一栏");
+        shell.CloseSettings();
+        OpenSettingsOn(shell, null);
+        Check(settings.SelectedCategory == "updates",
+            "再开时回到上次那一栏：浮层关掉不等于把人读到哪里忘了");
+
+        // A dropdown is its own top-level, so Escape belongs to it first. Without this guard the card vanishes
+        // from under a choice the reader was mid-way through making.
+        shell.OpenSettingsForCheck("appearance");
+        var picker = NamedDescendant<ComboBox>(settings, "LanguagePicker")
+                     ?? throw new InvalidOperationException("自检夹具：外观栏里没有语言下拉");
+        picker.IsDropDownOpen = true;
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(picker.IsDropDownOpen && settings.HasOpenDropDown, "下拉展开时页面报得出「有下拉开着」");
+        shell.PressSettingsKeyForCheck(Key.Escape);
+        Check(picker.IsDropDownOpen && shell.SettingsOverlayVisibleForCheck,
+            "下拉开着时 Escape 不收浮层：那一键是列表的，不是卡片的");
+        picker.IsDropDownOpen = false;
+        Dispatcher.UIThread.RunJobs();
+        shell.PressSettingsKeyForCheck(Key.Escape);
+        Check(!shell.SettingsOverlayVisibleForCheck, "没有下拉开着时 Escape 把浮层收掉");
+
+        // The two other ways out, each through its own real input rather than the method behind it.
+        OpenSettingsOn(shell, "appearance");
+        shell.ClickSettingsCloseForCheck();
+        Check(!shell.SettingsOverlayVisibleForCheck, "点卡片右上角的 × 关掉浮层（接线有效，不是只画了一枚按钮）");
+
+        OpenSettingsOn(shell, "appearance");
+        PressScrim(shell.SettingsScrimForCheck, shell);
+        Check(!shell.SettingsOverlayVisibleForCheck,
+            "点遮罩也关掉：卡里没有任何未提交状态，外面那一下不该没有反应");
+
+        // The gear toggles: pressed twice it must undo itself, since it is the one entry always on screen.
+        shell.ClickSettingsGearForCheck();
+        Check(shell.SettingsOverlayVisibleForCheck, "齿轮第一下升起浮层");
+        shell.ClickSettingsGearForCheck();
+        Check(!shell.SettingsOverlayVisibleForCheck,
+            "齿轮是开关不是只开：第二下把卡收掉（自检直接触发按钮事件，人在卡开着时点到的是遮罩而不是它）");
+
+        // The charter's other half: a question does not get to be covered by an answer. The card holds the
+        // whole chat column under its scrim, so an approval that lands while it is up would be a question
+        // nobody can see, let alone answer.
+        shell.OpenSettingsForCheck("appearance");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        shell.RaiseAttentionForCheck(ChatAttentionKind.ToolApproval);
+        Check(!shell.SettingsOverlayVisibleForCheck,
+            "会话需要决定时浮层自己让开：审批卡不能长在遮罩底下等人去发现");
+
+        // Clipping: the detail column is the tall thing in a bounded card, and an overflow that paints past
+        // the rounded corner is a bug here, not a style.
+        shell.OpenSettingsForCheck("providers");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var detail = NamedDescendant<ScrollViewer>(settings, "DetailScroll");
+        Check(detail is not null && detail.Bounds.Height <= shell.SettingsCardBoundsForCheck.Height + 0.5,
+            "详情区高不过卡片：滚动条长在卡里，不是把卡撑破（详情 "
+            + Fmt(detail?.Bounds.Height ?? 0) + "，卡片 " + Fmt(shell.SettingsCardBoundsForCheck.Height) + "）");
+        shell.CloseSettings();
+    }
+
+    /// <summary>Raises a real press on the scrim, the way the title bar's drag layer is pressed: exercising the
+    /// wiring rather than calling the handler. A stub pointer is enough because nothing under test reads it —
+    /// the event's constructor is what demands one.</summary>
+    private static void PressScrim(Border scrim, MainWindow shell)
+        => scrim.RaiseEvent(new PointerPressedEventArgs(
+            scrim, CheckPointer, shell, new Point(4, 4), 0,
+            new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed),
+            KeyModifiers.None, 1));
+
+    /// <summary>
     /// Really render **every** page and judge the frame as non-blank. The assertions above could all pass while rendering simply isn't up;
     /// and per-page captures have an added value: the PNGs left in the report let a human glance at the layout —
     /// assertions understand "is there content", not "is anything squeezed together or clipped".
@@ -10819,7 +11080,6 @@ public partial class ShellCheckWindow : Window
     private void CheckRealRender(MainWindow shell)
     {
         var directory = ScratchDirectory.Resolve("shell-render");
-
         foreach (var key in MainWindow.PageKeys)
         {
             var path = System.IO.Path.Combine(directory, "page-" + key + ".png");
@@ -10834,6 +11094,37 @@ public partial class ShellCheckWindow : Window
                 + "，variance=" + stats.LuminanceVariance.ToString("F2", CultureInfo.InvariantCulture)
                 + "，" + size + " 字节）");
         }
+
+        // Settings left the page sweep when it became a layer, so it gets its own: one frame per category,
+        // captured off **the card** rather than the window. The difference matters — a shot of the window would
+        // read as "not blank" from the shell behind the scrim and stay green on a card that painted nothing,
+        // while the card's own frame can only be non-blank if the group actually drew.
+        foreach (var category in SettingsPage.CategoryKeys)
+        {
+            var path = System.IO.Path.Combine(directory, "card-" + category + ".png");
+            shell.OpenSettingsForCheck(category);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var stats = SmokeCapture.Capture(shell.SettingsCardForCheck, path);
+            var size = System.IO.File.Exists(path) ? new System.IO.FileInfo(path).Length : 0;
+            Check(size > 0 && !stats.IsBlank()
+                  && shell.SettingsSelectedCategoryForCheck == category,
+                "设置浮层「" + category + "」栏真实渲染出非空白帧（" + stats.Width + "x" + stats.Height
+                + "，distinct=" + stats.DistinctColors
+                + "，variance=" + stats.LuminanceVariance.ToString("F2", CultureInfo.InvariantCulture)
+                + "，" + size + " 字节）");
+        }
+
+        // One frame of the whole window with the card up, for the thing no per-card shot can show: that the
+        // title bar and the status strip are still outside the scrim.
+        var overlayPath = System.IO.Path.Combine(directory, "settings-overlay.png");
+        shell.OpenSettingsForCheck("appearance");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        SmokeCapture.Capture(shell, overlayPath);
+        shell.CloseSettings();
+        Check(System.IO.File.Exists(overlayPath),
+            "浮层整窗帧留在报告里，遮罩边界与那两条留白能用人眼看（" + overlayPath + "）");
     }
 
     // ---------------------------------------------------------------------

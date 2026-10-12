@@ -367,6 +367,47 @@
       <Setter Property="Opacity" Value="0.94" />
     </Style>
 
+    <!-- ==================== Settings overlay ====================
+         The same overlay argument as the viewer's scrim: a Popup would be its own top-level and no screenshot of
+         this window would ever show the settings surface, so it is a layer of the window and asserted as one.
+         Lighter than the viewer's 0.94 on purpose — what happens under this one is a question arriving while an
+         answer surface is up, and a scrim you can still read through is what makes the shell yielding to it
+         (see MainWindow.Settings.cs) legible instead of magical. -->
+    <Style Selector="Border.settings-scrim">
+      <Setter Property="Background" Value="{DynamicResource Hub.PopupSurface}" />
+      <Setter Property="Opacity" Value="0.88" />
+    </Style>
+    <!-- The frame radius is the composer's and the viewer's number, not a fourth one: this is the same kind of
+         surface — a raised panel floating on the shell, not a page section. Clipped because a scrollable detail
+         pane lives inside it, and an overflowing child painting past the corner is a bug, not a style. -->
+    <Style Selector="Border.settings-card">
+      <Setter Property="Background" Value="{DynamicResource Hub.Surface}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderStrong}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="{DynamicResource Hub.Radius.Frame}" />
+      <Setter Property="ClipToBounds" Value="True" />
+    </Style>
+    <!-- The category rail. Derived from the sidebar's `RadioButton.nav` and deliberately stripped of it: no icon
+         arms (seven text-only rows, so the nav item's Path.icon fill rules have nothing to apply to), and a
+         tighter plate, because this rail is 200 pixels inside a card rather than the window's own spine. -->
+    <Style Selector="RadioButton.settings-cat">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Padding" Value="12,9" />
+      <Setter Property="Margin" Value="0,0,0,2" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+    <Style Selector="RadioButton.settings-cat:pointerover">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    </Style>
+    <Style Selector="RadioButton.settings-cat:checked">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceSelected}" />
+    </Style>
+
     <!-- ==================== Inspector pane ====================
          The tabs read as text with an underline on the selected one rather than as a boxed TabControl: the pane
          is already a boxed column, and a second box inside it is chrome saying "navigation" a second time. -->
@@ -492,14 +533,16 @@
     </Style>
   </Window.Styles>
 
-  <!-- Three layers: the shell (title bar, sidebar, page, inspector column), above it the inspector's expanded
-       self, and above that the picture viewer. The two overlays are siblings of the whole shell rather than
-       column-spanning children of it, so the inspector column coming and going cannot change what they cover —
-       and they stay inside this window, which is what keeps them photographable by the shell self-check (a Popup
-       would be its own top-level). Nothing in this app sets ZIndex: document order is the entire stacking
-       contract, and the order of these three is asserted, because an overlay placed in the wrong slot covers
-       the shell just as well and only loses to the wrong thing. The expanded one is held to the second row, so
-       "everything but the title bar" is a fact about the grid rather than about its paint order. -->
+  <!-- Four layers: the shell (title bar, sidebar, page, inspector column), above it the inspector's expanded
+       self, above that the picture viewer, and on top the settings overlay. The three overlays are siblings of
+       the whole shell rather than column-spanning children of it, so the inspector column coming and going
+       cannot change what they cover — and they stay inside this window, which is what keeps them photographable
+       by the shell self-check (a Popup would be its own top-level). Nothing in this app sets ZIndex: document
+       order is the entire stacking contract, and the order of these layers is asserted, because an overlay
+       placed in the wrong slot covers the shell just as well and only loses to the wrong thing. The expanded
+       inspector and settings are held to the second row, so "everything but the title bar" is a fact about the
+       grid rather than about its paint order — and for settings that row plus a 28-pixel bottom margin is also
+       what keeps the window draggable and the status strip pressable while it is open. -->
   <Grid x:Name="ClientRoot" RowDefinitions="32,*">
   <!-- The shell spans both rows: its own first row *is* the title bar strip, and the row split up here exists so
        that the expanded inspector can be given everything below that strip. The 32 is the same number the bar's
@@ -883,6 +926,47 @@
       <StackPanel x:Name="PictureViewerBar" Grid.Column="1" Orientation="Horizontal" Spacing="4"
                   Margin="14,0,0,0" />
     </Grid>
+  </Grid>
+
+  <!-- ==================== Settings overlay ====================
+     Settings is a layer of this window rather than a page in PageHost and rather than its own OS window. The
+     page argument against it: eight stacked cards in one scroll, where the model-provider card alone is a screen
+     and a half, pushed every other group off the bottom. The window argument against it: this host is held to
+     the grid's **second row with a 28-pixel bottom margin**, which is the title bar's drag strip and the status
+     strip's own height — so the window stays draggable and the strip's download slot stays pressable while
+     settings is open. A real modal would have frozen both, and the slot is the only place an app update can be
+     acted on.
+
+     The card is sized off the parent window: it is this host minus a fixed inset, clamped between a floor (a
+     minimum-size window still gets a usable card) and a ceiling (a 5K display does not get a 2,500-pixel
+     measure line). The header names the surface once — the page's own 22-pixel title went away with it, because
+     a card that says 设置 under a bar that says 设置 is the same word twice. -->
+  <Grid x:Name="SettingsOverlayHost" Grid.Row="1" Margin="0,0,0,28" IsVisible="False" ClipToBounds="True">
+    <Border x:Name="SettingsScrim" Classes="settings-scrim" />
+    <!-- The card's Width and Height are set in code from this host's own bounds (see SyncSettingsCardSize):
+         alignment cannot express "fill the window, but not past a readable measure" — a centered child measures
+         against infinity and collapses to its minimum, and a stretched one ignores MaxWidth by pinning to the
+         cell's left edge. -->
+    <Border x:Name="SettingsCard" Classes="settings-card"
+            HorizontalAlignment="Center" VerticalAlignment="Center">
+      <Grid RowDefinitions="56,*">
+        <Grid ColumnDefinitions="*,Auto" Margin="24,0,18,0">
+          <TextBlock Text="{DynamicResource Settings}" FontSize="20" FontWeight="SemiBold"
+                     VerticalAlignment="Center" />
+          <Button x:Name="SettingsCloseButton" Grid.Column="1" Classes="viewer-action"
+                  VerticalAlignment="Center" ToolTip.Tip="{DynamicResource SettingsOverlayClose}">
+            <Path Width="14" Height="14" Stretch="Uniform" Data="{StaticResource Hub.Icon.Close}"
+                  Fill="Transparent" Stroke="{DynamicResource Hub.TextSecondary}" StrokeThickness="1.7"
+                  StrokeLineCap="Round" StrokeJoin="Round" />
+          </Button>
+        </Grid>
+        <!-- The rule under the header, and the page under that. The Border carries the divider rather than the
+             card growing a second box: the rail's own hairline continues this one down the card. -->
+        <Border Grid.Row="1" BorderBrush="{DynamicResource Hub.BorderSubtle}" BorderThickness="0,1,0,0">
+          <ContentControl x:Name="SettingsHost" />
+        </Border>
+      </Grid>
+    </Border>
   </Grid>
   </Grid>
 </Window>

@@ -121,6 +121,7 @@ public partial class SettingsPage : UserControl
         SpawnCheck.IsCheckedChanged += (_, _) => OnSpawnChanged();
         WebFetchCheck.IsCheckedChanged += (_, _) => OnWebFetchChanged();
         WireProviders();
+        InitializeCategories();
 
         // The update card is a *view* of the shared UpdateService, so a check started elsewhere (the shell's
         // startup check) shows up here live. The download itself is no longer this page's to report — that is
@@ -133,6 +134,84 @@ public partial class SettingsPage : UserControl
         // an imperative value won't change on language switch, and the self-check reads this control's text to judge whether localization works.
         Reload();
     }
+
+    // ───────────────────────── The category rail ─────────────────────────
+
+    /// <summary>The row the card opens on when nobody asked for a specific one.</summary>
+    internal const string DefaultCategory = "appearance";
+
+    /// <summary>Every category the rail can land on, in rail order. The shell holds the deep-link string, so
+    /// this is the one list both sides agree on — a key that is not here is not a category.</summary>
+    internal static readonly string[] CategoryKeys =
+        ["appearance", "providers", "permission", "engine", "storage", "updates", "editors"];
+
+    internal static bool IsCategory(string? key)
+        => key is { Length: > 0 } && Array.IndexOf(CategoryKeys, key) >= 0;
+
+    /// <summary>The rail's rows and the pane each one shows, paired in code rather than by naming convention:
+    /// a row that opens nothing, or a pane nobody can reach, is exactly the mistake a convention hides.</summary>
+    private (string Key, RadioButton Row, Control Pane)[] _categories = [];
+
+    private string _selectedCategory = DefaultCategory;
+
+    private void InitializeCategories()
+    {
+        _categories =
+        [
+            ("appearance", CatAppearance, PaneAppearance),
+            ("providers", CatProviders, PaneProviders),
+            ("permission", CatPermission, PanePermission),
+            ("engine", CatEngine, PaneEngine),
+            ("storage", CatStorage, PaneStorage),
+            ("updates", CatUpdates, PaneUpdates),
+            ("editors", CatEditors, PaneEditors),
+        ];
+
+        foreach (var (key, row, _) in _categories)
+        {
+            row.Click += (_, _) => SelectCategory(key);
+        }
+
+        SelectCategory(_selectedCategory);
+    }
+
+    /// <summary>Shows one group and hides the other six. The rail's checked state is set here rather than left
+    /// to the toggle: a raised <c>Click</c> does not flip a ToggleButton (measured, and the reason the shell's
+    /// own checks drive rows through this method), and a row that reads checked while its pane is hidden is a
+    /// worse answer than one that reads unchecked.</summary>
+    internal void SelectCategory(string key)
+    {
+        if (!IsCategory(key))
+        {
+            key = DefaultCategory;
+        }
+
+        _selectedCategory = key;
+        if (_categories.Length == 0)
+        {
+            // Constructed before the rail was paired — the constructor's own Reload lands here.
+            return;
+        }
+
+        foreach (var (candidate, row, pane) in _categories)
+        {
+            var shown = candidate == key;
+            row.IsChecked = shown;
+            pane.IsVisible = shown;
+        }
+
+        // Every group shares the one detail scroll, so an offset left over from the bottom of a long provider
+        // list would open the next group somewhere in its middle.
+        DetailScroll.Offset = default;
+    }
+
+    internal string SelectedCategory => _selectedCategory;
+
+    /// <summary>Whether any picker in the card has its dropdown up. The shell's Escape handler asks, because a
+    /// dropdown is its own top-level: the key belongs to the list the reader is looking at, not to the card
+    /// behind it.</summary>
+    internal bool HasOpenDropDown
+        => this.GetLogicalDescendants().OfType<ComboBox>().Any(box => box.IsDropDownOpen);
 
     /// <summary>
     /// The language tags declared in XAML. The language mapping lives on XAML's <c>Tag</c>; here we just read it out —
@@ -204,6 +283,9 @@ public partial class SettingsPage : UserControl
             // Visual Studio (devenv.exe) is Windows-only; hide its row on other hosts so the user isn't
             // offered an editor that can never be installed there.
             VisualStudioRow.IsVisible = OperatingSystem.IsWindows();
+            // The rule between the two editor rows divides one editor from two, so it follows the row that
+            // decides the count rather than being painted unconditionally.
+            EditorRule.IsVisible = VisualStudioRow.IsVisible;
             // The auto-download switch mirrors the preference. Assigning it here doesn't re-save:
             // _ready is false for the whole reload (the same gate the dropdowns rely on). It is
             // disabled on a dev/portable copy, where there is nothing to auto-update.
@@ -574,6 +656,33 @@ public partial class SettingsPage : UserControl
         HubTheme.Dark => "ThemeDark",
         _ => "ThemeSystem",
     };
+
+    /// <summary>What each theme value actually decides, for the one-line hint the bottom menu's row carries.
+    /// Same reason as <see cref="ThemeTextKey"/>: a fourth theme must not be able to arrive without a
+    /// sentence.</summary>
+    internal static string ThemeHintKey(string theme) => HubTheme.Normalize(theme) switch
+    {
+        HubTheme.Light => "ThemeLightHint",
+        HubTheme.Dark => "ThemeDarkHint",
+        _ => "ThemeSystemHint",
+    };
+
+    /// <summary>The glyph for a theme value. Also total over the three, for the same reason.</summary>
+    internal static string ThemeIconKey(string theme) => HubTheme.Normalize(theme) switch
+    {
+        HubTheme.Light => "Hub.Icon.Sun",
+        HubTheme.Dark => "Hub.Icon.Moon",
+        _ => "Hub.Icon.Monitor",
+    };
+
+    /// <summary>
+    /// The languages the interface speaks and the name each one is called by its own speakers. The picker in
+    /// XAML declares the same pairs and an assertion compares the two — the bottom menu cannot read the
+    /// picker's items (the page may not exist yet), and a second copy of the list is exactly where they would
+    /// drift. The display names are **not** localized: they are here for people who cannot read the current UI.
+    /// </summary>
+    internal static readonly (string Tag, string Display)[] LanguageChoices =
+        [(HubTexts.ChineseLanguage, "简体中文"), (HubTexts.EnglishLanguage, "English")];
 
     /// <summary>
     /// Writes the three labels from the text table. It is imperative **on purpose**: a ComboBoxItem
@@ -2718,26 +2827,11 @@ public partial class SettingsPage : UserControl
         viewer.Offset = new Vector(0, Math.Max(0, offset.Y - 40));
     }
 
-    /// <summary>
-    /// Scrolls the provider card into view so a screenshot shows it. The page is one long
-    /// <c>ScrollViewer</c>, and the group list sits well below the fold — without this a captured page image
-    /// simply does not contain the thing being reviewed.
-    /// </summary>
-    internal void ScrollToProviderCardForCheck()
-    {
-        // Walking up to the ScrollViewer (rather than naming it) keeps the page free of a screenshot-only
-        // reference; the page has exactly one, and its child is the card stack.
-        Avalonia.Visual? node = ProviderGroupList;
-        while (node is not null and not ScrollViewer) node = node.GetVisualParent();
-
-        if (node is ScrollViewer viewer && viewer.Content is Control content)
-        {
-            // Bring the group list's own top into view: the card heading above it is what makes the picture
-            // legible, so the offset is pulled up by the height of that heading and hint.
-            var offset = ProviderGroupList.TranslatePoint(new Point(0, 0), content) ?? new Point(0, 0);
-            viewer.Offset = new Vector(0, Math.Max(0, offset.Y - 150));
-        }
-    }
+    /// <summary>Drives the rail the way a click on it does, for the checks and the shot modes that need one
+    /// specific group on screen. This replaced <c>ScrollToProviderCardForCheck</c>, which no longer means
+    /// anything: the provider list is not below a fold to crawl past any more, it is a category the rail
+    /// selects, and selecting it already lands at its top.</summary>
+    internal void SelectCategoryForCheck(string key) => SelectCategory(key);
 
     /// <summary>
     /// Role markers attached to the nodes of a provider group with <c>Control.Tag</c>.

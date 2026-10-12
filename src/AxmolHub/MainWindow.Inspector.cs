@@ -297,9 +297,11 @@ public partial class MainWindow
     private void OnInspectorExpandKeyDown(object? sender, KeyEventArgs e)
     {
         if (e.Key != Key.Escape) return;
-        // The picture viewer owns Escape while it is up: it is the topmost layer, and the one thing a person
-        // has just asked for. Only then does an expanded inspector get the key — and it gets it before the
-        // composer's decision host, which is a window away from being on top.
+        // The layers above this one own Escape first, and the order is stated here rather than left to handler
+        // registration: settings is the topmost layer of the window, the picture viewer sits above the expanded
+        // inspector, and only then does an expanded inspector get the key — before the composer's decision host,
+        // which is a window away from being on top.
+        if (SettingsOverlayHost.IsVisible) return;
         if (PictureViewerHost.IsVisible) return;
         if (!_inspectorExpanded) return;
         RestoreInspector();
@@ -538,6 +540,9 @@ public partial class MainWindow
     private void OnViewerKeyDown(object? sender, KeyEventArgs e)
     {
         if (!PictureViewerHost.IsVisible) return;
+        // Settings is the one layer stacked above the viewer, so a card on screen owns Escape: closing the
+        // picture underneath it would take away a frame the reader is not looking at and leave the card up.
+        if (SettingsOverlayHost.IsVisible) return;
         switch (e.Key)
         {
             case Key.Escape:

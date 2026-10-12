@@ -3,106 +3,130 @@
              xmlns:local="using:AxmolHub"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-             mc:Ignorable="d" d:DesignWidth="740" d:DesignHeight="500"
+             mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="560"
              x:Class="AxmolHub.SettingsPage"
              x:DataType="local:SettingsPage">
 
-  <!-- Settings page (the WPF version's SettingsPage). It is also the localization pipeline's **live
-       acceptance bench**: switching language must reload the resource dictionary in place so that
-       **already-existing controls** change their text. Whether Avalonia's DynamicResource really
-       re-resolves when the resource dictionary changes cannot be decided by reading the code — it can
-       only be clicked for real here and asserted. See the verify shell self-check. -->
-  <ScrollViewer VerticalScrollBarVisibility="Auto">
-    <StackPanel Spacing="16">
+  <!-- The settings card's content. It lives on the shell's own overlay layer (MainWindow.Settings.cs), which is
+       why there is no page title here: the card's header bar already says 设置, and a second one under it is the
+       same word twice.
 
-      <StackPanel Spacing="6">
-        <TextBlock Text="{DynamicResource Settings}" FontSize="22" FontWeight="SemiBold" />
-        <TextBlock Classes="muted" Text="{DynamicResource SettingsHint}" />
-      </StackPanel>
+       It is also why the layout is a rail plus one group on screen rather than the eight stacked cards this file
+       used to be. As a page in PageHost the stack worked — the window is tall and a page scrolls; as a card it
+       would be a wall, because the model-provider group alone runs past a screen and everything below it would
+       need a scroll nobody asked for. So the rail carries the seven groups, and the detail column shows one.
 
-      <!-- Language -->
-      <Border Classes="card">
-        <Grid ColumnDefinitions="*,240">
+       This page is still the localization pipeline's **live acceptance bench**: switching language must reload
+       the resource dictionary in place so that **already-existing controls** change their text. Whether
+       Avalonia's DynamicResource really re-resolves when the dictionary changes cannot be decided by reading the
+       code — it can only be clicked for real here and asserted. See the verify shell self-check.
+
+       The sections are separated by a hairline rather than by a card each, because the card is already a box:
+       eight boxes inside one box is chrome saying "these are separate" eight times over. -->
+  <Grid ColumnDefinitions="200,1,*">
+
+    <!-- ==================== Category rail ====================
+         Text-only, and the selected row is the shell's own `Hub.SurfaceSelected` plate rather than an accent
+         bar: this rail sits inside a card, and an accent stripe is the spine's language, not a panel's. -->
+    <StackPanel Grid.Column="0" Spacing="2" Margin="14,16,10,14">
+      <RadioButton x:Name="CatAppearance" Classes="settings-cat" GroupName="SettingsCat"
+                   Content="{DynamicResource SettingsCatAppearance}" />
+      <RadioButton x:Name="CatProviders" Classes="settings-cat" GroupName="SettingsCat"
+                   Content="{DynamicResource ModelProviders}" />
+      <RadioButton x:Name="CatPermission" Classes="settings-cat" GroupName="SettingsCat"
+                   Content="{DynamicResource ToolPermission}" />
+      <RadioButton x:Name="CatEngine" Classes="settings-cat" GroupName="SettingsCat"
+                   Content="{DynamicResource DownloadSource}" />
+      <RadioButton x:Name="CatStorage" Classes="settings-cat" GroupName="SettingsCat"
+                   Content="{DynamicResource Storage}" />
+      <RadioButton x:Name="CatUpdates" Classes="settings-cat" GroupName="SettingsCat"
+                   Content="{DynamicResource Updates}" />
+      <RadioButton x:Name="CatEditors" Classes="settings-cat" GroupName="SettingsCat"
+                   Content="{DynamicResource Editors}" />
+    </StackPanel>
+
+    <Border Grid.Column="1" Background="{DynamicResource Hub.BorderSubtle}" />
+
+    <!-- One ScrollViewer for the whole detail column, in a bounded grid cell rather than a StackPanel slot: a
+         StackPanel hands its children infinite height and the scroll bar would never appear. Every pane below
+         shares it, and switching category resets its offset (see SelectCategory). -->
+    <ScrollViewer Grid.Column="2" x:Name="DetailScroll" VerticalScrollBarVisibility="Auto"
+                  Padding="26,18,26,24">
+
+      <!-- The chat column's own measure, reused rather than reinvented: a card that follows a 5K window is
+         free to be 1,180 wide, but a hint line is still hard to read back at its own start past ~820. The cap
+         is a ceiling, not a floor — on a narrow window the detail is simply as wide as it is. -->
+      <StackPanel MaxWidth="{DynamicResource Hub.Column.MaxWidth}" HorizontalAlignment="Left">
+
+        <!-- ─────────────── Appearance and language ───────────────
+             The two pickers that the bottom menu also drives. They are one group here because they are one
+             decision — how the app looks and speaks — and both are short enough that stacking them costs
+             nothing. -->
+        <StackPanel x:Name="PaneAppearance" Spacing="22" IsVisible="False">
+
+          <!-- Language -->
           <StackPanel>
             <TextBlock Text="{DynamicResource Language}" FontSize="16" FontWeight="SemiBold" />
-            <TextBlock Classes="muted" Margin="0,7,0,0" Text="{DynamicResource LanguageHint}" />
+            <TextBlock Classes="muted" Margin="0,7,0,0" TextWrapping="Wrap"
+                       Text="{DynamicResource LanguageHint}" />
+            <!-- Language names are deliberately **not** localized: they are there for people who can't read
+                 the current UI. The language tag lives in Tag rather than being looked up by index: the WPF
+                 version scattered the "0 ↔ zh-CN / 1 ↔ en-US" mapping across 4 places, and adding a language
+                 or reordering would silently misalign. With Tag there is a single mapping, sitting right next
+                 to the data itself. -->
+            <ComboBox x:Name="LanguagePicker" Margin="0,10,0,0" Width="240"
+                      HorizontalAlignment="Left">
+              <ComboBoxItem Content="简体中文" Tag="zh-CN" />
+              <ComboBoxItem Content="English" Tag="en-US" />
+            </ComboBox>
           </StackPanel>
-          <!-- Language names are deliberately **not** localized: they are there for people who can't read
-               the current UI. The language tag lives in Tag rather than being looked up by index: the WPF
-               version scattered the "0 ↔ zh-CN / 1 ↔ en-US" mapping across 4 places, and adding a language
-               or reordering would silently misalign. With Tag there is a single mapping, sitting right next
-               to the data itself. -->
-          <ComboBox x:Name="LanguagePicker" Grid.Column="1">
-            <ComboBoxItem Content="简体中文" Tag="zh-CN" />
-            <ComboBoxItem Content="English" Tag="en-US" />
-          </ComboBox>
-        </Grid>
-      </Border>
 
-      <!-- Appearance: the three-state theme picker (follow system / light / dark). Unlike the language
-           names, these three labels are localized; how they get their text is noted on the ComboBox. -->
-      <Border Classes="card">
-        <Grid ColumnDefinitions="*,240">
+          <!-- Appearance: the three-state theme picker (follow system / light / dark). Unlike the language
+               names, these three labels are localized; how they get their text is noted on the ComboBox. -->
           <StackPanel>
+            <!-- The rule between two sections of one group. A 1px filled Border rather than a
+                 BorderThickness on the section itself, because the section is a StackPanel with no box of its
+                 own and a thickness there would grow its bounds. -->
+            <Border Height="1" Background="{DynamicResource Hub.BorderSubtle}" Margin="0,0,0,20" />
             <TextBlock Text="{DynamicResource Appearance}" FontSize="16" FontWeight="SemiBold" />
-            <TextBlock Classes="muted" Margin="0,7,0,0" Text="{DynamicResource ThemeHint}" />
+            <TextBlock Classes="muted" Margin="0,7,0,0" TextWrapping="Wrap"
+                       Text="{DynamicResource ThemeHint}" />
+            <!-- The value lives on Tag, exactly like the language picker: the index ↔ value mapping
+                 (0 ↔ system …) would otherwise be scattered across XAML and code, and inserting a
+                 value would silently misalign them.
+
+                 The three labels are **not** {DynamicResource}: a ComboBoxItem sitting in Items isn't
+                 attached to the logical tree until the dropdown opens, and DynamicResource resolves
+                 through the resource host it is attached to — measured here, all three came back empty.
+                 They are written in code instead (see LocalizeThemeItems), and the language switch
+                 reaches them because MainWindow.ApplyLanguage reloads this page. -->
+            <ComboBox x:Name="ThemePicker" Margin="0,10,0,0" Width="240"
+                      HorizontalAlignment="Left">
+              <ComboBoxItem Tag="system" />
+              <ComboBoxItem Tag="light" />
+              <ComboBoxItem Tag="dark" />
+            </ComboBox>
           </StackPanel>
-          <!-- The value lives on Tag, exactly like the language picker: the index ↔ value mapping
-               (0 ↔ system …) would otherwise be scattered across XAML and code, and inserting a
-               value would silently misalign them.
-
-               The three labels are **not** {DynamicResource}: a ComboBoxItem sitting in Items isn't
-               attached to the logical tree until the dropdown opens, and DynamicResource resolves
-               through the resource host it is attached to — measured here, all three came back empty.
-               They are written in code instead (see LocalizeThemeItems), and the language switch
-               reaches them because MainWindow.ApplyLanguage reloads this page. -->
-          <ComboBox x:Name="ThemePicker" Grid.Column="1">
-            <ComboBoxItem Tag="system" />
-            <ComboBoxItem Tag="light" />
-            <ComboBoxItem Tag="dark" />
-          </ComboBox>
-        </Grid>
-      </Border>
-
-      <!-- Engine download source: where the engine release package comes from. It is **not** the
-           engine's own dependency mirror (that lives in the engine tree, switched on the engines
-           page) — this only decides the host Hub downloads the zip from.
-           The three labels are written in code (LocalizeDownloadSourceItems) for the same reason as
-           the theme labels: a ComboBoxItem inside Items is not attached to the logical tree until
-           the dropdown opens, so {DynamicResource} resolves empty. -->
-      <Border Classes="card">
-        <StackPanel Spacing="10">
-          <TextBlock Text="{DynamicResource DownloadSource}" FontSize="16" FontWeight="SemiBold" />
-          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource DownloadSourceHint}" />
-
-          <ComboBox x:Name="DownloadSourcePicker" HorizontalAlignment="Stretch">
-            <ComboBoxItem Tag="github" />
-            <ComboBoxItem Tag="atomgit" />
-            <ComboBoxItem Tag="custom" />
-          </ComboBox>
-
-          <TextBlock Text="{DynamicResource CustomDownloadSource}" FontWeight="SemiBold" />
-          <TextBox x:Name="CustomDownloadSourceBox" />
-          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource CustomDownloadSourceHint}" />
         </StackPanel>
-      </Border>
 
-      <!-- Model providers (the AI assistant's configuration). Moved here from the assistant page: choosing
-           which model answers is part of the conversation, but *managing endpoints, models and keys* is
-           configuration — the same split GitHub Copilot uses. The assistant page keeps only a read-only
-           "current model" line.
+        <!-- ─────────────── Model providers ───────────────
+             The AI assistant's configuration. Moved here from the assistant page: choosing which model answers
+             is part of the conversation, but *managing endpoints, models and keys* is configuration — the same
+             split GitHub Copilot uses. The assistant page keeps only a read-only "current model" line.
 
-           Every configured provider is its own group, and all groups are expanded: the list is short (a
-           handful of endpoints), and collapsing would hide the two things people come here for — which model
-           is in use and whether a key is already stored. Each group therefore carries its own sign-in
-           entrance, its own accounts and its own model list.
+             Every configured provider is its own group, and a group is expanded when it has little to hide:
+             collapsing a provider would hide the two things people come here for — which model is in use and
+             whether a key is already stored. Each group therefore carries its own sign-in entrance, its own
+             accounts and its own model list.
 
-           The groups are built in code (RebuildProviderGroups) rather than bound, because each one owns
-           button handlers that close over the provider it belongs to and the rows are rebuilt on every
-           language switch — a DataTemplate would need a view-model layer for four controls. -->
-      <Border Classes="card">
-        <StackPanel Spacing="10">
-          <TextBlock Text="{DynamicResource ModelProviders}" FontSize="16" FontWeight="SemiBold" />
+             The groups are built in code (RebuildProviderGroups) rather than bound, because each one owns
+             button handlers that close over the provider it belongs to and the rows are rebuilt on every
+             language switch — a DataTemplate would need a view-model layer for four controls.
+
+             This is the one group with no ceiling on its own height: a machine with six endpoints and forty
+             models is a long scroll, and that is the correct length for it. The rail is what keeps the other
+             six groups off the end of that scroll. -->
+        <StackPanel x:Name="PaneProviders" Spacing="10" IsVisible="False">
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource ModelProvidersHint}" />
 
           <Button x:Name="AddProviderButton" Content="{DynamicResource AddProvider}" Classes="quiet"
@@ -115,18 +139,16 @@
 
           <StackPanel x:Name="ProviderGroupList" Spacing="12" />
         </StackPanel>
-      </Border>
 
-      <!-- What the assistant may do without asking. The default belongs here because it is a standing policy
-           across sessions; the per-session override lives in the composer, where the exception is actually
-           being made. Labels are written in code for the same reason as the theme and source lists: a
-           ComboBoxItem in Items is not attached to the logical tree until the dropdown opens. -->
-      <Border Classes="card">
-        <StackPanel Spacing="10">
-          <TextBlock Text="{DynamicResource ToolPermission}" FontSize="16" FontWeight="SemiBold" />
+        <!-- ─────────────── Tool permission ───────────────
+             What the assistant may do without asking. The default belongs here because it is a standing policy
+             across sessions; the per-session override lives in the composer, where the exception is actually
+             being made. Labels are written in code for the same reason as the theme and source lists: a
+             ComboBoxItem in Items is not attached to the logical tree until the dropdown opens. -->
+        <StackPanel x:Name="PanePermission" Spacing="10" IsVisible="False">
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource ToolPermissionHint}" />
 
-          <ComboBox x:Name="ToolApprovalPicker" HorizontalAlignment="Stretch">
+          <ComboBox x:Name="ToolApprovalPicker" Width="240" HorizontalAlignment="Left">
             <ComboBoxItem Tag="ask" />
             <ComboBoxItem Tag="auto" />
             <ComboBoxItem Tag="full" />
@@ -135,7 +157,8 @@
           <!-- The 「以后都不问」 choices clicked on cards are visible in this section, and revocable here too.
                The list is built in code: every row must carry its own tool name for revocation — the same
                reason as ProviderGroupList. -->
-          <TextBlock Text="{DynamicResource TrustedToolsTitle}" FontSize="13" FontWeight="SemiBold" />
+          <TextBlock Text="{DynamicResource TrustedToolsTitle}" FontSize="13" FontWeight="SemiBold"
+                     Margin="0,12,0,0" />
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource TrustedToolsHint}" />
           <StackPanel x:Name="TrustedToolList" Spacing="4" />
           <Button x:Name="RevokeAllTrustedToolsButton" Classes="quiet" HorizontalAlignment="Left"
@@ -145,7 +168,7 @@
                approval mode governs "should one action ask first", while this governs "may the assistant open
                another session and spend money on its own". Default off, and with it off the tool itself says
                where to turn it on instead of letting the model retry. -->
-          <CheckBox x:Name="SpawnCheck" Content="{DynamicResource AllowSpawnSessions}" />
+          <CheckBox x:Name="SpawnCheck" Content="{DynamicResource AllowSpawnSessions}" Margin="0,12,0,0" />
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource AllowSpawnSessionsHint}" />
 
           <!-- The outbound-network switch, like the one above, is not an approval tier either: tiers decide
@@ -154,16 +177,36 @@
                defaulting off would make the feature nonexistent for anyone who never finds the setting.
                The real gate is WebFetch's address policy (https only, public hosts, redirects may not escape)
                plus the ask tier's card. -->
-          <CheckBox x:Name="WebFetchCheck" Content="{DynamicResource AllowWebFetch}" />
+          <CheckBox x:Name="WebFetchCheck" Content="{DynamicResource AllowWebFetch}" Margin="0,12,0,0" />
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource AllowWebFetchHint}" />
         </StackPanel>
-      </Border>
 
-      <!-- Storage and projects -->
-      <Border Classes="card">
-        <StackPanel Spacing="18">
-          <TextBlock Text="{DynamicResource Storage}" FontSize="16" FontWeight="SemiBold" />
+        <!-- ─────────────── Engine download source ───────────────
+             Where the engine release package comes from. It is **not** the engine's own dependency mirror
+             (that lives in the engine tree, switched on the engines page) — this only decides the host Hub
+             downloads the zip from. The three labels are written in code
+             (LocalizeDownloadSourceItems) for the same reason as the theme labels: a ComboBoxItem inside Items
+             is not attached to the logical tree until the dropdown opens, so {DynamicResource} resolves empty.
 
+             Its own group rather than a row inside 下载与更新, because the two decide different things: this is
+             where an *engine* comes from, and 软件更新 is where *Hub itself* comes from. -->
+        <StackPanel x:Name="PaneEngine" Spacing="10" IsVisible="False">
+          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource DownloadSourceHint}" />
+
+          <ComboBox x:Name="DownloadSourcePicker" Width="240" HorizontalAlignment="Left">
+            <ComboBoxItem Tag="github" />
+            <ComboBoxItem Tag="atomgit" />
+            <ComboBoxItem Tag="custom" />
+          </ComboBox>
+
+          <TextBlock Text="{DynamicResource CustomDownloadSource}" FontWeight="SemiBold"
+                     Margin="0,12,0,0" />
+          <TextBox x:Name="CustomDownloadSourceBox" />
+          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource CustomDownloadSourceHint}" />
+        </StackPanel>
+
+        <!-- ─────────────── Storage and projects ─────────────── -->
+        <StackPanel x:Name="PaneStorage" Spacing="18" IsVisible="False">
           <StackPanel Spacing="6">
             <TextBlock Text="{DynamicResource DataDirectory}" FontWeight="SemiBold" />
             <!-- The WPF version had only one Browse button here; the Avalonia version adds an "Open", because
@@ -183,6 +226,10 @@
                        Text="{DynamicResource DataHint}" />
           </StackPanel>
 
+          <!-- Three peer sections, so two rules. The rail names the group; these say where one directory
+               decision stops and the next begins. -->
+          <Border Height="1" Background="{DynamicResource Hub.BorderSubtle}" />
+
           <StackPanel Spacing="6">
             <TextBlock Text="{DynamicResource DefaultProjectDirectory}" FontWeight="SemiBold" />
             <DockPanel>
@@ -193,25 +240,27 @@
             <TextBlock Classes="muted" Text="{DynamicResource ProjectDirectoryHint}" />
           </StackPanel>
 
+          <Border Height="1" Background="{DynamicResource Hub.BorderSubtle}" />
+
           <StackPanel Spacing="6">
             <TextBlock Text="{DynamicResource DefaultEngine}" Classes="muted" />
             <TextBlock x:Name="DefaultEngine" />
           </StackPanel>
         </StackPanel>
-      </Border>
 
-      <!-- Software update (Velopack self-update). The version line, status, progress and buttons are
-           wired in code: the current version comes from the assembly, the check is a network call, and
-           the download reports progress through a callback. -->
-      <Border Classes="card">
-        <StackPanel Spacing="10">
-          <TextBlock Text="{DynamicResource Updates}" FontSize="16" FontWeight="SemiBold" />
+        <!-- ─────────────── Software update ───────────────
+             Velopack self-update. The version line, status and buttons are wired in code: the current version
+             comes from the assembly and the check is a network call. What is **not** here is the transfer: an
+             update is downloaded, retried and applied from the status strip's queue slot, the same surface every
+             other download reports on, so this group is settings and a check for one — nothing that moves a
+             byte. -->
+        <StackPanel x:Name="PaneUpdates" Spacing="10" IsVisible="False">
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource UpdatesHint}" />
 
           <StackPanel Spacing="6">
             <TextBlock Text="{DynamicResource UpdateChannel}" FontWeight="SemiBold" />
             <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource UpdateChannelHint}" />
-            <ComboBox x:Name="UpdateChannelPicker" HorizontalAlignment="Stretch">
+            <ComboBox x:Name="UpdateChannelPicker" Width="240" HorizontalAlignment="Left">
               <ComboBoxItem Tag="stable" />
               <ComboBoxItem Tag="preview" />
             </ComboBox>
@@ -223,6 +272,11 @@
                is where the transfer then reports. -->
           <CheckBox x:Name="AutoDownloadCheck" Content="{DynamicResource AutoDownloadUpdates}" />
 
+          <!-- The rule divides policy above from readout below: the two pickers and the switch decide how an
+               update arrives, and everything under the line reports where this install stands. Nothing that
+               moves a byte lives on either side of it — the transfer is the strip's queue slot. -->
+          <Border Height="1" Background="{DynamicResource Hub.BorderSubtle}" />
+
           <Grid ColumnDefinitions="*,Auto">
             <StackPanel>
               <TextBlock x:Name="CurrentVersionLine" FontWeight="SemiBold" />
@@ -232,12 +286,9 @@
                     VerticalAlignment="Center" Margin="12,0,0,0" />
           </Grid>
         </StackPanel>
-      </Border>
 
-      <!-- Code editors -->
-      <Border Classes="card">
-        <StackPanel Spacing="16">
-          <TextBlock Text="{DynamicResource Editors}" FontSize="16" FontWeight="SemiBold" />
+        <!-- ─────────────── Code editors ─────────────── -->
+        <StackPanel x:Name="PaneEditors" Spacing="16" IsVisible="False">
           <TextBlock Classes="muted" Text="{DynamicResource EditorHint}" />
 
           <!-- Visual Studio is Windows-only; the row is hidden on macOS/Linux by SettingsPage.Reload(). -->
@@ -250,6 +301,11 @@
             </StackPanel>
           </DockPanel>
 
+          <!-- The rule between the two editors is visible exactly when there are two to divide: Reload hides
+               the Visual Studio row on a host without devenv.exe, and a rule left behind would sit under the
+               hint as if something had been removed from above it. -->
+          <Border x:Name="EditorRule" Height="1" Background="{DynamicResource Hub.BorderSubtle}" />
+
           <DockPanel>
             <Button x:Name="SelectCodeButton" DockPanel.Dock="Right" Margin="12,0,0,0" Classes="more"
                     Content="{DynamicResource SelectEditor}" />
@@ -259,8 +315,8 @@
             </StackPanel>
           </DockPanel>
         </StackPanel>
-      </Border>
 
-    </StackPanel>
-  </ScrollViewer>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
 </UserControl>
