@@ -57,7 +57,25 @@ internal static class MarkdownMessageRenderer
         engine.HyperlinkCommand = new OpenLinkCommand(viewer);
         viewer.Engine = engine;
         viewer.Markdown = LinkifyBareUrls(markdown);
+        ApplyCodeFont(viewer);
         return viewer;
+    }
+
+    /// <summary>
+    /// Replaces the font GithubLike stamps onto inline code.
+    ///
+    /// <para>Its theme resolves <c>fonts:SystemFonts</c> to a bare "Consolas" and assigns it as a **local
+    /// value** on each <see cref="CCode"/>. That family exists on Windows and nowhere else, and Avalonia
+    /// throws rather than falling back to the next name, so a single backticked word takes the whole window
+    /// down at measure time on Linux. Being a local value is why neither a style in
+    /// <see cref="HubMarkdownStyles"/> nor an override of the resource key can reach it: both lose to it.
+    /// This is the same post-build pass that hands the code editor its theme.</para>
+    /// </summary>
+    private static void ApplyCodeFont(MarkdownScrollViewer viewer)
+    {
+        if (Application.Current?.FindResource("Hub.Font.Mono") is not FontFamily mono) return;
+        foreach (var code in viewer.GetLogicalDescendants().OfType<CCode>())
+            code.FontFamily = mono;
     }
 
     internal static void RenderInto(StackPanel content, string markdown)
