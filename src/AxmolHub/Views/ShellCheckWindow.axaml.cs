@@ -10476,8 +10476,8 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(settings.UpdateStatusText == foundLine
-              && shell.TransferSlotTipForCheck.Contains("9.9.9", StringComparison.Ordinal),
-            "更新就绪后版本号仍在卡片上，并且进了槽位的重启提示（提示 " + shell.TransferSlotTipForCheck + "）");
+              && shell.TaskSlotTipForCheck.Contains("9.9.9", StringComparison.Ordinal),
+            "更新就绪后版本号仍在卡片上，并且进了槽位的重启提示（提示 " + shell.TaskSlotTipForCheck + "）");
 
         // And the card must come back down: a scripted update left behind would leak into every render
         // check that follows (the shell's download slot included).
@@ -10486,7 +10486,7 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(settings.UpdateStatusText == HubTexts.Get("UpdateCheckHint", HubStrings.Language)
-              && shell.TransferSlotTipForCheck == HubTexts.Get("TransferSlotTip", HubStrings.Language),
+              && shell.TaskSlotTipForCheck == HubTexts.Get("TaskSlotTip", HubStrings.Language),
             "清掉脚本更新后卡片与槽位都回到未检查的初始态（状态行 " + settings.UpdateStatusText + "）");
 
         // --- 5.1b The download queue's own surface ---
@@ -10494,126 +10494,126 @@ public partial class ShellCheckWindow : Window
         // function rather than a live transfer because the branches are about *counting*, and counting can
         // be asserted without parking three real downloads behind it. What then runs live is the one thing
         // a pure function cannot prove: that the slot, the popover and the strip's geometry really move.
-        Check(!shell.TransferSlotVisibleForCheck,
+        Check(!shell.TaskSlotVisibleForCheck,
             "没有下载在跑时状态条的下载槽是暗的");
 
-        static TransferQueue.Item Moving(string version, int? percent = null, long? bytes = null)
+        static TaskQueue.Item Moving(string version, int? percent = null, long? bytes = null)
         {
-            var item = new TransferQueue.Item($"engine:install:{version}", "TransferEnginePackage", version);
-            item.BeginTransferring();
+            var item = new TaskQueue.Item($"engine:install:{version}", "TaskEnginePackage", version);
+            item.BeginRunning();
             if (percent is { } p) item.ReportPercent(p);
             if (bytes is { } b) item.ReportBytes(new DownloadProgress(b, b * 2, 2_400_000));
             return item;
         }
 
-        static TransferQueue.Item Waiting(string version)
-            => new($"engine:install:{version}", "TransferEnginePackage", version);
+        static TaskQueue.Item Waiting(string version)
+            => new($"engine:install:{version}", "TaskEnginePackage", version);
 
         var twoMoving = new[] { Moving("9.9.9"), Moving("9.9.8"), Waiting("9.9.7") };
-        var twoMovingState = MainWindow.TransferSlotStateFor(
+        var twoMovingState = MainWindow.TaskSlotStateFor(
             twoMoving, UpdateService.DownloadState.None, canStartDownload: false, armed: false);
-        Check(twoMovingState.Visible && twoMovingState.Action == MainWindow.TransferSlotAction.OpenQueue
+        Check(twoMovingState.Visible && twoMovingState.Action == MainWindow.TaskSlotAction.OpenQueue
               && twoMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                  HubTexts.Get("TransferSlotFormat", HubStrings.Language), 2, 3),
+                  HubTexts.Get("TaskSlotFormat", HubStrings.Language), 2, 3),
             "两路在跑、第三路等待时槽说 下载 2/3，并且它不是一个动作（实际 " + twoMovingState.Label + "）");
 
         // One number per download, never an average of two: with a single transfer moving its own
         // percentage is the honest aggregate, and with two the count stands alone.
         var oneMoving = new[] { Moving("9.9.9", percent: 37) };
-        var oneMovingState = MainWindow.TransferSlotStateFor(
+        var oneMovingState = MainWindow.TaskSlotStateFor(
             oneMoving, UpdateService.DownloadState.None, canStartDownload: false, armed: false);
         Check(oneMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                  HubTexts.Get("TransferSlotPercentFormat", HubStrings.Language), 1, 1, 37),
+                  HubTexts.Get("TaskSlotPercentFormat", HubStrings.Language), 1, 1, 37),
             "只有一路在跑时槽带上它自己的百分比（实际 " + oneMovingState.Label + "）");
 
         // A failure does not steal the label while something is still moving: the count is the live fact,
         // and the failed row is inside the popover where it can be read next to the one still running.
         var failedWhileMoving = new[] { Waiting("9.9.9"), Moving("9.9.8") };
         failedWhileMoving[0].Fail("fixture: the mirror answered 503");
-        var mixedState = MainWindow.TransferSlotStateFor(
+        var mixedState = MainWindow.TaskSlotStateFor(
             failedWhileMoving, UpdateService.DownloadState.None, canStartDownload: false, armed: false);
-        Check(mixedState.Visible && mixedState.Action != MainWindow.TransferSlotAction.Restart
+        Check(mixedState.Visible && mixedState.Action != MainWindow.TaskSlotAction.Restart
               && mixedState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                  HubTexts.Get("TransferSlotFormat", HubStrings.Language), 1, 1),
+                  HubTexts.Get("TaskSlotFormat", HubStrings.Language), 1, 1),
             "还有路在跑时，失败的那条不抢标签（实际 " + mixedState.Label + "）");
 
         var allFailed = new[] { Waiting("9.9.9") };
         allFailed[0].Fail("fixture: digest mismatch");
-        Check(MainWindow.TransferSlotStateFor(allFailed, UpdateService.DownloadState.None, canStartDownload: false, armed: false).Visible,
+        Check(MainWindow.TaskSlotStateFor(allFailed, UpdateService.DownloadState.None, canStartDownload: false, armed: false).Visible,
             "没有下载在跑、只留下一次失败时槽仍然亮着");
-        Check(!MainWindow.TransferSlotStateFor(
-                  Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.None, canStartDownload: false, armed: false).Visible,
+        Check(!MainWindow.TaskSlotStateFor(
+                  Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.None, canStartDownload: false, armed: false).Visible,
             "队列空且没有待更新时槽保持沉默");
 
         // The action mode: the bytes have landed and only a process swap is missing.
-        var restartState = MainWindow.TransferSlotStateFor(
-            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.Ready, canStartDownload: false, armed: false);
-        var armedState = MainWindow.TransferSlotStateFor(
-            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.Ready, canStartDownload: false, armed: true);
-        Check(restartState.Visible && restartState.Action == MainWindow.TransferSlotAction.Restart
-              && restartState.Label == HubTexts.Get("TransferRestartAction", HubStrings.Language)
-              && armedState.Label == HubTexts.Get("TransferRestartArmed", HubStrings.Language)
+        var restartState = MainWindow.TaskSlotStateFor(
+            Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.Ready, canStartDownload: false, armed: false);
+        var armedState = MainWindow.TaskSlotStateFor(
+            Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.Ready, canStartDownload: false, armed: true);
+        Check(restartState.Visible && restartState.Action == MainWindow.TaskSlotAction.Restart
+              && restartState.Label == HubTexts.Get("TaskRestartAction", HubStrings.Language)
+              && armedState.Label == HubTexts.Get("TaskRestartArmed", HubStrings.Language)
               && armedState.Label != restartState.Label,
             "下载就绪时槽就是重启动作，忙时第一下只把它变成再点一次（" + restartState.Label + " / " + armedState.Label + "）");
 
         // And live, on the real strip: one scripted transfer that never ends.
-        TransferQueue.Instance.EnqueueForCheck("engine:install:9.9.6", "TransferEnginePackage", "9.9.6");
+        TaskQueue.Instance.EnqueueForCheck("engine:install:9.9.6", "TaskEnginePackage", "9.9.6");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         var platesBefore = shell.WindowControlsBoundsForCheck;
-        Check(shell.TransferSlotVisibleForCheck
-              && shell.TransferSlotTextForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                  HubTexts.Get("TransferSlotFormat", HubStrings.Language), 1, 1),
-            "脚本下载在跑时状态条真的亮着并写着 下载 1/1（实际 " + shell.TransferSlotTextForCheck + "）");
+        Check(shell.TaskSlotVisibleForCheck
+              && shell.TaskSlotTextForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                  HubTexts.Get("TaskSlotFormat", HubStrings.Language), 1, 1),
+            "脚本下载在跑时状态条真的亮着并写着 下载 1/1（实际 " + shell.TaskSlotTextForCheck + "）");
 
-        shell.OpenQueuePopupForCheck();
+        shell.OpenTaskPopupForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.QueuePopupOpenForCheck && shell.QueueRowCountForCheck == 1,
-            "点下载槽弹出队列面板，跑着的那一项有一行（实际 " + shell.QueueRowCountForCheck + " 行）");
+        Check(shell.TaskPopupOpenForCheck && shell.TaskRowCountForCheck == 1,
+            "点下载槽弹出队列面板，跑着的那一项有一行（实际 " + shell.TaskRowCountForCheck + " 行）");
         // The frame, not just the tree: a Popup that opens with nothing in it passes every object-graph
         // check above, and it is exactly the failure the reader would see. It has to be captured as its own
         // visual because a popup presents in its own PopupRoot, outside the window's pixels.
-        var popoverShot = System.IO.Path.Combine(ScratchDirectory.Resolve("queue-popover"), "rows.png");
-        var popoverStats = SmokeCapture.Capture(shell.QueuePopoverForCheck!, popoverShot);
+        var popoverShot = System.IO.Path.Combine(ScratchDirectory.Resolve("task-popover"), "rows.png");
+        var popoverStats = SmokeCapture.Capture(shell.TaskPopoverForCheck!, popoverShot);
         Check(System.IO.File.Exists(popoverShot) && !popoverStats.IsBlank(),
             "队列面板真的画出了内容（" + popoverStats.Width + "x" + popoverStats.Height
             + "，distinct=" + popoverStats.DistinctColors + "）");
-        Check(!shell.TransferSlotAccentForCheck,
+        Check(!shell.TaskSlotAccentForCheck,
             "队列模式的槽不加强调底板，强调留给只剩一个动作的时候");
         Check(shell.StatusStripHeightForCheck <= 28.5
               && SameRect(shell.WindowControlsBoundsForCheck, platesBefore),
             "面板展开时状态条仍是那 28 高，三枚窗口按钮一格没动");
-        shell.CloseQueuePopupForCheck();
+        shell.CloseTaskPopupForCheck();
         Dispatcher.UIThread.RunJobs();
 
         // Three scripted transfers, so two hold the slots and one waits. Cancelling the waiting one has to
         // end it: a cancel that only reaches a running transfer would leave this one queued, and the moment
         // a slot freed it would start downloading something the user already said no to.
-        TransferQueue.Instance.EnqueueForCheck("engine:install:9.9.5", "TransferEnginePackage", "9.9.5");
-        TransferQueue.Instance.EnqueueForCheck("engine:install:9.9.4", "TransferEnginePackage", "9.9.4");
-        var waiting = TransferQueue.Instance.EnqueueForCheck("engine:install:9.9.3", "TransferEnginePackage", "9.9.3")
+        TaskQueue.Instance.EnqueueForCheck("engine:install:9.9.5", "TaskEnginePackage", "9.9.5");
+        TaskQueue.Instance.EnqueueForCheck("engine:install:9.9.4", "TaskEnginePackage", "9.9.4");
+        var waiting = TaskQueue.Instance.EnqueueForCheck("engine:install:9.9.3", "TaskEnginePackage", "9.9.3")
             ?? throw new InvalidOperationException("fixture: the third transfer was refused, so nothing is waiting");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(TransferQueue.Instance.Items.Count(item => item.IsMoving) == 2
-              && waiting is { State: TransferQueue.Phase.Queued },
+        Check(TaskQueue.Instance.Items.Count(item => item.IsMoving) == 2
+              && waiting is { State: TaskQueue.Phase.Queued },
             "第三路下载停在等待，闸只有两路（实际在跑 "
-            + TransferQueue.Instance.Items.Count(item => item.IsMoving) + " 路）");
-        TransferQueue.Instance.Cancel("engine:install:9.9.3");
+            + TaskQueue.Instance.Items.Count(item => item.IsMoving) + " 路）");
+        TaskQueue.Instance.Cancel("engine:install:9.9.3");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(waiting.State == TransferQueue.Phase.Cancelled,
+        Check(waiting.State == TaskQueue.Phase.Cancelled,
             "取消一个还在等待的下载，它就此结束，不会等空位补上（实际 " + waiting.State + "）");
-        TransferQueue.Instance.ClearForCheck();
+        TaskQueue.Instance.ClearForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         // The scripted transfer has to go before the restart can be read: while anything is moving the slot
         // is the queue, and that is the rule the two states are distinguished by.
-        TransferQueue.Instance.ClearForCheck();
+        TaskQueue.Instance.ClearForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(!shell.TransferSlotVisibleForCheck,
+        Check(!shell.TaskSlotVisibleForCheck,
             "脚本下载结束后槽自己熄灭，不留下一个报过去的行");
 
         // The restart press must never reach the updater here: that would replace the process running the
@@ -10623,64 +10623,64 @@ public partial class ShellCheckWindow : Window
         UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Ready);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.TransferSlotVisibleForCheck && shell.TransferSlotAccentForCheck
-              && shell.TransferSlotTextForCheck == HubTexts.Get("TransferRestartAction", HubStrings.Language),
-            "更新就绪且没有在跑时，槽真的变成了重启动作（实际 " + shell.TransferSlotTextForCheck + "）");
+        Check(shell.TaskSlotVisibleForCheck && shell.TaskSlotAccentForCheck
+              && shell.TaskSlotTextForCheck == HubTexts.Get("TaskRestartAction", HubStrings.Language),
+            "更新就绪且没有在跑时，槽真的变成了重启动作（实际 " + shell.TaskSlotTextForCheck + "）");
         // More than a flat plate: the accent rectangle alone is one or two colours, so the count is what
         // says the word is on it. This is the one press the whole queue exists to hand the user, and a
         // strip that painted it invisible would look finished.
         var slotShot = System.IO.Path.Combine(ScratchDirectory.Resolve("queue-slot"), "restart.png");
-        var slotStats = SmokeCapture.Capture(shell.TransferSlotForCheck, slotShot);
+        var slotStats = SmokeCapture.Capture(shell.TaskSlotForCheck, slotShot);
         Check(!slotStats.IsBlank() && slotStats.DistinctColors > 2,
             "重启槽画得出来：强调底板与文字都在帧里（" + slotStats.Width + "x" + slotStats.Height
             + "，distinct=" + slotStats.DistinctColors + "）");
 
         // Busy: the first press arms, and nothing is applied yet.
         shell.RestartInterruptsWork = () => true;
-        shell.ClickTransferSlotForCheck();
+        shell.ClickTaskSlotForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(shell.RestartArmedForCheck && applied.Length == 0
-              && shell.TransferSlotTextForCheck == HubTexts.Get("TransferRestartArmed", HubStrings.Language),
-            "有活在跑时第一下只把槽变成再点一次，不重启（实际 " + shell.TransferSlotTextForCheck + "）");
-        shell.ClickTransferSlotForCheck();
+              && shell.TaskSlotTextForCheck == HubTexts.Get("TaskRestartArmed", HubStrings.Language),
+            "有活在跑时第一下只把槽变成再点一次，不重启（实际 " + shell.TaskSlotTextForCheck + "）");
+        shell.ClickTaskSlotForCheck();
         Check(applied == "9.9.9", "第二下才真的走重启，并且带上那个版本（实际 " + applied + "）");
 
         // Idle: one press is the whole action, no confirmation in the way.
         shell.RestartInterruptsWork = () => false;
         applied = "";
-        shell.ClickTransferSlotForCheck();
+        shell.ClickTaskSlotForCheck();
         Check(applied == "9.9.9" && !shell.RestartArmedForCheck,
             "没有在跑的东西时重启一下就走，不要求第二下（实际 " + applied + "）");
         UpdateService.Instance.ApplyOverrideForCheck = null;
 
         // Everything scripted goes back down, or every render check after this inherits a lit strip.
-        TransferQueue.Instance.ClearForCheck();
+        TaskQueue.Instance.ClearForCheck();
         UpdateService.Instance.ClearForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(!shell.TransferSlotVisibleForCheck && !shell.QueuePopupOpenForCheck,
+        Check(!shell.TaskSlotVisibleForCheck && !shell.TaskPopupOpenForCheck,
             "清掉脚本队列与脚本更新后下载槽熄灭、面板收起");
 
         // --- 5.1c Retry, dismiss, and the download the settings card used to own ---
         // The three things this round added, asserted where they are decided: the pure function for which
         // branch wins, the live strip and popover for what the user can actually press.
-        var retryWord = HubTexts.Get("TransferRetry", HubStrings.Language);
-        var dismissWord = HubTexts.Get("TransferDismiss", HubStrings.Language);
+        var retryWord = HubTexts.Get("TaskRetry", HubStrings.Language);
+        var dismissWord = HubTexts.Get("TaskDismiss", HubStrings.Language);
         var cancelWord = HubTexts.Get("Cancel", HubStrings.Language);
 
         // A failure outranks an offer: the strip that lights 「下载更新」 over a download that just died
         // would be asking for more work while hiding the work that failed.
         var outrank = new[] { Waiting("9.9.9") };
         outrank[0].Fail("fixture: digest mismatch");
-        Check(MainWindow.TransferSlotStateFor(outrank, UpdateService.DownloadState.None,
-                    canStartDownload: true, armed: false).Action == MainWindow.TransferSlotAction.OpenQueue,
+        Check(MainWindow.TaskSlotStateFor(outrank, UpdateService.DownloadState.None,
+                    canStartDownload: true, armed: false).Action == MainWindow.TaskSlotAction.OpenQueue,
             "有失败行时下载动作不抢槽，失败先要被人看见");
 
-        var downloadOffer = MainWindow.TransferSlotStateFor(
-            Array.Empty<TransferQueue.Item>(), UpdateService.DownloadState.None, canStartDownload: true, armed: false);
-        Check(downloadOffer.Visible && downloadOffer.Action == MainWindow.TransferSlotAction.Download
-              && downloadOffer.Label == HubTexts.Get("TransferDownloadAction", HubStrings.Language),
+        var downloadOffer = MainWindow.TaskSlotStateFor(
+            Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.None, canStartDownload: true, armed: false);
+        Check(downloadOffer.Visible && downloadOffer.Action == MainWindow.TaskSlotAction.Download
+              && downloadOffer.Label == HubTexts.Get("TaskDownloadAction", HubStrings.Language),
             "发现新版本且没开自动下载时，槽就是下载动作（实际 " + downloadOffer.Label + "）");
 
         // Live, and with the real fetch refused: asking Velopack here would reach GitHub.
@@ -10691,14 +10691,14 @@ public partial class ShellCheckWindow : Window
         UpdateService.Instance.SetPendingForCheck(pendingUpdate);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.TransferSlotVisibleForCheck && shell.TransferSlotAccentForCheck
-              && shell.TransferSlotTextForCheck == HubTexts.Get("TransferDownloadAction", HubStrings.Language),
-            "自动下载关着时状态条真的亮成下载动作（实际 " + shell.TransferSlotTextForCheck + "）");
+        Check(shell.TaskSlotVisibleForCheck && shell.TaskSlotAccentForCheck
+              && shell.TaskSlotTextForCheck == HubTexts.Get("TaskDownloadAction", HubStrings.Language),
+            "自动下载关着时状态条真的亮成下载动作（实际 " + shell.TaskSlotTextForCheck + "）");
 
-        shell.ClickTransferSlotForCheck();
+        shell.ClickTaskSlotForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(downloaded == "9.9.9" && TransferQueue.Instance.Items.Count == 0 && !shell.RestartArmedForCheck,
+        Check(downloaded == "9.9.9" && TaskQueue.Instance.Items.Count == 0 && !shell.RestartArmedForCheck,
             "点下载动作只发起那一次下载，不入队也不武装重启（实际版本 " + downloaded + "）");
 
         // With auto-download back on nobody needs to be asked: the transfer starts by itself, so the offer
@@ -10706,7 +10706,7 @@ public partial class ShellCheckWindow : Window
         UpdateService.Instance.AutoDownload = true;
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(!shell.TransferSlotVisibleForCheck,
+        Check(!shell.TaskSlotVisibleForCheck,
             "自动下载开着时槽不亮下载，因为那件事已经在跑");
         UpdateService.Instance.AutoDownload = autoDownloadWas;
         UpdateService.Instance.DownloadOverrideForCheck = null;
@@ -10717,65 +10717,65 @@ public partial class ShellCheckWindow : Window
         // A failed row is the one settled state with answers left to give, and the retry has to be the same
         // row: a second row for one download would make 「取消这个」 ambiguous.
         var retryIdentity = "engine:install:9.9.2";
-        var firstAttempt = TransferQueue.Instance.EnqueueForCheck(retryIdentity, "TransferEnginePackage", "9.9.2")
+        var firstAttempt = TaskQueue.Instance.EnqueueForCheck(retryIdentity, "TaskEnginePackage", "9.9.2")
             ?? throw new InvalidOperationException("fixture: the retry transfer was refused");
         var firstCompletion = firstAttempt.Completion;
-        TransferQueue.Instance.FinishTransferForCheck(retryIdentity, TransferQueue.Phase.Failed, "fixture: 503");
+        TaskQueue.Instance.FinishTaskForCheck(retryIdentity, TaskQueue.Phase.Failed, "fixture: 503");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        shell.OpenQueuePopupForCheck();
+        shell.OpenTaskPopupForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.QueueRowCountForCheck == 1 && shell.QueueRowActionsForCheck == retryWord + "+" + dismissWord,
-            "失败的那一行给的是重试和忽略，不是取消（实际 " + shell.QueueRowActionsForCheck + "）");
+        Check(shell.TaskRowCountForCheck == 1 && shell.TaskRowActionsForCheck == retryWord + "+" + dismissWord,
+            "失败的那一行给的是重试和忽略，不是取消（实际 " + shell.TaskRowActionsForCheck + "）");
 
         // The trap the retry could walk into: a completion source is single-shot, so reusing it hands an
         // awaiting caller an already-settled task and 「还在下载」 reads as 「装完了」.
-        shell.ClickQueueRowActionForCheck(retryIdentity, retryWord);
+        shell.ClickTaskRowActionForCheck(retryIdentity, retryWord);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(firstCompletion.IsCompleted && !firstAttempt.Completion.IsCompleted
-              && firstAttempt.State is TransferQueue.Phase.Queued or TransferQueue.Phase.Transferring
-              && shell.QueueRowCountForCheck == 1 && shell.QueueRowActionsForCheck == cancelWord,
+              && firstAttempt.State is TaskQueue.Phase.Queued or TaskQueue.Phase.Running
+              && shell.TaskRowCountForCheck == 1 && shell.TaskRowActionsForCheck == cancelWord,
             "重试让同一行重新计时，旧的完成承诺不再算数（实际 " + firstAttempt.State + "）");
 
-        TransferQueue.Instance.FinishTransferForCheck(retryIdentity, TransferQueue.Phase.Failed, "fixture: 503 again");
+        TaskQueue.Instance.FinishTaskForCheck(retryIdentity, TaskQueue.Phase.Failed, "fixture: 503 again");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.QueueRowActionsForCheck == retryWord + "+" + dismissWord,
-            "又失败一次，行仍然给那两条路（实际 " + shell.QueueRowActionsForCheck + "）");
-        shell.ClickQueueRowActionForCheck(retryIdentity, dismissWord);
+        Check(shell.TaskRowActionsForCheck == retryWord + "+" + dismissWord,
+            "又失败一次，行仍然给那两条路（实际 " + shell.TaskRowActionsForCheck + "）");
+        shell.ClickTaskRowActionForCheck(retryIdentity, dismissWord);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(TransferQueue.Instance.Items.Count == 0 && shell.QueueRowCountForCheck == 0
-              && !shell.TransferSlotVisibleForCheck,
+        Check(TaskQueue.Instance.Items.Count == 0 && shell.TaskRowCountForCheck == 0
+              && !shell.TaskSlotVisibleForCheck,
             "忽略之后这一行不再报，槽也跟着熄灭");
 
         var dupIdentity = "engine:install:9.9.1";
-        TransferQueue.Instance.EnqueueForCheck(dupIdentity, "TransferEnginePackage", "9.9.1");
-        TransferQueue.Instance.FinishTransferForCheck(dupIdentity, TransferQueue.Phase.Failed, "fixture: first attempt");
-        TransferQueue.Instance.EnqueueForCheck(dupIdentity, "TransferEnginePackage", "9.9.1");
+        TaskQueue.Instance.EnqueueForCheck(dupIdentity, "TaskEnginePackage", "9.9.1");
+        TaskQueue.Instance.FinishTaskForCheck(dupIdentity, TaskQueue.Phase.Failed, "fixture: first attempt");
+        TaskQueue.Instance.EnqueueForCheck(dupIdentity, "TaskEnginePackage", "9.9.1");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(TransferQueue.Instance.Items.Count(item => item.Identity == dupIdentity) == 1,
+        Check(TaskQueue.Instance.Items.Count(item => item.Identity == dupIdentity) == 1,
             "同一次下载的旧失败行让位给新尝试，不并列成两行（实际 "
-            + TransferQueue.Instance.Items.Count(item => item.Identity == dupIdentity) + " 行）");
+            + TaskQueue.Instance.Items.Count(item => item.Identity == dupIdentity) + " 行）");
 
         // An estimate is not a measurement. The row's measure column stays the transport's own number, and
         // what its owner guessed lives in the tooltip — the shape the settings card's bar used to have.
         var estimateIdentity = "hub:update:8.8.8";
-        var estimateRow = TransferQueue.Instance.EnqueueForCheck(estimateIdentity, "TransferHubUpdate", "8.8.8")
+        var estimateRow = TaskQueue.Instance.EnqueueForCheck(estimateIdentity, "TaskHubUpdate", "8.8.8")
             ?? throw new InvalidOperationException("fixture: the estimate transfer was refused");
         estimateRow.ReportPercent(42);
         estimateRow.ReportEstimate(1_900_000, 3.5 * 1024 * 1024);
         // The rows only exist while the popover is open, and dismissing the last one closed it: reopen so
         // this reads the live row rather than a stale one left over from the previous cell.
-        shell.OpenQueuePopupForCheck();
+        shell.OpenTaskPopupForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        var rowReading = shell.QueueRowMeasureForCheck(estimateIdentity);
+        var rowReading = shell.TaskRowMeasureForCheck(estimateIdentity);
         Check(rowReading.EndsWith("|42%", StringComparison.Ordinal)
-              && rowReading.StartsWith(HubTexts.Get("TransferEstimateSize", HubStrings.Language), StringComparison.Ordinal)
+              && rowReading.StartsWith(HubTexts.Get("TaskEstimateSize", HubStrings.Language), StringComparison.Ordinal)
               && rowReading.Contains("MB/s", StringComparison.Ordinal),
             "更新行只报百分比，估算的体积与速率留在 tooltip（实际 " + rowReading + "）");
 
@@ -10788,7 +10788,7 @@ public partial class ShellCheckWindow : Window
         Check(restartWords.Count == 0,
             "设置页上没有任何会重启的按钮，两下闸门只长在槽位上（实际 " + string.Join("/", restartWords) + "）");
 
-        TransferQueue.Instance.ClearForCheck();
+        TaskQueue.Instance.ClearForCheck();
         UpdateService.Instance.ClearForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();

@@ -232,7 +232,7 @@
 
     <!-- The queue's popover: same furniture as the assistant's context popover (it hangs off a strip slot and
          holds a list), on the popup surface rather than the alt surface, because it floats over the page. -->
-    <Style Selector="Border.queue-popover">
+    <Style Selector="Border.task-popover">
       <Setter Property="Background" Value="{DynamicResource Hub.PopupSurface}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
       <Setter Property="BorderThickness" Value="1" />
@@ -240,23 +240,23 @@
       <Setter Property="Padding" Value="16,14" />
       <Setter Property="Width" Value="400" />
     </Style>
-    <Style Selector="TextBlock.queue-title">
+    <Style Selector="TextBlock.task-title">
       <Setter Property="FontSize" Value="13" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
-    <Style Selector="TextBlock.queue-row-title">
+    <Style Selector="TextBlock.task-row-title">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
       <Setter Property="TextTrimming" Value="CharacterEllipsis" />
     </Style>
     <!-- The measurement line: bytes and rate, or a percentage, or an em-dash. Tertiary ink because the row
          above already says what is being fetched. -->
-    <Style Selector="TextBlock.queue-row-measure">
+    <Style Selector="TextBlock.task-row-measure">
       <Setter Property="FontSize" Value="11" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
     </Style>
-    <Style Selector="TextBlock.queue-row-error">
+    <Style Selector="TextBlock.task-row-error">
       <Setter Property="FontSize" Value="11" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
       <Setter Property="TextWrapping" Value="Wrap" />
@@ -732,10 +732,10 @@
              rows, the measurements and the per-item cancel: the list does not live in the strip, only its
              count does. Its own Auto column for the same reason as the repository slot above, because a
              second sentence inside the * column would take trimming room from the operation status. -->
-        <Button x:Name="TransferSlot" Grid.Column="3" Classes="strip"
+        <Button x:Name="TaskSlot" Grid.Column="3" Classes="strip"
                 IsVisible="False" Margin="6,0,0,0" MaxWidth="220"
                 VerticalAlignment="Center">
-          <TextBlock x:Name="TransferSlotText" TextTrimming="CharacterEllipsis"
+          <TextBlock x:Name="TaskSlotText" TextTrimming="CharacterEllipsis"
                      VerticalAlignment="Center" />
         </Button>
         <!-- Background replies get their own slot rather than overwriting the operation status: a session
@@ -783,17 +783,17 @@
            MenuFlyout because Avalonia 12's flyouts host menu items only, and a row here is a title, a
            measurement and a progress track. Light-dismissed like the assistant's context popover: the list
            is a reading, and clicking anywhere else is how a person stops reading it.
-           The rows are built in code (MainWindow.RenderTransferRows) from the queue's own items. -->
-      <Popup x:Name="QueuePopup" IsLightDismissEnabled="True">
-        <Border Classes="queue-popover">
+           The rows are built in code (MainWindow.RenderTaskRows) from the queue's own items. -->
+      <Popup x:Name="TaskPopup" IsLightDismissEnabled="True">
+        <Border Classes="task-popover">
           <DockPanel>
-            <TextBlock DockPanel.Dock="Top" Classes="queue-title"
-                       Text="{DynamicResource TransferQueueTitle}" Margin="0,0,0,10" />
+            <TextBlock DockPanel.Dock="Top" Classes="task-title"
+                       Text="{DynamicResource TaskListTitle}" Margin="0,0,0,10" />
             <!-- Bounded on purpose: the ScrollViewer is the fill child of the DockPanel with a ceiling, so a
                  long batch scrolls instead of pushing the popover past the window. A StackPanel handed the
                  list infinite height and the scroll would never engage. -->
             <ScrollViewer MaxHeight="280">
-              <StackPanel x:Name="QueueRows" Spacing="10" ClipToBounds="True" />
+              <StackPanel x:Name="TaskRows" Spacing="10" ClipToBounds="True" />
             </ScrollViewer>
           </DockPanel>
         </Border>

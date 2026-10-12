@@ -81,7 +81,7 @@ public partial class MainWindow : Window
     /// The slot's tip moves on every progress tick, so a fresh string each time would make the tooltip
     /// impossible to read while a download runs.
     /// </summary>
-    private readonly TextBlock _transferSlotTip = new();
+    private readonly TextBlock _taskSlotTip = new();
 
     private string _currentKey = "";
 
@@ -672,53 +672,53 @@ public partial class MainWindow : Window
     /// of numbers it moved. Re-creating the row controls on every 80 KB report is how a list that works in a
     /// unit test stutters on a real download.
     /// </summary>
-    private void UpdateTransferSlot()
+    private void UpdateTaskSlot()
     {
         // Same construction-window as UpdateRepoIndicator: the queue can report before the strip exists.
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(UpdateTransferSlot);
+            Dispatcher.UIThread.Post(UpdateTaskSlot);
             return;
         }
 
-        if (TransferSlotText is null) return;
+        if (TaskSlotText is null) return;
 
         var service = UpdateService.Instance;
-        var (visible, label, action) = TransferSlotStateFor(
-            TransferQueue.Instance.Items, service.Download, CanStartDownload(), _restartArmed);
-        if (action != TransferSlotAction.Restart)
+        var (visible, label, action) = TaskSlotStateFor(
+            TaskQueue.Instance.Items, service.Download, CanStartDownload(), _restartArmed);
+        if (action != TaskSlotAction.Restart)
         {
             // Whatever the second press was standing by for is gone, so the word goes back before the next
             // click can find it still armed on a different state.
             _restartArmed = false;
         }
 
-        TransferSlot.IsVisible = visible;
-        TransferSlotText.Text = visible ? label : "";
+        TaskSlot.IsVisible = visible;
+        TaskSlotText.Text = visible ? label : "";
         // Emphasis belongs to a slot that *is* a decision, not to one that only shows a list.
-        TransferSlot.Classes.Set("accent", action is TransferSlotAction.Restart or TransferSlotAction.Download);
-        _transferSlotTip.Text = action switch
+        TaskSlot.Classes.Set("accent", action is TaskSlotAction.Restart or TaskSlotAction.Download);
+        _taskSlotTip.Text = action switch
         {
-            TransferSlotAction.Restart => service.PendingVersion is { } readyVersion
+            TaskSlotAction.Restart => service.PendingVersion is { } readyVersion
                 ? string.Format(HubStrings.Get("UpdateRestartActionTip"), readyVersion)
-                : HubStrings.Get("TransferRestartAction"),
-            TransferSlotAction.Download => service.PendingVersion is { } newVersion
-                ? string.Format(HubStrings.Get("TransferDownloadSlotTip"), newVersion)
-                : HubStrings.Get("TransferSlotTip"),
-            _ => HubStrings.Get("TransferSlotTip"),
+                : HubStrings.Get("TaskRestartAction"),
+            TaskSlotAction.Download => service.PendingVersion is { } newVersion
+                ? string.Format(HubStrings.Get("TaskDownloadSlotTip"), newVersion)
+                : HubStrings.Get("TaskSlotTip"),
+            _ => HubStrings.Get("TaskSlotTip"),
         };
         if (!visible)
         {
             // Nothing left to act on and nothing left to read: the popover goes with its own anchor rather
             // than staying open over an empty list — and its rows go with it, because a closed popover still
             // holding rows for transfers nobody queued is the same report of the past, just unseen.
-            QueuePopup.IsOpen = false;
-            QueueRows.Children.Clear();
-            _queueRowViews.Clear();
+            TaskPopup.IsOpen = false;
+            TaskRows.Children.Clear();
+            _taskRowViews.Clear();
         }
-        else if (QueuePopup.IsOpen)
+        else if (TaskPopup.IsOpen)
         {
-            RenderTransferRows();
+            RenderTaskRows();
         }
     }
 
@@ -726,7 +726,7 @@ public partial class MainWindow : Window
     /// What a press on the slot does. Named rather than flagged because the slot answers more than one kind
     /// of question, and a bool could only ever tell "show me the list" apart from everything else.
     /// </summary>
-    internal enum TransferSlotAction
+    internal enum TaskSlotAction
     {
         /// <summary>Nothing to act on, so nothing is shown.</summary>
         None,
@@ -753,8 +753,8 @@ public partial class MainWindow : Window
     /// lit for work already finished would be reporting the past. A failure keeps the slot lit because it
     /// is still a thing to act on.</para>
     /// </summary>
-    internal static (bool Visible, string Label, TransferSlotAction Action) TransferSlotStateFor(
-        IReadOnlyList<TransferQueue.Item> items, UpdateService.DownloadState download, bool canStartDownload, bool armed)
+    internal static (bool Visible, string Label, TaskSlotAction Action) TaskSlotStateFor(
+        IReadOnlyList<TaskQueue.Item> items, UpdateService.DownloadState download, bool canStartDownload, bool armed)
     {
         var active = items.Where(item => item.IsActive).ToList();
         if (active.Count > 0)
@@ -766,23 +766,23 @@ public partial class MainWindow : Window
             var single = moving == 1 ? active.Single(item => item.IsMoving) : null;
             return single?.Report.Percent is { } percent
                 ? (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("TransferSlotPercentFormat"), moving, active.Count, percent), TransferSlotAction.OpenQueue)
+                    HubStrings.Get("TaskSlotPercentFormat"), moving, active.Count, percent), TaskSlotAction.OpenQueue)
                 : (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("TransferSlotFormat"), moving, active.Count), TransferSlotAction.OpenQueue);
+                    HubStrings.Get("TaskSlotFormat"), moving, active.Count), TaskSlotAction.OpenQueue);
         }
 
         // The restart waits on the user, not the other way round: this is the state where the bytes have
         // landed and only a process swap is missing.
         if (download == UpdateService.DownloadState.Ready)
         {
-            return (true, HubStrings.Get(armed ? "TransferRestartArmed" : "TransferRestartAction"), TransferSlotAction.Restart);
+            return (true, HubStrings.Get(armed ? "TaskRestartArmed" : "TaskRestartAction"), TaskSlotAction.Restart);
         }
 
-        var failed = items.Count(item => item.State == TransferQueue.Phase.Failed);
+        var failed = items.Count(item => item.State == TaskQueue.Phase.Failed);
         if (failed > 0)
         {
             return (true, string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("TransferSlotFailed"), failed), TransferSlotAction.OpenQueue);
+                HubStrings.Get("TaskSlotFailed"), failed), TaskSlotAction.OpenQueue);
         }
 
         // Nothing is moving and nothing waits on a decision, but an update is sitting there unread. With
@@ -790,10 +790,10 @@ public partial class MainWindow : Window
         // page — so the slot asks, in the one sentence the strip is allowed to spend.
         if (canStartDownload)
         {
-            return (true, HubStrings.Get("TransferDownloadAction"), TransferSlotAction.Download);
+            return (true, HubStrings.Get("TaskDownloadAction"), TaskSlotAction.Download);
         }
 
-        return (false, "", TransferSlotAction.None);
+        return (false, "", TaskSlotAction.None);
     }
 
     /// <summary>
@@ -806,18 +806,18 @@ public partial class MainWindow : Window
     /// between an accidental click and that. Same shape as a steer waiting for its second tap, for the same
     /// reason — the consequence is read once, on the button that carries it, not in a dialog.</para>
     /// </summary>
-    private void OnTransferSlotClicked()
+    private void OnTaskSlotClicked()
     {
-        var (_, _, action) = TransferSlotStateFor(
-            TransferQueue.Instance.Items, UpdateService.Instance.Download, CanStartDownload(), _restartArmed);
+        var (_, _, action) = TaskSlotStateFor(
+            TaskQueue.Instance.Items, UpdateService.Instance.Download, CanStartDownload(), _restartArmed);
         switch (action)
         {
-            case TransferSlotAction.None:
+            case TaskSlotAction.None:
                 return;
-            case TransferSlotAction.OpenQueue:
-                ToggleQueuePopup();
+            case TaskSlotAction.OpenQueue:
+                ToggleTaskPopup();
                 return;
-            case TransferSlotAction.Download:
+            case TaskSlotAction.Download:
                 // Fetch it, and stop there. The transfer ends in Ready and the slot then becomes the
                 // restart, so the process swap stays behind a press the user meant.
                 UpdateService.Instance.StartPendingDownload();
@@ -828,14 +828,14 @@ public partial class MainWindow : Window
         if (busy && !_restartArmed)
         {
             _restartArmed = true;
-            UpdateTransferSlot();
+            UpdateTaskSlot();
             // A button left armed is a button that restarts on the next stray click, minutes later, when
             // whatever made it busy has long since finished. The word goes away on its own.
             DispatcherTimer.RunOnce(() =>
             {
                 if (!_restartArmed) return;
                 _restartArmed = false;
-                UpdateTransferSlot();
+                UpdateTaskSlot();
             }, TimeSpan.FromSeconds(10));
             return;
         }
@@ -875,7 +875,7 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task ConfirmQuitAsync()
     {
-        var running = TransferQueue.Instance.ActiveCount;
+        var running = TaskQueue.Instance.ActiveCount;
         var answer = await HubDialog.ShowAsync(this,
             HubStrings.Get("QuitDuringDownloadsTitle"),
             string.Format(System.Globalization.CultureInfo.CurrentCulture,
@@ -891,60 +891,60 @@ public partial class MainWindow : Window
     }
 
 
-    private void ToggleQueuePopup()
+    private void ToggleTaskPopup()
     {
-        if (QueuePopup.IsOpen)
+        if (TaskPopup.IsOpen)
         {
-            QueuePopup.IsOpen = false;
+            TaskPopup.IsOpen = false;
             return;
         }
 
-        RenderTransferRows();
-        QueuePopup.IsOpen = true;
+        RenderTaskRows();
+        TaskPopup.IsOpen = true;
     }
 
     /// <summary>The rows, reconciled against the queue. The list is short and changes rarely, so the
     /// reconciliation is "same shape → repaint in place, otherwise build it again".</summary>
-    private void RenderTransferRows()
+    private void RenderTaskRows()
     {
-        var items = TransferQueue.Instance.Items;
-        if (_queueRowViews.Count != items.Count
-            || items.Where((item, index) => !ReferenceEquals(_queueRowViews[index].Bound, item)).Any())
+        var items = TaskQueue.Instance.Items;
+        if (_taskRowViews.Count != items.Count
+            || items.Where((item, index) => !ReferenceEquals(_taskRowViews[index].Bound, item)).Any())
         {
-            QueueRows.Children.Clear();
-            _queueRowViews.Clear();
+            TaskRows.Children.Clear();
+            _taskRowViews.Clear();
             foreach (var item in items)
             {
-                var row = new QueueRowView(
+                var row = new TaskRowView(
                     item,
-                    () => TransferQueue.Instance.Cancel(item.Identity),
-                    () => TransferQueue.Instance.Retry(item),
-                    () => TransferQueue.Instance.Dismiss(item));
-                QueueRows.Children.Add(row.Control);
-                _queueRowViews.Add(row);
+                    () => TaskQueue.Instance.Cancel(item.Identity),
+                    () => TaskQueue.Instance.Retry(item),
+                    () => TaskQueue.Instance.Dismiss(item));
+                TaskRows.Children.Add(row.Control);
+                _taskRowViews.Add(row);
             }
 
             return;
         }
 
-        foreach (var view in _queueRowViews)
+        foreach (var view in _taskRowViews)
         {
             view.Update();
         }
     }
 
-    private readonly List<QueueRowView> _queueRowViews = [];
+    private readonly List<TaskRowView> _taskRowViews = [];
 
     /// <summary>One row of the popover: what is being fetched, how far it has come, and the press that
     /// answers it — stop it while it runs, run it again once it failed, and forget it when neither is
     /// wanted. Held as controls rather than rebuilt, so a progress tick moves three strings.</summary>
-    private sealed class QueueRowView
+    private sealed class TaskRowView
     {
-        private readonly TransferQueue.Item _item;
-        private readonly TextBlock _title = new() { Classes = { "queue-row-title" } };
+        private readonly TaskQueue.Item _item;
+        private readonly TextBlock _title = new() { Classes = { "task-row-title" } };
         private readonly ProgressBar _bar = new() { Minimum = 0, Maximum = 100, Height = 6 };
-        private readonly TextBlock _measure = new() { Classes = { "queue-row-measure" } };
-        private readonly TextBlock _error = new() { Classes = { "queue-row-error" }, IsVisible = false };
+        private readonly TextBlock _measure = new() { Classes = { "task-row-measure" } };
+        private readonly TextBlock _error = new() { Classes = { "task-row-error" }, IsVisible = false };
         /// <summary>The row's tooltip body, held rather than re-set: assigning a new tooltip closes the one
         /// on screen, and a rate that updates every 500 ms would dismiss itself mid-read.</summary>
         /// <summary>
@@ -962,7 +962,7 @@ public partial class MainWindow : Window
             VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
         };
 
-        public QueueRowView(TransferQueue.Item item, Action cancel, Action retry, Action dismiss)
+        public TaskRowView(TaskQueue.Item item, Action cancel, Action retry, Action dismiss)
         {
             _item = item;
             _cancel.Click += (_, _) => cancel();
@@ -986,7 +986,7 @@ public partial class MainWindow : Window
 
         public Control Control { get; }
 
-        public TransferQueue.Item Bound => _item;
+        public TaskQueue.Item Bound => _item;
 
         /// <summary>The row's buttons, in the order they appear. A check presses these rather than calling
         /// the queue method behind them, so broken wiring stays detectable.</summary>
@@ -1006,7 +1006,7 @@ public partial class MainWindow : Window
             _title.Text = _item.Title + " · " + _item.PhaseText;
             // An unmeasurable phase gets the indeterminate bar rather than a number held at 99: the local
             // work after the bytes (unzipping, patching) is real work with no percentage in it.
-            _bar.IsIndeterminate = _item.State == TransferQueue.Phase.Applying;
+            _bar.IsIndeterminate = _item.State == TaskQueue.Phase.Finalizing;
             _bar.Value = _item.Fill ?? 0;
             _measure.Text = _item.MeasureText;
             // The estimate reaches the user through the tooltip and nowhere else: the measure column is kept
@@ -1018,13 +1018,13 @@ public partial class MainWindow : Window
             // Re-read on every repaint, not once at construction: these are the shell's own buttons, and the
             // row that survived a language switch would otherwise keep saying 取消 in an English client.
             _cancel.Content = HubStrings.Get("Cancel");
-            _retry.Content = HubStrings.Get("TransferRetry");
-            _dismiss.Content = HubStrings.Get("TransferDismiss");
+            _retry.Content = HubStrings.Get("TaskRetry");
+            _dismiss.Content = HubStrings.Get("TaskDismiss");
             // A finished row keeps no cancel: there is nothing left to stop, and a button that answers to
             // nothing is the thing this shell already refused to do in the version picker.
             _cancel.IsVisible = _item.IsActive;
-            _retry.IsVisible = _item.State == TransferQueue.Phase.Failed;
-            _dismiss.IsVisible = _item.State == TransferQueue.Phase.Failed;
+            _retry.IsVisible = _item.State == TaskQueue.Phase.Failed;
+            _dismiss.IsVisible = _item.State == TaskQueue.Phase.Failed;
         }
 
         private static Button StripButton() => new()
@@ -1034,36 +1034,36 @@ public partial class MainWindow : Window
         };
     }
 
-    internal bool TransferSlotVisibleForCheck => TransferSlot.IsVisible;
-    internal string TransferSlotTextForCheck => TransferSlotText.Text ?? "";
-    internal bool TransferSlotAccentForCheck => TransferSlot.Classes.Contains("accent");
+    internal bool TaskSlotVisibleForCheck => TaskSlot.IsVisible;
+    internal string TaskSlotTextForCheck => TaskSlotText.Text ?? "";
+    internal bool TaskSlotAccentForCheck => TaskSlot.Classes.Contains("accent");
 
     /// <summary>What the slot's tooltip says. The version number lives here, not in the label, so a check on
     /// "the user can still tell which update this is" has to read the tip rather than the words on the strip.</summary>
-    internal string TransferSlotTipForCheck => _transferSlotTip.Text ?? "";
-    internal bool QueuePopupOpenForCheck => QueuePopup.IsOpen;
-    internal int QueueRowCountForCheck => QueueRows.Children.Count;
+    internal string TaskSlotTipForCheck => _taskSlotTip.Text ?? "";
+    internal bool TaskPopupOpenForCheck => TaskPopup.IsOpen;
+    internal int TaskRowCountForCheck => TaskRows.Children.Count;
 
     /// <summary>The words on each row's visible buttons, rows in order: a running row says 取消, a failed one
     /// says 重试+忽略. Read straight off the affordance, because the phase would pass while the button behind
     /// it is missing or mis-wired.</summary>
-    internal string QueueRowActionsForCheck
-        => string.Join(" / ", _queueRowViews.Select(view => view.ActionsForCheck));
+    internal string TaskRowActionsForCheck
+        => string.Join(" / ", _taskRowViews.Select(view => view.ActionsForCheck));
 
     /// <summary>One row's tooltip and its measure column, as "tip|measure" — so a check can prove the
     /// estimate stayed out of the column that carries measured bytes.</summary>
-    internal string QueueRowMeasureForCheck(string identity)
+    internal string TaskRowMeasureForCheck(string identity)
     {
-        var view = _queueRowViews.FirstOrDefault(v => v.Bound.Identity == identity);
+        var view = _taskRowViews.FirstOrDefault(v => v.Bound.Identity == identity);
         return view is null ? "" : view.TipForCheck + "|" + view.Bound.MeasureText;
     }
 
     /// <summary>Presses one row's button by its word, through the button rather than the queue method it
     /// ends up calling. False when the row does not offer that word right now — which is itself the answer a
     /// check wants about a failed row that stopped being retryable.</summary>
-    internal bool ClickQueueRowActionForCheck(string identity, string text)
+    internal bool ClickTaskRowActionForCheck(string identity, string text)
     {
-        var button = _queueRowViews
+        var button = _taskRowViews
             .FirstOrDefault(view => view.Bound.Identity == identity)?
             .ActionButtons
             .FirstOrDefault(candidate => candidate.IsVisible
@@ -1080,10 +1080,10 @@ public partial class MainWindow : Window
     /// <summary>The slot and the popover as visuals, for a frame capture. The popover needs this rather
     /// than a region of the window's frame because a Popup presents in its own PopupRoot — it is a
     /// top-level visual, and not part of the window's pixels.</summary>
-    internal Visual TransferSlotForCheck => TransferSlot;
-    internal Visual? QueuePopoverForCheck => QueuePopup.Child;
-    internal void OpenQueuePopupForCheck() => ToggleQueuePopup();
-    internal void CloseQueuePopupForCheck() => QueuePopup.IsOpen = false;
+    internal Visual TaskSlotForCheck => TaskSlot;
+    internal Visual? TaskPopoverForCheck => TaskPopup.Child;
+    internal void OpenTaskPopupForCheck() => ToggleTaskPopup();
+    internal void CloseTaskPopupForCheck() => TaskPopup.IsOpen = false;
 
     /// <summary>The restart slot's armed state. Setting it repaints, so a check reads what the user would
     /// see rather than what the field happens to hold. A test reaches the busy half through
@@ -1094,12 +1094,12 @@ public partial class MainWindow : Window
         set
         {
             _restartArmed = value;
-            UpdateTransferSlot();
+            UpdateTaskSlot();
         }
     }
 
     /// <summary>Presses the slot the way the user does, so a check walks the same routing.</summary>
-    internal void ClickTransferSlotForCheck() => TransferSlot.RaiseEvent(
+    internal void ClickTaskSlotForCheck() => TaskSlot.RaiseEvent(
         new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
 
 
@@ -1460,7 +1460,7 @@ public partial class MainWindow : Window
         UpdateRepoIndicator();
         // Same for the download slot, and for the rows if the popover happens to be open: every one of those
         // strings is composed in code from a key.
-        UpdateTransferSlot();
+        UpdateTaskSlot();
 
         // The settings card is not in the page cache any more, so it gets told on its own — and told even while
         // it is closed, because its ComboBox labels are written in code and a stale English dropdown would be
@@ -1811,19 +1811,19 @@ public partial class MainWindow : Window
         // The download slot mirrors the queue. Marshalled because a transfer reports from whatever thread
         // its transport reports on, and the strip is owned by this one. Subscribed once — WireChrome only
         // runs from the constructor.
-        TransferQueue.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTransferSlot);
+        TaskQueue.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTaskSlot);
         // The update's own phase is part of what the slot says — "ready" is the restart — and it moves
         // without the queue moving: a check that finds nothing new, a cancel, a channel switch.
-        UpdateService.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTransferSlot);
-        QueuePopup.PlacementTarget = TransferSlot;
-        QueuePopup.Placement = PlacementMode.TopEdgeAlignedLeft;
-        // The holder is installed once, for the reason recorded on _transferSlotTip: only its text moves.
-        ToolTip.SetTip(TransferSlot, _transferSlotTip);
+        UpdateService.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTaskSlot);
+        TaskPopup.PlacementTarget = TaskSlot;
+        TaskPopup.Placement = PlacementMode.TopEdgeAlignedLeft;
+        // The holder is installed once, for the reason recorded on _taskSlotTip: only its text moves.
+        ToolTip.SetTip(TaskSlot, _taskSlotTip);
         // What a restart would cut short: a Hub operation, or replies still being written in the
         // background. Both are the user's work, and neither gets destroyed by one stray click.
         RestartInterruptsWork = () => _workspace.IsBusy || _chat.RunningCount > 0;
-        TransferSlot.Click += (_, _) => OnTransferSlotClicked();
-        UpdateTransferSlot();
+        TaskSlot.Click += (_, _) => OnTaskSlotClicked();
+        UpdateTaskSlot();
 
         CancelButton.Click += (_, _) => _workspace.Cancel();
 
@@ -1853,7 +1853,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (_quitConfirmed || TransferQueue.Instance.ActiveCount == 0 || App.Options.IsAutomation)
+            if (_quitConfirmed || TaskQueue.Instance.ActiveCount == 0 || App.Options.IsAutomation)
             {
                 return;
             }

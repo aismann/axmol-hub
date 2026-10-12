@@ -34,7 +34,7 @@ namespace AxmolHub;
 /// <see cref="Changed"/> for the shell, both of which belong on the thread that owns the objects they
 /// touch. Same discipline as <see cref="UpdateService"/>.
 /// </summary>
-internal sealed class TransferQueue
+internal sealed class TaskQueue
 {
     /// <summary>
     /// Transfers allowed to move at once. Two, not more: a GB-scale engine package off a mirror is the
@@ -45,16 +45,16 @@ internal sealed class TransferQueue
     /// </summary>
     public const int MaxConcurrent = 2;
 
-    private static readonly Lazy<TransferQueue> Shared = new(() => new TransferQueue());
+    private static readonly Lazy<TaskQueue> Shared = new(() => new TaskQueue());
 
-    public static TransferQueue Instance => Shared.Value;
+    public static TaskQueue Instance => Shared.Value;
 
-    private TransferQueue()
+    private TaskQueue()
     {
     }
 
     /// <summary>
-    /// Where one transfer is. Six phases, and each is something a transport can report truthfully:
+    /// Where one task is. Six phases, and each is something a transport can report truthfully:
     /// there is deliberately no "verifying" phase, because the SHA-256 pass runs inside
     /// <see cref="DownloadManager.DownloadAsync"/> and cannot be observed from here.
     /// </summary>
@@ -62,13 +62,13 @@ internal sealed class TransferQueue
     {
         /// <summary>Waiting for a slot.</summary>
         Queued,
-        /// <summary>Bytes are moving.</summary>
-        Transferring,
+        /// <summary>The work is doing the thing it was enqueued for.</summary>
+        Running,
         /// <summary>
         /// The bytes are on disk and the rest is local: unzipping an engine, or Velopack patching a
         /// delta. Unmeasurable, so the percentage is dropped rather than held at 99.
         /// </summary>
-        Applying,
+        Finalizing,
         Done,
         Failed,
         Cancelled,
@@ -152,10 +152,10 @@ internal sealed class TransferQueue
             ? HubStrings.Get(TitleKey) + " " + value
             : HubStrings.Get(TitleKey);
 
-        public bool IsActive => State is Phase.Queued or Phase.Transferring or Phase.Applying;
+        public bool IsActive => State is Phase.Queued or Phase.Running or Phase.Finalizing;
 
         /// <summary>Whether this item occupies one of the <see cref="MaxConcurrent"/> slots right now.</summary>
-        public bool IsMoving => State is Phase.Transferring or Phase.Applying;
+        public bool IsMoving => State is Phase.Running or Phase.Finalizing;
 
         /// <summary>0-100 for the row's track: the measured percentage, full once done, and nothing while
         /// the remaining work is local and unmeasurable.</summary>
@@ -200,14 +200,14 @@ internal sealed class TransferQueue
 
         /// <summary>The estimate, in words, or null when there is nothing honest to say.</summary>
         public string? HintText => EstimatedTotal is { } total && total > 0
-            ? string.Format(HubStrings.Get("TransferEstimateSize"), FormatBytes(total))
+            ? string.Format(HubStrings.Get("TaskEstimateSize"), FormatBytes(total))
               + (EstimatedRate is { } rate && rate > 0 ? " · " + UpdateService.FormatSpeed(rate) : "")
             : null;
 
         /// <summary>The bytes are down and the rest is local work.</summary>
-        public void MarkApplying()
+        public void MarkFinalizing()
         {
-            State = Phase.Applying;
+            State = Phase.Finalizing;
             OnProgress?.Invoke();
         }
 
@@ -215,12 +215,12 @@ internal sealed class TransferQueue
         /// state, the same reason <see cref="UpdateService.PendingVersion"/> is read rather than rebuilt.</summary>
         public string PhaseText => HubStrings.Get(State switch
         {
-            Phase.Queued => "TransferQueued",
-            Phase.Transferring => "TransferTransferring",
-            Phase.Applying => "TransferApplying",
-            Phase.Done => "TransferDone",
-            Phase.Cancelled => "TransferCancelled",
-            _ => "TransferFailed",
+            Phase.Queued => "TaskQueued",
+            Phase.Running => "TaskTransferring",
+            Phase.Finalizing => "TaskApplying",
+            Phase.Done => "TaskDone",
+            Phase.Cancelled => "TaskCancelled",
+            _ => "TaskFailed",
         });
 
         /// <summary>
@@ -233,10 +233,10 @@ internal sealed class TransferQueue
             { Bytes: { } bytes } => FormatBytes(bytes) + " / " + FormatBytes(Report.Total)
                 + (Report.BytesPerSecond is { } rate && rate > 0 ? " · " + UpdateService.FormatSpeed(rate) : ""),
             { Percent: { } percent } => percent + "%",
-            _ => HubStrings.Get("TransferNoMeasure"),
+            _ => HubStrings.Get("TaskNoMeasure"),
         };
 
-        internal void BeginTransferring() => State = Phase.Transferring;
+        internal void BeginRunning() => State = Phase.Running;
 
         internal void Succeed() => State = Phase.Done;
         internal void Abort() => State = Phase.Cancelled;
@@ -293,7 +293,7 @@ internal sealed class TransferQueue
     /// A null size stays an em-dash: a download whose total the server never said is not a zero-byte one.</summary>
     internal static string FormatBytes(long? bytes) => bytes is { } value
         ? string.Create(CultureInfo.InvariantCulture, $"{value / 1048576.0:F1} MB")
-        : HubStrings.Get("TransferNoMeasure");
+        : HubStrings.Get("TaskNoMeasure");
 
     /// <summary>The item running or waiting under this identity, or null. This is what the engine
     /// version picker asks so a downloading version cannot be picked again.</summary>
@@ -422,13 +422,13 @@ internal sealed class TransferQueue
     /// <summary>
     /// Verification hook (<c>--verify-shell</c>): a transfer that never finishes on its own, standing in
     /// for a download the suite cannot really run. Settle it with
-    /// <see cref="FinishTransferForCheck"/>; <see cref="ClearForCheck"/> takes it away.
+    /// <see cref="FinishTaskForCheck"/>; <see cref="ClearForCheck"/> takes it away.
     /// </summary>
     internal Item? EnqueueForCheck(string identity, string titleKey, string? subject = null)
         => Enqueue(identity, titleKey, subject, (_, token) => Task.Delay(Timeout.Infinite, token));
 
     /// <summary>Verification hook: settles a scripted transfer without touching its cancellation.</summary>
-    internal void FinishTransferForCheck(string identity, Phase state, string? error = null)
+    internal void FinishTaskForCheck(string identity, Phase state, string? error = null)
     {
         if (_items.FirstOrDefault(item => item.Identity == identity) is not { } item)
         {
@@ -493,7 +493,7 @@ internal sealed class TransferQueue
         item.Cancellation = new CancellationTokenSource();
         item.CancelAction = () => item.Cancellation?.Cancel();
         item.OnProgress = () => Changed?.Invoke();
-        item.BeginTransferring();
+        item.BeginRunning();
         item.Running = RunAsync(item, item.Cancellation.Token);
         Changed?.Invoke();
     }

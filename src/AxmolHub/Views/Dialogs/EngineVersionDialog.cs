@@ -53,7 +53,7 @@ public sealed class EngineVersionDialog : Window
         public bool InFlight => _isInFlight(Release);
 
         public override string ToString() => InFlight
-            ? Release + " · " + HubStrings.Get("TransferInFlightSuffix")
+            ? Release + " · " + HubStrings.Get("TaskInFlightSuffix")
             : Release.ToString()!;
     }
 
@@ -133,7 +133,7 @@ public sealed class EngineVersionDialog : Window
         // label rather than sitting there greyed and unexplained: a disabled control takes its tooltip with
         // it, so the reason would be unreadable exactly when it is needed.
         _install.IsEnabled = !inFlight;
-        _install.Content = HubStrings.Get(inFlight ? "TransferInFlightSuffix" : "InstallSelected");
+        _install.Content = HubStrings.Get(inFlight ? "TaskInFlightSuffix" : "InstallSelected");
         _detail.Text = string.Join("\n", new[]
         {
             HubStrings.Get("Channel") + "：" + release.Channel,
@@ -143,7 +143,7 @@ public sealed class EngineVersionDialog : Window
             HubStrings.Get("DownloadSize") + "：" + Size(release.Package.DownloadBytes),
             // "Not installed" is true while it is arriving and useless: the fact worth printing is that
             // it is on its way.
-            inFlight ? HubStrings.Get("TransferInFlightSuffix") : HubStrings.Get(release.Installed ? "Installed" : "Missing"),
+            inFlight ? HubStrings.Get("TaskInFlightSuffix") : HubStrings.Get(release.Installed ? "Installed" : "Missing"),
         });
 
         // Versions with unverified recipes are still installable — the engine itself is

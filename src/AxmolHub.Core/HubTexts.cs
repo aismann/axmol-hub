@@ -399,58 +399,58 @@ public static class HubTexts
         // ── Download queue ──
         // A queue row names the thing it is fetching, and the version rides behind that name **unformatted**:
         // a version number is not a localized word, and a format key would print a bare "{0}" on the one path
-        // that has no version yet (install the latest). See TransferQueue.Item.Subject.
-        ["TransferEnginePackage"] = ("Axmol 引擎", "Axmol engine"),
-        ["TransferHostShell"] = ("PowerShell 7 安装程序", "PowerShell 7 installer"),
+        // that has no version yet (install the latest). See TaskQueue.Item.Subject.
+        ["TaskEnginePackage"] = ("Axmol 引擎", "Axmol engine"),
+        ["TaskHostShell"] = ("PowerShell 7 安装程序", "PowerShell 7 installer"),
         // The app's own update. The version rides behind the name like every other row, so this is the one
         // product name in the table that is deliberately not translated.
-        ["TransferHubUpdate"] = ("Axmol Hub", "Axmol Hub"),
+        ["TaskHubUpdate"] = ("Axmol Hub", "Axmol Hub"),
         // Said by a row (and by the install button) whose bytes are already on their way.
-        ["TransferInFlightSuffix"] = ("正在进行", "In progress"),
+        ["TaskInFlightSuffix"] = ("正在进行", "In progress"),
         // The slot's other action mode: an update is known, auto-download is off, and nobody has fetched it.
         // The tip says what the press does and what it deliberately does not — with auto-download off there
         // was no way to ask at all, and the only place to ask used to be the settings page.
-        ["TransferDownloadAction"] = ("下载更新", "Download update"),
-        ["TransferDownloadSlotTip"] = ("发现新版本 {0}，下载完由你决定何时重启。", "Version {0} is available. Download it, then choose when to restart."),
+        ["TaskDownloadAction"] = ("下载更新", "Download update"),
+        ["TaskDownloadSlotTip"] = ("发现新版本 {0}，下载完由你决定何时重启。", "Version {0} is available. Download it, then choose when to restart."),
         // The queue row's tooltip for a transport that reports a percentage and no bytes: what its owner
         // estimated the transfer to be. A prefix, not a sentence — the rate is appended with " · " exactly
         // as the measured column does it.
-        ["TransferEstimateSize"] = ("约 ", "About "),
+        ["TaskEstimateSize"] = ("约 ", "About "),
         // ── The strip's download slot and the queue popover ──
         // The slot is one sentence in a 28px strip, so it counts rather than narrates. The percentage only
         // appears when a single transfer is moving: averaging two rates into one number would be a figure
         // that describes neither download.
-        ["TransferSlotFormat"] = ("下载 {0}/{1}", "Downloads {0}/{1}"),
-        ["TransferSlotPercentFormat"] = ("下载 {0}/{1} · {2}%", "Downloads {0}/{1} · {2}%"),
-        ["TransferSlotFailed"] = ("{0} 个下载失败", "{0} download(s) failed"),
-        ["TransferQueueTitle"] = ("下载队列", "Downloads"),
-        ["TransferSlotTip"] = ("查看下载队列", "Show the download queue"),
+        ["TaskSlotFormat"] = ("任务 {0}/{1}", "Tasks {0}/{1}"),
+        ["TaskSlotPercentFormat"] = ("任务 {0}/{1} · {2}%", "Tasks {0}/{1} · {2}%"),
+        ["TaskSlotFailed"] = ("{0} 个任务失败", "{0} task(s) failed"),
+        ["TaskListTitle"] = ("任务列表", "Tasks"),
+        ["TaskSlotTip"] = ("查看正在跑的任务", "Show what is running"),
         // The slot's action mode: the bytes have landed and only a process swap is missing. The armed form
         // is the second tap of a restart pressed while something is still working — the word on the button
         // is the warning, same shape as a steer waiting for its second tap.
-        ["TransferRestartAction"] = ("重启完成更新", "Restart to update"),
-        ["TransferRestartArmed"] = ("再点一次重启", "Tap again to restart"),
+        ["TaskRestartAction"] = ("重启完成更新", "Restart to update"),
+        ["TaskRestartArmed"] = ("再点一次重启", "Tap again to restart"),
         // A failed row is the only settled state with an answer still left to give, and it gets both: try
         // that transfer again, or say you have read it so the strip can go quiet about it.
-        ["TransferRetry"] = ("重试", "Retry"),
-        ["TransferDismiss"] = ("忽略", "Dismiss"),
+        ["TaskRetry"] = ("重试", "Retry"),
+        ["TaskDismiss"] = ("忽略", "Dismiss"),
         // The one question the queue is allowed to interrupt with, and it says only what the press does:
         // stopping the transfers. That the bytes already down survive is a property of DownloadManager's
         // .partial + Range transport, not something the app acts on by itself — a restart empties the list
         // and the next install is what picks the bytes back up — so the dialog does not hint at one.
         ["QuitDuringDownloadsTitle"] = ("下载还没结束", "Downloads still running"),
         ["QuitDuringDownloadsBody"] = ("还有 {0} 个下载在跑。现在退出会中断它们。", "{0} download(s) are still running. Quitting now stops them."),
-        ["TransferQueued"] = ("等待中", "Queued"),
-        ["TransferTransferring"] = ("下载中", "Downloading"),
+        ["TaskQueued"] = ("等待中", "Queued"),
+        ["TaskTransferring"] = ("下载中", "Downloading"),
         // The bytes have arrived and the rest is local work — unzipping an engine, patching an update. One
         // word covers both because the row cannot promise which it is doing.
-        ["TransferApplying"] = ("正在处理", "Applying"),
-        ["TransferDone"] = ("完成", "Done"),
-        ["TransferFailed"] = ("失败", "Failed"),
-        ["TransferCancelled"] = ("已取消", "Cancelled"),
+        ["TaskApplying"] = ("正在处理", "Applying"),
+        ["TaskDone"] = ("完成", "Done"),
+        ["TaskFailed"] = ("失败", "Failed"),
+        ["TaskCancelled"] = ("已取消", "Cancelled"),
         // A transfer with no measurable progress still shows this rather than an empty space, so the row
         // never reads as a stalled number.
-        ["TransferNoMeasure"] = ("—", "—"),
+        ["TaskNoMeasure"] = ("—", "—"),
         // Said by every engine operation whose own download has not landed yet: the transfer is replacing the
         // directory the operation is about to read or delete.
         ["EngineBusyTransferring"] = ("这个引擎正在下载，等它结束后再操作。", "This engine is still downloading. Wait for the transfer to finish."),

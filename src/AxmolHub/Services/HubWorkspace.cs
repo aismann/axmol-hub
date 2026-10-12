@@ -56,9 +56,9 @@ public sealed class HubWorkspace : IDisposable
     /// <summary>
     /// The downloads. Deliberately not under <see cref="ExecuteAsync"/>: a transfer must not grey out the
     /// page it was started from, and two of them must not crowd each other out. See
-    /// <see cref="TransferQueue"/> for where the line is drawn.
+    /// <see cref="TaskQueue"/> for where the line is drawn.
     /// </summary>
-    private readonly TransferQueue _transfers = TransferQueue.Instance;
+    private readonly TaskQueue _tasks = TaskQueue.Instance;
     private BuildProgressWindow? _buildProgress;
     private readonly TaskCompletionSource _engineIndexReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -371,7 +371,7 @@ public sealed class HubWorkspace : IDisposable
     public bool CanCancel => _operation is not null;
 
     /// <summary>
-    /// Runs one download on <see cref="TransferQueue"/> instead of under the exclusive lock, and gives it
+    /// Runs one download on <see cref="TaskQueue"/> instead of under the exclusive lock, and gives it
     /// the parts of <see cref="ExecuteAsync"/>'s lifecycle that still apply: a log line for the title, a
     /// state save and a page refresh when it lands, and the typed error dialog when it does not.
     ///
@@ -383,15 +383,15 @@ public sealed class HubWorkspace : IDisposable
     /// <see cref="ExecuteAsync"/> awaited, so a caller that needs "is it installed yet" (the deep link,
     /// the version picker) keeps meaning it. Null from the queue means "already running"; that is not an
     /// error, and the row already on screen is the answer.</returns>
-    private Task EnqueueTransfer(
+    private Task EnqueueTask(
         string identity,
         string titleKey,
         string? subject,
         string logTitleKey,
-        Func<TransferQueue.Item, CancellationToken, Task> work)
+        Func<TaskQueue.Item, CancellationToken, Task> work)
     {
-        var item = _transfers.Enqueue(identity, titleKey, subject, work,
-            onFinished: finished => FinishTransfer(finished, logTitleKey));
+        var item = _tasks.Enqueue(identity, titleKey, subject, work,
+            onFinished: finished => FinishTask(finished, logTitleKey));
         if (item is null)
         {
             return Task.CompletedTask;
@@ -404,7 +404,7 @@ public sealed class HubWorkspace : IDisposable
     /// <summary>What a settled transfer leaves behind. Mirrors the success / cancel / failure arms of
     /// <see cref="ExecuteAsync"/> one-for-one, including the reason a failure keeps its exception **type**:
     /// <see cref="ShowOperationErrorAsync"/> chooses the advice the user can act on from that type.</summary>
-    private void FinishTransfer(TransferQueue.Item item, string logTitleKey)
+    private void FinishTask(TaskQueue.Item item, string logTitleKey)
     {
         var title = HubStrings.Get(logTitleKey);
         if (item.Fault is { } error)
@@ -417,7 +417,7 @@ public sealed class HubWorkspace : IDisposable
                 _ = ShowOperationErrorAsync(error);
             }
         }
-        else if (item.State == TransferQueue.Phase.Done)
+        else if (item.State == TaskQueue.Phase.Done)
         {
             Store.Save(State);
             Log.Write(title + " · " + HubStrings.Get("Done"));
@@ -432,7 +432,7 @@ public sealed class HubWorkspace : IDisposable
 
     /// <summary>Wraps a queue row as the byte reporter a Core transport expects. The row is what carries
     /// the identity that this used to throw away into one status sentence.</summary>
-    private static IProgress<DownloadProgress> ByteProgress(TransferQueue.Item item)
+    private static IProgress<DownloadProgress> ByteProgress(TaskQueue.Item item)
         => new Progress<DownloadProgress>(item.ReportBytes);
 
     private async Task ShowOperationErrorAsync(Exception error)
@@ -605,7 +605,7 @@ public sealed class HubWorkspace : IDisposable
     /// picks the latest LTS in the manifest — the CLI and verification programs follow this default
     /// path, while the interactive UI lets the user pick first.
     ///
-    /// This is a download, so it runs on <see cref="TransferQueue"/> rather than under the exclusive
+    /// This is a download, so it runs on <see cref="TaskQueue"/> rather than under the exclusive
     /// lock: the returned task still completes when the transfer settles (so <c>await</c> means what it
     /// meant), but the page stays live while it runs and a second engine can arrive alongside it.
     /// </summary>
@@ -616,9 +616,9 @@ public sealed class HubWorkspace : IDisposable
             throw new InvalidOperationException("The requested engine download source is not supported.");
         }
 
-        return EnqueueTransfer(
+        return EnqueueTask(
             EngineInstallIdentity(version),
-            "TransferEnginePackage",
+            "TaskEnginePackage",
             version,
             "Install official engine",
             async (item, token) =>
@@ -641,7 +641,7 @@ public sealed class HubWorkspace : IDisposable
                             : $"Axmol {version} is not an installable release in the manifest.");
 
                 var package = WithDownloadSource(release.Package, downloadSourceOverride);
-                var path = await _installer.InstallAsync(package, ByteProgress(item), token, item.MarkApplying);
+                var path = await _installer.InstallAsync(package, ByteProgress(item), token, item.MarkFinalizing);
                 AddEngine(StateStore.ValidateEngine(path, package.Channel));
             });
     }
@@ -763,14 +763,14 @@ public sealed class HubWorkspace : IDisposable
             return;
         }
 
-        await EnqueueTransfer(
+        await EnqueueTask(
             EngineRepairIdentity(engine.Version, engine.Channel),
-            "TransferEnginePackage",
+            "TaskEnginePackage",
             engine.Version,
             "Repair engine",
             async (item, token) =>
             {
-                await _installer.RepairAsync(WithDownloadSource(ManagedEnginePackage(engine)), ByteProgress(item), token, item.MarkApplying);
+                await _installer.RepairAsync(WithDownloadSource(ManagedEnginePackage(engine)), ByteProgress(item), token, item.MarkFinalizing);
                 StateStore.ValidateEngine(engine.Path, engine.Channel);
                 foreach (var project in State.Projects.Where(p => p.Version == engine.Version && p.Channel == engine.Channel))
                 {
@@ -793,8 +793,8 @@ public sealed class HubWorkspace : IDisposable
     /// transfer that is replacing it has settled.
     /// </summary>
     private bool EngineIsTransferring(string version, string channel)
-        => _transfers.FindActive(EngineInstallIdentity(version)) is not null
-           || _transfers.FindActive(EngineRepairIdentity(version, channel)) is not null;
+        => _tasks.FindActive(EngineInstallIdentity(version)) is not null
+           || _tasks.FindActive(EngineRepairIdentity(version, channel)) is not null;
 
     /// <summary>The answer every engine operation gives when its own download has not landed yet.</summary>
     private void RequireEngineAtRest(EngineEntry engine)
@@ -1474,7 +1474,7 @@ public sealed class HubWorkspace : IDisposable
             return;
         }
 
-        await EnqueueTransfer("hostshell:msi", "TransferHostShell", null, "Install PowerShell 7",
+        await EnqueueTask("hostshell:msi", "TaskHostShell", null, "Install PowerShell 7",
             (item, token) => InstallHostShellAsync(token, ByteProgress(item)));
     }
 

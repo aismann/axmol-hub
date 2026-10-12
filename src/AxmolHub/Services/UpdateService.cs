@@ -18,7 +18,7 @@ namespace AxmolHub;
 /// and this type is the single place Hub makes them.
 ///
 /// There is deliberately **no modal update prompt**. An update is surfaced by the same thing that surfaces
-/// every other download: a row in <see cref="TransferQueue"/>, whose slot in the status strip counts it and
+/// every other download: a row in <see cref="TaskQueue"/>, whose slot in the status strip counts it and
 /// whose popover carries the percentage. The settings page keeps what is not progress — the channel, the
 /// auto-download switch, and the version this would move to.
 ///
@@ -143,7 +143,7 @@ internal sealed class UpdateService
     }
 
     /// <summary>The download phase of the update found by <see cref="Last"/>. Only the phase, never a
-    /// percentage: the row in <see cref="TransferQueue"/> is what measures the transfer, and this is what
+    /// percentage: the row in <see cref="TaskQueue"/> is what measures the transfer, and this is what
     /// decides whether the strip's slot may offer a restart.</summary>
     public DownloadState Download { get; private set; }
 
@@ -156,7 +156,7 @@ internal sealed class UpdateService
     /// <see cref="CancelDownload"/> has to name the transfer it is stopping, and the identity is built from
     /// the version — which the channel switch clears right after cancelling.
     /// </summary>
-    private string? _transferIdentity;
+    private string? _taskIdentity;
 
     private string _updateChannel = UpdateChannels.DefaultChannel;
 
@@ -278,7 +278,7 @@ internal sealed class UpdateService
     /// the download phase asked for, so the surfaces that read this service can be rendered and read back.
     /// Those phases are otherwise unreachable in a self-check — a real check needs GitHub, and a real
     /// download replaces the process the moment it finishes. A percentage is not part of it: that belongs to
-    /// the queue's row, which the suite drives through <see cref="TransferQueue"/> instead.
+    /// the queue's row, which the suite drives through <see cref="TaskQueue"/> instead.
     /// </summary>
     internal void SetPendingForCheck(UpdateInfo update, DownloadState download = DownloadState.None)
     {
@@ -314,9 +314,9 @@ internal sealed class UpdateService
     /// <summary>Cancels a running download (manual or automatic). No-op when nothing is downloading.</summary>
     public void CancelDownload()
     {
-        if (_transferIdentity is { } identity)
+        if (_taskIdentity is { } identity)
         {
-            TransferQueue.Instance.Cancel(identity);
+            TaskQueue.Instance.Cancel(identity);
         }
     }
 
@@ -349,13 +349,13 @@ internal sealed class UpdateService
     internal Action<UpdateInfo>? DownloadOverrideForCheck { get; set; }
 
     /// <summary>
-    /// Puts this update's download on the shared <see cref="TransferQueue"/> rather than on a cancellation
+    /// Puts this update's download on the shared <see cref="TaskQueue"/> rather than on a cancellation
     /// token of its own. An update downloading next to an engine install is two transfers on one pipe, and
     /// before this they did not know the other existed.
     ///
     /// <para><b>Velopack reports a percentage and nothing else</b> — <c>DownloadUpdatesAsync</c> hands back
     /// an <c>Action&lt;int&gt;</c>. So the row shows a percentage and an em-dash where an engine row shows
-    /// MB and MB/s: see <see cref="TransferQueue.Item.ReportPercent(int)"/>. The byte estimate from
+    /// MB and MB/s: see <see cref="TaskQueue.Item.ReportPercent(int)"/>. The byte estimate from
     /// <see cref="DescribeDownload"/> stays what it always was, the tooltip's, and never becomes the row's
     /// total.</para>
     ///
@@ -375,8 +375,8 @@ internal sealed class UpdateService
         }
 
         var version = update.TargetFullRelease.Version.ToString();
-        _transferIdentity = $"hub:update:{version}";
-        TransferQueue.Instance.Enqueue(_transferIdentity, "TransferHubUpdate", version, async (item, token) =>
+        _taskIdentity = $"hub:update:{version}";
+        TaskQueue.Instance.Enqueue(_taskIdentity, "TaskHubUpdate", version, async (item, token) =>
         {
             Download = DownloadState.Downloading;
             Changed?.Invoke();
@@ -411,7 +411,7 @@ internal sealed class UpdateService
                     // size too, because the bytes it estimated are no longer the bytes being moved.
                     smoothedRate = 0;
                     item.ReportEstimate(null, null);
-                    item.MarkApplying();
+                    item.MarkFinalizing();
                 }
                 else if (totalBytes > 0 && window >= sampleWindowMs)
                 {
@@ -439,12 +439,12 @@ internal sealed class UpdateService
     /// <see cref="Download"/>, and a card still offering "restart" after a cancelled download would be a
     /// button that does nothing.
     /// </summary>
-    private void FinishDownload(TransferQueue.Item item)
+    private void FinishDownload(TaskQueue.Item item)
     {
         switch (item.State)
         {
-            case TransferQueue.Phase.Failed:
-            case TransferQueue.Phase.Cancelled:
+            case TaskQueue.Phase.Failed:
+            case TaskQueue.Phase.Cancelled:
                 // The row keeps the message and the retry; this service only gives up the restart action.
                 Download = DownloadState.None;
                 break;
