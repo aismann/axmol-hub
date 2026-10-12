@@ -95,6 +95,13 @@ public partial class MainWindow : Window
     /// measured from.</summary>
     private Point _titleBarPressOrigin;
 
+    /// <summary>The client size the window has when it is not maximized, which is the size a restore-drag has to
+    /// place against. Avalonia 12.1.3 remembers nothing of the kind for the app (there is no
+    /// <c>Window.RestoreBounds</c>), and <c>Width</c>/<c>Height</c> cannot serve: <c>Window.HandleResized</c>
+    /// overwrites them with whatever the platform last reported, so while the window is maximized they *are* the
+    /// screen size. Recorded from <c>Resized</c>, and only while the state is not maximized.</summary>
+    private Size? _normalClientSize;
+
     /// <summary>
     /// For the XAML loader and design-time preview (without it Avalonia reports AVLN3001 "not
     /// available via the runtime loader"). Using the default data root is safe: **construction
@@ -1650,6 +1657,17 @@ public partial class MainWindow : Window
     /// <see cref="HubDialogChrome.DragExceeded"/>), so its start is asserted instead.</summary>
     internal bool TitleBarDragArmedForCheck => _titleBarPress is not null;
 
+    /// <summary>The client size remembered as the window's normal one, which is the size a restore-drag places
+    /// against. Exposed because the one thing a check cannot assert about a drag is the drag: it ends in
+    /// <see cref="Window.BeginMoveDrag"/>. What it can prove is that the geometry the placement is computed from is
+    /// the pre-maximize one and not the screen size the platform reports while maximized.</summary>
+    internal Size NormalClientSizeForCheck => _normalClientSize ?? default;
+
+    /// <summary>The half of the restore-drag that does not need a pointer: take the window out of the maximized
+    /// state and put it where the formula says. The check drives this with the press point a bar press would have
+    /// carried, and stops before the <see cref="Window.BeginMoveDrag"/> that would otherwise not return.</summary>
+    internal void RestoreForDragForCheck(Point press) => RestoreForDrag(press);
+
     /// <summary>Whether the bar's page title takes pointer input. It must not: the title is a label in the middle
     /// of the one press surface the window has, and a label that answers hit tests punches a dead hole in it —
     /// exactly where a reader would double-click to maximize.</summary>
@@ -1993,6 +2011,11 @@ public partial class MainWindow : Window
         {
             if (e.Property == WindowStateProperty) SyncWindowStateChrome();
         };
+        // The one place the normal geometry is remembered. A tracker rather than a snapshot taken at the maximize
+        // call, because that would only cover this app's three ways in and would miss a window the window manager
+        // maximized by itself — and a restore-drag has to place the window against a size, whatever put it in the
+        // maximized state.
+        Resized += (_, e) => RememberNormalClientSize(e.ClientSize);
         SyncWindowStateChrome();
     }
 
@@ -2011,6 +2034,80 @@ public partial class MainWindow : Window
     /// exactly the one that used to fall through to the drag.
     /// </summary>
     internal static bool TitleBarPressToggles(int clickCount) => clickCount >= 2;
+
+    /// <summary>Records the client size the window has while it is not maximized — the size a restore-drag places
+    /// against. A size under the window's own minimum is filtered out because it is not a geometry a reader ever
+    /// asked for: it is the platform mid-restore, or a configure that landed before the frame was applied, and
+    /// remembering it would restore the next drag to the wrong width.</summary>
+    private void RememberNormalClientSize(Size clientSize)
+    {
+        if (WindowState == WindowState.Maximized) return;
+        if (clientSize.Width < MinWidth || clientSize.Height < MinHeight) return;
+        _normalClientSize = clientSize;
+    }
+
+    /// <summary>Whether a drag that began on the bar has to take the window out of the maximized state before the
+    /// platform will move it at all. Pure — the platform and the state come in — so the self-check can drive both
+    /// arms, the one that acts ending in <see cref="Window.BeginMoveDrag"/>, which is where a check would hang.
+    /// Windows is excluded on purpose: DWM un-maximizes there by itself and <see cref="TitleBarSnapHook"/> is built
+    /// on that, while everywhere else the window manager owns the geometry and answers a move request for a window
+    /// it has maximized with nothing at all (measured on WSLg, where a maximized bar simply does not drag).</summary>
+    internal static bool DragRestoresMaximized(bool isWindows, WindowState state)
+        => !isWindows && state == WindowState.Maximized;
+
+    /// <summary>Where to put the window once the maximized state is gone so that the bar is still under the pointer,
+    /// at the same proportion of its width the pointer was at when the press landed — the semantics DWM gives on
+    /// Windows. The proportion is DIP over DIP and therefore unit-free, while every length that reaches the window
+    /// manager is a physical pixel, which is why the restored width and the grab offset are scaled. The frame term
+    /// is the window's origin measured against its client origin: the pointer sits in the client area, and
+    /// <see cref="Window.Position"/> is the window's own top-left, which a window manager that reparents the window
+    /// keeps a few pixels outside it.</summary>
+    internal static PixelPoint RestoredOriginForDrag(
+        PixelPoint maximizedClientOrigin,
+        PixelPoint maximizedWindowOrigin,
+        double maximizedBarWidth,
+        Point press,
+        Size restoredSize,
+        double scaling)
+    {
+        var scale = scaling <= 0 ? 1 : scaling;
+        var fractionX = Math.Clamp(press.X / Math.Max(maximizedBarWidth, 1), 0, 1);
+        var cursorX = maximizedClientOrigin.X + press.X * scale;
+        var cursorY = maximizedClientOrigin.Y + press.Y * scale;
+        var frameX = maximizedClientOrigin.X - maximizedWindowOrigin.X;
+        var frameY = maximizedClientOrigin.Y - maximizedWindowOrigin.Y;
+        // Where inside the 32px bar the press landed is where the pointer stays; a press below the bar (the check
+        // drives one at its centre, and a reader's press cannot leave it) never lifts the window past its own top.
+        var grabY = Math.Min(press.Y, HubDialogChrome.Height) * scale;
+
+        return new PixelPoint(
+            (int)Math.Round(cursorX - restoredSize.Width * scale * fractionX - frameX, MidpointRounding.AwayFromZero),
+            (int)Math.Round(cursorY - grabY - frameY, MidpointRounding.AwayFromZero));
+    }
+
+    /// <summary>Takes the window out of the maximized state and places it under the pointer, so the
+    /// <see cref="Window.BeginMoveDrag"/> the caller hands the platform right after starts from where the reader's
+    /// cursor already is. Deliberately not <see cref="ToggleMaximized"/>: this is a restore, not a flip, and had the
+    /// state already changed under us a toggle would maximize the window instead. Everything is read before anything
+    /// is written, because setting <see cref="Window.WindowState"/> can re-configure the window from inside the
+    /// call — and the order is the whole point: the state removal and the move request are client messages on one X
+    /// connection, which the window manager answers in send order, so a move handed over first is a move for a
+    /// window it still has maximized.</summary>
+    private void RestoreForDrag(Point press)
+    {
+        var remembered = _normalClientSize;
+        var clientOrigin = this.PointToScreen(new Point(0, 0));
+        var windowOrigin = Position;
+        var barWidth = Bounds.Width;
+        var scaling = RenderScaling;
+
+        WindowState = WindowState.Normal;
+
+        // With nothing remembered there is nothing honest to place the window against. The state flip is the part
+        // that makes the window movable at all, so it still happens and the window manager does the placing.
+        if (remembered is not { } size) return;
+        Position = RestoredOriginForDrag(clientOrigin, windowOrigin, barWidth, press, size, scaling);
+    }
 
     /// <summary>How far the pointer has to travel before this bar moves the window. The number and the reason for
     /// it live once, on <see cref="HubDialogChrome.DragThreshold"/>, because a dialog's drawn bar has to answer to
@@ -2046,6 +2143,11 @@ public partial class MainWindow : Window
         // and nothing after this line in the handler may be relied on, so the state has to be settled first.
         _titleBarPress = null;
         e.Pointer.Capture(null);
+
+        // The press is what the placement is measured from, not the current pointer: the two differ by up to the
+        // drag threshold, and the window has to end up where the platform's move loop thinks the cursor is.
+        if (DragRestoresMaximized(OperatingSystem.IsWindows(), WindowState)) RestoreForDrag(_titleBarPressOrigin);
+
         BeginMoveDrag(press);
     }
 

@@ -754,6 +754,8 @@ public partial class ShellCheckWindow : Window
         shell.SetWindowStateForCheck(WindowState.Maximized);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
+        var maximizedClient = shell.Bounds.Size;
+        var rememberedUnderMaximize = shell.NormalClientSizeForCheck;
         Check(shell.MaximizeTipForCheck == HubTexts.Get("RestoreWindow", HubStrings.Language)
               && shell.MaximizeGlyphIsRestoreForCheck,
             "已最大化时那枚按钮改说「还原」并换成还原图形（实际提示「" + shell.MaximizeTipForCheck + "」）");
@@ -763,6 +765,22 @@ public partial class ShellCheckWindow : Window
         Check(shell.MaximizeTipForCheck == HubTexts.Get("MaximizeWindow", HubStrings.Language)
               && !shell.MaximizeGlyphIsRestoreForCheck,
             "还原后那枚按钮改回「最大化」并换回方框图形");
+        // What a restore-drag places the window against is the size from before the maximize. The one way to feed
+        // that wrong is silently: Width/Height, which Window.HandleResized overwrites with whatever the platform
+        // last reported — the whole screen, for as long as the window is maximized. So the value is read back while
+        // the window is maximized and compared with the normal bounds; where no window manager resized the window
+        // at all there is nothing to compare, and the clause waives itself rather than lying.
+        var normalClient = shell.Bounds.Size;
+        var remembered = shell.NormalClientSizeForCheck;
+        Check(remembered.Width > 0
+              && Math.Abs(remembered.Width - normalClient.Width) <= 1
+              && Math.Abs(remembered.Height - normalClient.Height) <= 1
+              && (maximizedClient.Width < normalClient.Width + 40
+                  || rememberedUnderMaximize.Width <= normalClient.Width + 1),
+            "拖动还原要按的那个尺寸是最大化之前的普通尺寸，全屏期间不跟着平台报的整屏尺寸走（实际记住 "
+            + Fmt(remembered.Width) + "×" + Fmt(remembered.Height) + "，全屏时读到 "
+            + Fmt(rememberedUnderMaximize.Width) + "×" + Fmt(rememberedUnderMaximize.Height)
+            + "，窗口当时 " + Fmt(maximizedClient.Width) + "×" + Fmt(maximizedClient.Height) + "）");
 
         // ── the caption semantics of the bar itself ──
         // Both halves of this were dead in the shipped build and neither could fail a build: answering
@@ -783,6 +801,24 @@ public partial class ShellCheckWindow : Window
               && HubDialogChrome.DragExceeded(new Point(100, 16), new Point(105, 16))
               && HubDialogChrome.DragExceeded(new Point(100, 16), new Point(100, 21)),
             "指针没挪出阈值之前标题栏不动窗口：这是双击能被认出来的前提（否则第一下就已经进了系统的拖动循环）");
+        // The other half of the same dead-arm story: outside Windows the window manager owns a maximized window's
+        // geometry and answers a move request for it with nothing, which is what made a maximized bar un-draggable
+        // on WSLg while a normal one dragged fine. So a drag has to take the window out of that state first —
+        // except on Windows, where DWM does it and the Snap Layouts hook is built on it being done.
+        Check(MainWindow.DragRestoresMaximized(false, WindowState.Maximized)
+              && !MainWindow.DragRestoresMaximized(false, WindowState.Normal)
+              && !MainWindow.DragRestoresMaximized(false, WindowState.FullScreen)
+              && !MainWindow.DragRestoresMaximized(true, WindowState.Maximized),
+            "已最大化的窗口在非 Windows 平台上拖动前必须先还原，否则窗口管理器直接拒绝移动；Windows 那一支交给 DWM");
+        // The placement, on the two arithmetic cases the formula exists for: a flat 1:1 screen with no frame, and
+        // one step that only passes if the ratio is computed in DIP while the lengths are written in pixels.
+        Check(MainWindow.RestoredOriginForDrag(new PixelPoint(0, 32), new PixelPoint(0, 32), 1920,
+                new Point(600, 16), new Size(1280, 880), 1) == new PixelPoint(200, 32),
+            "最大化后拖动标题栏时，还原的窗口按指针在标题栏上的比例落位，32px 那条 bar 仍在指针底下"
+            + "（1920 宽的屏、指针在 600、还原成 1280×880，期望 200,32）");
+        Check(MainWindow.RestoredOriginForDrag(new PixelPoint(0, 0), new PixelPoint(-8, -8), 1920,
+                new Point(600, 16), new Size(1280, 880), 1.5) == new PixelPoint(292, -8),
+            "同一套落位在 150% 缩放、且窗口管理器自己画外框时仍然一致：比例在 DIP 里算，长度在像素里写（期望 292,-8）");
 
         // The double-click, driven through the real event on the real control rather than through the method it
         // ends up calling. The pointer is one this check made (Avalonia's IPointer cannot be implemented from
@@ -812,6 +848,11 @@ public partial class ShellCheckWindow : Window
                 KeyModifiers.None, MouseButton.Left));
             Check(!shell.TitleBarDragArmedForCheck, "松开后拖动解除武装，不会留下一个等着被移动的窗口");
         }
+
+        // The arm that acts on a drag still cannot be driven here (BeginMoveDrag does not return until a mouse
+        // moves), but everything up to that call can be — and outside Windows it is the only way to see the
+        // placement the reader gets when they pull a maximized window off the screen.
+        CheckRestoreDragPlacement(shell, dragArea);
 
         // The page title is a label sitting in the middle of that surface, and a label that answers hit tests is a
         // dead hole in it — exactly where a reader would double-click. Pinned as the property that decides it, the
@@ -7744,6 +7785,66 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
     }
+
+    /// <summary>
+    /// The placement a restore-drag writes, measured on a real window: the half of the gesture the pure asserts
+    /// above cannot reach, and the half that only exists outside Windows — there DWM un-maximizes by itself and the
+    /// app writes nothing. Both of its skip conditions are said out loud, because an environment with no window
+    /// manager has no geometry to check and the object graph cannot tell that from a broken formula.
+    /// </summary>
+    private void CheckRestoreDragPlacement(MainWindow shell, Border? dragArea)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            _lines.Add("SKIP  Windows 上把窗口从全屏里拖出来是 DWM 的事，这里验证的是非 Windows 那一支");
+            return;
+        }
+
+        if (dragArea is null)
+        {
+            _lines.Add("SKIP  找不到标题栏的拖动层，还原落位没法测");
+            return;
+        }
+
+        shell.SetWindowStateForCheck(WindowState.Maximized);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        if (shell.Bounds.Width <= shell.NormalClientSizeForCheck.Width + 1)
+        {
+            _lines.Add("SKIP  没有窗口管理器把这个窗口真的最大化，非 Windows 的落位实测在这里量不到东西");
+            return;
+        }
+
+        // Every input is read while the window is still maximized, which is the state the formula is defined on:
+        // the client origin because the pointer sits in the client area, the window origin because that is what
+        // Position carries, and the bar's width because the press proportion is measured along it.
+        var clientOrigin = shell.PointToScreen(new Point(0, 0));
+        var windowOrigin = shell.Position;
+        var barWidth = shell.Bounds.Width;
+        var restored = shell.NormalClientSizeForCheck;
+        var press = BarPressPoint(dragArea, shell);
+        var expected = MainWindow.RestoredOriginForDrag(
+            clientOrigin, windowOrigin, barWidth, press, restored, shell.RenderScaling);
+
+        shell.RestoreForDragForCheck(press);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
+        Check(shell.WindowState == WindowState.Normal
+              && Math.Abs(shell.Position.X - expected.X) <= 2
+              && Math.Abs(shell.Position.Y - expected.Y) <= 2,
+            "在非 Windows 的真实窗口上按公式落位：状态回到 Normal，窗口原点落在算出来的那一点（±2px，窗口管理器有权"
+            + "微调）（实际 " + FmtPoint(shell.Position) + "，期望 " + FmtPoint(expected) + "，全屏时客户区原点 "
+            + FmtPoint(clientOrigin) + "、窗口原点 " + FmtPoint(windowOrigin) + "）");
+
+        // The live window has just been moved on purpose; the caption-plate assertions further down re-read screen
+        // coordinates, so the window goes back where it was found.
+        shell.Position = windowOrigin;
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+    }
+
+    private static string FmtPoint(PixelPoint point) => point.X + "," + point.Y;
 
     /// <summary>The screen point at the centre of a control, or null when the window is not on screen yet (nothing
     /// headless has screen coordinates to give).</summary>
