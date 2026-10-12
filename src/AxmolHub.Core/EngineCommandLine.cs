@@ -22,7 +22,8 @@ public sealed class EngineCommandLine(ProcessRunner runner, string wrapper)
     private string SetupWrapper => Path.Combine(Path.GetDirectoryName(wrapper)!, "Invoke-AxmolSetup.ps1");
 
     public async Task<ProcessResult> RunAsync(EngineEntry engine, AxmolInvocation invocation, string workingDirectory,
-        CancellationToken cancellation = default, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? environment = null)
+        CancellationToken cancellation = default, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? environment = null,
+        Action<string>? onLine = null)
     {
         StateStore.ValidateEngine(engine.Path, engine.Channel);
         var arguments = new List<string> { "-NoProfile", "-NonInteractive" };
@@ -37,7 +38,7 @@ public sealed class EngineCommandLine(ProcessRunner runner, string wrapper)
         // The timeout semantics = how long with no output before judging a stall (default 10 minutes), not a
         // wall-clock cap on the whole command; compiling the whole engine never times out as long as it keeps
         // printing, so don't pass an arbitrary 2-hour total here.
-        var result = await runner.RunAsync(Shell, arguments, workingDirectory, environment: null, cancellation, timeout, overrides: environment);
+        var result = await runner.RunAsync(Shell, arguments, workingDirectory, environment: null, cancellation, timeout, overrides: environment, onLine: onLine);
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException($"axmol {invocation.SubCommand} failed (exit {result.ExitCode}).\n{result.Error}\n{result.Output}");
@@ -57,7 +58,8 @@ public sealed class EngineCommandLine(ProcessRunner runner, string wrapper)
     /// while setup downloads a GB-scale toolchain it never times out as long as it keeps printing progress,
     /// so no total time cap is set.
     /// </summary>
-    public Task<ProcessResult> RunSetupAsync(EngineEntry engine, SetupOptions options, CancellationToken cancellation = default)
+    public Task<ProcessResult> RunSetupAsync(EngineEntry engine, SetupOptions options, CancellationToken cancellation = default,
+        Action<string>? onLine = null)
     {
         StateStore.ValidateEngine(engine.Path, engine.Channel);
         var arguments = new List<string> { "-NoProfile", "-NonInteractive" };
@@ -65,7 +67,7 @@ public sealed class EngineCommandLine(ProcessRunner runner, string wrapper)
         arguments.AddRange(SetupScriptArguments(SetupWrapper, engine.Path, options));
 
         runner.Write($"axmol setup: {string.Join(' ', arguments)}");
-        return runner.RunAsync(Shell, arguments, engine.Path, environment: null, cancellation);
+        return runner.RunAsync(Shell, arguments, engine.Path, environment: null, cancellation, onLine: onLine);
     }
 
     /// <summary>Builds the engine setup-wrapper arguments, including the Hub-specific no-persistent-AX_ROOT switch.</summary>

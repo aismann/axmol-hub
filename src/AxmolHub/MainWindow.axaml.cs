@@ -919,7 +919,8 @@ public partial class MainWindow : Window
                     item,
                     () => TaskQueue.Instance.Cancel(item.Identity),
                     () => TaskQueue.Instance.Retry(item),
-                    () => TaskQueue.Instance.Dismiss(item));
+                    () => TaskQueue.Instance.Dismiss(item),
+                    () => ShowLog(true));
                 TaskRows.Children.Add(row.Control);
                 _taskRowViews.Add(row);
             }
@@ -951,6 +952,9 @@ public partial class MainWindow : Window
         private readonly Button _cancel = StripButton();
         private readonly Button _retry = StripButton();
         private readonly Button _dismiss = StripButton();
+        /// <summary>For a change whose detail lives in the log drawer rather than on this row: the row says
+        /// which stage, the drawer says what happened. The one press that leaves the popover to go read.</summary>
+        private readonly Button _log = StripButton();
         private readonly StackPanel _actions = new()
         {
             Orientation = Avalonia.Layout.Orientation.Horizontal,
@@ -958,15 +962,17 @@ public partial class MainWindow : Window
             VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
         };
 
-        public TaskRowView(TaskQueue.Item item, Action cancel, Action retry, Action dismiss)
+        public TaskRowView(TaskQueue.Item item, Action cancel, Action retry, Action dismiss, Action showLog)
         {
             _item = item;
             _cancel.Click += (_, _) => cancel();
             _retry.Click += (_, _) => retry();
             _dismiss.Click += (_, _) => dismiss();
+            _log.Click += (_, _) => showLog();
             _actions.Children.Add(_cancel);
             _actions.Children.Add(_retry);
             _actions.Children.Add(_dismiss);
+            _actions.Children.Add(_log);
             Control = new Grid
             {
                 ColumnDefinitions = new ColumnDefinitions("*,Auto"),
@@ -984,9 +990,13 @@ public partial class MainWindow : Window
 
         public TaskQueue.Item Bound => _item;
 
+        /// <summary>The row's title line as drawn — what the work is and which stage it says it is in. A check
+        /// on "the row speaks for its own process" has to read this, not the field behind it.</summary>
+        public string TitleForCheck => _title.Text ?? "";
+
         /// <summary>The row's buttons, in the order they appear. A check presses these rather than calling
         /// the queue method behind them, so broken wiring stays detectable.</summary>
-        public IReadOnlyList<Button> ActionButtons => [_cancel, _retry, _dismiss];
+        public IReadOnlyList<Button> ActionButtons => [_cancel, _retry, _dismiss, _log];
 
         /// <summary>The words on the row's visible buttons. This is the affordance read directly, not a phase
         /// inferred from a percentage.</summary>
@@ -1019,6 +1029,10 @@ public partial class MainWindow : Window
             _cancel.Content = HubStrings.Get("Cancel");
             _retry.Content = HubStrings.Get("TaskRetry");
             _dismiss.Content = HubStrings.Get("TaskDismiss");
+            _log.Content = HubStrings.Get("TaskLogAction");
+            // A change's detail is in the drawer; a transfer's whole story is its byte count, and a fourth
+            // button on every row would be the shell asking permission to scroll.
+            _log.IsVisible = _item.Kind == TaskQueue.TaskKind.Mutating;
             // A finished row keeps no cancel: there is nothing left to stop, and a button that answers to
             // nothing is the thing this shell already refused to do in the version picker.
             _cancel.IsVisible = _item.IsActive;
@@ -1071,6 +1085,11 @@ public partial class MainWindow : Window
         var view = _taskRowViews.FirstOrDefault(v => v.Bound.Identity == identity);
         return view is null ? "" : view.TipForCheck + "|" + view.Bound.MeasureText;
     }
+
+    /// <summary>One row's title line as drawn: <c>标题 · 阶段</c>. The stage a build printed about itself is
+    /// the thing a check has to see, and it is only on this line.</summary>
+    internal string TaskRowTitleForCheck(string identity)
+        => _taskRowViews.FirstOrDefault(v => v.Bound.Identity == identity)?.TitleForCheck ?? "";
 
     /// <summary>Presses one row's button by its word, through the button rather than the queue method it
     /// ends up calling. False when the row does not offer that word right now — which is itself the answer a
@@ -1776,6 +1795,10 @@ public partial class MainWindow : Window
     internal double StatusStripHeightForCheck => StatusStrip.Bounds.Height;
     internal double RepoIndicatorWidthForCheck => RepoIndicator.Bounds.Width;
     internal (double Width, double Height) LogTogglePlateForCheck => (LogToggle.Bounds.Width, LogToggle.Bounds.Height);
+
+    /// <summary>The drawer's own caption. A task row points here, so the surface it lands on has to say what
+    /// it holds rather than leaving the text at the top of a box.</summary>
+    internal string LogTitleForCheck => LogTitleText.Text ?? "";
     internal double StatusWidthForCheck => Status.Bounds.Width;
 
     /// <summary>Whether the assistant page is the one on screen.</summary>

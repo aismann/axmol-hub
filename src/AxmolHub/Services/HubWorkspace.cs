@@ -59,7 +59,6 @@ public sealed class HubWorkspace : IDisposable
     /// between the two is drawn.
     /// </summary>
     private readonly TaskQueue _tasks = TaskQueue.Instance;
-    private BuildProgressWindow? _buildProgress;
     /// <summary>
     /// The wasm preview Hub is serving, if any. A named field rather than an awaited call because that server
     /// outlives the request that started it, and the 运行 button has to find it again as 停止.
@@ -106,11 +105,10 @@ public sealed class HubWorkspace : IDisposable
         // HubLog's callbacks come from a **worker thread** (ProcessRunner's output pump). The WPF
         // version switches back to the UI thread with Dispatcher.BeginInvoke; here is the same.
         // Without this step, appending text to a TextBox throws a cross-thread exception.
-        Log.Written += line => Dispatcher.UIThread.Post(() =>
-        {
-            Logged?.Invoke(line);
-            _buildProgress?.Report(line[(line.IndexOf(' ') + 1)..]);
-        });
+        // The drawer is the one surface that shows every line; a task's own row is fed by that task's
+        // process (see OwnLines), because a row that moved on somebody else's output was reporting a
+        // stage the build never printed.
+        Log.Written += line => Dispatcher.UIThread.Post(() => Logged?.Invoke(line));
 
         _runner = new ProcessRunner(Log.Write);
         _commandLine = new EngineCommandLine(_runner, Path.Combine(AppContext.BaseDirectory, "Invoke-Axmol.ps1"));
@@ -418,7 +416,6 @@ public sealed class HubWorkspace : IDisposable
             Log.Write(StatusText);
         }
 
-        CloseBuildProgress();
         BusyChanged?.Invoke(false);
         Refresh();
     }
@@ -554,12 +551,13 @@ public sealed class HubWorkspace : IDisposable
                + "\n\n" + HubStrings.Get("ErrorHint");
     }
 
-    private void CloseBuildProgress()
-    {
-        var dialog = _buildProgress;
-        _buildProgress = null;
-        dialog?.Finish();
-    }
+    /// <summary>
+    /// A line sink for one task's <b>own</b> process. The pump that calls it is a worker thread and the row is
+    /// data the shell reads on the UI thread, so the reading is posted rather than applied there — the same
+    /// pairing the log above needs for its TextBox, and for the same reason.
+    /// </summary>
+    private Action<string> OwnLines(TaskQueue.Item item) => line => Dispatcher.UIThread.Post(() =>
+        item.ApplyProgress(TaskQueue.TaskFeed.Parse(line)));
 
     /// <summary>
     /// The WPF version's <c>Refresh()</c>: after an operation ends, recompute all lists and derived
@@ -1090,21 +1088,11 @@ public sealed class HubWorkspace : IDisposable
         await RunTaskAsync($"project:build:{selected.Name}:{target.Id}",
             configureOnly ? "Configure CMake" : "Build project",
             selected.Name + " · " + target.Name,
-            async (_, token) =>
+            async (task, token) =>
         {
             var project = RequiredProject();
             BuildTargets.Select(project, target.Id, configuration);
             var engine = RequiredEngine(project);
-
-            _buildProgress = new BuildProgressWindow(project.Name, target.Name, configuration, Cancel);
-            if (Owner is null)
-            {
-                _buildProgress.Show();
-            }
-            else
-            {
-                _buildProgress.Show(Owner);
-            }
 
             if (project.Platform == "windows-x64")
             {
@@ -1117,7 +1105,7 @@ public sealed class HubWorkspace : IDisposable
             try
             {
                 _androidPasswords.TryGetValue(project.Path, out var passwords);
-                await _projects.BuildAsync(project, engine, configureOnly, token, passwords);
+                await _projects.BuildAsync(project, engine, configureOnly, token, passwords, OwnLines(task));
                 if (!configureOnly)
                 {
                     _projects.FindExecutable(project);
@@ -1140,15 +1128,18 @@ public sealed class HubWorkspace : IDisposable
                 Store.Save(State);
             }
 
-            CloseBuildProgress();
-
-            if (!configureOnly)
+            if (configureOnly)
             {
-                var output = BuildOutputDirectory(project);
-                await HubDialog.ShowAsync(Owner, HubStrings.Get("BuildComplete"),
-                    HubStrings.Get("BuildComplete") + "\n\n" + target.Name + " · " + configuration + "\n" + output);
-                _runner.Open(output);
+                return;
             }
+
+            // No completion dialog: the row already says 完成 and the drawer holds the detail — a modal that
+            // appears after minutes of waiting is the same shape this round deleted the progress window for.
+            // Opening the output directory stays, because that is the next thing the user does with a build,
+            // and it is written to the log so 看日志 leads somewhere with the path in it.
+            var output = BuildOutputDirectory(project);
+            Log.Write(output);
+            _runner.Open(output);
         });
     }
 
@@ -1403,20 +1394,9 @@ public sealed class HubWorkspace : IDisposable
         // any other way, so it is the change that earns a row — and an identity per engine and host, so
         // pressing build twice on two targets shows two rows rather than a second copy of one.
         await RunTaskAsync($"engine:hostbuild:{engine.Version}:{host.Id}", "Build engine",
-            engine.Version + " · " + host.Name, async (_, token) =>
+            engine.Version + " · " + host.Name, async (task, token) =>
         {
-            if (Owner is null)
-            {
-                _buildProgress = new BuildProgressWindow("Axmol " + engine.Version, host.Name, configuration, Cancel);
-                _buildProgress.Show();
-            }
-            else
-            {
-                _buildProgress = new BuildProgressWindow("Axmol " + engine.Version, host.Name, configuration, Cancel);
-                _buildProgress.Show(Owner);
-            }
-
-            await _engineBuild.BuildAsync(engine, host, configuration, token);
+            await _engineBuild.BuildAsync(engine, host, configuration, token, OwnLines(task));
         });
 
         Refresh();
@@ -1595,7 +1575,7 @@ public sealed class HubWorkspace : IDisposable
         // change that takes a row. The identity is per engine version because that is what the row is about,
         // and pressing it again for the same version must not stack a second row.
         await RunTaskAsync($"engine:setup:{ToolEngine?.Version ?? "none"}", "Run engine setup",
-            ToolEngine?.Version, async (_, token) =>
+            ToolEngine?.Version, async (task, token) =>
         {
             var engine = ToolEngine ?? throw new InvalidOperationException("Import an Axmol engine first.");
             var target = ToolTarget ?? BuildTargets.All[0];
@@ -1605,7 +1585,7 @@ public sealed class HubWorkspace : IDisposable
             }
 
             var effective = platform ?? AxmolCommandMap.Target(target).Platform;
-            var result = await _setup.RunAsync(engine, new SetupOptions(effective), token);
+            var result = await _setup.RunAsync(engine, new SetupOptions(effective), token, OwnLines(task));
             Log.Write($"{effective}: {result.Describe()}");
             if (result.Outcome == SetupOutcome.NeedsPowerShell)
             {

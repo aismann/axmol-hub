@@ -52,7 +52,7 @@ public sealed class ProjectService(ProcessRunner runner, EngineCommandLine comma
     public Task ConfigureAsync(ProjectEntry project, EngineEntry engine, CancellationToken cancellation = default)
         => BuildAsync(project, engine, true, cancellation);
 
-    public async Task BuildAsync(ProjectEntry project, EngineEntry engine, bool configureOnly = false, CancellationToken cancellation = default, AndroidSigningPasswords? androidPasswords = null)
+    public async Task BuildAsync(ProjectEntry project, EngineEntry engine, bool configureOnly = false, CancellationToken cancellation = default, AndroidSigningPasswords? androidPasswords = null, Action<string>? onLine = null)
     {
         BuildConfigurations.ValidateTarget(project);
         var target = BuildTargets.Get(project.Platform);
@@ -69,7 +69,7 @@ public sealed class ProjectService(ProcessRunner runner, EngineCommandLine comma
 
         // The single assembly point for -xc is ProjectBuildOptions — build and plan share it, otherwise plan would omit options.
         var extraCmake = ProjectBuildOptions.CmakeOptions(project, engine, target, prepareFiles: true, prebuiltState);
-        await commandLine.RunAsync(engine, AxmolCommandMap.Build(target, project.Path, project.Configuration, configureOnly, extraCmake), project.Path, cancellation);
+        await commandLine.RunAsync(engine, AxmolCommandMap.Build(target, project.Path, project.Configuration, configureOnly, extraCmake), project.Path, cancellation, onLine: onLine);
         WriteBuildReceipt(project, engine);
     }
 

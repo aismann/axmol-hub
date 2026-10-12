@@ -50,7 +50,6 @@ public static class HubTexts
 
     private static readonly Dictionary<string, (string Chinese, string English)> Values = new()
     {
-        ["BuildComplete"] = ("编译完成", "Build completed"),
         ["BuildConfiguration"] = ("构建配置", "Build configuration"),
         ["ConfigurationHint"] = ("Debug：调试、断言与详细日志。Release：优化构建。两种配置的产物分别保存。", "Debug: debugging, assertions and detailed logs. Release: optimized build. Outputs are stored separately."),
         ["AndroidReleasePending"] = ("Release 使用项目发行密钥，生成已签名 APK/AAB；继续后配置包名、版本和密钥。", "Release uses your project key to produce signed APK/AAB. Configure application ID, version and signing after continuing."),
@@ -333,14 +332,13 @@ public static class HubTexts
         ["DeepLinkTitle"] = ("官网安装请求", "Website install request"),
         ["DeepLinkInvalid"] = ("此安装链接无效或不受支持。请从 Axmol 官网重新打开链接。", "This install link is invalid or unsupported. Open it again from the Axmol website."),
         ["DeepLinkBusy"] = ("Hub 正在执行其他操作，请完成或取消后再试。", "Hub is busy. Finish or cancel the current operation, then try again."),
-        ["BuildProgress"] = ("构建进度", "Build progress"),
-        ["BuildPreparing"] = ("准备构建", "Preparing build"),
+        // The stage words a build prints about itself. They outrank the phase word on a task's row, and since
+        // the progress window went away nothing else needs the window's own title, hint or "preparing" state.
         ["BuildConfiguring"] = ("配置项目", "Configuring project"),
         ["BuildCompiling"] = ("编译代码", "Compiling code"),
         ["BuildPackaging"] = ("打包应用", "Packaging application"),
         ["BuildVerifying"] = ("校验产物", "Verifying output"),
         ["BuildElapsed"] = ("已用时间", "Elapsed"),
-        ["BuildProgressHint"] = ("百分比显示当前编译阶段的进度；配置、打包和校验时显示活动进度。", "Percentage shows the current compilation stage. Configuration, packaging and verification use an activity indicator."),
         ["ProjectAlreadyExists"] = ("项目目录已存在，无法创建同名项目。", "The project destination already exists. Cannot create a project at the same location."),
         ["ProjectAlreadyExistsAction"] = ("请修改项目名称或选择其他目录。若要使用现有项目，请点击“添加已有项目”。", "Change the project name or choose another directory. To use the existing project, click Add existing project."),
         ["EngineMissing"] = ("项目所需引擎未安装，请前往引擎页面安装或导入。", "Required engine is missing. Install or import it on the Engines page."),
@@ -434,6 +432,9 @@ public static class HubTexts
         ["TaskSlotFailed"] = ("{0} 个任务失败", "{0} task(s) failed"),
         ["TaskListTitle"] = ("任务列表", "Tasks"),
         ["TaskSlotTip"] = ("查看正在跑的任务", "Show what is running"),
+        // On a change's row: the stage is here, the detail is in the log drawer, and this is the only press
+        // that leaves the popover to go read it.
+        ["TaskLogAction"] = ("看日志", "View log"),
         // The slot's action mode: the bytes have landed and only a process swap is missing. The armed form
         // is the second tap of a restart pressed while something is still working — the word on the button
         // is the warning, same shape as a steer waiting for its second tap.
@@ -441,8 +442,7 @@ public static class HubTexts
         ["TaskRestartArmed"] = ("再点一次重启", "Tap again to restart"),
         // A failed row is the only settled state with an answer still left to give, and it gets both: try
         // that transfer again, or say you have read it so the strip can go quiet about it.
-        ["TaskRetry"] = ("重试", "Retry"),
-        ["TaskDismiss"] = ("忽略", "Dismiss"),
+        ["TaskRetry"] = ("重试", "Retry"),        ["TaskDismiss"] = ("忽略", "Dismiss"),
         // The one question the queue is allowed to interrupt with, and it says only what the press does:
         // stopping the transfers. That the bytes already down survive is a property of DownloadManager's
         // .partial + Range transport, not something the app acts on by itself — a restart empties the list

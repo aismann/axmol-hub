@@ -773,13 +773,19 @@
               BorderThickness="1" CornerRadius="6"
               Background="{DynamicResource Hub.SurfaceAlt}" Padding="12,8">
         <Grid Height="190" Margin="0,6,0,0" RowDefinitions="Auto,*">
-          <StackPanel Grid.Row="0" Orientation="Horizontal"
-                      HorizontalAlignment="Right" Margin="0,0,0,8">
-            <Button x:Name="CopyErrorButton" Content="{DynamicResource CopyError}"
-                    Classes="strip" Padding="10,4" />
-            <Button x:Name="OpenLogsButton" Content="{DynamicResource OpenLogs}"
-                    Classes="strip" Padding="10,4" Margin="8,0,0,0" />
-          </StackPanel>
+          <!-- Named, and named with the copy key that existed before anything read it: the drawer is where a
+               task row's 看日志 lands, so it has to say what it holds. -->
+          <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+            <TextBlock Grid.Column="0" x:Name="LogTitleText" Text="{DynamicResource LogTitle}"
+                       FontSize="12" VerticalAlignment="Center"
+                       Foreground="{DynamicResource Hub.TextSecondary}" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+              <Button x:Name="CopyErrorButton" Content="{DynamicResource CopyError}"
+                      Classes="strip" Padding="10,4" />
+              <Button x:Name="OpenLogsButton" Content="{DynamicResource OpenLogs}"
+                      Classes="strip" Padding="10,4" Margin="8,0,0,0" />
+            </StackPanel>
+          </Grid>
           <TextBox Grid.Row="1" x:Name="ActivityLog" Classes="mono"
                    IsReadOnly="True" TextWrapping="NoWrap"
                    AcceptsReturn="True" />

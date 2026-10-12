@@ -70,7 +70,8 @@ public sealed class EngineSetupService(EngineCommandLine commandLine)
         return Directory.Exists(root) && Directory.EnumerateDirectories(root).Any();
     }
 
-    public async Task<SetupResult> RunAsync(EngineEntry engine, SetupOptions options, CancellationToken cancellation = default)
+    public async Task<SetupResult> RunAsync(EngineEntry engine, SetupOptions options, CancellationToken cancellation = default,
+        Action<string>? onLine = null)
     {
         if (!File.Exists(Path.Combine(engine.Path, "setup.ps1")))
         {
@@ -80,7 +81,7 @@ public sealed class EngineSetupService(EngineCommandLine commandLine)
         ProcessResult result;
         try
         {
-            result = await commandLine.RunSetupAsync(engine, options, cancellation);
+            result = await commandLine.RunSetupAsync(engine, options, cancellation, onLine: onLine);
         }
         catch (System.ComponentModel.Win32Exception ex) when (!OperatingSystem.IsWindows())
         {

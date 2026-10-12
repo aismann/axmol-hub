@@ -10859,6 +10859,50 @@ public partial class ShellCheckWindow : Window
         Check(!shell.Workspace.IsBusy && !shell.CanCancelForCheck,
             "取消那条秒级操作后闸空出来，状态条的取消也跟着熄灭");
 
+        // The row reads its own process and nothing else. This is the defect the progress window carried: it
+        // was fed from the global log, so a line printed by an unrelated tool moved its stage and its
+        // percentage. Positive first (its own line lands), then the negative that is the whole point —
+        // the same words through the log must not be able to touch it.
+        TaskQueue.Instance.ClearForCheck();
+        var ownIdentity = "project:build:ownstream:windows-x64";
+        if (TaskQueue.Instance.EnqueueForCheck(ownIdentity, "Build project", "fixture · windows-x64",
+                TaskQueue.TaskKind.Mutating) is null)
+        {
+            throw new InvalidOperationException("fixture: the own-stream build was refused");
+        }
+
+        shell.OpenTaskPopupForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        TaskQueue.Instance.ReportLineForCheck(ownIdentity, "Command: cmake --build build --config Release");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var ownStage = shell.TaskRowTitleForCheck(ownIdentity);
+        Check(ownStage.Contains(HubTexts.Get("BuildCompiling", HubStrings.Language), StringComparison.Ordinal),
+            "构建的那一行说的是它自己的阶段（行上 " + ownStage + "）");
+
+        TaskQueue.Instance.ReportLineForCheck(ownIdentity, "[7/42] Building CXX object CMakeFiles/app.dir/main.cpp.obj");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.TaskRowMeasureForCheck(ownIdentity).Contains("7 / 42", StringComparison.Ordinal),
+            "编译器报了自己的步数时，测量列就是那两步数（实际 "
+            + shell.TaskRowMeasureForCheck(ownIdentity) + "）");
+
+        shell.WriteLog("Command: org.gradle.launcher.GradleMain assembleRelease");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.TaskRowTitleForCheck(ownIdentity) == ownStage
+              && !shell.TaskRowTitleForCheck(ownIdentity)
+                  .Contains(HubTexts.Get("BuildPackaging", HubStrings.Language), StringComparison.Ordinal),
+            "别人的日志推动不了这一行（行上仍是 " + shell.TaskRowTitleForCheck(ownIdentity) + "）");
+
+        // The row's own answer for where the detail is: a change offers the press into the drawer, and the
+        // drawer says what it holds now that the window that used to hold it is gone.
+        Check(shell.TaskRowActionsForCheck.Contains(HubTexts.Get("TaskLogAction", HubStrings.Language), StringComparison.Ordinal)
+              && shell.LogTitleForCheck == HubTexts.Get("LogTitle", HubStrings.Language),
+            "变更的那一行给看日志，抽屉带着它自己的标题（实际 " + shell.LogTitleForCheck + "）");
+        shell.CloseTaskPopupForCheck();
+
         TaskQueue.Instance.ClearForCheck();
         UpdateService.Instance.ClearForCheck();
         shell.UpdateLayout();

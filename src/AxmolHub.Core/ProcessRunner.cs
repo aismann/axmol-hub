@@ -54,7 +54,8 @@ public sealed class ProcessRunner(Action<string> log)
     public async Task<ProcessResult> RunAsync(string executable, IEnumerable<string> arguments,
         string workingDirectory, IReadOnlyDictionary<string, string>? environment = null,
         CancellationToken cancellation = default, TimeSpan? timeout = null, IReadOnlyList<string>? sensitiveValues = null,
-        IReadOnlyDictionary<string, string>? overrides = null, bool firstLineOnly = false)
+        IReadOnlyDictionary<string, string>? overrides = null, bool firstLineOnly = false,
+        Action<string>? onLine = null)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -103,8 +104,8 @@ public sealed class ProcessRunner(Action<string> log)
         var outputSink = new StringBuilder();
         var errorSink = new StringBuilder();
 
-        var output = ReadAsync(process.StandardOutput, false, Redact, MarkOutput, outputSink, firstLineOnly);
-        var error = ReadAsync(process.StandardError, true, Redact, MarkOutput, errorSink, firstLineOnly);
+        var output = ReadAsync(process.StandardOutput, false, Redact, MarkOutput, outputSink, firstLineOnly, onLine);
+        var error = ReadAsync(process.StandardError, true, Redact, MarkOutput, errorSink, firstLineOnly, onLine);
 
         if (idleTimeout == Infinite)
         {
@@ -201,7 +202,7 @@ public sealed class ProcessRunner(Action<string> log)
     }
 
     private async Task<string> ReadAsync(StreamReader reader, bool error, Func<string, string> redact,
-        Action? onOutput, StringBuilder sink, bool firstLineOnly = false)
+        Action? onOutput, StringBuilder sink, bool firstLineOnly = false, Action<string>? onLine = null)
     {
         try
         {
@@ -210,7 +211,12 @@ public sealed class ProcessRunner(Action<string> log)
                 onOutput?.Invoke();
                 line = redact(line);
                 lock (sink) sink.AppendLine(line);
-                log(error ? $"stderr: {line}" : line);
+                var text = error ? $"stderr: {line}" : line;
+                log(text);
+                // The one who started this process may want its lines for itself: a task row fed from the
+                // global log moves when an unrelated tool prints. This is that row's own stream — the same
+                // redacted text the log got, so the stderr prefix a stage parser reads stays in one piece.
+                onLine?.Invoke(text);
                 // For cheap probes (e.g. `nuget help` where only the first line "NuGet Version: …" matters),
                 // stop reading once the first line is captured so the rest of the dump isn't pulled into memory
                 // or the log. The child process still runs to completion and exits on its own.
