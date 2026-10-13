@@ -635,10 +635,9 @@ public partial class ChatPanel
     }
 
     /// <summary>
-    /// Executes the selected row. Approve hands the plan to the workspace, which flips the session into Agent
-    /// mode and starts the run; the composer's plan chip then has to go too, and it goes through the panel-only
-    /// clear rather than <see cref="ClearComposerMode"/> — that one rewrites <c>conversation.Mode</c> and raises
-    /// <c>Changed</c> again inside the window where the run has just started.
+    /// Executes the selected row. Approve hands the plan to the workspace, which flips the session into Agent mode
+    /// and starts the run; the composer's plan chip goes with that flip, because it reads the session's mode rather
+    /// than keeping a copy of it here.
     ///
     /// Revise records the decision and then sends the feedback as an ordinary user message through
     /// <see cref="ChatWorkspace.TryEnqueueSend"/>: the pending-plan refusal inside it keys on
@@ -650,7 +649,6 @@ public partial class ChatPanel
         if (_planSelectedOption == ChatPlanStates.Approve)
         {
             ResolvePlanApproval(conversationId, turnIndex, PlanApprovalStates.Approved);
-            ClearComposerModeSelection();
             return;
         }
 
@@ -665,15 +663,6 @@ public partial class ChatPanel
         }
         RememberSentText(feedback.Trim());
         InputBox.Focus();
-    }
-
-    /// <summary>Panel-side only: clears the composer's mode selection without touching the conversation. The
-    /// workspace has already set the session's mode; writing it again here would be a second transcript write
-    /// inside the run-start window.</summary>
-    private void ClearComposerModeSelection()
-    {
-        _selectedComposerMode = null;
-        RefreshComposerChoices();
     }
 
     /// <summary>

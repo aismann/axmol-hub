@@ -319,8 +319,9 @@ public partial class ShellCheckWindow : Window
             "工具权限按钮紧跟加号，启用的模式按钮按序排在权限按钮右侧");
         Check(panel.ClickComposerModeMenuForCheck(ChatModes.Plan)
               && panel.SelectedModeForCheck == ChatModes.Plan
-              && panel.SelectedComposerModeForCheck == ChatModes.Plan
+              && panel.ComposerModeMarkerForCheck == ChatModes.Plan
               && panel.ModeIndicatorVisibleForCheck
+              && panel.ModeIndicatorLabelForCheck == HubStrings.Get("ChatModePlan")
               && panel.ModeIndicatorIconMatchesSelectedModeForCheck
               && panel.CheckedComposerMenuModesForCheck.SequenceEqual([ChatModes.Plan]),
             "点击计划后菜单关闭、只勾选计划，并显示模式按钮");
@@ -337,26 +338,76 @@ public partial class ShellCheckWindow : Window
             "模式取消图标使用轻量的文字叉号，字体走应用的 UI 字族栈（实际 " + closeGlyph.FontFamily + "）");
         Check(panel.ClickComposerModeMenuForCheck(ChatModes.Agent)
               && panel.SelectedModeForCheck == ChatModes.Agent
-              && panel.SelectedComposerModeForCheck == ChatModes.Agent
-              && panel.CheckedComposerMenuModesForCheck.SequenceEqual([ChatModes.Agent])
-              && panel.ModeIndicatorIconMatchesSelectedModeForCheck
-              && panel.ModeIndicatorVisibleForCheck,
-            "点击目标会取消计划并仅勾选目标，菜单立即关闭");
-        Check(panel.ClickComposerModeMenuForCheck(ChatModes.Agent)
-              && panel.SelectedModeForCheck == ChatModes.Agent
-              && panel.SelectedComposerModeForCheck is null
+              && panel.ComposerModeMarkerForCheck is null
               && panel.CheckedComposerMenuModesForCheck.Length == 0
               && !panel.ModeIndicatorVisibleForCheck,
-            "再次点击已勾选的目标会取消选择并恢复默认模式");
+            "点击目标取消计划：两档都不勾、胶囊消失、菜单立即关闭（目标就是菜单全不勾的默认）");
         Check(panel.ClickComposerModeMenuForCheck(ChatModes.Plan)
-              && panel.SelectedComposerModeForCheck == ChatModes.Plan,
+              && panel.ComposerModeMarkerForCheck == ChatModes.Plan
+              && panel.ClickComposerModeMenuForCheck(ChatModes.Plan)
+              && panel.SelectedModeForCheck == ChatModes.Agent
+              && panel.ComposerModeMarkerForCheck is null
+              && panel.CheckedComposerMenuModesForCheck.Length == 0
+              && !panel.ModeIndicatorVisibleForCheck,
+            "再点已勾选的计划就是取消勾选：回到默认目标模式");
+        Check(panel.ClickComposerModeMenuForCheck(ChatModes.Plan)
+              && panel.ComposerModeMarkerForCheck == ChatModes.Plan,
             "可重新启用计划模式");
         panel.ResetModeForCheck();
         Check(panel.SelectedModeForCheck == ChatModes.Agent
-              && panel.SelectedComposerModeForCheck is null
+              && panel.ComposerModeMarkerForCheck is null
               && !panel.ModeIndicatorVisibleForCheck
               && panel.CheckedComposerMenuModesForCheck.Length == 0,
             "点击模式按钮的删除图标恢复默认目标模式并取消勾选");
+        // The marker is the session's, not the panel's. A field on ChatPanel used to carry it, and a field that
+        // only clicks write leaves the composer naming 计划 on a session that is about to run in the default mode
+        // — so the pair below is the bug: what the chip says, and what the session's own file says.
+        var sessionBeforeMarkers = shell.Chat.ActiveConversation?.Id;
+        var markerSource = shell.Chat.StartConversation();
+        var markerPeer = shell.Chat.StartConversation();
+        shell.Chat.OpenConversation(markerSource.Id);
+        shell.Chat.SelectMode(ChatModes.Plan);
+        Dispatcher.UIThread.RunJobs();
+        Check(panel.ModeIndicatorVisibleForCheck
+              && panel.ModeIndicatorLabelForCheck == HubStrings.Get("ChatModePlan"),
+            "计划会话的胶囊写着计划（实际「" + panel.ModeIndicatorLabelForCheck + "」）");
+        markerSource.Append(ChatTurn.User("先给出计划"));
+        var markerBranch = shell.Chat.BranchFrom(markerSource.Id, 0);
+        Dispatcher.UIThread.RunJobs();
+        Check(markerBranch is not null && markerBranch.Mode == ChatModes.Plan
+              && panel.ModeIndicatorVisibleForCheck
+              && panel.ModeIndicatorLabelForCheck == HubStrings.Get("ChatModePlan"),
+            "分叉沿用源会话的模式，胶囊当场就是计划（实际「" + panel.ModeIndicatorLabelForCheck + "」）");
+        Check(shell.Chat.OpenConversation(markerPeer.Id) is not null
+              && panel.SelectedModeForCheck == ChatModes.Agent
+              && panel.ComposerModeMarkerForCheck is null
+              && !panel.ModeIndicatorVisibleForCheck,
+            "切到另一条会话，胶囊不再念上一条的计划：非计划的会话没有标记（实际模式「"
+            + panel.SelectedModeForCheck + "」）");
+        Check(shell.Chat.OpenConversation(markerSource.Id) is not null
+              && panel.ModeIndicatorVisibleForCheck
+              && panel.ComposerModeMarkerForCheck == ChatModes.Plan,
+            "切回计划会话，标记照它自己的模式回来");
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.Chat.StoredCopyForCheck(markerSource.Id)?.Mode == ChatModes.Plan
+              && shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Mode == ChatModes.Agent,
+            "模式各写进自己会话的文件，重启读回按会话而不是按界面（实际源「"
+            + shell.Chat.StoredCopyForCheck(markerSource.Id)?.Mode + "」/ 另一条「"
+            + shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Mode + "」）");
+        // 提问 is deliberately unnamed here: it is a chat with no tools, not a mode the composer advertises. The
+        // assertion keeps that from being mistaken later for a marker that failed to paint.
+        shell.Chat.SelectMode(ChatModes.Ask);
+        Dispatcher.UIThread.RunJobs();
+        Check(panel.SelectedModeForCheck == ChatModes.Ask && !panel.ModeIndicatorVisibleForCheck
+              && panel.CheckedComposerMenuModesForCheck.Length == 0,
+            "提问模式不戴胶囊也不勾任何一档，模式照旧生效（实际模式「" + panel.SelectedModeForCheck + "」）");
+        foreach (var id in new[] { markerBranch?.Id, markerSource.Id, markerPeer.Id })
+            if (id is { } gone) shell.Chat.DeleteConversation(gone);
+        // The page goes back to whatever the fixture had on screen: deleting the active session empties the panel,
+        // and the cells after this one read the transcript that fixture set up.
+        if (sessionBeforeMarkers is { } backFromMarkers) shell.Chat.OpenConversation(backFromMarkers);
+        panel.Reload();
+        Dispatcher.UIThread.RunJobs();
         var contextEstimatePrefix = HubStrings.Get("ChatContextEstimateFormat").Split("{0}")[0];
         Check(panel.ContextTooltipForCheck.StartsWith(contextEstimatePrefix, StringComparison.Ordinal),
             "上下文圆环提示显示当前本地估算");

@@ -64,7 +64,6 @@ public partial class ChatPanel : UserControl
     private bool _recalling;
     private const int MaxRecalledTexts = 20;
 
-    private string? _selectedComposerMode;
     private bool _stickToBottom = true;
     private Task? _contextCompressionTask;
 
@@ -268,7 +267,7 @@ public partial class ChatPanel : UserControl
         {
             if (ForkNotice.Tag is string sourceId) _chat.OpenConversation(sourceId);
         };
-        ModeIndicatorButton.Click += (_, _) => ClearComposerMode();
+        ModeIndicatorButton.Click += (_, _) => _chat.SelectMode(ChatModes.Agent);
         ContextButton.Click += (_, _) => ShowContextMenu();
         ContextPopup.PlacementTarget = ContextButton;
         ContextPopup.Placement = PlacementMode.TopEdgeAlignedRight;
@@ -521,9 +520,15 @@ public partial class ChatPanel : UserControl
     private void RefreshComposerChoices()
     {
         RefreshModelPicker();
-        ModeIndicatorButton.IsVisible = _selectedComposerMode is not null;
-        ModeIndicatorIcon.Data = ThemeGeometry(ComposerModeIconKey(_selectedComposerMode));
-        ModeIndicatorLabel.Text = HubStrings.Get(_selectedComposerMode switch
+        // The marker is read off the session on screen, never kept here: a field on this view is what let one
+        // session's 计划 paint over the next one's, and the mode it named was then not the mode the message ran
+        // under. Its content follows the session's own mode even while hidden, so a chip cannot disagree with the
+        // session it belongs to; only 计划 wears one, because an unticked menu pair already reads as the default
+        // 目标, and 提问 is a chat with no tools rather than something to advertise.
+        var mode = _chat.ActiveMode;
+        ModeIndicatorButton.IsVisible = mode == ChatModes.Plan;
+        ModeIndicatorIcon.Data = ThemeGeometry(ComposerModeIconKey(mode));
+        ModeIndicatorLabel.Text = HubStrings.Get(mode switch
         {
             ChatModes.Ask => "ChatModeAsk",
             ChatModes.Plan => "ChatModePlan",
@@ -967,19 +972,19 @@ public partial class ChatPanel : UserControl
                      (ChatModes.Agent, "ChatModeGoal"),
                  })
         {
+            // Only 计划 wears a tick: the session's mode is a fact about it, and 目标 is what an unticked pair
+            // already means, so that item is the way back to the default rather than a state to hold.
+            var ticks = mode == ChatModes.Plan && _chat.ActiveMode == ChatModes.Plan;
             var item = new MenuItem
             {
                 Header = BuildComposerModeHeader(mode, key),
                 ToggleType = MenuItemToggleType.CheckBox,
-                IsChecked = _selectedComposerMode == mode,
+                IsChecked = ticks,
                 Tag = mode,
             };
             item.Click += (_, _) =>
             {
-                if (_selectedComposerMode == mode)
-                    ClearComposerMode();
-                else
-                    SetComposerMode(mode);
+                _chat.SelectMode(ticks ? ChatModes.Agent : mode);
                 menu.Hide();
             };
             menu.Items.Add(item);
@@ -1059,26 +1064,12 @@ public partial class ChatPanel : UserControl
         return icon;
     }
 
-    private static string ComposerModeIconKey(string? mode) => mode switch
+    private static string ComposerModeIconKey(string mode) => mode switch
     {
         ChatModes.Ask => "Hub.Icon.ChatModeAsk",
         ChatModes.Plan => "Hub.Icon.ChatModePlan",
         _ => "Hub.Icon.ChatModeGoal",
     };
-
-    private void SetComposerMode(string mode)
-    {
-        _selectedComposerMode = mode;
-        _chat.SelectMode(mode);
-        RefreshComposerChoices();
-    }
-
-    private void ClearComposerMode()
-    {
-        _selectedComposerMode = null;
-        _chat.SelectMode(ChatModes.Agent);
-        RefreshComposerChoices();
-    }
 
     private void ShowModelMenu()
     {
@@ -4394,6 +4385,7 @@ public partial class ChatPanel : UserControl
         => BuildComposerMenu().Items.OfType<MenuItem>()
             .Select(item => item.Header?.ToString() ?? "").ToArray();
     internal bool ModeIndicatorVisibleForCheck => ModeIndicatorButton.IsVisible;
+    internal string ModeIndicatorLabelForCheck => ModeIndicatorLabel.Text ?? "";
     internal bool ComposerPlusCenteredForCheck
         => AddContextButton.HorizontalContentAlignment == HorizontalAlignment.Center
            && AddContextButton.VerticalContentAlignment == VerticalAlignment.Center;
@@ -4410,8 +4402,10 @@ public partial class ChatPanel : UserControl
         => ModeIndicatorLabel.IsVisible && ModeIndicatorLabel.Parent is Grid grid
            && grid.ColumnDefinitions.Count == 2
            && Grid.GetColumn(ModeIndicatorLabel) == 1;
+    // Compared against the session, not against anything this view remembers: comparing the chip with a field the
+    // chip itself wrote is how a stale marker passed its own check.
     internal bool ModeIndicatorIconMatchesSelectedModeForCheck
-        => ReferenceEquals(ModeIndicatorIcon.Data, ThemeGeometry(ComposerModeIconKey(_selectedComposerMode)));
+        => ReferenceEquals(ModeIndicatorIcon.Data, ThemeGeometry(ComposerModeIconKey(_chat.ActiveMode)));
     internal bool ModeIndicatorCloseIsRedForCheck
         => ModeIndicatorButton.GetLogicalDescendants().OfType<TextBlock>()
             .FirstOrDefault(text => text.Classes.Contains("mode-indicator-close")) is { } close
@@ -4436,7 +4430,7 @@ public partial class ChatPanel : UserControl
         => BuildComposerMenu().Items.OfType<MenuItem>().Where(IsComposerModeItem)
             .All(item => item.Header is StackPanel header
                          && header.Children.OfType<Avalonia.Controls.Shapes.Path>().FirstOrDefault() is { } icon
-                         && ReferenceEquals(icon.Data, ThemeGeometry(ComposerModeIconKey(item.Tag?.ToString())))
+                         && ReferenceEquals(icon.Data, ThemeGeometry(ComposerModeIconKey((string)item.Tag!)))
                          && header.Children.OfType<TextBlock>().Any());
     internal string[] ComposerMenuModesForCheck => BuildComposerMenu().Items.OfType<MenuItem>()
         .Where(IsComposerModeItem)
@@ -4452,7 +4446,10 @@ public partial class ChatPanel : UserControl
     internal bool ComposerMenuModesAreCheckboxesForCheck
         => BuildComposerMenu().Items.OfType<MenuItem>().Where(IsComposerModeItem)
             .All(item => item.ToggleType == MenuItemToggleType.CheckBox);
-    internal string? SelectedComposerModeForCheck => _selectedComposerMode;
+    /// <summary>The marker the composer is wearing, read the same way the chip reads it: 计划 while the session on
+    /// screen is in plan mode, nothing otherwise — the default and 提问 wear no chip by design.</summary>
+    internal string? ComposerModeMarkerForCheck
+        => _chat.ActiveMode == ChatModes.Plan ? ChatModes.Plan : null;
 
     // ── Permission chip and its menu ──
     // Each probe builds a fresh menu, which is the same object a user's click would have arrived on: the list
@@ -4639,12 +4636,7 @@ public partial class ChatPanel : UserControl
 
     internal void SetInputForCheck(string text) => InputBox.Text = text;
 
-    internal bool SelectModeForCheck(string mode)
-    {
-        if (mode is not (ChatModes.Ask or ChatModes.Plan or ChatModes.Agent)) return false;
-        SetComposerMode(mode);
-        return true;
-    }
+    internal bool SelectModeForCheck(string mode) => _chat.SelectMode(mode);
 
     internal bool ClickComposerModeMenuForCheck(string mode)
     {

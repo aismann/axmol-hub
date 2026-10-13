@@ -1241,6 +1241,9 @@
                   <Path Classes="chip-caret" Data="{StaticResource Hub.Icon.Caret}" />
                 </StackPanel>
               </Button>
+              <!-- The plan marker: it names the mode of the session on screen, and only plan wears one — an
+                   unticked pair in the ＋ menu already reads as the default goal, and ask is a chat with no tools
+                   rather than something to advertise. The × picks the default back. -->
               <Button x:Name="ModeIndicatorButton" Classes="mode-indicator"
                       VerticalAlignment="Center" IsVisible="False">
                 <Grid ColumnDefinitions="14,*">
