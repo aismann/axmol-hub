@@ -877,6 +877,47 @@ if (args.Contains("--check-ai-copilot"))
     Assert(!ProviderRequestPolicy.HasPicture("""{"messages":[{"role":"user","content":"hi"}]}"""),
         "a text-only request carries no vision marker");
 
+    // The third body, and the shell that is not a pipeline policy. Anthropic has no `tool` role — a result is a
+    // `tool_result` block inside the next *user* message — so a rule that only read roles would report every tool
+    // round as a human turn. On a metered provider that is the direction that spends the user's allowance, and it
+    // is the exact mistake this class's own doc refuses to make twice.
+    Assert(ProviderRequestPolicy.IsToolRound(
+               """{"system":"be brief","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}]}"""),
+        "an Anthropic tool round reads as a tool round even though the entry's role is user");
+    Assert(!ProviderRequestPolicy.IsToolRound(
+               """{"system":"be brief","messages":[{"role":"user","content":[{"type":"text","text":"what changed?"}]}]}"""),
+        "a user message holding plain text blocks is still a human turn");
+    Assert(ProviderRequestPolicy.IsToolRound(
+               """{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"run_command","input":{}}]}]}"""),
+        "an assistant turn asking for a call is a tool round on this body too");
+    Assert(ProviderRequestPolicy.HasPicture(
+               """{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":""}}]}]}"""),
+        "the Anthropic block type is one the picture rule already knows");
+
+    // The same answers, reached through the plain-request shell a client without a pipeline uses. Parity here is
+    // the reason such a client does not get to invent its own copy of the meter rule.
+    var probeRequest = new HttpRequestMessage(HttpMethod.Post, "https://mirror.test/v1/messages");
+    ProviderRequestPolicy.ApplyTo(probeRequest,
+        new Dictionary<string, string> { ["x-client"] = "axmol-hub" },
+        ProviderRequestSemantics.Copilot, "interaction-7",
+        """{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}]}""");
+    Assert(probeRequest.Headers.TryGetValues("x-client", out var declared) && declared.SequenceEqual(new[] { "axmol-hub" }),
+        "the static headers land on the plain-request shell too");
+    Assert(probeRequest.Headers.TryGetValues(ProviderRequestPolicy.InitiatorHeader, out var initiator)
+           && initiator.SequenceEqual(new[] { ProviderRequestPolicy.InitiatorAgent }),
+        "the plain shell derives the same x-initiator the pipeline shell does");
+    Assert(probeRequest.Headers.TryGetValues(ProviderRequestPolicy.InteractionIdHeader, out var interaction)
+           && interaction.SequenceEqual(new[] { "interaction-7" }),
+        "the conversation id rides the same request");
+    Assert(!probeRequest.Headers.Contains("Authorization"),
+        "no shell writes the credential: that header belongs to whoever authenticates the call");
+
+    // A provider outside any family gets nothing derived, whatever the body says — the path every preset shipping
+    // today walks, and the reason the pure function has to be the one both shells call.
+    Assert(ProviderRequestPolicy.Headers(new Dictionary<string, string>(), null, "ignored",
+            """{"messages":[{"role":"user","content":[{"type":"tool_result"}]}]}""").Count() == 0,
+        "no declared family means no derived header, even for a body full of tool results");
+
     var manifestText = File.ReadAllText(AiProviderManifest.ManifestPath);
     Assert(!manifestText.Contains("clientSecret", StringComparison.OrdinalIgnoreCase)
            && !manifestText.Contains("client_secret", StringComparison.OrdinalIgnoreCase),

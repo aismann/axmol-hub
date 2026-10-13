@@ -16,6 +16,12 @@ namespace AxmolHub.Agent;
 /// the repository already proved out for <see cref="ReasoningReplayPolicy"/> — the one moment where the request
 /// body exists as the connector built it and the transport has not taken it yet.</para>
 ///
+/// <para><b>The rule itself is a pure function; the policy is one shell for it.</b> <see cref="Headers"/> turns
+/// a declared header bag, a family and the serialized body into the list to send, and this class writes that list
+/// through the connector's pipeline. <see cref="ApplyTo"/> writes the identical list onto a plain
+/// <see cref="HttpRequestMessage"/> for a client that has no pipeline to hang a policy on. A second client wanting
+/// the meter rule should take the second shell, not copy the first.</para>
+///
 /// <para><b>It never touches <c>Authorization</c>.</b> The credential handed to the client <i>is</i> the token:
 /// the SDK's own bearer policy writes the header, and a second writer here would produce two of them, which a
 /// gateway reports as a confusing 4xx rather than as a duplicate header. opencode has to delete the SDK's header
@@ -57,18 +63,43 @@ public sealed class ProviderRequestPolicy(
         return ProcessNextAsync(message, pipeline, currentIndex);
     }
 
-    private void Apply(PipelineMessage message)
+    /// <summary>
+    /// The headers one request should carry: the declared ones first, then the ones that describe the body about
+    /// to go out. Pure — no pipeline, no request object — because there are now two shells that need exactly this
+    /// answer and a rule kept in two shells is the drift this repository keeps having to undo.
+    /// </summary>
+    public static IEnumerable<(string Name, string Value)> Headers(
+        IReadOnlyDictionary<string, string> statics, string? semantics, string? interactionId, string? bodyJson)
     {
-        foreach (var (name, value) in statics) message.Request.Headers.Set(name, value);
+        foreach (var (name, value) in statics) yield return (name, value);
 
         // No family semantics declared: the static headers above are the whole job. Every provider shipping
         // today lands here, so this path must stay free of a JSON round trip.
-        if (semantics != ProviderRequestSemantics.Copilot) return;
+        if (semantics != ProviderRequestSemantics.Copilot) yield break;
 
-        var body = ReadBody(message);
-        message.Request.Headers.Set(InitiatorHeader, IsToolRound(body) ? InitiatorAgent : InitiatorUser);
-        if (HasPicture(body)) message.Request.Headers.Set(VisionHeader, "true");
-        if (interactionId is { Length: > 0 }) message.Request.Headers.Set(InteractionIdHeader, interactionId);
+        yield return (InitiatorHeader, IsToolRound(bodyJson) ? InitiatorAgent : InitiatorUser);
+        if (HasPicture(bodyJson)) yield return (VisionHeader, "true");
+        if (interactionId is { Length: > 0 }) yield return (InteractionIdHeader, interactionId);
+    }
+
+    /// <summary>
+    /// Writes the same headers onto a plain <see cref="HttpRequestMessage"/>.
+    ///
+    /// <para>The pipeline version below is the shell a connector-built client uses; this one exists for a client
+    /// that assembles its own request and therefore has no <see cref="PipelineMessage"/> to hang a policy on.
+    /// Splitting them is what keeps such a client from inventing a third copy of the meter rule.</para>
+    /// </summary>
+    public static void ApplyTo(HttpRequestMessage request, IReadOnlyDictionary<string, string> statics,
+        string? semantics, string? interactionId, string? bodyJson)
+    {
+        foreach (var (name, value) in Headers(statics, semantics, interactionId, bodyJson))
+            request.Headers.TryAddWithoutValidation(name, value);
+    }
+
+    private void Apply(PipelineMessage message)
+    {
+        foreach (var (name, value) in Headers(statics, semantics, interactionId, ReadBody(message)))
+            message.Request.Headers.Set(name, value);
     }
 
     /// <summary>
@@ -106,15 +137,32 @@ public sealed class ProviderRequestPolicy(
     /// <para><b>An unreadable body answers "user".</b> That is the expensive direction, and it is deliberate:
     /// guessing "agent" to save quota when a person actually typed the prompt would be gaming the meter, which is
     /// a different category of mistake than paying for it.</para>
+    ///
+    /// <para><b>Anthropic's wire needs the second test, not just the role.</b> It has no <c>tool</c> role at all:
+    /// a result is a <c>tool_result</c> block inside the next <i>user</i> message. Reading the role alone would
+    /// call every tool round a human turn — the flattering-to-expensive direction the paragraph above says is
+    /// acceptable only when nothing can be read, and here it can be. So a block by that name settles it whatever
+    /// the role says.</para>
     /// </summary>
     public static bool IsToolRound(string? json)
     {
-        var last = LastEntryRole(json);
-        return last is "tool" or "assistant" or "function";
+        if (Parse(json) is not { } root) return false;
+        var entries = ArrayType(root, "messages", "input");
+        if (entries is null || entries.Count == 0) return false;
+        if (entries[^1] is not JsonObject last) return false;
+
+        // The two bodies share the key name `messages` and mean different things by it — a chat entry's content
+        // is a string or `image_url` parts, an Anthropic entry's is a block array whose `tool_result` is a role in
+        // disguise — so the test is on the block, not on the key or the wire. Nothing here needs to know which
+        // protocol produced the body.
+        if (HasBlock(last, "tool_result")) return true;
+        return RoleOf(last) is "tool" or "assistant" or "function";
     }
 
     /// <summary>Whether the request carries a picture, in either of the two shapes this build can produce:
-    /// chat/completions' <c>image_url</c> part or the Responses API's <c>input_image</c>.</summary>
+    /// chat/completions' <c>image_url</c> part or the Responses API's <c>input_image</c>. Anthropic's block type is
+    /// plain <c>image</c> and is matched too, though no client in this build sends a picture on that wire yet —
+    /// the arm is here so the day one does, the meter rule is not the thing that has to be discovered.</summary>
     public static bool HasPicture(string? json)
     {
         if (Parse(json) is not { } root) return false;
@@ -124,25 +172,40 @@ public sealed class ProviderRequestPolicy(
         foreach (var node in parts)
         {
             if (node is not JsonObject entry) continue;
-            if (entry["content"] is not JsonArray content) continue;
-            foreach (var part in content)
-            {
-                var type = (part as JsonObject)?["type"]?.GetValue<string>();
+            foreach (var type in BlockTypes(entry))
                 if (type is "image_url" or "input_image" or "image") return true;
-            }
         }
 
         return false;
     }
 
-    /// <summary>The role of the last entry in the conversation, whichever of the two wire shapes it is.</summary>
-    private static string? LastEntryRole(string? json)
+    /// <summary>Whether one conversation entry carries a block of this type — the question that settles an
+    /// Anthropic tool round, where the result rides inside a <c>user</c> message instead of its own role.</summary>
+    private static bool HasBlock(JsonObject entry, string blockType)
     {
-        if (Parse(json) is not { } root) return null;
-        var entries = ArrayType(root, "messages", "input");
-        if (entries is null || entries.Count == 0) return null;
-        return (entries[^1] as JsonObject)?["role"]?.GetValue<string>();
+        foreach (var type in BlockTypes(entry))
+            if (string.Equals(type, blockType, StringComparison.Ordinal)) return true;
+        return false;
     }
+
+    /// <summary>The <c>type</c> of every part in an entry's content. A bare string content — which both the chat
+    /// body and a short Anthropic message can carry — has no parts, and an entry whose content is an object rather
+    /// than an array is not a reason to lose the request over an exception.</summary>
+    private static IEnumerable<string?> BlockTypes(JsonObject entry)
+    {
+        if (entry["content"] is not JsonArray content) yield break;
+        foreach (var part in content)
+            yield return AsString((part as JsonObject)?["type"]);
+    }
+
+    /// <summary>The entry's role, or <c>null</c> when the body wrote something other than a string there.</summary>
+    private static string? RoleOf(JsonObject entry)
+        => AsString(entry["role"]);
+
+    /// <summary>A node read as text, or <c>null</c> when it is not text. A gateway that writes a number where a
+    /// block type belongs gets a header rule that reads nothing from it, not an exception that eats the request.</summary>
+    private static string? AsString(JsonNode? node)
+        => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     /// <summary>The first of <paramref name="keys"/> that is present as an array — the chat body's
     /// <c>messages</c> and the Responses body's <c>input</c> are the same idea under two names.</summary>
