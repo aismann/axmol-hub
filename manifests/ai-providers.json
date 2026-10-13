@@ -101,7 +101,7 @@
       "baseUrl": "http://localhost:11434/v1",
       "authMethods": ["none"],
       "maxContextTokens": 256000,
-      "_maxContextTokensNote": "A local server answers /v1/models with ids and nothing else, and its OpenAI layer truncates an oversized prompt silently instead of refusing it — so there is no 400 to learn the real window from, and the hosted fallback of 256000 would only make Hub believe a 4k model holds 256k. Declared low on purpose; the per-model override in the model catalog is the way to raise it for a model pulled with a bigger num_ctx."
+      "_maxContextTokensNote": "A local server answers /v1/models with ids and nothing else, and its OpenAI layer truncates an oversized prompt silently instead of refusing it — so there is no 400 to learn the real window from. Adopting the hosted fallback of 256000 accepts that Hub may overestimate a small local model; the per-model override in the model catalog is the way to correct it down for a model pulled with a smaller num_ctx."
     }
   ]
 }
