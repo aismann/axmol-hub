@@ -391,6 +391,43 @@
     </Style>
   </ControlTheme>
 
+  <!-- ==================== Collapse header ====================
+       The model-list collapse header (SettingsPage). Fluent's ToggleButton ControlTheme paints :checked with
+       a full accent slab driven by theme resources — neither a "quiet" class style nor a local-value
+       Background reliably removed it (both were tried and the slab survived on the screenshot), because the
+       slab lives in Fluent's own template. A dedicated ControlTheme replaces the template outright: nothing
+       from the Fluent theme leaks in, the header stays a quiet text row with a hover surface. -->
+  <ControlTheme x:Key="HubCollapseHeader" TargetType="ToggleButton">
+    <Setter Property="FocusAdorner" Value="{x:Null}" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+    <Setter Property="HorizontalContentAlignment" Value="Left" />
+    <Setter Property="Cursor" Value="Hand" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <Border Name="HeaderFrame"
+                Background="{TemplateBinding Background}"
+                CornerRadius="4"
+                Padding="{TemplateBinding Padding}">
+          <ContentPresenter Name="PART_ContentPresenter"
+                            Content="{TemplateBinding Content}"
+                            ContentTemplate="{TemplateBinding ContentTemplate}"
+                            Foreground="{TemplateBinding Foreground}"
+                            VerticalAlignment="Center" />
+        </Border>
+      </ControlTemplate>
+    </Setter>
+    <Style Selector="^:pointerover /template/ Border#HeaderFrame">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    </Style>
+    <Style Selector="^:checked">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
+    <Style Selector="^:pointerover">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
+  </ControlTheme>
+
   <!-- ==================== Expander ==================== -->
   <ControlTheme x:Key="{x:Type Expander}" TargetType="Expander">
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />

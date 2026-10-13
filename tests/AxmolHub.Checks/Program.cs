@@ -348,6 +348,29 @@ if (args.Contains("--check-ai-providers"))
         throw new Exception("A leftover apiKeyRequired still decided whether the provider is usable.");
     Console.WriteLine("PASS: a leftover apiKeyRequired in an older providers.json is ignored, not obeyed.");
 
+    // The provider-level enable flag is the one a settings row writes. An older providers.json carries no
+    // "enabled" key, and the field must default to true — a provider whose file predates the flag should not
+    // disappear from the picker the day it is first read by a newer build.
+    var enabledStore = new ProviderStore(staleRoot);
+    File.WriteAllText(Path.Combine(staleRoot, "ai", "providers.json"),
+        """[{"id":"orcarouter","name":"OrcaRouter","baseUrl":"https://api.orcarouter.ai/v1","model":"orcarouter/auto"}]""");
+    var noFlag = enabledStore.Load().Single(item => item.Id == "orcarouter");
+    if (!noFlag.Enabled)
+        throw new Exception("A provider loaded from a file without an 'enabled' key must default to enabled.");
+    var toggled = new ModelProvider
+    {
+        Id = "orcarouter",
+        Name = "OrcaRouter",
+        BaseUrl = "https://api.orcarouter.ai/v1",
+        AuthMethods = [ProviderAuthMethods.ApiKey],
+        Model = "orcarouter/auto",
+        Enabled = false,
+    };
+    enabledStore.Save([toggled]);
+    if (enabledStore.Load().Single(item => item.Id == "orcarouter").Enabled)
+        throw new Exception("A provider saved disabled came back enabled.");
+    Console.WriteLine("PASS: the provider enable flag defaults to true for legacy files and survives the round-trip.");
+
     // Credential shape: the secret is what makes a credential usable, and it must survive the JSON/OS-store
     // split whichever provenance produced it. Provenance itself is metadata the UI never has to branch on —
     // a pasted key and a browser sign-in are the same kind of thing, which is the point of the one-to-one rule.

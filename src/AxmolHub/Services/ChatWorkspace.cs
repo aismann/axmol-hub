@@ -1525,6 +1525,41 @@ public sealed class ChatWorkspace : IDisposable
     }
 
     /// <summary>
+    /// Controls whether a whole provider is offered in chat. The flag already exists on
+    /// <see cref="ModelProvider"/> and is honoured by <see cref="AvailableChatModels"/>, so the composer picker
+    /// and the client factory follow without further wiring — this is the single write path the settings row
+    /// needed. Disabled is not "broken": the provider keeps its models and its credential, and re-enabling
+    /// restores exactly what was hidden.
+    /// </summary>
+    public bool SetProviderEnabled(string providerId, bool enabled)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        if (provider.Enabled == enabled) return true;
+
+        provider.Enabled = enabled;
+        SaveProviders();
+        return true;
+    }
+
+    /// <summary>
+    /// Records the auth method the user bound for a provider (API key vs browser sign-in). Null clears the
+    /// binding so the next authenticate offers the choice again. Persisted with the provider list.
+    /// </summary>
+    public bool SetPreferredAuthMethod(string providerId, string? method)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        if (provider.PreferredAuthMethod == method) return true;
+
+        provider.PreferredAuthMethod = method;
+        SaveProviders();
+        return true;
+    }
+
+    /// <summary>
     /// Corrects one model's context window by hand, or — with <paramref name="tokens"/> null — stops correcting
     /// it. The case it exists for is the one every gateway eventually creates: an id the catalog does not
     /// describe, or describes wrongly. It lives on the model rather than on the provider because a window is a

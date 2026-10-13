@@ -57,6 +57,13 @@ public sealed class ModelProvider
     /// </summary>
     public List<string> AuthMethods { get; set; } = [ProviderAuthMethods.ApiKey];
 
+    /// <summary>
+    /// The sign-in method the user bound when adding this provider (or chose later via "change method").
+    /// Persisted so a dual-method provider does not re-ask on every authenticate. Null means the user has
+    /// not chosen yet and the auth dialog should offer the choice.
+    /// </summary>
+    public string? PreferredAuthMethod { get; set; }
+
     /// <summary>OAuth configuration for a provider that offers browser sign-in; <c>null</c> otherwise.</summary>
     public AiProviderOAuth? OAuth { get; set; }
 

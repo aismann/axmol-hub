@@ -129,13 +129,14 @@
         <StackPanel x:Name="PaneProviders" Spacing="10" IsVisible="False">
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource ModelProvidersHint}" />
 
-          <Button x:Name="AddProviderButton" Content="{DynamicResource AddProvider}" Classes="quiet"
-                  HorizontalAlignment="Left" Padding="10,4" />
-
-          <!-- Status line for provider operations (add/remove/key/sign-in). Lives above the list so a
-               result is visible wherever the scroll happens to be. Named distinctly from the update card's
-               status line: a page registers every x:Name, and a duplicate throws at load time. -->
-          <TextBlock x:Name="ProviderStatusLine" Classes="muted" TextWrapping="Wrap" IsVisible="False" />
+          <!-- The add button and the operation status line share one row: the button leads on the left, the
+               feedback sits top-right where a result is visible without scrolling. -->
+          <Grid ColumnDefinitions="*,Auto">
+            <Button x:Name="AddProviderButton" Content="{DynamicResource AddProvider}" Classes="quiet"
+                    HorizontalAlignment="Left" Padding="10,4" />
+            <TextBlock x:Name="ProviderStatusLine" Grid.Column="1" Classes="muted" TextWrapping="Wrap"
+                       VerticalAlignment="Center" IsVisible="False" />
+          </Grid>
 
           <StackPanel x:Name="ProviderGroupList" Spacing="12" />
         </StackPanel>

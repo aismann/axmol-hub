@@ -8335,11 +8335,12 @@ public partial class ShellCheckWindow : Window
         Check(deepseekGroup is { IsLinked: false },
             "没有任何凭据的 provider 显示未鉴权（实际「" + deepseekGroup?.LinkedStatusText + "」）");
 
-        // The summary line is what makes a name-only list readable, and the account count must not appear
-        // before there is an account — "0 accounts" on an unconfigured provider is noise, not information.
-        Check(deepseekGroup is not null && deepseekGroup.SummaryText.Contains("模型")
-              && !deepseekGroup.SummaryText.Contains("账号"),
-            "摘要行给出模型数，未鉴权时不出现「0 个账号」（实际「" + deepseekGroup?.SummaryText + "」）");
+        // The model count lives in the model-section header (「模型 (N)」), not in a second summary line —
+        // saying it twice is noise. The section header is what a name-only list now reads against.
+        Check(deepseekGroup is not null && deepseekGroup.ShowsModelSection
+              && settings.ProviderGroupForId("deepseek") is { HasModelListToggle: true },
+            "模型数与列表入口在模型区标题上（「模型 (N)」+ 折叠），不再另起摘要行（实际摘要「"
+                + deepseekGroup?.SummaryText + "」）");
 
         // The mark and its label must actually be *drawn*, not merely present in the tree. Both are looked up
         // during a rebuild that can happen while the page is still detached from the resource host, and a
@@ -8399,9 +8400,13 @@ public partial class ShellCheckWindow : Window
         var withTwo = settings.ProviderGroupForId("deepseek");
         Check(withTwo is { ModelNames.Length: 2 }, "两个模型都渲染在子列表里（实际 "
             + (withTwo?.ModelNames.Length ?? -1) + " 个）");
+        // Every row in the list is active and selectable — there is no enable toggle and no "in use" pill.
+        // List membership is the activation set.
         Check(withTwo is { ModelEnabled.Length: 2 }
               && withTwo.ModelEnabled.All(enabled => enabled),
-            "新添加的模型默认启用（实际 [" + string.Join(", ", withTwo?.ModelEnabled ?? []) + "]）");
+            "列表里的模型一律视为启用（实际 [" + string.Join(", ", withTwo?.ModelEnabled ?? []) + "]）");
+        Check(withTwo is { HasUseModelButton: false },
+            "模型行不再挂「使用此模型」入口（使用中由聊天选择器负责）");
         // The row states the window this model is treated as having, and nothing else. No editor: the box it
         // replaced parsed on every keystroke and the save behind it rebuilt every provider group, so the first
         // digit typed tore down the box being typed in. No source suffix either — that tag already rides the
@@ -8424,53 +8429,23 @@ public partial class ShellCheckWindow : Window
               && contextSources.Any(label => contextRow.Tip.Contains(label, StringComparison.Ordinal))
               && contextRow.Tip.Contains("providers.json", StringComparison.Ordinal),
             "来源与纠正路径一起收进 tooltip（实际「" + contextRow.Tip + "」）");
-        Check(settings.SetModelEnabledForCheck("deepseek", secondModel, false)
-              && shell.Chat.Providers.First(provider => provider.Id == "deepseek")
-                  .Models.Single(model => model.Name == secondModel).Enabled == false
-              && shell.Chat.AvailableChatModels.All(choice =>
-                  choice.Provider.Id != "deepseek" || choice.ModelName != secondModel),
-            "关闭模型开关后保存状态并从聊天模型选择器隐藏");
-        settings.RefreshProviderGroupsForCheck();
-        Check(settings.ProviderGroupForId("deepseek") is { ModelEnabled.Length: 2 } disabledGroup
-              && !disabledGroup.ModelEnabled[1],
-            "模型开关状态在设置列表重绘后保持关闭");
-        Check(settings.SetModelEnabledForCheck("deepseek", secondModel, true)
-              && shell.Chat.AvailableChatModels.Any(choice =>
-                  choice.Provider.Id == "deepseek" && choice.ModelName == secondModel),
-            "重新启用模型后恢复到聊天模型选择器");
-        settings.RefreshProviderGroupsForCheck();
-        // The name of the model the first AddModel created — read back from the rendered rows rather than
-        // written into the check, because it is data and it moves. It is deliberately *not* ModelNames[0]:
-        // the list keeps insertion order, and the first row is the first model added, which is also the one
-        // holding the mark. Reading position 0 would work today and silently stop meaning anything if the
-        // list were ever sorted.
+        // The enable toggle is gone: presence in the list is what makes a model selectable. These two
+        // rows used to flip a ToggleSwitch and watch the chat picker follow; the picker now follows
+        // list membership, which AddModel/RemoveModel already cover above and below.
         var firstModel = added?.Name ?? "";
-        Check(firstModel.Length > 0, "读到了第一个添加的模型名，用它断言标记落点");
-        // Adding a model does not steal the in-use mark — that only moves when the user says so.
-        Check(withTwo is not null && withTwo.ActiveModelName == firstModel,
-            "添加模型不会改变使用中的那个（实际「" + withTwo?.ActiveModelName + "」）");
+        Check(firstModel.Length > 0, "读到了第一个添加的模型名");
 
-        // Switching is explicit, and it moves the mark rather than adding a second one.
-        Check(shell.Chat.SetActiveModel("deepseek", "deepseek-reasoner"), "可以切换使用中的模型");
-        settings.RefreshProviderGroupsForCheck();
-        var switched = settings.ProviderGroupForId("deepseek");
-        Check(switched is not null && switched.ActiveModelName == "deepseek-reasoner",
-            "标记移到新选的模型上（实际「" + switched?.ActiveModelName + "」）");
-        Check(switched is { ModelNames.Length: 2 }, "切换不会新增模型行（实际 "
-            + (switched?.ModelNames.Length ?? -1) + " 个）");
-
-        // Removing the one in use hands the mark to what is left, so a provider is never left without a model.
-        // The survivor is the *other* model, not the one that was in use — which is the point: "hands the
-        // mark to what is left" is a claim about the remaining list, and asserting it against the removed
-        // name would pass for a provider that had somehow kept its mark on a deleted row.
+        // Removing a model drops it from the list and from the chat picker together.
         Check(shell.Chat.RemoveModel("deepseek", "deepseek-reasoner"), "可以移除模型");
         settings.RefreshProviderGroupsForCheck();
         var afterRemoval = settings.ProviderGroupForId("deepseek");
         Check(afterRemoval is { ModelNames.Length: 1 }, "移除后子列表少一行（实际 "
             + (afterRemoval?.ModelNames.Length ?? -1) + " 个）");
-        Check(afterRemoval is not null && afterRemoval.ActiveModelName == secondModel,
-            "移除使用中的模型后，标记落到剩下的那个上（实际「" + afterRemoval?.ActiveModelName
-                + "」，期望「" + secondModel + "」）");
+        Check(afterRemoval is { ModelNames.Length: 1 }
+              && afterRemoval.ModelNames[0] == secondModel
+              && shell.Chat.AvailableChatModels.All(choice =>
+                  choice.Provider.Id != "deepseek" || choice.ModelName != "deepseek-reasoner"),
+            "移除的模型不再出现在列表里，也不再出现在聊天选择器里（实际 [" + string.Join(",", afterRemoval?.ModelNames ?? []) + "]）");
 
         // DeepSeek stays configured from here on: the disconnect check below needs a real provider to cut
         // loose, and adding a credential to a removed provider is a silent no-op that would make that check
@@ -8873,27 +8848,37 @@ public partial class ShellCheckWindow : Window
         Check(ModelList.Parse(System.Text.Encoding.UTF8.GetBytes("""{"object":"list","data":[]}""")).Count == 0,
             "空 data 数组是合法答案（这就是「该提供商没有模型」）");
 
-        // ── Before authentication the list is not rendered at all ──
+        // ── The model section is always rendered ──
         //
-        // The list is fetched with the user's key. Before there is one there is nothing to ask with, so the
-        // section is absent rather than present-and-empty — an empty list here would read as "this provider
-        // has no models", which is a different and wrong statement.
+        // List membership is the activation set. An unauthenticated provider must still show the section —
+        // otherwise a freshly added Xiaomi MiMo has nowhere to put a model name, which is the bug this
+        // revision fixes. Catalog fetch stays gated; the section itself does not.
         var unauthenticated = shell.Chat.Providers.FirstOrDefault(provider =>
             provider.RequiresCredential && shell.Chat.CredentialFor(provider.Id) is null);
-        Check(unauthenticated is not null, "存在未鉴权且需要凭据的 provider，用它检查模型列表的隐藏规则");
+        Check(unauthenticated is not null, "存在未鉴权且需要凭据的 provider，用它检查模型区始终可见");
+        // The empty-state assertion needs a provider with no local models; a leftover row would turn it into
+        // a different check. Clear first — removal is local-list only.
+        if (unauthenticated is not null)
+        {
+            foreach (var leftover in unauthenticated.Models.ToArray())
+            {
+                shell.Chat.RemoveModel(unauthenticated.Id, leftover.Name);
+            }
+        }
 
         settings.RefreshProviderGroupsForCheck();
-        var hiddenGroup = unauthenticated is null ? null : settings.ProviderGroupForId(unauthenticated.Id);
-        Check(unauthenticated is not null && hiddenGroup is { ShowsModelSection: false },
-            "未鉴权的 provider 不渲染模型列表（实际 "
-                + (hiddenGroup is { ShowsModelSection: true } ? "仍然渲染" : "未渲染") + "）");
-        Check(unauthenticated is not null && hiddenGroup is { ModelNames.Length: 0 },
-            "未鉴权时一个模型名都不出现（实际 " + (hiddenGroup?.ModelNames.Length ?? -1) + " 个）");
+        var unauthGroup = unauthenticated is null ? null : settings.ProviderGroupForId(unauthenticated.Id);
+        Check(unauthenticated is not null && unauthGroup is { ShowsModelSection: true },
+            "未鉴权的 provider 仍然渲染模型区（实际 "
+                + (unauthGroup is { ShowsModelSection: true } ? "仍然渲染" : "未渲染") + "）");
+        Check(unauthenticated is not null && unauthGroup is { ModelNames.Length: 0, ShowsModelEmptyState: true },
+            "未鉴权且零模型时给空态，而不是整块藏起来（实际 "
+                + (unauthGroup?.ModelNames.Length ?? -1) + " 行）");
+        Check(unauthenticated is not null && unauthGroup is { HasAddModelButton: true },
+            "未鉴权时手动添加模型仍然可用（本地列表不依赖密钥）");
 
-        // A keyless provider is the exemption, and it is the one that would break if the rule were written as
-        // "hide until a credential exists": Ollama never has one, so its models would be unreachable forever.
-        // Restricted to the presets on purpose — a custom endpoint is *never* gated either, but that is the
-        // unknowable-requirement case, not this declaration, and the assertion below names Ollama.
+        // A keyless provider is the exemption that used to justify the hide rule: Ollama never has a
+        // credential, so a "hide until linked" rule made its models unreachable forever.
         var keyless = shell.Chat.Providers.FirstOrDefault(provider =>
             !provider.IsCustom && !provider.RequiresCredential);
         Check(keyless is not null, "存在无需凭据的 provider（Ollama），用它检查豁免规则");
@@ -9064,17 +9049,10 @@ public partial class ShellCheckWindow : Window
         Check(fetched is { ModelNames.Length: 2 },
             "启用后的模型出现在列表（实际 ["
                 + string.Join(",", fetched?.ModelNames ?? []) + "]）");
-        Check(fetched is { ActiveModelName: "qwen3" },
-            "首次启用的模型成为默认模型，后续选择不覆盖默认（实际「" + fetched?.ActiveModelName + "」）");
-        Check(settings.SetModelEnabledForCheck(target.Id, "qwen3", false)
-              && settings.ProviderGroupForId(target.Id) is { ActiveModelName: "llama3.2" },
-            "关闭默认模型时默认标记转给另一个已启用模型");
-        Check(settings.SetModelEnabledForCheck(target.Id, "llama3.2", false)
-              && settings.ProviderGroupForId(target.Id) is { ActiveModelName: "" },
-            "关闭最后一个已启用模型后清空默认模型标记");
-        Check(settings.SetModelEnabledForCheck(target.Id, "qwen3", true)
-              && settings.ProviderGroupForId(target.Id) is { ActiveModelName: "qwen3" },
-            "重新启用模型时设置新的默认模型");
+        // There is no default-model mark on this page: every row in the list is selectable, and which one
+        // a conversation runs is the chat picker's job.
+        Check(fetched is { ActiveModelName: "" },
+            "模型管理器不再展示「使用中」标记（实际「" + fetched?.ActiveModelName + "」）");
 
         var extraModels = Enumerable.Range(1, 11).Select(index => $"collapse-probe-{index}").ToArray();
         foreach (var name in extraModels) shell.Chat.AddModel(target.Id, name);
@@ -9240,6 +9218,26 @@ public partial class ShellCheckWindow : Window
                 "移除 provider 后它的缓存条目也一并清除（实际还有 "
                     + shell.Chat.CachedModels(disposable.Id).Count + " 条）");
         }
+
+        // ── The model-row pencil ──
+        //
+        // The draft row's first build used to add the name box under two parents at once (the stack and the
+        // inline input row), so the very first pencil press threw mid-rebuild and the card froze on the
+        // exception. Opening it here is the regression: the call returning at all is half of it, exactly one
+        // draft row in the tree is the other half (the flags are page-wide, so an unscoped render shows a
+        // copy under every group), and closing must take the row back out — a close that does not rebuild
+        // leaves the form on screen after cancel or save.
+        shell.Chat.AddModel(target.Id, "pencil-probe");
+        settings.RefreshProviderGroupsForCheck();
+        settings.OpenFirstModelEditForCheck();
+        Check(settings.ModelDraftCountForCheck == 1,
+            "模型行铅笔打开上下文草稿，且只在被编辑的分组里出现一份（实际 "
+                + settings.ModelDraftCountForCheck + " 份）");
+        settings.CloseDraftForCheck();
+        Check(settings.ModelDraftCountForCheck == 0,
+            "关闭草稿后行从树里消失：取消/保存留下的是收起的分组，不是停在屏上的表单");
+        shell.Chat.RemoveModel(target.Id, "pencil-probe");
+        settings.RefreshProviderGroupsForCheck();
     }
 
     /// <summary>

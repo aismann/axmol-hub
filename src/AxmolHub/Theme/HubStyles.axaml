@@ -161,6 +161,49 @@
     <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
   </Style>
 
+  <!-- A model row is a small outlined card so the list reads as a list. Surface fill + hairline border;
+       hover only lifts the fill. -->
+  <Style Selector="Border.model-row">
+    <Setter Property="Background" Value="{DynamicResource Hub.Surface}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderSubtle}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="6" />
+  </Style>
+  <Style Selector="Border.model-row:pointerover">
+    <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+  </Style>
+
+  <!-- The provider card: outlined, slightly darker than the model rows inside it. -->
+  <Style Selector="Border.provider-card">
+    <Setter Property="Background" Value="{DynamicResource Hub.ProviderSurface}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderSubtle}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="8" />
+    <Setter Property="Padding" Value="14,12" />
+    <Setter Property="Margin" Value="0,0,0,12" />
+  </Style>
+
+  <!-- The model-list collapse header (SettingsPage) no longer relies on a "quiet" class here: Fluent's
+       ToggleButton paints its :checked accent slab from inside its own template, which a Background style
+       setter cannot reach. It is handled by the HubCollapseHeader ControlTheme in HubControls.axaml instead. -->
+
+  <!-- An icon cluster that stays quiet until the row it lives on is hovered (pencil / trash on a provider
+       header). Opacity is the reveal; the icons are always in the tree so tab order and hit-testing survive.
+       The reveal is driven by the parent row's pointerover, not the cluster's own, so the icons appear when
+       the eye is anywhere on the row. -->
+  <Style Selector="Grid.provider-row StackPanel.reveal">
+    <Setter Property="Opacity" Value="0" />
+  </Style>
+  <Style Selector="Grid.provider-row:pointerover StackPanel.reveal">
+    <Setter Property="Opacity" Value="1" />
+  </Style>
+  <Style Selector="Border.provider-row StackPanel.reveal">
+    <Setter Property="Opacity" Value="0" />
+  </Style>
+  <Style Selector="Border.provider-row:pointerover StackPanel.reveal">
+    <Setter Property="Opacity" Value="1" />
+  </Style>
+
   <!-- Added in P4. The WPF version had no "dangerous action" button variant: there MessageBoxImage.Warning/Error
        only swapped the icon, and the confirm button of uninstall / delete confirmation dialogs looked exactly
        like a normal confirm button. HubDialog adds this tier as a button variant. -->

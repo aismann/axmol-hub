@@ -87,7 +87,7 @@ public partial class ChatPanel : UserControl
     /// a send, and an empty box means no composition is open — so a just-sent reply must still stream normally.
     /// Windows/macOS hand composition to the OS IME and need no such deferral.</summary>
     private bool DeferringLiveRepaint =>
-        OperatingSystem.IsLinux() && InputBox.IsKeyboardFocusWithin && InputBox.Text.Length > 0;
+        OperatingSystem.IsLinux() && InputBox.IsKeyboardFocusWithin && !string.IsNullOrEmpty(InputBox.Text);
 
     /// <summary>One attached run's worth of chrome: the row, the pieces of it that change while text arrives, and
     /// the timer that animates them. Created on attach, thrown away on detach; the run outlives both and carries

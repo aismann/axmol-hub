@@ -37,7 +37,12 @@ public sealed class ProviderPickerWindow : Window
 
     private readonly List<ModelProvider> _presets;
     private readonly TextBox _search = new() { PlaceholderText = HubStrings.Get("ProviderSearchHint") };
-    private readonly ListBox _list = new() { Margin = new Thickness(0, 10, 0, 0) };
+    private readonly ListBox _list = new()
+    {
+        Margin = new Thickness(0, 10, 0, 0),
+        VerticalAlignment = VerticalAlignment.Stretch,
+        HorizontalAlignment = HorizontalAlignment.Stretch,
+    };
     private readonly TextBlock _empty = new() { Classes = { "muted" }, TextWrapping = TextWrapping.Wrap, IsVisible = false, Margin = new Thickness(0, 10, 0, 0) };
 
     /// <summary>The chosen preset, or the sentinel when the user picked "Custom endpoint…".</summary>
@@ -59,17 +64,32 @@ public sealed class ProviderPickerWindow : Window
         // ShowAsync hands the caller a null, i.e. "the user did not pick one".
         var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
 
-        var panel = new StackPanel { Margin = new Thickness(24, 12, 24, 24), Spacing = 0 };
-        panel.Children.Add(new TextBlock
+        var body = new Grid
+        {
+            Margin = new Thickness(24, 12, 24, 24),
+            RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto,Auto"),
+        };
+
+        var hint = new TextBlock
         {
             Text = HubStrings.Get("ProviderPickerHint"),
             Classes = { "muted" },
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 10),
-        });
-        panel.Children.Add(_search);
-        panel.Children.Add(_list);
-        panel.Children.Add(_empty);
+        };
+        body.Children.Add(hint);
+        Grid.SetRow(hint, 0);
+
+        body.Children.Add(_search);
+        Grid.SetRow(_search, 1);
+
+        // The list sits in a star-sized row so it gets a bounded height and the ListBox's own scroller can
+        // work. Inside a StackPanel it would receive infinite height and the scrollbar would never appear.
+        body.Children.Add(_list);
+        Grid.SetRow(_list, 2);
+
+        body.Children.Add(_empty);
+        Grid.SetRow(_empty, 3);
 
         var buttons = new StackPanel
         {
@@ -84,12 +104,13 @@ public sealed class ProviderPickerWindow : Window
         add.Click += (_, _) => Commit();
         buttons.Children.Add(cancel);
         buttons.Children.Add(add);
-        panel.Children.Add(buttons);
+        body.Children.Add(buttons);
+        Grid.SetRow(buttons, 4);
 
         var root = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
         root.Children.Add(chrome.Header);
-        Grid.SetRow(panel, 1);
-        root.Children.Add(panel);
+        Grid.SetRow(body, 1);
+        root.Children.Add(body);
         Content = root;
 
         // A ListBox shows ToString() by default, which would flatten the card to a bare provider name. A
@@ -176,8 +197,11 @@ public sealed class ProviderPickerWindow : Window
     {
         public override Control Render()
         {
+            // Name + one quiet line. The picker is a scan-and-pick list, not a datasheet: the long manifest
+            // description stays in the search index (Filter matches on it) and in the settings card after the
+            // choice, but it does not get three wrapped lines per row here.
             var stack = new StackPanel { Spacing = 2 };
-            var title = new TextBlock { Text = Provider.Name, FontWeight = FontWeight.SemiBold };
+            var title = new TextBlock { Text = Provider.Name, FontWeight = FontWeight.SemiBold, FontSize = 13 };
             if (Provider.Affiliate)
             {
                 // The affiliate flag rides on the card rather than only on the settings page: the disclosure has
@@ -186,26 +210,32 @@ public sealed class ProviderPickerWindow : Window
             }
 
             stack.Children.Add(title);
-            var description = Provider.Describe(Language);
-            if (description.Length > 0)
+
+            var oneLiner = ShortLine(Provider.Describe(Language));
+            if (oneLiner.Length > 0)
             {
                 stack.Children.Add(new TextBlock
                 {
-                    Text = description,
+                    Text = oneLiner,
                     Classes = { "muted" },
                     FontSize = 12,
-                    TextWrapping = TextWrapping.Wrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
                 });
             }
-
-            stack.Children.Add(new TextBlock
-            {
-                Text = Provider.BaseUrl + "  ·  " + Provider.Model,
-                Classes = { "muted" },
-                FontSize = 11,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            });
             return stack;
+        }
+
+        /// <summary>
+        /// First sentence (or first clause) of a description, capped so a row stays one glance tall.
+        /// Search still runs over the full text — this is presentation only.
+        /// </summary>
+        private static string ShortLine(string description)
+        {
+            if (description.Length == 0) return "";
+            var stop = description.IndexOfAny(['。', '！', '？', '.', '!', '?']);
+            var line = stop > 0 ? description[..stop] : description;
+            const int cap = 42;
+            return line.Length <= cap ? line : line[..(cap - 1)].TrimEnd() + "…";
         }
 
         public override string ToString() => Provider.Name;

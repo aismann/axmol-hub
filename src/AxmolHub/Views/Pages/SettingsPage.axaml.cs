@@ -11,6 +11,7 @@ using Avalonia.Layout;
 using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AxmolHub.Core;
@@ -61,6 +62,48 @@ public partial class SettingsPage : UserControl
     /// <summary>Whether this page is currently subscribed to <see cref="UpdateService.Changed"/>
     /// (hooked while on screen only).</summary>
     private bool _updateHooked;
+
+    // ── Provider draft state (v3) ──
+    // A provider's edit view is a draft that lives *inside* its group, and an "add model" / "add custom
+    // endpoint" draft is always the first child of its list. While any draft is open, ChatWorkspace.Changed
+    // must not rebuild the groups — that would tear apart the very TextBox being typed in (the historical
+    // inline-edit bug). The rebuild is deferred and applied when the draft closes.
+
+    /// <summary>The id of the provider currently open for editing, or <c>null</c> when none.</summary>
+    private string? _editingProviderId;
+
+    /// <summary>Whether an "add custom endpoint" draft is open at the top of the provider list.</summary>
+    private bool _addingProvider;
+
+    /// <summary>Whether an "add model" draft row is open inside a provider.</summary>
+    private bool _addingModel;
+
+    /// <summary>The name of the model being edited (context-window draft), or <c>null</c> when none.</summary>
+    private string? _editingModelName;
+
+    /// <summary>True while any draft is open, which suspends the group rebuild (see the note above).</summary>
+    private bool DraftOpen => _editingProviderId is not null || _addingProvider || _addingModel || _editingModelName is not null;
+
+    /// <summary>Set when a rebuild was skipped while a draft was open; applied when the draft closes.</summary>
+    private bool _pendingReload;
+
+    /// <summary>Opens the first model's edit draft without a click — the seam --verify-shell drives to
+    /// assert that the model-row pencil's draft builds (it once tore the tree on the first press).</summary>
+    internal void OpenFirstModelEditForCheck()
+    {
+        var provider = _chat.Providers.FirstOrDefault(candidate => candidate.Models.Count > 0)
+            ?? throw new InvalidOperationException("no provider with a configured model");
+        OpenModelEditDraft(provider, provider.Models[0]);
+    }
+
+    /// <summary>How many model-draft rows are in the tree. More than one means the page-wide draft flags
+    /// leaked into a group that is not the one being edited.</summary>
+    internal int ModelDraftCountForCheck
+        => this.GetLogicalDescendants().OfType<Control>()
+            .Count(control => SectionTags.ModelDraft.Equals(control.Tag));
+
+    /// <summary>Closes whatever draft is open through the same path cancel and save use.</summary>
+    internal void CloseDraftForCheck() => CloseDraft();
 
     /// <summary>For the XAML loader and design-time preview (missing it raises AVLN3001).</summary>
     public SettingsPage()
@@ -254,6 +297,10 @@ public partial class SettingsPage : UserControl
         _ready = false;
         try
         {
+            // A language switch discards any open draft rather than transplanting half-typed input across a
+            // locale boundary. Clearing the flags first lets ReloadProviders below rebuild from scratch.
+            CloseDraft();
+
             LocalizeThemeItems();
             LocalizeDownloadSourceItems();
             LocalizeToolApprovalItems();
@@ -1090,6 +1137,15 @@ public partial class SettingsPage : UserControl
     {
         if (_chat is null) return;
 
+        // A draft is live input; rebuilding under it destroys the control being typed in. Defer the rebuild
+        // and apply it when the draft closes. Reload (a language switch) is the one caller that must not be
+        // deferred: it calls CloseDraft() first, so by the time it reaches here no draft is open.
+        if (DraftOpen)
+        {
+            _pendingReload = true;
+            return;
+        }
+
         AddProviderButton.Content = HubStrings.Get("AddProvider");
         RebuildProviderGroups();
     }
@@ -1108,14 +1164,29 @@ public partial class SettingsPage : UserControl
         ProviderGroupList.Children.Clear();
         if (_chat is null) return;
 
-        if (_chat.Providers.Count == 0)
+        // The add-custom-endpoint draft is always the first child, above every provider — the form is placed
+        // where the eye already is, and it never scrolls out from under the user who just opened it.
+        if (_addingProvider)
         {
-            ProviderGroupList.Children.Add(new TextBlock
+            ProviderGroupList.Children.Add(BuildAddProviderDraft());
+        }
+
+        if (_chat.Providers.Count == 0 && !_addingProvider)
+        {
+            var empty = new StackPanel { Spacing = 6 };
+            empty.Children.Add(new TextBlock
             {
                 Text = HubStrings.Get("NoProvider"),
                 Classes = { "muted" },
                 TextWrapping = TextWrapping.Wrap,
             });
+            empty.Children.Add(new TextBlock
+            {
+                Text = HubStrings.Get("NoProviderGuide"),
+                Classes = { "muted" },
+                TextWrapping = TextWrapping.Wrap,
+            });
+            ProviderGroupList.Children.Add(empty);
             return;
         }
 
@@ -1180,26 +1251,33 @@ public partial class SettingsPage : UserControl
     }
 
     /// <summary>
-    /// One provider group: header (name, source tag, remove affordance), then the model list, then the sign-in
-    /// entrances, then the accounts.
+    /// One provider group: a collapsed one-line header by default, or the in-place edit draft when the pencil is
+    /// pressed. The model section is shown in <b>both</b> states — collapsing hides the edit form, not the
+    /// model list, because the list is what a person glances at to answer "what can I call here?".
     ///
-    /// <para><b>The sign-in entrance follows the manifest, not a control.</b> A provider that supports pasted
-    /// keys gets a key field, one that supports browser sign-in gets a button, one that supports both gets both
-    /// with an "or" between them, and a keyless local endpoint gets a plain note. There is no method dropdown:
-    /// which routes exist is a fact about the provider, and asking the user to pick one asks them to understand
-    /// our transport before they can sign in.</para>
+    /// <para>There is deliberately no "browse but not edit" expanded state: the only reason to open a provider
+    /// is to change it, so the pencil opens the draft directly and a stale read-only layout never has to be kept
+    /// in sync with the draft.</para>
     /// </summary>
     private Control BuildProviderGroup(ModelProvider provider)
     {
-        var content = new StackPanel { Spacing = 10 };
+        var editing = _editingProviderId == provider.Id;
+        var content = new StackPanel { Spacing = 12 };
 
-        content.Children.Add(BuildProviderHeader(provider));
-        content.Children.Add(BuildProviderSummary(provider));
-        if (CanListModels(provider))
-            content.Children.Add(BuildProviderHeaderDivider());
+        content.Children.Add(editing ? BuildEditDraft(provider) : BuildCollapsedHeader(provider));
+
+        // Identity row is separated from the model list by a hairline, so the card reads as two bands.
+        content.Children.Add(new Border
+        {
+            Height = 1,
+            Background = BrushOrNull("Hub.BorderSubtle"),
+            Tag = SectionTags.ProviderHeaderDivider,
+            Margin = new Thickness(0, 2),
+        });
+
+        // The model section is present in both states; only the edit form is gated on the draft.
         content.Children.Add(BuildModelSection(provider));
 
-        // A keyless provider says so once, in the summary, rather than growing a section of its own.
         if (!provider.CanAuthenticate)
         {
             content.Children.Add(new TextBlock
@@ -1217,83 +1295,42 @@ public partial class SettingsPage : UserControl
             content.Children.Add(BuildAffiliateSection(provider));
         }
 
-        var card = new Border
+        // Outlined card: the list of providers has to read as a list. Tag stays the provider id so the
+        // self-check can find the group by id.
+        return new Border
         {
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(14, 10),
-            // The provider id, not the display name: a lookup by name breaks the moment a preset is renamed
-            // ("Ollama (local)") and would report a missing group as a layout failure.
+            Classes = { "provider-card" },
             Tag = provider.Id,
             Child = content,
         };
-        card.Bind(Border.BackgroundProperty,
-            new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("Hub.ProviderSurface"));
-        card.Bind(Border.BorderBrushProperty,
-            new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("Hub.BorderSubtle"));
-        return card;
     }
 
     /// <summary>
-    /// The one line of prose under the name: how many models are configured, not how many are in the full catalog.
-    ///
-    /// <para>It exists because the header is now only a name and a state, and a bare list of names gives the
-    /// eye nothing to compare rows by. It is deliberately counts and not detail — the details are one click
-    /// away, and printing a base URL under every row is what made the list feel heavy in the first place.</para>
-    ///
-    /// <para><b>No account count.</b> A provider has exactly one credential, so "1 account" was a number with
-    /// nothing to vary; the state mark beside the name already says whether it is connected.</para>
+    /// The collapsed one-line header: name (with source/current/disabled pills), the auth status mark, the
+    /// state-dependent auth action, and — revealed on hover — the pencil and trash icons.
     /// </summary>
-    private Control BuildProviderSummary(ModelProvider provider)
-    {
-        var models = provider.Models.Count;
-        var text = string.Format(
-            System.Globalization.CultureInfo.InvariantCulture,
-            HubStrings.Get(models == 1 ? "SummaryModelCountOne" : "SummaryModelCount"),
-            models);
-
-        return new TextBlock
-        {
-            Text = text,
-            Classes = { "muted" },
-            FontSize = 11,
-            TextWrapping = TextWrapping.Wrap,
-            Tag = SectionTags.Summary,
-        };
-    }
-
-    /// <summary>
-    /// The group header: who it is, where it came from, and — on the right — whether it is linked and the two
-    /// actions that change that.
-    ///
-    /// <para><b>The check mark is the linked state, and it is drawn at the header's right edge</b> because that
-    /// is where the eye goes to answer "is this one set up?". The rule is deliberately source-agnostic: a
-    /// pasted key and a browser sign-in produce the same kind of credential, so both light it up. Splitting
-    /// "authenticated" from "has a key" would re-introduce the distinction the account model exists to
-    /// remove.</para>
-    ///
-    /// <para><b>Disconnect and remove are two buttons, not one.</b> They answer different intentions:
-    /// disconnect is "revoke access on this machine" (available everywhere, including the pinned default),
-    /// remove is "stop showing me this endpoint" (unavailable only for the default, which the manifest
-    /// re-seeds). Folding them together would force someone who only wants to unlink a key to reconfigure the
-    /// endpoint afterwards.</para>
-    /// </summary>
-    private Control BuildProviderHeader(ModelProvider provider)
+    private Control BuildCollapsedHeader(ModelProvider provider)
     {
         var title = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         title.Children.Add(new TextBlock
         {
             Text = provider.Name,
             FontWeight = FontWeight.SemiBold,
+            FontSize = 15,
             VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
         });
 
-        // The source tag answers "why can I not edit this base URL?" before the user tries.
         title.Children.Add(Pill(
             HubStrings.Get(provider.IsCustom ? "ProviderCustomTag" : "ProviderBuiltInTag"),
             brush: null));
 
-        if (_chat?.ActiveProvider?.Id == provider.Id)
+        if (!provider.Enabled)
+        {
+            title.Children.Add(Pill(HubStrings.Get("ProviderDisabledTag"),
+                BrushOrNull("Hub.DangerBorder"), BrushOrNull("Hub.DangerText")));
+        }
+        else if (_chat?.ActiveProvider?.Id == provider.Id)
         {
             title.Children.Add(Pill(HubStrings.Get("ProviderInUse"), BrushOrNull("Hub.AccentSoft"),
                 BrushOrNull("Hub.TextOnAccent")));
@@ -1306,75 +1343,75 @@ public partial class SettingsPage : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        var linked = IsLinked(provider);
+        // Status mark is always painted: green + words when callable, grey + words otherwise. Colour never
+        // carries the state alone.
+        actions.Children.Add(BuildLinkedStatusMark(provider));
 
-        // The state mark sits left of the actions so it reads as a status column rather than as part of the
-        // button row. A drawn tick, not a coloured dot: colour alone is not a label, and "connected" is the
-        // kind of thing that must survive a colour-blind reading.
-        var status = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 5,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        status.Children.Add(linked ? BuildCheckIcon() : BuildUnlinkedIcon());
-
-        // The label is bound through DynamicResource rather than resolved on the spot, for the same reason
-        // the icons are: the group list is rebuilt from Reload(), and at that moment this page may not be
-        // attached to the resource host yet — a one-shot lookup then yields null and the text renders with no
-        // brush at all, which reads on screen as "the status is missing" rather than as a theming bug. A
-        // deferred binding resolves once attached, and re-resolves when the language or theme changes.
-        var statusLabel = new TextBlock
-        {
-            Text = HubStrings.Get(linked ? "ProviderConnected" : "ProviderNotConnected"),
-            FontSize = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        statusLabel.Bind(TextBlock.ForegroundProperty,
-            new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension(
-                linked ? "Hub.Success" : "Hub.TextTertiary"));
-        status.Children.Add(statusLabel);
-        actions.Children.Add(status);
-
-        // A provider with no way to authenticate gets no button. Ollama is the case that proves the rule: it is
-        // never "unauthenticated", so offering "authenticate" would be offering an action with no outcome.
-        // This is a different question from whether it *needs* a credential — a self-supplied endpoint needs
-        // none yet still takes a key, so it must keep the button.
-        //
-        // One button, two meanings. "Authenticate" opens the dialog; "Disconnect" clears the credential. It
-        // is a single control rather than two because the two are mutually exclusive by construction — there
-        // is never a state where both would be the right offer — and a row that showed both at once would
-        // ask the user to choose between starting over and undoing, which is not a question this row asks.
+        // The single auth control. Its label is the state: 鉴权 when not linked, 断开鉴权 when linked.
+        // Method inputs never live on this page — the button opens the bound method's dialog.
         if (provider.CanAuthenticate)
         {
+            var linked = IsLinked(provider);
             var auth = new Button
             {
+                Content = HubStrings.Get(linked ? "DisconnectProvider" : "Authenticate"),
                 Classes = { "quiet" },
-                Padding = new Thickness(8, 3),
                 FontSize = 11,
+                Padding = new Thickness(8, 3),
                 VerticalAlignment = VerticalAlignment.Center,
                 Tag = SectionTags.AuthButton,
             };
-
-            if (linked)
+            auth.Click += async (_, _) =>
             {
-                // The wording is the state's own verb: the row already says "authenticated", so the label is
-                // what tells the user what the button will do.
-                auth.Content = HubStrings.Get("DisconnectProvider");
-                auth.Click += async (_, _) => await DisconnectProviderAsync(provider);
-            }
-            else
-            {
-                auth.Content = HubStrings.Get("Authenticate");
-                auth.Click += async (_, _) => await AuthenticateProviderAsync(provider);
-            }
-
+                if (linked) await DisconnectProviderAsync(provider);
+                else await AuthenticateProviderAsync(provider);
+            };
             actions.Children.Add(auth);
+
         }
 
-        // Remove is absent — not present-and-refusing — for the one provider that cannot be removed: an icon
-        // whose only outcome is an error message is worse than no icon. The hint is on the group's tooltip
-        // instead, so the rule is discoverable without being a dead control.
+        var reveal = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "reveal" },
+        };
+
+        // Changing the bound method is secondary: it first clears the credential. Hidden until hover.
+        if (provider.CanAuthenticate && provider.EffectiveAuthMethods.Count > 1)
+        {
+            var change = new Button
+            {
+                Content = HubStrings.Get("ChangeAuthMethod"),
+                Classes = { "quiet" },
+                FontSize = 11,
+                Padding = new Thickness(6, 3),
+                VerticalAlignment = VerticalAlignment.Center,
+                Tag = SectionTags.ChangeAuthMethod,
+            };
+            ToolTip.SetTip(change, HubStrings.Get("ChangeAuthMethodHint"));
+            change.Click += async (_, _) => await ChangeAuthMethodAsync(provider);
+            reveal.Children.Add(change);
+        }
+
+        // Custom providers own their identity fields; a built-in is pinned by the manifest and has no
+        // configuration left to edit on this page.
+        if (provider.IsCustom)
+        {
+            var edit = new Button
+            {
+                Content = BuildEditIcon(),
+                Classes = { "quiet" },
+                Padding = new Thickness(6, 4),
+                VerticalAlignment = VerticalAlignment.Center,
+                Tag = SectionTags.EditProvider,
+            };
+            ToolTip.SetTip(edit, HubStrings.Get("EditProvider"));
+            edit.Click += (_, _) => OpenEditDraft(provider);
+            reveal.Children.Add(edit);
+        }
+
         if (ChatWorkspace.CanRemoveProvider(provider))
         {
             var remove = new Button
@@ -1387,22 +1424,226 @@ public partial class SettingsPage : UserControl
             };
             ToolTip.SetTip(remove, HubStrings.Get("RemoveProviderIcon"));
             remove.Click += async (_, _) => await RemoveProviderAsync(provider);
-            actions.Children.Add(remove);
-        }
-        else if (provider.CanAuthenticate)
-        {
-            // Only worth saying when there is a disconnect button next to it to explain; on a keyless
-            // provider the hint would be explaining a rule that has nothing to do with it.
-            ToolTip.SetTip(status, HubStrings.Get("ProviderPinnedHint"));
+            reveal.Children.Add(remove);
         }
 
-        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        actions.Children.Add(reveal);
+
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Classes = { "provider-row" } };
         Grid.SetColumn(title, 0);
         Grid.SetColumn(actions, 1);
         grid.Children.Add(title);
         grid.Children.Add(actions);
-
         return grid;
+    }
+
+    /// <summary>The brush key for a provider's status dot: green when callable, tertiary otherwise.</summary>
+    private static string ProviderStatusBrushKey(ModelProvider provider)
+        => provider.IsCallReady ? "Hub.Success" : "Hub.TextTertiary";
+
+    /// <summary>
+    /// The edit draft: configuration only. Name and base URL are read-only for a built-in provider (the
+    /// manifest pins them). Authentication never appears here — no key box, no sign-in button — so the form
+    /// cannot contradict the status mark on the header.
+    /// </summary>
+    private Control BuildEditDraft(ModelProvider provider)
+    {
+        var isBuiltIn = provider is { IsCustom: false };
+
+        var stack = new StackPanel { Spacing = 8, Tag = SectionTags.ProviderDraft };
+
+        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        titleRow.Children.Add(new TextBlock
+        {
+            Text = HubStrings.Get("EditProviderTitle"),
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        titleRow.Children.Add(Pill(
+            HubStrings.Get(provider.IsCustom ? "ProviderCustomTag" : "ProviderBuiltInTag"),
+            brush: null));
+        titleRow.Children.Add(BuildLinkedStatusMark(provider));
+        stack.Children.Add(titleRow);
+
+        if (isBuiltIn)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = HubStrings.Get("ProviderBuiltInLockedHint"),
+                Classes = { "muted" },
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+
+        var fields = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("1*,1*"),
+            RowDefinitions = new RowDefinitions("Auto"),
+        };
+
+        var name = new TextBox { Text = provider.Name, IsReadOnly = isBuiltIn };
+        if (isBuiltIn) name.Classes.Add("muted");
+        fields.Children.Add(BuildField(HubStrings.Get("ProviderName"), name));
+        Grid.SetColumn(fields.Children[^1], 0);
+        Grid.SetRow(fields.Children[^1], 0);
+
+        var baseUrl = new TextBox { Text = provider.BaseUrl, IsReadOnly = isBuiltIn };
+        if (isBuiltIn) baseUrl.Classes.Add("muted");
+        fields.Children.Add(BuildField(HubStrings.Get("ProviderBaseUrl"), baseUrl));
+        Grid.SetColumn(fields.Children[^1], 1);
+        Grid.SetRow(fields.Children[^1], 0);
+
+        stack.Children.Add(fields);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+        };
+        var cancel = new Button { Content = HubStrings.Get("Cancel"), Classes = { "quiet" } };
+        cancel.Click += (_, _) => CloseDraft();
+        var save = new Button { Content = HubStrings.Get("Save"), Classes = { "primary" }, IsDefault = true };
+        save.Click += (_, _) => CommitEditDraft(provider, name, baseUrl);
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        stack.Children.Add(buttons);
+
+        return stack;
+    }
+
+    /// <summary>Wraps a labelled field for the draft's two-column grid.</summary>
+    private static Control BuildField(string label, TextBox box, string? hint = null)
+    {
+        var stack = new StackPanel { Spacing = 2, Margin = new Thickness(0, 0, 0, 6) };
+        stack.Children.Add(new TextBlock
+        {
+            Text = label,
+            Classes = { "muted" },
+            FontSize = 11,
+        });
+        stack.Children.Add(box);
+        if (hint is not null)
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = hint,
+                Classes = { "muted" },
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+        return stack;
+    }
+
+    /// <summary>The linked-state mark in words + glyph, the three states the dot compresses into colour.</summary>
+    private Control BuildLinkedStatusMark(ModelProvider provider)
+    {
+        var linked = IsLinked(provider);
+        var keyless = !provider.RequiresCredential;
+        var ready = keyless || linked;
+
+        var status = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 5,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        status.Children.Add(ready ? BuildCheckIcon() : BuildUnlinkedIcon());
+
+        var label = new TextBlock
+        {
+            Text = HubStrings.Get(
+                keyless ? "ProviderKeylessReady"
+                    : linked ? "ProviderConnected"
+                    : "ProviderNotConnected"),
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        label.Bind(TextBlock.ForegroundProperty,
+            new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension(
+                ready ? "Hub.Success" : "Hub.TextTertiary"));
+        status.Children.Add(label);
+        return status;
+    }
+
+    /// <summary>The "add custom endpoint" draft, inserted first in the provider list. Four fields, cancel/save,
+    /// and the same validation the save path re-runs.</summary>
+    private Control BuildAddProviderDraft()
+    {
+        var stack = new StackPanel { Spacing = 8, Tag = SectionTags.AddProviderDraft };
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = HubStrings.Get("AddCustomProvider"),
+            FontWeight = FontWeight.SemiBold,
+        });
+
+        // Identity only. The key is not asked here: the list page never hosts a credential box. Saving this
+        // draft creates the provider, then the auth dialog takes the key — the same one-job split as the
+        // preset path.
+        var fields = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("1*,1*"),
+            RowDefinitions = new RowDefinitions("Auto"),
+        };
+
+        var name = new TextBox();
+        fields.Children.Add(BuildField(HubStrings.Get("ProviderName"), name));
+        Grid.SetColumn(fields.Children[^1], 0);
+        Grid.SetRow(fields.Children[^1], 0);
+
+        var baseUrl = new TextBox();
+        fields.Children.Add(BuildField(HubStrings.Get("ProviderBaseUrl"), baseUrl, HubStrings.Get("ProviderBaseUrlHint")));
+        Grid.SetColumn(fields.Children[^1], 1);
+        Grid.SetRow(fields.Children[^1], 0);
+
+        var model = new TextBox();
+        fields.Children.Add(BuildField(HubStrings.Get("ProviderModel"), model));
+        Grid.SetColumn(fields.Children[^1], 0);
+        Grid.SetRow(fields.Children[^1], 1);
+
+        stack.Children.Add(fields);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+        };
+        var cancel = new Button { Content = HubStrings.Get("Cancel"), Classes = { "quiet" } };
+        cancel.Click += (_, _) => CloseDraft();
+        var save = new Button { Content = HubStrings.Get("Save"), Classes = { "primary" }, IsDefault = true };
+        save.Click += async (_, _) => await CommitAddProviderDraft(name, baseUrl, model);
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        stack.Children.Add(buttons);
+
+        return stack;
+    }
+
+    private async Task CommitAddProviderDraft(TextBox name, TextBox baseUrl, TextBox model)
+    {
+        if (_chat is null) return;
+
+        var created = _chat.AddProvider(name.Text ?? "", baseUrl.Text ?? "", model.Text ?? "", null);
+        if (created is null)
+        {
+            SetProviderStatus(true, _chat.CanStoreSecrets
+                ? HubStrings.Get("ProviderBaseUrlInvalid")
+                : HubStrings.Get("ApiKeyPlatformUnsupported"));
+            return;
+        }
+
+        SetProviderStatus(false, HubStrings.Get("ProviderAdded"));
+        CloseDraft();
+        // Connect it now so the card does not land half-ready: a custom endpoint that wants a key gets the
+        // auth dialog, a keyless one is done.
+        if (created.CanAuthenticate)
+        {
+            await AuthenticateProviderAsync(created);
+        }
     }
 
     /// <summary>
@@ -1420,31 +1661,86 @@ public partial class SettingsPage : UserControl
     private bool IsLinked(ModelProvider provider)
         => _chat?.CredentialFor(provider.Id)?.HasSecret == true;
 
+    /// <summary>Opens the edit draft for a provider, replacing its collapsed header.</summary>
+    private void OpenEditDraft(ModelProvider provider)
+    {
+        _editingProviderId = provider.Id;
+        _addingProvider = false;
+        _addingModel = false;
+        RebuildProviderGroups();
+    }
 
     /// <summary>
-    /// The configured model sub-list: catalog entries are added here only when selected or when a manifest
-    /// default matches. Each row has enable/remove actions; the full catalog is in the model-section toolbar.
+    /// Closes every open draft and applies any deferred rebuild. Called on cancel, save, Escape, and — from
+    /// <see cref="Reload"/> — before a language-switch rebuild that must discard the draft.
     ///
-    /// <para>Each row keeps the model name, optional description, current-use marker and availability toggle.
-    /// Model selection stays in the conversation page's picker. The description is a lookup
-    /// (<see cref="ModelCatalog"/>) and is simply absent for a model Hub
-    /// does not know, so a brand-new name still works.</para>
+    /// <para>A close is only observable through a rebuild: <see cref="BuildProviderGroup"/> swaps the draft
+    /// for the collapsed header purely from the flags, so returning without one would leave the form on
+    /// screen after cancel or save. The deferred reload rides the same pass.</para>
+    /// </summary>
+    private void CloseDraft()
+    {
+        var wasOpen = DraftOpen;
+        _editingProviderId = null;
+        _addingProvider = false;
+        _addingModel = false;
+        _editingModelName = null;
+        if (wasOpen || _pendingReload)
+        {
+            _pendingReload = false;
+            AddProviderButton.Content = HubStrings.Get("AddProvider");
+            RebuildProviderGroups();
+        }
+    }
+
+    /// <summary>
+    /// Applies the edit draft. Built-in name/base URL are pinned by the manifest and already read-only. The
+    /// blank key argument is a deliberate no-op: authentication is owned by the auth dialog, and this form
+    /// must never touch the stored credential.
+    /// </summary>
+    private void CommitEditDraft(ModelProvider provider, TextBox name, TextBox baseUrl)
+    {
+        if (_chat is null) return;
+
+        // Keep the existing default-model name; this page no longer edits it.
+        if (_chat.UpdateProvider(provider.Id, name.Text ?? "", baseUrl.Text ?? "", provider.Model, ""))
+        {
+            SetProviderStatus(false, HubStrings.Get("ProviderEditSaved"));
+        }
+        else
+        {
+            SetProviderStatus(true, _chat.CanStoreSecrets
+                ? HubStrings.Get("ProviderBaseUrlInvalid")
+                : HubStrings.Get("ApiKeyPlatformUnsupported"));
+        }
+        CloseDraft();
+    }
+
+    private void SetProviderEnabled(string providerId, bool enabled)
+    {
+        if (_chat?.SetProviderEnabled(providerId, enabled) == true)
+        {
+            RebuildProviderGroups();
+        }
+    }
+
+
+    /// <summary>
+    /// The configured model sub-list. Always rendered: list membership is the activation set, and a provider
+    /// that is not yet authenticated must still be able to hold local model names. Catalog fetch stays gated
+    /// on a credential; manual add does not.
     ///
-    /// <para><b>The configured-model list is not rendered before authentication.</b> The full cached catalog
-    /// remains reachable through the model toolbar, but fetching it requires the user's key. A keyless provider
-    /// is exempt: Ollama needs no key, so it can fetch and show its configured entries immediately.</para>
+    /// <para>The header states only the model count. Which model a conversation runs is not this page's job.</para>
     /// </summary>
     private Control BuildModelSection(ModelProvider provider)
     {
-        if (!CanListModels(provider)) return new Border { Tag = SectionTags.ModelsHidden };
-
         // Tagged so the self-check can find this section by role instead of by position: an index-based walk
         // silently reads the wrong node the moment the layout gains a row, and then reports a failure that
         // has nothing to do with what broke.
         var section = new StackPanel { Spacing = 6, Tag = SectionTags.Models };
 
         var expanded = provider.Models.Count <= 10;
-        var listContent = new StackPanel { Spacing = 8, IsVisible = expanded, Tag = SectionTags.ModelList };
+        var listContent = new StackPanel { Spacing = 6, IsVisible = expanded, Tag = SectionTags.ModelList };
         var toggleContent = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var disclosure = new Avalonia.Controls.Shapes.Path
         {
@@ -1470,25 +1766,23 @@ public partial class SettingsPage : UserControl
                 HubStrings.Get("ModelsCount"),
                 provider.Models.Count),
             FontWeight = FontWeight.SemiBold,
+            FontSize = 13,
         });
-        if (provider.ActiveModel is { } activeModel)
-        {
-            toggleText.Children.Add(new TextBlock
-            {
-                Text = string.Format(
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    HubStrings.Get("CurrentModelSummary"),
-                    activeModel.Name),
-                Classes = { "muted" },
-                FontSize = 11,
-            });
-        }
         toggleContent.Children.Add(toggleText);
 
+        // The dedicated collapse-header ControlTheme, not Fluent's default: Fluent paints a :checked
+        // ToggleButton with a full accent slab from inside its own template, which no style setter or local
+        // Background value could remove (observed on the screenshot). Replacing the theme removes the slab
+        // at the source and keeps the header a quiet text row with a hover surface. TryFindResource, not the
+        // Resources indexer: the indexer does not walk merged dictionaries, so the key lives in the
+        // HubControls include and the indexer returns null — a silent fall-back to the accent slab.
+        object? collapseHeaderThemeRaw = null;
+        Application.Current?.TryFindResource("HubCollapseHeader", null, out collapseHeaderThemeRaw);
+        var collapseHeaderTheme = collapseHeaderThemeRaw as ControlTheme;
         var toggle = new ToggleButton
         {
             Content = toggleContent,
-            Classes = { "quiet" },
+            Theme = collapseHeaderTheme as ControlTheme,
             IsChecked = expanded,
             Padding = new Thickness(4, 2),
             Margin = new Thickness(-4, 0, 0, 0),
@@ -1562,19 +1856,59 @@ public partial class SettingsPage : UserControl
         heading.Children.Add(actions);
         section.Children.Add(heading);
 
-        if (provider.Models.Count == 0)
+        // The add/edit-model draft is always the first row of ITS provider's list — the flags are page-wide,
+        // so without the id gate every group would render a copy of the same draft (the pencil's own group
+        // only). The provider being edited is exactly what _editingProviderId tracks.
+        var modelDraftOpen = _editingProviderId == provider.Id
+            && (_addingModel || _editingModelName is not null);
+        if (provider.Models.Count == 0 && !modelDraftOpen)
         {
-            // The catalog is separate; this empty state means the user has not enabled or manually added a model.
-            listContent.Children.Add(new TextBlock
+            // Empty state carries one primary path for an unauthenticated provider and the two local ones
+            // for everyone else. Manual add never requires a key.
+            var empty = new StackPanel { Spacing = 8, Tag = SectionTags.ModelsEmpty };
+            empty.Children.Add(new TextBlock
             {
-                Text = HubStrings.Get("NoEnabledModels"),
+                Text = IsLinked(provider) || !provider.RequiresCredential
+                    ? HubStrings.Get("NoEnabledModels")
+                    : HubStrings.Get("ModelsAuthHint"),
                 Classes = { "muted" },
                 FontSize = 11,
                 TextWrapping = TextWrapping.Wrap,
-                Tag = SectionTags.ModelsEmpty,
             });
+
+            var emptyActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            if (provider.RequiresCredential && !IsLinked(provider) && provider.CanAuthenticate)
+            {
+                var auth = new Button
+                {
+                    Content = HubStrings.Get("AuthenticateAndFetchModels"),
+                    Classes = { "primary" },
+                    FontSize = 11,
+                    Padding = new Thickness(10, 4),
+                };
+                auth.Click += async (_, _) => await AuthenticateProviderAsync(provider);
+                emptyActions.Children.Add(auth);
+            }
+            var manual = new Button
+            {
+                Content = HubStrings.Get("AddModel"),
+                Classes = { "quiet" },
+                FontSize = 11,
+                Padding = new Thickness(10, 4),
+            };
+            manual.Click += async (_, _) => await AddModelAsync(provider);
+            emptyActions.Children.Add(manual);
+            empty.Children.Add(emptyActions);
+
+            listContent.Children.Add(empty);
             section.Children.Add(listContent);
             return section;
+        }
+
+        // The add/edit-model draft is always the first row, above every configured model.
+        if (modelDraftOpen)
+        {
+            listContent.Children.Add(BuildModelDraftRow(provider));
         }
 
         foreach (var model in provider.Models)
@@ -1584,6 +1918,118 @@ public partial class SettingsPage : UserControl
 
         section.Children.Add(listContent);
         return section;
+    }
+
+    /// <summary>The add-model draft row: an inline input with confirm/cancel, always first in the list. When a
+    /// model is being edited (context-window override), the name is pre-filled and read-only, and a second
+    /// field carries the token count.</summary>
+    private Control BuildModelDraftRow(ModelProvider provider)
+    {
+        var stack = new StackPanel { Spacing = 4, Tag = SectionTags.ModelDraft };
+
+        var editing = _editingModelName is not null;
+        var name = editing ? _editingModelName! : "";
+
+        var input = new TextBox
+        {
+            Text = name,
+            IsReadOnly = editing,
+            PlaceholderText = HubStrings.Get("ModelNamePlaceholder"),
+        };
+        if (editing) input.Classes.Add("muted");
+        // The input joins the tree only through the inline row below — adding it to the stack here as well
+        // gave it a second parent and threw "already has a visual parent" mid-rebuild, which is what froze
+        // the settings card on the first pencil press.
+
+        // The token field is built here but appended after the row, so the stack reads name-row first and
+        // the context-window field second (the docstring's "second field").
+        Control? tokensField = null;
+        TextBox? tokens = null;
+        if (editing)
+        {
+            var (current, _, _) = _chat!.ContextWindowFor(provider.Id, name);
+            tokens = new TextBox
+            {
+                Text = current.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            };
+            tokensField = BuildField(HubStrings.Get("ModelContextEditHint"), tokens);
+        }
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+        };
+        var cancel = new Button { Content = HubStrings.Get("Cancel"), Classes = { "quiet" } };
+        cancel.Click += (_, _) => CloseDraft();
+        var confirm = new Button
+        {
+            Content = HubStrings.Get(editing ? "Save" : "Add"),
+            Classes = { "primary" },
+            IsDefault = true,
+        };
+        confirm.Click += (_, _) =>
+        {
+            if (editing) CommitModelEditDraft(provider, name, tokens!);
+            else CommitModelDraft(provider, input);
+        };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(confirm);
+
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        Grid.SetColumn(input, 0);
+        Grid.SetColumn(buttons, 1);
+        row.Children.Add(input);
+        row.Children.Add(buttons);
+
+        stack.Children.Add(row);
+        if (tokensField is not null) stack.Children.Add(tokensField);
+        return stack;
+    }
+
+    private void CommitModelDraft(ModelProvider provider, TextBox input)
+    {
+        if (_chat is null) return;
+
+        var name = input.Text ?? "";
+        if (name.Trim().Length == 0)
+        {
+            SetProviderStatus(true, HubStrings.Get("ModelNameRequired"));
+            return;
+        }
+
+        if (_chat.AddModel(provider.Id, name) is null)
+        {
+            SetProviderStatus(true, HubStrings.Get("ModelDuplicated"));
+            return;
+        }
+
+        SetProviderStatus(false, HubStrings.Get("ModelAdded"));
+        CloseDraft();
+    }
+
+    /// <summary>Opens the context-window draft for a model (the pencil on a model row).</summary>
+    private void OpenModelEditDraft(ModelProvider provider, ProviderModel model)
+    {
+        _editingProviderId = provider.Id;
+        _editingModelName = model.Name;
+        _addingModel = false;
+        RebuildProviderGroups();
+    }
+
+    private void CommitModelEditDraft(ModelProvider provider, string name, TextBox tokens)
+    {
+        if (_chat is null) return;
+
+        int? parsed = null;
+        if (int.TryParse((tokens.Text ?? "").Trim(), out var value) && value > 0)
+        {
+            parsed = value;
+        }
+
+        _chat.SetModelContextTokens(provider.Id, name, parsed);
+        SetProviderStatus(false, HubStrings.Get("ProviderEditSaved"));
+        CloseDraft();
     }
 
     /// <summary>
@@ -1629,21 +2075,14 @@ public partial class SettingsPage : UserControl
 
     private Control BuildModelRow(ModelProvider provider, ProviderModel model)
     {
-        var inUse = ReferenceEquals(model, provider.ActiveModel);
-
+        // List membership is the activation set: every row here is selectable in a conversation. No enable
+        // toggle and no "in use" marker — those answered a question this page does not ask.
         var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        nameRow.Children.Add(new TextBlock
+        text.Children.Add(new TextBlock
         {
             Text = model.Name,
             VerticalAlignment = VerticalAlignment.Center,
         });
-        if (inUse)
-        {
-            nameRow.Children.Add(Pill(HubStrings.Get("AccountActive"), BrushOrNull("Hub.AccentSoft"),
-                BrushOrNull("Hub.TextOnAccent")));
-        }
-        text.Children.Add(nameRow);
         text.Children.Add(BuildModelContextRow(provider, model));
 
         var actions = new StackPanel
@@ -1651,21 +2090,21 @@ public partial class SettingsPage : UserControl
             Orientation = Orientation.Horizontal,
             Spacing = 4,
             VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "reveal" },
         };
 
-        var enabled = new ToggleSwitch
+        // The pencil opens a context-window draft for this model. The one field is MaxContextTokens — the
+        // zero-cost override the model already persists — so "edit model" is real without growing the model's
+        // schema. Display name / wire override / output cap stay out until a later pass.
+        var edit = new Button
         {
-            IsChecked = model.Enabled,
-            // The Fluent theme labels the knob "On"/"Off" — English text in a bilingual UI that the row's
-            // knob position already says. Clear both contents rather than translating them.
-            OnContent = null,
-            OffContent = null,
-            VerticalAlignment = VerticalAlignment.Center,
-            Tag = SectionTags.ModelEnabled,
+            Content = BuildEditIcon(),
+            Classes = { "quiet" },
+            Padding = new Thickness(6, 2),
         };
-        ToolTip.SetTip(enabled, HubStrings.Get("ModelEnabledHint"));
-        enabled.IsCheckedChanged += (_, _) => SetModelEnabled(provider.Id, model.Name, enabled.IsChecked == true);
-        actions.Children.Add(enabled);
+        ToolTip.SetTip(edit, HubStrings.Get("ModelEditTitle"));
+        edit.Click += (_, _) => OpenModelEditDraft(provider, model);
+        actions.Children.Add(edit);
 
         var remove = new Button
         {
@@ -1683,21 +2122,15 @@ public partial class SettingsPage : UserControl
         grid.Children.Add(text);
         grid.Children.Add(actions);
 
+        // Outlined card so the model list reads as a list; the fill is Hub.Surface (bound, not a captured
+        // null brush). Hover only lifts the fill.
         var row = new Border
         {
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
             Padding = new Thickness(12, 8),
             Tag = SectionTags.ModelRow,
+            Classes = { "model-row", "provider-row" },
             Child = grid,
         };
-        // Bind, don't capture: BrushOrNull runs while the page may still be unattached, and a static null
-        // here rendered the rows transparent — they silently took the provider card's colour instead of
-        // the settings card's (the exact confusion that made the card itself get recoloured once).
-        row.Bind(Border.BackgroundProperty,
-            new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("Hub.Surface"));
-        row.Bind(Border.BorderBrushProperty,
-            new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("Hub.BorderSubtle"));
         return row;
     }
 
@@ -1793,6 +2226,25 @@ public partial class SettingsPage : UserControl
         path.Bind(Avalonia.Controls.Shapes.Shape.StrokeProperty,
             new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("Hub.TextSecondary"));
 
+        return new Viewbox { Width = 12, Height = 12, Child = path };
+    }
+
+    /// <summary>
+    /// The edit affordance: a pencil outline. Same construction as the other icons — generated geometry, stroke
+    /// bound through DynamicResource so it re-resolves on theme/language switch rather than going blank.
+    /// </summary>
+    private Control BuildEditIcon()
+    {
+        var path = new Avalonia.Controls.Shapes.Path
+        {
+            Data = Avalonia.Media.Geometry.Parse(
+                "M10.5,2.2 L11.8,3.5 L4.6,10.7 L2.9,11.1 L3.3,9.4 Z M9.4,3.3 L10.7,4.6"),
+            StrokeThickness = 1.2,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+            StrokeJoin = Avalonia.Media.PenLineJoin.Round,
+        };
+        path.Bind(Avalonia.Controls.Shapes.Shape.StrokeProperty,
+            new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("Hub.TextSecondary"));
         return new Viewbox { Width = 12, Height = 12, Child = path };
     }
 
@@ -1969,29 +2421,14 @@ public partial class SettingsPage : UserControl
 
     private async Task AddModelAsync(ModelProvider provider)
     {
-        if (_chat is null || Owner() is not { } owner) return;
+        if (_chat is null) return;
 
-        var name = await PromptWindow.ShowAsync(
-            owner,
-            HubStrings.Get("AddModelTitle"),
-            "",
-            HubStrings.Get("ModelNamePlaceholder"));
-        if (name is null) return;
-
-        if (name.Trim().Length == 0)
-        {
-            SetProviderStatus(true, HubStrings.Get("ModelNameRequired"));
-            return;
-        }
-
-        if (_chat.AddModel(provider.Id, name) is null)
-        {
-            SetProviderStatus(true, HubStrings.Get("ModelDuplicated"));
-            return;
-        }
-
-        SetProviderStatus(false, HubStrings.Get("ModelAdded"));
+        // The draft row replaces the old PromptWindow modal: it stays where the list is, and it is always the
+        // first row so the input never scrolls out from under the person who just clicked "add".
+        _editingProviderId = provider.Id;
+        _addingModel = true;
         RebuildProviderGroups();
+        await Task.CompletedTask;
     }
 
     private async Task RemoveModelAsync(ModelProvider provider, ProviderModel model)
@@ -2148,6 +2585,8 @@ public partial class SettingsPage : UserControl
 
             SetProviderStatus(false, HubStrings.Get("AuthOAuthSucceeded"));
 
+            _chat?.SetPreferredAuthMethod(provider.Id, ProviderAuthMethods.OAuth);
+
             // The credential is stored the moment the flow lands, so the linked mark repaints now — the
             // fetch below can take seconds and must not hold the state badge hostage.
             RebuildProviderGroups();
@@ -2195,24 +2634,28 @@ public partial class SettingsPage : UserControl
 
         SetProviderStatus(false, "");
         RebuildProviderGroups();
+
+        // Adding a provider and connecting it are one job. Dual-method presets choose the method inside the
+        // auth dialog; a keyless preset has nothing to do. On success the catalog is fetched and the
+        // manifest defaults are enabled — otherwise the card lands empty and the user has to remember a
+        // second step.
+        var provider = _chat.Providers.FirstOrDefault(candidate => candidate.Id == presetId);
+        if (provider is { CanAuthenticate: true })
+        {
+            await AuthenticateProviderAsync(provider);
+        }
     }
 
-    /// <summary>The free-form path, shared by the picker's custom row. Validation lives in the dialog and is
-    /// re-run by <see cref="ChatWorkspace.AddProvider"/>, so a half-filled provider cannot reach the file.</summary>
+    /// <summary>The free-form path, shared by the picker's custom row. Instead of a modal dialog it inserts an
+    /// "add custom endpoint" draft at the top of the provider list; the draft is always first, so the person
+    /// never has to scroll to find the form they just opened.</summary>
     private async Task AddCustomProviderAsync()
     {
-        var dialog = await ProviderEditWindow.ShowAsync(Owner(), existing: null);
-        if (dialog is null) return;
-
-        if (_chat.AddProvider(dialog.ProviderName, dialog.BaseUrl, dialog.Model, dialog.ApiKey) is null)
-        {
-            // The dialog validates too; reaching here means a platform without a secret store refused the key.
-            SetProviderStatus(true, HubStrings.Get(_chat.CanStoreSecrets ? "ProviderBaseUrlInvalid" : "ApiKeyPlatformUnsupported"));
-            return;
-        }
-
-        SetProviderStatus(false, "");
+        _addingProvider = true;
+        _editingProviderId = null;
+        _addingModel = false;
         RebuildProviderGroups();
+        await Task.CompletedTask;
     }
 
     private async Task RemoveProviderAsync(ModelProvider provider)
@@ -2264,14 +2707,17 @@ public partial class SettingsPage : UserControl
     }
 
     /// <summary>
-    /// Opens the two-step authentication dialog and applies whatever it produces.
+    /// Opens the authentication dialog and applies whatever it produces.
+    ///
+    /// <para>When the provider has already bound a method (preferred, or a credential source), the dialog
+    /// skips its choice step and opens that method's surface directly — one provider never shows both.</para>
     ///
     /// <para>The two routes end differently on purpose. A pasted key is stored here and now. Browser sign-in
     /// closes this dialog immediately and hands off to <see cref="SignInAsync"/>, which owns the browser, the
     /// callback and the failure messages — the dialog's part was only to ask which route, and pretending
     /// otherwise would put two owners on one flow.</para>
     /// </summary>
-    private async Task AuthenticateProviderAsync(ModelProvider provider)
+    private async Task AuthenticateProviderAsync(ModelProvider provider, bool forceChooseMethod = false)
     {
         if (_chat is null) return;
         if (Owner() is not { } owner) return;
@@ -2282,9 +2728,16 @@ public partial class SettingsPage : UserControl
             return;
         }
 
+        // Bound method: prefer an explicit choice, else the live credential's source, else the sole declared
+        // method. Dual-method with no binding falls through to the dialog's choice step.
+        var bound = forceChooseMethod
+            ? null
+            : BoundAuthMethod(provider);
+
         var outcome = await AuthDialog.ShowAsync(
             owner,
             provider,
+            initialMethod: bound,
             checkKey: key => _chat.CheckApiKeyAsync(provider.Id, key));
 
         // Null is the user closing the dialog without choosing. Anything else is one of the two routes, and
@@ -2310,6 +2763,8 @@ public partial class SettingsPage : UserControl
             return;
         }
 
+        _chat.SetPreferredAuthMethod(provider.Id, ProviderAuthMethods.ApiKey);
+
         // The key is already stored, so "linked" is true now: repaint the mark before the fetch rather than
         // after it — the list can take seconds to arrive and the state must not wait on it.
         RebuildProviderGroups();
@@ -2318,6 +2773,41 @@ public partial class SettingsPage : UserControl
         // than left as the next thing to remember. It is the same call the refresh button makes; doing it
         // automatically is what turns "authenticated" into "ready to use" without a second visit.
         await RefreshModelsAsync(provider);
+    }
+
+    /// <summary>The method this provider is bound to for sign-in, or null when the user has not chosen yet.</summary>
+    private static string? BoundAuthMethod(ModelProvider provider)
+    {
+        if (provider.Credential?.Source == CredentialSources.OAuth) return ProviderAuthMethods.OAuth;
+        if (provider.Credential?.Source == CredentialSources.ApiKey) return ProviderAuthMethods.ApiKey;
+        if (provider.PreferredAuthMethod is { Length: > 0 } preferred) return preferred;
+        var methods = provider.EffectiveAuthMethods;
+        return methods.Count == 1 ? methods[0] : null;
+    }
+
+    /// <summary>
+    /// Clears the current credential and re-enters method choice. The entry is secondary (hover-revealed):
+    /// switching methods is rare, and the button that does it must not sit next to 鉴权 looking equally
+    /// primary.
+    /// </summary>
+    private async Task ChangeAuthMethodAsync(ModelProvider provider)
+    {
+        if (_chat is null) return;
+
+        if (Owner() is { } owner)
+        {
+            var confirmed = await HubDialog.ShowAsync(
+                owner,
+                HubStrings.Get("ChangeAuthMethod"),
+                provider.Name + "\n\n" + HubStrings.Get("ChangeAuthMethodConfirm"),
+                HubDialogButtons.OkCancel);
+            if (confirmed != HubDialogResult.Ok) return;
+        }
+
+        _chat.DisconnectProvider(provider.Id);
+        _chat.SetPreferredAuthMethod(provider.Id, null);
+        RebuildProviderGroups();
+        await AuthenticateProviderAsync(provider, forceChooseMethod: true);
     }
 
     /// <summary>The top-level window, used as the dialog owner. <c>null</c> in a design-time host, in which
@@ -2476,8 +2966,10 @@ public partial class SettingsPage : UserControl
         var isLinked = statusText == HubStrings.Get("ProviderConnected");
         // Tags distinguish icon actions even though their content is a generated control rather than text.
         var hasRemove = actions.Children.OfType<Button>()
+            .Concat(actions.GetLogicalDescendants().OfType<Button>())
             .Any(button => button.Tag as string == SectionTags.RemoveProvider);
         var hasHeaderCatalogButton = actions.Children.OfType<Button>()
+            .Concat(actions.GetLogicalDescendants().OfType<Button>())
             .Any(button => button.Tag as string == SectionTags.ModelCatalog);
 
         // "The text is in the tree" is not "the user can see it". A brush that resolved to null while the page
@@ -2523,8 +3015,8 @@ public partial class SettingsPage : UserControl
         var showsModelSection = modelSection is not null;
 
         // The empty-state line and model controls are looked up by tag rather than by position.
-        var showsModelEmptyState = modelSection?.GetLogicalDescendants().OfType<TextBlock>()
-            .Any(text => text.Tag as string == SectionTags.ModelsEmpty) ?? false;
+        var showsModelEmptyState = modelSection?.GetLogicalDescendants()
+            .Any(node => (node as Control)?.Tag as string == SectionTags.ModelsEmpty) ?? false;
         var hasRefresh = modelSection?.GetLogicalDescendants()
             .OfType<Button>()
             .Any(button => button.Tag as string == SectionTags.RefreshModels) ?? false;
@@ -2555,14 +3047,11 @@ public partial class SettingsPage : UserControl
         foreach (var row in modelRows)
         {
             var text = (StackPanel)((Grid)row.Child!).Children[0];
-            var nameRow = (StackPanel)text.Children[0];
-            var modelName = nameRow.Children.OfType<TextBlock>().First().Text ?? "";
+            // Name is the first TextBlock; there is no nameRow and no "in use" pill any more — every row in
+            // the list is an active, selectable model.
+            var modelName = text.Children.OfType<TextBlock>().FirstOrDefault()?.Text ?? "";
             modelNames.Add(modelName);
-            modelEnabled.Add(row.GetVisualDescendants().OfType<ToggleSwitch>()
-                .FirstOrDefault(toggle => toggle.Tag as string == SectionTags.ModelEnabled)?.IsChecked == true);
-
-            // The "in use" pill is the Border the row adds after the name.
-            if (nameRow.Children.OfType<Border>().Any()) activeModel = modelName;
+            modelEnabled.Add(true);
         }
 
         // Model rows are individually outlined cards, so there should be no extra dividers between them.
@@ -2570,15 +3059,17 @@ public partial class SettingsPage : UserControl
 
         // The single auth control, read by its tag. Its *label* is the state: the same button reads
         // "authenticate" or "disconnect", so a check that only counted buttons would pass for either.
+        // It lives in the header actions stack (status + auth + reveal cluster).
         var authButton = actions.Children.OfType<Button>()
+            .Concat(actions.GetLogicalDescendants().OfType<Button>())
             .FirstOrDefault(button => button.Tag as string == SectionTags.AuthButton);
         var authButtonText = authButton?.Content as string ?? "";
 
         // The whole point of this revision: no credential input exists anywhere in the list. A password-class
-        // TextBox anywhere under the group is the regression this check exists to catch, and it is checked
-        // over descendants because a future layout could easily nest it one level deeper.
+        // TextBox, or any TextBox with PasswordChar set, anywhere under the group is the regression this
+        // check exists to catch — checked over descendants because a future layout could nest it deeper.
         var hasCredentialField = content.GetVisualDescendants().OfType<TextBox>()
-            .Any(box => box.Classes.Contains("password"));
+            .Any(box => box.Classes.Contains("password") || box.PasswordChar != default(char));
 
         var summary = content.Children.OfType<TextBlock>()
             .FirstOrDefault(text => text.Tag as string == SectionTags.Summary)?.Text ?? "";
@@ -2875,6 +3366,7 @@ public partial class SettingsPage : UserControl
         // button is there" from "the button says the right thing for this state", and those are different
         // failures with the same shape in the tree.
         internal const string AuthButton = "provider-auth-button";
+        internal const string ChangeAuthMethod = "provider-change-auth-method";
         internal const string NoCredential = "provider-no-credential";
 
         /// <summary>
@@ -2884,5 +3376,28 @@ public partial class SettingsPage : UserControl
         /// </summary>
         internal const string SecretBackend = "provider-secret-backend";
         internal const string Affiliate = "provider-affiliate";
+
+        // ── Draft interaction (v3) ──
+        // The edit form lives inside the group rather than in a modal window, and every draft is always the
+        // first child of the list it belongs to. Tags let the self-check find each draft state without walking
+        // the tree positionally, which a collapsible layout invalidates on every reshuffle.
+
+        /// <summary>The in-group edit draft form (opened by the header's pencil icon).</summary>
+        internal const string EditProvider = "provider-edit";
+
+        /// <summary>The header enable/disable toggle for the whole provider.</summary>
+        internal const string ProviderEnabled = "provider-enabled";
+
+        /// <summary>The collapsed header's status dot (colour compresses the three link states).</summary>
+        internal const string StatusDot = "provider-status-dot";
+
+        /// <summary>The edit draft's form container, distinct from the collapsed header.</summary>
+        internal const string ProviderDraft = "provider-draft";
+
+        /// <summary>The draft row inserted at the top of a model list by "add model".</summary>
+        internal const string ModelDraft = "provider-model-draft";
+
+        /// <summary>The draft form inserted at the top of the provider list by "add custom endpoint".</summary>
+        internal const string AddProviderDraft = "provider-add-draft";
     }
 }
