@@ -1414,6 +1414,8 @@ public partial class SettingsPage : UserControl
 
         if (ChatWorkspace.CanRemoveProvider(provider))
         {
+            // Always visible: removing a provider is a primary management action, not a hover secret.
+            // The pencil and change-method stay on the reveal cluster.
             var remove = new Button
             {
                 Content = BuildRemoveIcon(),
@@ -1424,7 +1426,7 @@ public partial class SettingsPage : UserControl
             };
             ToolTip.SetTip(remove, HubStrings.Get("RemoveProviderIcon"));
             remove.Click += async (_, _) => await RemoveProviderAsync(provider);
-            reveal.Children.Add(remove);
+            actions.Children.Add(remove);
         }
 
         actions.Children.Add(reveal);
@@ -1863,8 +1865,9 @@ public partial class SettingsPage : UserControl
             && (_addingModel || _editingModelName is not null);
         if (provider.Models.Count == 0 && !modelDraftOpen)
         {
-            // Empty state carries one primary path for an unauthenticated provider and the two local ones
-            // for everyone else. Manual add never requires a key.
+            // Empty state is one quiet line. The toolbar already carries ＋ 手动添加 and 🔍 浏览目录 —
+            // a second 「添加模型」 here is the same action twice. The only extra is the auth CTA when the
+            // provider cannot fetch a catalog yet.
             var empty = new StackPanel { Spacing = 8, Tag = SectionTags.ModelsEmpty };
             empty.Children.Add(new TextBlock
             {
@@ -1876,7 +1879,6 @@ public partial class SettingsPage : UserControl
                 TextWrapping = TextWrapping.Wrap,
             });
 
-            var emptyActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             if (provider.RequiresCredential && !IsLinked(provider) && provider.CanAuthenticate)
             {
                 var auth = new Button
@@ -1885,20 +1887,11 @@ public partial class SettingsPage : UserControl
                     Classes = { "primary" },
                     FontSize = 11,
                     Padding = new Thickness(10, 4),
+                    HorizontalAlignment = HorizontalAlignment.Left,
                 };
                 auth.Click += async (_, _) => await AuthenticateProviderAsync(provider);
-                emptyActions.Children.Add(auth);
+                empty.Children.Add(auth);
             }
-            var manual = new Button
-            {
-                Content = HubStrings.Get("AddModel"),
-                Classes = { "quiet" },
-                FontSize = 11,
-                Padding = new Thickness(10, 4),
-            };
-            manual.Click += async (_, _) => await AddModelAsync(provider);
-            emptyActions.Children.Add(manual);
-            empty.Children.Add(emptyActions);
 
             listContent.Children.Add(empty);
             section.Children.Add(listContent);
