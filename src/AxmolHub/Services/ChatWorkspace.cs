@@ -1170,6 +1170,11 @@ public sealed class ChatWorkspace : IDisposable
                 // The `?? []` is for the compiler, not for a real case — `CreateBuiltIn` always hands over a list —
                 // but the copy is what keeps a provider from sharing the manifest's own list.
                 provider.ServerTools ??= [.. builtIn.ServerTools ?? []];
+                // ??= for the same reason as ServerTools: the wire is a claim about the deployment this person is
+                // standing on, so a saved declaration survives the manifest and a manifest-only change still
+                // reaches an install that never said anything. An unknown value never gets here — the manifest
+                // filters it through ModelProtocols.IsKnown when it projects the entry.
+                provider.Protocol ??= builtIn.Protocol;
                 // ??= and not = : a persisted number is now a deliberate human setting — except where nothing was
                 // ever stored, which is what made an install run every model against 8192 while its own gateway
                 // published 128000 for the preset and the saved row said null.

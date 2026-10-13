@@ -54,8 +54,9 @@ public sealed class ModelCapabilities
     public IReadOnlyList<string> OutputModalities { get; init; } = [];
 
     /// <summary>Protocol families this model id answers on, when the catalog says (the OpenRouter-shaped field
-    /// <c>supported_endpoint_types</c>). Recorded for display and for a later protocol choice; Hub sends
-    /// OpenAI-compatible requests regardless today.</summary>
+    /// <c>supported_endpoint_types</c>, or Copilot's <c>supported_endpoints</c> paths). Not decoration:
+    /// <see cref="Protocol"/> reads it to decide which body to build, which is the whole difference between a
+    /// catalog entry that explains a refusal and one that merely records a string.</summary>
     public IReadOnlyList<string> EndpointTypes { get; init; } = [];
 
     /// <summary>Reasoning-effort levels the model accepts, normalized to
@@ -105,28 +106,41 @@ public sealed class ModelCapabilities
     }
 
     /// <summary>
-    /// Which wire to call this model on, read from whatever the catalog said about protocols.
+    /// Which wire to call this model on, read from whatever the catalog said about protocols. This is the
+    /// <b>second</b> rung: a wire declared on the provider itself outranks it, and the order is owned by one
+    /// function (<c>ChatClientFactory.ProtocolFor</c>) rather than repeated here.
     ///
-    /// <para>Responses is chosen only when the endpoint named it and did <b>not</b> also name chat. A model that
-    /// answers on both stays on chat, because that is the path whose reasoning replay and tool loop are already
-    /// proven here — taking the newer wire just because it is offered would trade a known-good request shape for
-    /// a coin flip.</para>
+    /// <para><b>Chat wins every tie, and the arms are written in that order on purpose.</b> A model that names
+    /// chat is called on chat even when it also names responses or messages, because chat is the path whose
+    /// reasoning replay and tool loop are already proven here — taking the newer wire just because it is offered
+    /// would trade a known-good request shape for a coin flip. Responses is therefore reached only by a model
+    /// that named it and not chat, and messages only by one that named neither OpenAI wire.</para>
     ///
     /// <para>Silence is chat, which is the case for every provider except Copilot today: an empty
     /// <see cref="EndpointTypes"/> means nobody published the field, not that the model speaks nothing.</para>
     /// </summary>
     public string Protocol
-        => EndpointTypes.Contains(ModelProtocols.Responses, StringComparer.OrdinalIgnoreCase)
-           && !EndpointTypes.Contains(ModelProtocols.Chat, StringComparer.OrdinalIgnoreCase)
-            ? ModelProtocols.Responses
-            : ModelProtocols.Chat;
+    {
+        get
+        {
+            if (EndpointTypes.Contains(ModelProtocols.Chat, StringComparer.OrdinalIgnoreCase)) return ModelProtocols.Chat;
+            if (EndpointTypes.Contains(ModelProtocols.Responses, StringComparer.OrdinalIgnoreCase)) return ModelProtocols.Responses;
+            if (EndpointTypes.Contains(ModelProtocols.Messages, StringComparer.OrdinalIgnoreCase)) return ModelProtocols.Messages;
+            return ModelProtocols.Chat;
+        }
+    }
 }
 
 /// <summary>
-/// The request wires Hub knows how to speak. Both are OpenAI's; what differs is the body and the event stream,
-/// so the choice belongs next to the model rather than next to the provider — GitHub Copilot serves its gpt-5
-/// class models on <c>/responses</c> while keeping others on <c>/chat/completions</c>, and a model can appear on
-/// both.
+/// The request wires Hub can tell apart. Two of the three it actually speaks: <see cref="Chat"/> and
+/// <see cref="Responses"/> are both OpenAI's and both ride an SDK connector, while <see cref="Messages"/> is
+/// Anthropic's — recognized and named out of a catalog, and answered with a sentence rather than with a request
+/// built against a body nobody writes here yet.
+///
+/// <para>The choice belongs next to the <b>model</b> because GitHub Copilot serves its gpt-5 class models on
+/// <c>/responses</c> while keeping others on <c>/chat/completions</c>, and a model can appear on both. What
+/// belongs next to the <i>provider</i> is the human declaration that overrides all of it — see
+/// <c>ModelProvider.Protocol</c>.</para>
 /// </summary>
 public static class ModelProtocols
 {
@@ -135,6 +149,22 @@ public static class ModelProtocols
 
     /// <summary>OpenAI <c>responses</c>. Different request body, different event stream, different client.</summary>
     public const string Responses = "responses";
+
+    /// <summary>Anthropic <c>/v1/messages</c>. Different body, different event vocabulary, and a different
+    /// credential scheme — <c>x-api-key</c> plus a version header, not a bearer token.</summary>
+    public const string Messages = "messages";
+
+    /// <summary>
+    /// Whether a declared string is one of the three wire names, compared exactly.
+    ///
+    /// <para>Exactness is the point. Real catalogs publish <c>"openai"</c> and <c>"anthropic"</c> as endpoint
+    /// <i>families</i> (OrcaRouter's <c>supported_endpoint_types</c> does, and Copilot's rows carry them too),
+    /// and those are vendor labels, not wires: letting <c>"anthropic"</c> resolve to <see cref="Messages"/> would
+    /// route a bearer-authenticated Copilot model at an <c>x-api-key</c> body. Anything unknown reads as "nothing
+    /// was declared", which is the case that keeps every provider shipping today on chat.</para>
+    /// </summary>
+    public static bool IsKnown(string? protocol)
+        => protocol is Chat or Responses or Messages;
 }
 
 /// <summary>One provider's answer to "which models do you serve, and what can each of them do?".</summary>

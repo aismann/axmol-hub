@@ -260,6 +260,25 @@ public sealed class AiProviderEntry
 
     public string BaseUrl { get; set; } = "";
     public int? MaxContextTokens { get; set; }
+
+    /// <summary>
+    /// Which request wire this endpoint answers on — one of <see cref="ModelProtocols"/>, absent means "not
+    /// declared" and therefore chat.
+    ///
+    /// <para>The field exists because the two OpenAI wires are decided by the <b>model</b> (one provider serves
+    /// some models on <c>/responses</c> and others on <c>/chat/completions</c>) while Anthropic's
+    /// <c>/v1/messages</c> is a property of the <b>endpoint</b>: it wants a different credential header, a
+    /// different body shape and a different event vocabulary for every model behind it, and the domestic gateways
+    /// that mount it publish no catalog at all to infer the fact from. So a person who points Hub at one has to
+    /// be able to say so, and a preset author has to be able to ship that saying.</para>
+    ///
+    /// <para>Declared, never guessed from the host name: <c>"anthropic"</c> appearing in a URL is what a Claude
+    /// Code user pastes and what a Copilot-compatible relay also serves, and only the first wants the messages
+    /// body. A wrong guess here is a request that fails on someone's live endpoint, which is the one outcome this
+    /// repository's provider layer has always refused.</para>
+    /// </summary>
+    public string? Protocol { get; set; }
+
     /// <summary>Which source knows how to read this provider's model catalog
     /// (<see cref="ModelCapabilitySources.All"/>). Absent means the OpenAI-compatible default.</summary>
     public string? CapabilitySource { get; set; }
@@ -492,6 +511,11 @@ public static class AiProviderManifest
                 // (see ModelCatalog), and a keyless provider gets it with no secret at all.
                 MaxContextTokens = entry.MaxContextTokens,
                 CapabilitySource = entry.CapabilitySource,
+                // Through IsKnown, not pasted through: the manifest is hand-edited and a family label such as
+                // "anthropic" (which is what real catalogs call it, not a wire name) would otherwise arrive as a
+                // protocol nothing builds a body for. Unknown is "nothing declared", which is chat — the same
+                // answer a manifest written before this field existed gets.
+                Protocol = ModelProtocols.IsKnown(entry.Protocol) ? entry.Protocol : null,
                 // Copied into its own dictionary for the same reason as OAuth below: a provider that outlives this
                 // call must not hold a reference into a document that gets re-read.
                 ExtraHeaders = new Dictionary<string, string>(entry.ExtraHeaders, StringComparer.OrdinalIgnoreCase),

@@ -169,8 +169,11 @@ public sealed class GithubCopilotModelsSource : IModelCapabilitySource
     /// protocol it names, because Hub's question is which body to build, not which transport to open.
     ///
     /// <para><c>/v1/messages</c> is kept as its own name rather than folded into chat: it is Anthropic's wire, and
-    /// a model that only answers there is not something this build can call — recording that honestly is what
-    /// makes the entry explainable later instead of looking like a parsing bug.</para>
+    /// a model that only answers there must not be sent an OpenAI body. What the name does <b>not</b> do is put
+    /// Copilot's own models on that wire — Copilot authenticates with a bearer token and Anthropic asks for
+    /// <c>x-api-key</c>, so the credentials are not interchangeable and a catalog row is no place to switch them.
+    /// The messages wire is entered by a declaration on the provider (<c>ModelProvider.Protocol</c>), which is the
+    /// rung above this one; this class only reports what it was told.</para>
     /// </summary>
     private static IReadOnlyList<string> EndpointNames(JsonElement entry)
     {
@@ -185,7 +188,7 @@ public sealed class GithubCopilotModelsSource : IModelCapabilitySource
                 {
                     _ when raw.Contains("chat/completions") => ModelProtocols.Chat,
                     _ when raw.Contains("responses") => ModelProtocols.Responses,
-                    _ when raw.Contains("messages") => "messages",
+                    _ when raw.Contains("messages") => ModelProtocols.Messages,
                     _ => null,
                 };
                 if (name is { Length: > 0 } && !values.Contains(name, StringComparer.OrdinalIgnoreCase)) values.Add(name);

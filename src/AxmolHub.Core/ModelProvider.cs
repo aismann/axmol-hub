@@ -6,10 +6,14 @@ namespace AxmolHub.Core;
 /// A user-facing model provider, assembled from a built-in manifest entry (see
 /// <see cref="AiProviderManifest"/>) plus any user overrides persisted in <c>data-root/ai/providers.json</c>.
 ///
-/// The provider layer has exactly one wire protocol — OpenAI-compatible — so every provider, built-in or
-/// custom, drives the same <c>IChatClient</c> factory (see <c>ChatClientFactory</c> in the Agent project).
-/// The fields below differ only in their defaults, not in their meaning. This is the reason "add another
-/// provider" is a data change (one more manifest entry), never a protocol change.
+/// The provider layer has exactly one wire protocol Hub builds a body for — OpenAI-compatible — so every
+/// provider, built-in or custom, drives the same <c>IChatClient</c> factory (see <c>ChatClientFactory</c> in the
+/// Agent project). The fields below differ only in their defaults, not in their meaning. This is the reason "add
+/// another provider" is a data change (one more manifest entry), never a protocol change.
+///
+/// <para><see cref="Protocol"/> is the one field that names a wire rather than a default, and it does not break
+/// the sentence above: declaring a wire Hub cannot speak yet is refused by name at the factory, never answered
+/// with an OpenAI body sent in the wrong hopes.</para>
 /// </summary>
 public sealed class ModelProvider
 {
@@ -128,6 +132,19 @@ public sealed class ModelProvider
     /// after a reload — "written empty: do not offer it" versus "never written: take what the preset says".</para>
     /// </summary>
     public List<string>? ServerTools { get; set; }
+
+    /// <summary>
+    /// Which request wire this provider's endpoint answers on (<see cref="ModelProtocols"/>), or <c>null</c> when
+    /// nobody declared one. <b>Persisted</b>, and seeded from the manifest only when the saved entry says
+    /// nothing — the same shape as <see cref="ServerTools"/> above, for the same reason: this is a claim about
+    /// the deployment a person is standing on, which is theirs to make and Hub's to honour.
+    ///
+    /// <para>It outranks the model catalog on purpose. A catalog can say which endpoints a model appears on; only
+    /// a person can say how their mirror of it authenticates. And a hand-edited <c>"chat"</c> on an endpoint that
+    /// is really Anthropic's is a claim that fails loudly on the first message rather than silently re-routing
+    /// someone's credential to a body it was never meant for.</para>
+    /// </summary>
+    public string? Protocol { get; set; }
 
     /// <summary>
     /// The two models Hub may switch between when a session is routed automatically, both of them named by the

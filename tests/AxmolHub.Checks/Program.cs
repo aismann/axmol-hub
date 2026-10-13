@@ -519,6 +519,81 @@ if (args.Contains("--check-ai-providers"))
         "a keyless provider arrives with no probe, which is what makes it skip validation");
 
     Console.WriteLine("PASS: key validation is opt-in per provider and fails open when undeclared.");
+
+    // ── Which wire a provider answers on: one rule, three names, and only two of them spoken ──
+    // IsKnown compares exactly, and the exactness is the load-bearing part. Real catalogs publish "openai" and
+    // "anthropic" as endpoint *families* (OrcaRouter's supported_endpoint_types does, and the Copilot capture
+    // carries the same two words); a family label is not a wire. Resolving "anthropic" to the messages body would
+    // aim a bearer-issued credential at an endpoint that reads x-api-key, on a machine where nobody asked for that.
+    Assert(new[] { ModelProtocols.Chat, ModelProtocols.Responses, ModelProtocols.Messages }.All(ModelProtocols.IsKnown),
+        "the three wire names are all known");
+    Assert(!new string?[] { "openai", "anthropic", "Messages", "chat ", "", null }.Any(ModelProtocols.IsKnown),
+        "a family label, a wrong case, padding and silence all read as nothing declared");
+
+    var wireMarked = new ModelProvider
+    {
+        Id = "custom-wire-marked", Name = "Marked", IsCustom = true,
+        BaseUrl = "https://mirror.test/v1", Model = "claude-sonnet",
+        Protocol = ModelProtocols.Messages,
+    };
+    wireMarked.ModelCapabilities["gpt-5"] = new ModelCapabilities { EndpointTypes = [ModelProtocols.Responses] };
+    Assert(ChatClientFactory.ProtocolFor(wireMarked, "gpt-5") == ModelProtocols.Messages,
+        "a wire declared on the provider outranks what the catalog said about the model");
+
+    var wirePlain = new ModelProvider
+    {
+        Id = "custom-wire-plain", Name = "Plain", IsCustom = true,
+        BaseUrl = "https://mirror.test/v1", Model = "m",
+    };
+    wirePlain.ModelCapabilities["solo"] = new ModelCapabilities { EndpointTypes = [ModelProtocols.Messages] };
+    wirePlain.ModelCapabilities["both"] = new ModelCapabilities { EndpointTypes = [ModelProtocols.Chat, ModelProtocols.Messages] };
+    wirePlain.ModelCapabilities["quiet"] = new ModelCapabilities();
+    Assert(ChatClientFactory.ProtocolFor(wirePlain, "solo") == ModelProtocols.Messages,
+        "a model that names only /v1/messages is not silently folded into chat");
+    Assert(ChatClientFactory.ProtocolFor(wirePlain, "both") == ModelProtocols.Chat,
+        "a model naming chat and messages is called on the wire this build speaks");
+    Assert(ChatClientFactory.ProtocolFor(wirePlain, "quiet") == ModelProtocols.Chat,
+        "a model nobody described stays on chat, which is every provider but Copilot");
+    wirePlain.Protocol = "anthropic";
+    Assert(ChatClientFactory.ProtocolFor(wirePlain, "quiet") == ModelProtocols.Chat,
+        "a hand-typed wire name Hub does not know is nothing declared, not a fourth protocol");
+
+    // The refusal is the point of naming a wire this build does not speak. Before it, a messages-only model
+    // resolved to chat and posted an OpenAI body at the endpoint, which came back as the provider's own 404 page
+    // — indistinguishable from a bad key or a dead gateway, and the one failure the settings screen could not
+    // explain. The sentence has to name the wire, the provider and the way out, because it is what the transcript
+    // prints after "助手请求失败：".
+    string? wireRefusal = null;
+    try { ChatClientFactory.Create(wireMarked, "claude-sonnet"); }
+    catch (InvalidOperationException exception) { wireRefusal = exception.Message; }
+    Assert(wireRefusal is not null
+           && wireRefusal.Contains("/v1/messages", StringComparison.Ordinal)
+           && wireRefusal.Contains("OpenAI", StringComparison.Ordinal)
+           && wireRefusal.Contains("Marked", StringComparison.Ordinal),
+        "a provider on the messages wire is refused by name instead of sent an OpenAI body");
+    Assert(ChatClientFactory.Create(wirePlain, "quiet") is not null,
+        "nothing else changed: an undeclared provider still builds a client on chat");
+
+    // Persisted, not derived: this is the one manifest-shaped wire fact a person must be able to state about an
+    // endpoint Hub does not ship. The round trip through the real store is what separates it from ExtraHeaders
+    // and RequestSemantics, which are facts about a service and are refreshed rather than remembered.
+    var wireRoot = Path.Combine(root, "wire-roundtrip");
+    Directory.CreateDirectory(wireRoot);
+    var wireStore = new ProviderStore(wireRoot);
+    wireStore.Save([new ModelProvider
+    {
+        Id = "saved-wire", Name = "Saved wire", IsCustom = true,
+        BaseUrl = "https://mirror.test/v1", Model = "m", Protocol = ModelProtocols.Messages,
+    }]);
+    Assert(wireStore.Load().Single().Protocol == ModelProtocols.Messages,
+        "a declared wire survives providers.json, because only the person on the endpoint can say it");
+
+    // No preset claims a wire yet, and that is asserted rather than assumed: the field arriving in the manifest
+    // must not quietly re-route any of the shipped endpoints.
+    Assert(AiProviderManifest.Load().All(entry => entry.Protocol is null),
+        "no shipped preset declares a wire, so every one of them still resolves to chat");
+    Assert(AiProviderManifest.CreateBuiltIn("deepseek")!.Protocol is null,
+        "a preset that says nothing arrives with no wire rather than a guessed one");
     return;
 }
 // Copilot: the manifest shapes of device-code sign-in, the polling arithmetic, and parsing of the
@@ -720,6 +795,27 @@ if (args.Contains("--check-ai-copilot"))
         "an effort level Hub does not implement is dropped rather than normalized into a menu entry");
     Assert(batch.Capabilities["gpt-5.4"].EndpointTypes.Count(name => name == ModelProtocols.Responses) == 1,
         "the websocket alias collapses onto its protocol instead of doubling the list");
+
+    // The third name, driven through the real parser rather than constructed in memory. Copilot's Claude rows list
+    // /v1/messages beside /chat/completions, so both halves matter: the path must be *named* (not dropped as an
+    // unknown value, which is what made the old literal invisible to everything downstream) and naming it must not
+    // move a model that also answers on chat off the wire this build speaks with a bearer token.
+    var anthropicRow = GithubCopilotModelsSource.Parse(Encoding.UTF8.GetBytes("""
+        {"data":[
+         {"id":"claude-only","object":"model","name":"Claude only","vendor":"Anthropic",
+          "capabilities":{"object":"model_capabilities","type":"chat","limits":{"max_context_window_tokens":200000}},
+          "supported_endpoints":["/v1/messages"]},
+         {"id":"claude-both","object":"model","name":"Claude both","vendor":"Anthropic",
+          "capabilities":{"object":"model_capabilities","type":"chat","limits":{"max_context_window_tokens":200000}},
+          "supported_endpoints":["/chat/completions","/v1/messages","/v1/messages/count_tokens"]}
+        ]}
+        """));
+    Assert(anthropicRow.Reachable && anthropicRow.Models.Contains("claude-only"),
+        "a row whose only endpoint is /v1/messages is still an offered model");
+    Assert(anthropicRow.Capabilities["claude-only"].Protocol == ModelProtocols.Messages,
+        "a model that appears nowhere else is named as the messages wire instead of defaulting to chat");
+    Assert(anthropicRow.Capabilities["claude-both"].Protocol == ModelProtocols.Chat,
+        "a Copilot model that also answers on chat stays on the bearer scheme Hub actually has for it");
 
     var html = GithubCopilotModelsSource.Parse(Encoding.UTF8.GetBytes("<html>502 Bad Gateway</html>"));
     Assert(html.Models.Count == 0 && html.Reachable,
