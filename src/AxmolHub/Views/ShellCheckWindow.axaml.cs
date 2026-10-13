@@ -2264,6 +2264,55 @@ public partial class ShellCheckWindow : Window
             "空闲超时给出超时提示而不是「已停止」（实际「" + panel.LastNoticeTextForCheck + "」）");
         chat.IdleTimeout = savedIdleTimeoutValue;
 
+        // The deadline measures silence, not the absence of prose. A model that thinks for longer than the window
+        // has to survive it — this is the exact shape that killed every long MiMo answer at 120.00s — and a stream
+        // that stops after one delta has to die anyway, so a re-arm cannot quietly become a no-op. Both run
+        // through the real send path, because a re-arm the pipeline never reaches would pass a unit test.
+        var thinkingAudits = new List<string>();
+        var savedAuditWrite = chat.AuditWrite;
+        var thinking = chat.StartConversation();
+        var stalled = chat.StartConversation();
+        chat.AuditWrite = line => thinkingAudits.Add(line);
+        chat.IdleTimeout = TimeSpan.FromMilliseconds(300);
+        try
+        {
+            chat.ClientOverride = (_, _) => new ReasoningTrickleChatClient(
+                5, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(50), "想完了");
+            chat.OpenConversation(thinking.Id);
+            chat.TryEnqueueSend(thinking.Id, "要想很久的提问", null, out _);
+            await WaitForRunAsync(chat, thinking.Id);
+
+            Check(!chat.IsRunning(thinking.Id) && thinking.Messages.Count == 2
+                  && thinking.Messages[1].Text == "想完了" && thinking.Messages[1].Reasoning is { Length: > 0 }
+                  && thinkingAudits.TrueForAll(line => !line.Contains("Idle timeout", StringComparison.Ordinal)),
+                "持续到达的思考块掐不断空闲超时，思考与正文都落库（实际 " + thinking.Messages.Count
+                + " 条，思考 " + (thinking.Messages[1].Reasoning?.Length ?? 0) + " 字）");
+
+            // The window is now being measured from the last delta, so a single thought followed by nothing is
+            // still dead on time — and the audit line says so in the one number that tells a stalled endpoint
+            // apart from a thinking model.
+            thinkingAudits.Clear();
+            chat.ClientOverride = (_, _) => new ReasoningTrickleChatClient(
+                1, TimeSpan.Zero, TimeSpan.FromMilliseconds(800));
+            chat.OpenConversation(stalled.Id);
+            chat.TryEnqueueSend(stalled.Id, "想到一半断了", null, out _);
+            await WaitForRunAsync(chat, stalled.Id);
+
+            Check(!chat.IsRunning(stalled.Id) && panel.LastNoticeTextForCheck == HubStrings.Get("ChatTimedOut"),
+                "思考块之后真静默照样超时，计时从最后一块算而不是从段首算（实际「"
+                + panel.LastNoticeTextForCheck + "」）");
+            var idleLine = thinkingAudits.Find(line => line.Contains("Idle timeout", StringComparison.Ordinal));
+            Check(idleLine is not null
+                  && idleLine.Contains("the 0.3s inactivity deadline", StringComparison.Ordinal)
+                  && idleLine.Contains(" chars of reasoning and 0 of text buffered", StringComparison.Ordinal),
+                "空闲超时在日志里说清窗口与当时攒下的内容，事后能分网络与模型（实际「" + (idleLine ?? "无") + "」）");
+        }
+        finally
+        {
+            chat.AuditWrite = savedAuditWrite;
+            chat.IdleTimeout = savedIdleTimeoutValue;
+        }
+
         // What the model said before asking for a tool belongs ahead of that call in the record; a replay that
         // puts the words after the result is a transcript nobody can read back.
         var ordered = chat.StartConversation();
@@ -7641,6 +7690,45 @@ public partial class ShellCheckWindow : Window
         {
             await Task.Delay(silence, cancellationToken);
             yield break;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    /// <summary>Thinking that keeps arriving, then a chosen length of silence. No existing fake can take this
+    /// shape: <see cref="ScriptedChatClient"/> yields prose, which is exactly the content type that already
+    /// re-armed the deadline, and its raw-content injections land back to back with no gap between them — so
+    /// nothing about them can span an inactivity window. The delta count and both delays belong to the check.
+    ///
+    /// <para>Keep the total inside the pump's ceiling (a few hundred milliseconds): a stream that outlives
+    /// <see cref="WaitForRunAsync"/> does not fail loudly, it fails as a missing notice.</para></summary>
+    private sealed class ReasoningTrickleChatClient(
+        int deltas, TimeSpan gap, TimeSpan silence, string? text = null) : Microsoft.Extensions.AI.IChatClient
+    {
+        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
+            System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("The assistant check only uses the streaming path.");
+
+        public async System.Collections.Generic.IAsyncEnumerable<Microsoft.Extensions.AI.ChatResponseUpdate> GetStreamingResponseAsync(
+            System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            for (var index = 0; index < deltas; index++)
+            {
+                await Task.Delay(gap, cancellationToken);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant,
+                    [new Microsoft.Extensions.AI.TextReasoningContent($"思考片段 {index + 1}")]);
+            }
+
+            await Task.Delay(silence, cancellationToken);
+            if (text is { Length: > 0 })
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant, text);
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;

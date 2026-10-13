@@ -2801,11 +2801,13 @@ public sealed class ChatWorkspace : IDisposable
     /// </summary>
     internal const int MaxConcurrentRuns = 3;
 
-    /// <summary>How long a run may go without producing anything. It is an inactivity deadline rather than a
-    /// total one: a reply that keeps arriving is not overdue however long it takes, and a stream that stopped
-    /// arriving is dead at any elapsed time. It measures the stream alone — the deadline stands down while a tool
-    /// owns the run, where the tool's own silence bound judges that stretch and answers with output the model
-    /// reads instead of a notice — and nothing re-arms it while a call waits for a person.</summary>
+    /// <summary>How long a run may go without the endpoint sending anything. It is an inactivity deadline rather
+    /// than a total one: a reply that keeps arriving is not overdue however long it takes, and a stream that
+    /// stopped arriving is dead at any elapsed time. "Anything" is every frame the pipeline is handed — which is
+    /// what makes a model that thinks for two minutes in reasoning deltas a working session rather than a stalled
+    /// one. It measures the stream alone: the deadline stands down while a tool owns the run, where the tool's own
+    /// silence bound judges that stretch and answers with output the model reads instead of a notice, and nothing
+    /// re-arms it while a call waits for a person.</summary>
     internal TimeSpan IdleTimeout = TimeSpan.FromSeconds(120);
 
     /// <summary>
@@ -4074,8 +4076,9 @@ public sealed class ChatWorkspace : IDisposable
         {
             await foreach (var chunk in StreamAsync(request.Value, run).ConfigureAwait(false))
             {
+                // No deadline re-arm beside this chunk: `StreamAsync`'s `onActivity` already re-armed it for the
+                // frame the chunk arrived in, and a text-only re-arm is what left a thinking model looking dead.
                 run.AppendText(chunk);
-                run.Touch();
                 SchedulePaint(run);
             }
 
@@ -4096,15 +4099,30 @@ public sealed class ChatWorkspace : IDisposable
         catch (OperationCanceledException)
         {
             var stopped = run.StopRequested;
+            // The one failure nobody can diagnose from the sentence they are handed: "timed out" covers a dead
+            // network, an endpoint that buffers the whole thinking block, and a model that is simply slow. What
+            // was buffered when the deadline fired says which — reasoning with no text is a stream that was
+            // alive, nothing at all is a stream that stopped.
+            Audit(run.ConversationId, stopped
+                ? $"Cancelled by the user after {run.Elapsed.TotalSeconds:0}s on {request.Value.ModelName}"
+                : $"Idle timeout: the {run.IdleWindow.TotalSeconds:0.###}s inactivity deadline fired on "
+                  + $"{request.Value.ModelName} ({request.Value.Provider.Name}) with "
+                  + $"{run.LiveReasoning.Length} chars of reasoning and {run.LiveText.Length} of text buffered");
             return (stopped ? RunResult.Cancelled : RunResult.TimedOut,
                 stopped ? "ChatCancelled" : "ChatTimedOut", !stopped, null);
         }
-        catch (TimeoutException)
+        catch (TimeoutException ex)
         {
+            // A timeout the client reported rather than this run's deadline: the two blame different things, so
+            // the record has to say which one ran out.
+            Audit(run.ConversationId,
+                $"Timeout reported by the client on {request.Value.ModelName}: {ex.Message}");
             return (RunResult.TimedOut, "ChatTimedOut", true, null);
         }
         catch (System.Net.Http.HttpRequestException ex)
         {
+            Audit(run.ConversationId,
+                $"Connection failed to {request.Value.Provider.Name} ({request.Value.ModelName}): {ex.Message}");
             return (RunResult.Failed, "ChatConnectionFailed", true, ex.Message);
         }
         catch (Exception ex) when (ChatPipeline.RateLimited(ex.Message))
@@ -4151,6 +4169,10 @@ public sealed class ChatWorkspace : IDisposable
                 () => _sessions.Peek(run.ConversationId)?.ReasoningEffort).ConfigureAwait(false);
             var refused = ModelCatalog.RejectedEffortOf(ex.Message, [effortAsked]);
             if (refused is not null) await NoteReasoningEvidenceAsync(run.ConversationId, refused, rejected: true);
+            // The catch-all is where a log earns its keep: everything the narrower branches did not name arrives
+            // here, and the type is the part the person cannot see on screen.
+            Audit(run.ConversationId,
+                $"Request failed on {request.Value.ModelName}: {ex.GetType().Name}: {ex.Message}");
             return (RunResult.Failed, "ChatFailed", true, ex.Message);
         }
         finally
@@ -4603,6 +4625,11 @@ public sealed class ChatWorkspace : IDisposable
                 // one label.
                 RaiseOnUi(() => ServerSearchChanged?.Invoke(run.ConversationId, notice));
             },
+            // The deadline measures silence, not the absence of prose. This is the one re-arm a stream that is
+            // talking without yet saying anything gets: reasoning deltas, a tool call's arguments, a search the
+            // endpoint is running. Touch short-circuits for a parked or tool-owning run, so nothing here can
+            // restart the clock on work the human or the tool is deciding.
+            onActivity: () => run.Touch(),
             // A steer waits for the next request the loop makes rather than cancelling the one in flight. The loop
             // has just been handed a tool result at that point, so a user message added there is a shape every
             // bridge accepts, and the answer the person was reading is not thrown away to make the point a few

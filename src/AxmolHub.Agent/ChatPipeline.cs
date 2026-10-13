@@ -125,6 +125,10 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         // A search the endpoint ran for itself, reported as it arrives. Same thread rule as the two above: this
         // fires inside the stream, on whatever thread the response is being read on.
         Action<ServerSearchNotice>? onServerSearch = null,
+        // The endpoint moved bytes. This fires for every response frame, not only for the content types the
+        // switch below understands: a caller's inactivity deadline that is re-armed by that switch would
+        // mistake a stream it has never seen for a stream that stopped.
+        Action? onActivity = null,
         // A steer, asked for once per request the tool loop makes. It is a message the person added while the
         // answer was going, and the loop is where it belongs: see ToolLoopContextGuard.PendingInterjection.
         Func<Task<ChatMessage?>>? pendingInterjection = null,
@@ -274,6 +278,11 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         await foreach (var update in effectiveClient.GetStreamingResponseAsync(messages, options, cancellationToken))
         {
             if (parked.Parked) break;
+            // Once per frame rather than per content item: a frame is what moved bytes off the wire, and
+            // re-arming a deadline resets a timer. Ahead of the switch below on purpose — a content type this
+            // file has never seen is still activity, and treating it as silence is how a thinking model that
+            // streams reasoning was read as a dead stream.
+            onActivity?.Invoke();
             foreach (var content in update.Contents)
             {
                 if (content is TextContent text && text.Text.Length > 0)

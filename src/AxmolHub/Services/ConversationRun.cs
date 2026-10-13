@@ -114,6 +114,10 @@ internal sealed class ConversationRun : IDisposable
         }
     }
 
+    /// <summary>The silence a stream is allowed before this run counts as dead. Read where a failure gets named:
+    /// an audit line saying a run timed out is worth nothing unless it also says what it was owed.</summary>
+    internal TimeSpan IdleWindow => _idleTimeout;
+
     /// <summary>Banks the stretch just run and stops the clock. Called when the run parks on an approval and when
     /// it finishes, so the last number a viewer reads is the one the answer actually earned.</summary>
     private void FreezeClock()
@@ -192,9 +196,9 @@ internal sealed class ConversationRun : IDisposable
 
     internal bool SpinStopped => Volatile.Read(ref _spinStopped);
 
-    /// <summary>Re-arms the inactivity deadline for the next chunk. A parked run has no stream, so nothing
-    /// re-arms it — waiting for a human is not the same as stalling — and neither does a tool that owns the run,
-    /// which is silent by nature; <see cref="EndTool"/> restarts the count once the tool comes back.</summary>
+    /// <summary>Re-arms the inactivity deadline for the next frame of output. A parked run has no stream, so
+    /// nothing re-arms it — waiting for a human is not the same as stalling — and neither does a tool that owns
+    /// the run, which is silent by nature; <see cref="EndTool"/> restarts the count once the tool comes back.</summary>
     internal void Touch()
     {
         if (_parked || Volatile.Read(ref _toolRunning) != 0) return;
