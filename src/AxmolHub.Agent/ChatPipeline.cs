@@ -25,16 +25,6 @@ namespace AxmolHub.Agent;
 /// </summary>
 public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning = null)
 {
-    /// <summary>How many tool round-trips one user message may cost. Reaching it is not an error: the client
-    /// stops offering tools and the model answers with what it has, which is the behaviour the guardrails
-    /// promise — stop and hand the log back rather than loop.
-    ///
-    /// Sixteen, not the eight a demo run needed: one ordinary debugging cycle — search, read the file, edit it,
-    /// build, read the compiler's answer — is five round-trips, and a request that touches two files before a
-    /// green build is two of those cycles. Stopping at eight cut the model off before it could verify its own
-    /// work, which is the one thing an agent has to be allowed to do.</summary>
-    public const int MaximumToolIterations = 16;
-
     /// <summary>A tool that keeps failing is a stuck loop, not a hard problem; three in a row ends the turn.</summary>
     public const int MaximumConsecutiveToolErrors = 3;
 
@@ -109,6 +99,13 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         string? systemPrompt = null,
         string? reasoningEffort = null,
         IReadOnlyList<AITool>? tools = null,
+        // Declared for their schema, executed by nothing in this call. Compaction is the caller: its transcript
+        // is saturated with tool calls, and a request over one that declares nothing is the shape a model
+        // answers in its native call markup instead of prose — a compaction summary came back exactly that way
+        // once. With the schemas on the wire the endpoint always has one to decode against; without the
+        // invoking client below, a call that comes back leaves no text, which the caller refuses as an empty
+        // summary rather than running anything.
+        IReadOnlyList<AITool>? declaredTools = null,
         ToolGate? gate = null,
         Func<ToolCallInfo, Task>? onToolStarted = null,
         Func<ToolCallInfo, string, bool, Task>? onToolCompleted = null,
@@ -131,7 +128,10 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         // capped against stays the model's own — otherwise switching from ask to agent mode would silently
         // shrink every tool result as well as every turn.
         var window = ContextBudget.For(provider, modelName);
-        var schemaTokens = ToolSchemaTokens(tools);
+        // Ask hands an empty list rather than null, so a `??` here would drop the declarations it is carrying
+        // for their schema — the count is what chooses, not the reference.
+        var wireTools = tools is { Count: > 0 } ? tools : declaredTools;
+        var schemaTokens = ToolSchemaTokens(wireTools);
         var budget = Math.Max(MinimumConversationBudgetTokens, window.ConversationRoom - schemaTokens);
         var trimmed = ContextTrimmer.Trim(history, budget, systemPrompt);
         var messages = ToChatMessages(trimmed, images);
@@ -140,8 +140,11 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         // measuring a growing loop against the first request's size would calibrate the wrong number.
         var firstRequestEstimate = trimmed.Sum(ContextTrimmer.EstimateTokens) + schemaTokens;
         var observed = new ContextReport();
-        var options = BuildOptions(provider, modelName, reasoningEffort, tools, maxOutputTokens);
+        var options = BuildOptions(provider, modelName, reasoningEffort, wireTools, maxOutputTokens);
         var parked = new GateState();
+        // Refusals of one signature within this run, so a second one ends the turn instead of buying a third
+        // paid round. Per SendAsync, which is per segment: a new question gets a fresh chance.
+        var spinRefusals = new Dictionary<string, int>(StringComparer.Ordinal);
         // The chain of thought behind the response now streaming, and whether a call has already been filed from
         // it. The invoker runs after a response has finished streaming and before the next request goes out, so
         // every call of one response reads the same block, and the first reasoning chunk that arrives afterwards
@@ -166,7 +169,15 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
             {
                 AllowConcurrentInvocation = false,
                 TerminateOnUnknownCalls = true,
-                MaximumIterationsPerRequest = MaximumToolIterations,
+                // No cap, deliberately: when this counter runs out the library sends one last request with the
+                // tool declarations stripped, and a model still mid-investigation answers that tool-less
+                // request by writing its native call markup into prose — the DSML leak, measured on the wire at
+                // request 17 of a 16-round run, three captures running. The setter rejects 0 and negatives
+                // (probed against the shipped assembly), so int.MaxValue is how "never" is spelled; the loop
+                // ends when the model stops asking for tools instead, and a runaway is bounded by cancellation,
+                // MaximumConsecutiveToolErrors, and the context budget. The error path was probed too: it
+                // throws with the declarations still on, it does not strip them.
+                MaximumIterationsPerRequest = int.MaxValue,
                 MaximumConsecutiveErrorsPerRequest = MaximumConsecutiveToolErrors,
             };
             functionClient.FunctionInvoker = async (context, token) =>
@@ -177,6 +188,33 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                     thinking.Length > 0 ? thinking.ToString() : null);
                 thinkingSpent = true;
                 if (onToolStarted is not null) await onToolStarted(info).ConfigureAwait(false);
+
+                // Before the gate, not after: a spinning call must not cost a person an approval card, and the
+                // refusal it gets instead is itself the record. With the round cap gone this is the one thing
+                // standing between a long task and an unbounded paid loop — see ToolSpinGuard for the exemptions
+                // that keep it off correct work.
+                if (ToolSpinGuard.RefusalFor(call.Name, arguments, context.Messages,
+                        guard?.ElidedCallIds) is { } spinRefusal)
+                {
+                    var signature = call.Name + "\n" + ToolSpinGuard.NormalizeArguments(arguments);
+                    var refusals = spinRefusals.GetValueOrDefault(signature) + 1;
+                    spinRefusals[signature] = refusals;
+                    if (refusals >= 2)
+                    {
+                        // The model asked again after being told to stop asking. One refusal is information;
+                        // a second is a loop, and the only honest move left is to end the turn rather than pay
+                        // for an identical round. Terminate is the invoking client's own stop — the loop
+                        // finishes this invocation and makes no further request. Measured against the shipped
+                        // assembly: two invocations, two requests, clean end.
+                        context.Terminate = true;
+                        spinRefusal = ToolSpinGuard.TerminationMarker + " the model asked for this same call "
+                                       + "again after the refusal above, so this turn is ending rather than "
+                                       + "paying for another identical round. " + spinRefusal;
+                    }
+                    if (onToolCompleted is not null)
+                        await onToolCompleted(info, spinRefusal, true).ConfigureAwait(false);
+                    return spinRefusal;
+                }
 
                 var outcome = gate is null
                     ? ToolGateOutcome.Allow
@@ -365,23 +403,7 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         var messages = new List<ChatMessage>(turns.Count);
         foreach (var turn in turns)
         {
-            // A tool call the model wrote out as prose must not go back out as an example of how to answer. It
-            // arrived as an assistant message, so replaying it teaches the next request to keep writing markup,
-            // and in one real session it went further: the review card mistook it for a plan, a person approved
-            // it, and it came back a second time in the user's own voice. The transcript keeps the bytes exactly
-            // as they arrived — this is the same boundary rule the captured frame below and InjectedFrom follow.
-            var wire = turn;
-            if (ControlTokens.IsLeakedCall(turn.Text))
-            {
-                var kept = ControlTokens.Strip(turn.Text);
-                // Taking the whole turn away is only safe when nothing else points at it. An assistant turn
-                // carrying a call, or the tool result answering one, would orphan its pair, and the endpoint
-                // answers that with a 400 rather than with a degraded reply.
-                if (kept.Length == 0 && turn.ToolCallId is not { Length: > 0 }) continue;
-                wire = turn with { Text = kept };
-            }
-
-            messages.Add(ToChatMessage(wire, images));
+            messages.Add(ToChatMessage(turn, images));
 
             // A frame the assistant captured itself is recorded on the tool result's turn, and a `tool` message
             // cannot carry image content in chat/completions — so the picture goes to the model as the user-role

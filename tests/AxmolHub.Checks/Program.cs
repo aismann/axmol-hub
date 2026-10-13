@@ -1234,26 +1234,6 @@ if (args.Contains("--check-ai-sessions"))
         throw new Exception("A workspace group's label is not the folder it names.");
     Console.WriteLine("PASS: workspace canonical keys fold casing and separators into one spelling per directory.");
 
-    // A thinking model that writes its tool call out as prose is a real capture, not a hypothesis: five turns of
-    // one DeepSeek session each named a Hub tool and none of them ran. The fixture carries the actual bytes — the
-    // bars are U+FF5C fullwidth, and a test that typed the ASCII pipe a Markdown table is made of would pass
-    // against a shape nobody sends. Both forms have to be read: the call opens with "<｜｜DSML｜｜ invoke" and
-    // closes with "</｜｜DSML｜｜ invoke>", and a detector that knew only the opening left the closing standing.
-    const string Dsml = "<｜｜DSML｜｜";
-    var leakedToolCall = "让我先确认这件事记在哪。\n\n"
-                         + $"{Dsml} calls>\n{Dsml} invoke name=\"search_text\">\n"
-                         + $"{Dsml} parameter name=\"path\">.agents/memory</{Dsml[1..]} parameter>\n"
-                         + $"</{Dsml[1..]} invoke>\n</{Dsml[1..]} calls>";
-    if (!ControlTokens.IsLeakedCall(leakedToolCall))
-        throw new Exception("A tool call written out in the model's own special token read as ordinary prose.");
-    if (ControlTokens.IsLeakedCall("| Name | Value |\n| --- | --- |\n| answer | 42 |"))
-        throw new Exception("An ordinary Markdown table was mistaken for a leaked tool call.");
-    if (ControlTokens.IsLeakedCall("Compare <b> and </b> in HTML, and a＜fullwidth＞example."))
-        throw new Exception("Ordinary angle brackets in prose were mistaken for a leaked tool call.");
-    if (ControlTokens.Strip(leakedToolCall) != "让我先确认这件事记在哪。")
-        throw new Exception("Stripping a leaked tool call took the sentence the model actually meant to say, or left its markup behind.");
-    Console.WriteLine("PASS: a leaked tool call is recognised by its token shape and stripped without losing the prose.");
-
     var workspaceSession = Conversation.Create("orcarouter");
     workspaceSession.Append(ChatTurn.User("works inside a folder"));
     workspaceSession.WorkspaceRoot = workspaceFolder;
@@ -2920,14 +2900,13 @@ if (args.Contains("--check-ai-context"))
         throw new Exception("The loop's estimate did not price the chain of thought (expected 2 elided with it, 0 without).");
     Console.WriteLine("PASS: a thinking model's reasoning is priced inside the tool loop, not only on the turn.");
 
-    // The round budget is a floor, not a magic number: one debug cycle is search, read, edit, build, read what the
-    // compiler said — five rounds — and a run that cannot fit two of those stops the model before it has verified
-    // its own change, which is the one thing an agent has to be allowed to finish.
-    if (ChatPipeline.MaximumToolIterations < 11)
-        throw new Exception($"Two debug cycles do not fit in {ChatPipeline.MaximumToolIterations} tool rounds.");
-
     // ── The loop ends on its own, and stays inside the window while it runs ──
-    var insistent = new InsistentToolClient();
+    // It has to run past both numbers that used to end it by force: the library's own default of 40 and the
+    // 16 this app once set. Reaching either sends one last request with the tool declarations taken off, and
+    // a model still mid-investigation answers a request with no schema by writing its call into prose — the
+    // DSML leak, measured on the wire at request 17 of a 16-round run. The only legitimate ending is the
+    // model answering without asking for a tool, which this client does at round 45.
+    var insistent = new InsistentToolClient { RoundsBeforeAnswering = 45 };
     // A threshold test owns its threshold: the fixture declares the window it is testing against rather than
     // inheriting whatever the fallback for an undescribed model happens to be this release.
     var probeProvider = new ModelProvider
@@ -2947,20 +2926,21 @@ if (args.Contains("--check-ai-context"))
     {
         capFailure = exception.GetType().Name + ": " + exception.Message;
     }
-    if (capFailure is not null) throw new Exception($"The iteration cap surfaced as an exception instead of an answer: {capFailure}");
-    if (insistent.CallCount != ChatPipeline.MaximumToolIterations + 1)
-        throw new Exception($"The loop made {insistent.CallCount} requests instead of {ChatPipeline.MaximumToolIterations} tool rounds plus one final answer.");
-    if (answered.Length == 0) throw new Exception("The loop hit its cap without leaving the user any text.");
+    if (capFailure is not null) throw new Exception($"The tool loop surfaced as an exception instead of an answer: {capFailure}");
+    if (insistent.CallCount != 46)
+        throw new Exception($"The loop made {insistent.CallCount} requests instead of ending on the model's own answer at round 46.");
+    if (answered.Length == 0) throw new Exception("The loop ended without leaving the user any text.");
     if (insistent.LastOptions?.AllowMultipleToolCalls != false)
         throw new Exception("A request went out still allowing several tool calls in one response.");
-    if (insistent.LastOptions?.Tools is not null)
-        throw new Exception("The final request still offered tools, so the model could ask for another round.");
+    if (insistent.LastOptions?.Tools is not { Count: > 0 })
+        throw new Exception("The final request went out with the tool declarations taken off — the shape that turns "
+                            + "a model still wanting to call into markup written into its answer.");
 
     // Every round returned 20 000 characters against the 8192-token window this fixture declares, so by the last
     // request the older results must have been elided — with the messages themselves still there, pairing intact.
     var lastResults = insistent.LastRequest.SelectMany(message => message.Contents).OfType<FunctionResultContent>()
         .Select(result => result.Result?.ToString() ?? "").ToList();
-    if (lastResults.Count < ChatPipeline.MaximumToolIterations)
+    if (lastResults.Count < 45)
         throw new Exception($"The final request carried only {lastResults.Count} tool results.");
     if (!lastResults.Any(text => text.Contains("elided")) || !lastResults.Any(text => !text.Contains("elided")))
         throw new Exception("The loop either elided nothing or elided the result it is reasoning about.");
@@ -2969,7 +2949,125 @@ if (args.Contains("--check-ai-context"))
     if (!insistent.LastRequest.SelectMany(message => message.Contents).OfType<FunctionCallContent>().Select(call => call.CallId)
              .SequenceEqual(insistent.LastRequest.SelectMany(message => message.Contents).OfType<FunctionResultContent>().Select(result => result.CallId)))
         throw new Exception("The loop's own request lost the call/result pairing.");
-    Console.WriteLine("PASS: the tool loop stops at its cap, caps every result, and elides the old ones.");
+    Console.WriteLine("PASS: the tool loop ends on the model's own answer, with the declarations on every request, "
+                      + "capping every result and eliding the old ones.");
+
+    // ── A loop that repeats itself instead of working is stopped ──
+    // With no round cap, this and the error counter are what stand between a long task and an unbounded paid
+    // loop. The verdict is read from the transcript the loop itself accumulated, so the probe here is the pure
+    // function over message lists: the pipeline wiring around it is one line in the invoker.
+    static ChatMessage SpinCall(string callId, string tool, string json)
+        => new(ChatRole.Assistant,
+            [new FunctionCallContent(callId, tool, JsonSerializer.Deserialize<Dictionary<string, object?>>(json))]);
+    static ChatMessage SpinResult(string callId, string text)
+        => new(ChatRole.Tool, [new FunctionResultContent(callId, text)]);
+    static List<ChatMessage> SpinHistory(params (string CallId, string Tool, string Json, string Result)[] runs)
+    {
+        var list = new List<ChatMessage> { new(ChatRole.User, "调查") };
+        foreach (var (callId, tool, json, result) in runs)
+        {
+            list.Add(SpinCall(callId, tool, json));
+            list.Add(SpinResult(callId, result));
+        }
+        return list;
+    }
+
+    // Key order is not intent: the same call with its arguments spelled in another order is the same call.
+    if (ToolSpinGuard.NormalizeArguments("""{"path":"a.cpp","deep":true}""")
+        != ToolSpinGuard.NormalizeArguments("""{"deep":true,"path":"a.cpp"}"""))
+        throw new Exception("Argument normalization made key order look like a different call.");
+    var probeRun = SpinHistory(("c1", "read_file", """{"path":"a.cpp"}""", new string('x', 2000)));
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", probeRun) is not null)
+        throw new Exception("A verify re-read after one run was refused; call plus verify is correct work.");
+    probeRun.Add(SpinCall("c2", "read_file", """{"path":"a.cpp"}"""));
+    probeRun.Add(SpinResult("c2", new string('x', 2000)));
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", probeRun) is null)
+        throw new Exception("A third identical run was allowed; that is the shape that used to run forever.");
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp", "lines":"1-10"}""", probeRun) is not null)
+        throw new Exception("A call with different arguments was refused as a repeat of another call.");
+    // Re-reading a file you just edited is verification: a successful state-changing call in between resets.
+    // Two identical reads sit before the write; one after it — so this next call is the second since the write
+    // and allowed, while without the reset it would be the fourth and refused.
+    var edited = SpinHistory(("c1", "read_file", """{"path":"a.cpp"}""", new string('x', 2000)),
+        ("c2", "read_file", """{"path":"a.cpp"}""", new string('x', 2000)),
+        ("c3", "file_write", """{"path":"a.cpp","content":"int main(){}"}""", "Edited a.cpp: 1 line"),
+        ("c4", "read_file", """{"path":"a.cpp"}""", new string('x', 2000)));
+    edited.Add(SpinCall("c5", "read_file", """{"path":"a.cpp"}"""));
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", edited) is not null)
+        throw new Exception("A re-read after a write was refused as a spin; the write reset the window.");
+    // A refused approval and a failed tool did not move the world either — they must not reset it.
+    var denied = SpinHistory(("c1", "run_command", """{"command":"rm x"}""", ToolApprovalResults.Denied),
+        ("c2", "run_command", """{"command":"rm x"}""", ToolApprovalResults.Denied));
+    denied.Add(SpinCall("c3", "run_command", """{"command":"rm x"}"""));
+    if (ToolSpinGuard.RefusalFor("run_command", """{"command":"rm x"}""", denied) is null)
+        throw new Exception("A third denied attempt was allowed; a refusal is not a state change.");
+    // An elided result is Hub asking for the re-call — the placeholder says so in its own words.
+    var elidedHistory = SpinHistory(("c1", "read_file", """{"path":"a.cpp"}""", "old content"),
+        ("c2", "read_file", """{"path":"a.cpp"}""", $"[elided: 2000 characters of tool output — call the tool again if you need this]"));
+    elidedHistory.Add(SpinCall("c3", "read_file", """{"path":"a.cpp"}"""));
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", elidedHistory) is not null)
+        throw new Exception("A re-read after an elision was refused as a spin; Hub asked for that call.");
+    // The invoking client's own list keeps the original bytes, so the guard reports elided ids for it — and an
+    // unreported elision must not invent the exemption, or every repeat becomes legal by claiming elided.
+    var elidedReport = SpinHistory(("c1", "read_file", """{"path":"a.cpp"}""", new string('x', 2000)),
+        ("c2", "read_file", """{"path":"a.cpp"}""", new string('x', 2000)));
+    elidedReport.Add(SpinCall("c3", "read_file", """{"path":"a.cpp"}"""));
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", elidedReport, new HashSet<string> { "c2" })
+        is not null)
+        throw new Exception("A re-read whose earlier result the guard reported as elided was refused anyway.");
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", elidedReport, new HashSet<string>()) is null)
+        throw new Exception("An unreported elision invented the exemption; two live runs are two live runs.");
+    // Alternating A→B→A→B is caught too: the window counts occurrences of one signature, not consecutive
+    // runs, so the fifth call (the third A) is refused. Pinned because a reviewer read this as uncatchable —
+    // exact-match over a window is what makes the cycle hit the same wall every rotation does.
+    var alternating = SpinHistory(("a1", "read_file", """{"path":"a.cpp"}""", "old"),
+        ("b1", "search_text", """{"pattern":"x"}""", "hit"),
+        ("a2", "read_file", """{"path":"a.cpp"}""", "old"),
+        ("b2", "search_text", """{"pattern":"x"}""", "hit"));
+    alternating.Add(SpinCall("a3", "read_file", """{"path":"a.cpp"}"""));
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", alternating) is null)
+        throw new Exception("An alternating A-B cycle slipped through; the window counts occurrences, not runs.");
+    // Beyond the window, repetitions were part of working through the problem, not the problem.
+    var distant = new List<ChatMessage> { new(ChatRole.User, "调查") };
+    for (var round = 0; round < ToolSpinGuard.WindowSize; round++)
+    {
+        distant.Add(SpinCall($"w{round}", "read_file", """{"path":"other.cpp"}"""));
+        distant.Add(SpinResult($"w{round}", new string('x', 100)));
+    }
+    distant.Add(SpinCall("s1", "read_file", """{"path":"a.cpp"}"""));
+    distant.Add(SpinResult("s1", "old"));
+    if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", distant) is not null)
+        throw new Exception("A lone repeat older than the window was refused as a spin.");
+    Console.WriteLine("PASS: three identical runs are refused, and writes, denials, elisions and the window "
+                      + "keep correct work off the refusal.");
+
+    // ── The refusal that ends the turn, end to end through the real invoking client ──
+    // A model that asks for the same call every round gets two executions, one plain refusal, and then the
+    // loop is terminated rather than bought a third identical round. Requests are bounded at four; the tool
+    // ran twice; the last result says the turn is stopping, which is what the shell reads to name the reason.
+    var spinner = new InsistentToolClient { SameCallEveryRound = true };
+    var executions = 0;
+    var spinTool = AIFunctionFactory.Create((Func<string>)(() => { executions++; return "ok"; }),
+        new AIFunctionFactoryOptions { Name = "get_projects", Description = "probe" });
+    var spinAnswered = new StringBuilder();
+    // The termination sentence is the last result of the run — no request carries it, because no request
+    // follows. The callback is the only place it can be read from.
+    var spinResults = new List<string>();
+    await foreach (var chunk in new ChatPipeline(spinner)
+                       .SendAsync(probeProvider, [ChatTurn.User("一直要同一个调用")], tools: [spinTool],
+                           onToolCompleted: (_, result, _) => { spinResults.Add(result); return Task.CompletedTask; }))
+        spinAnswered.Append(chunk);
+    if (spinner.CallCount != 4)
+        throw new Exception($"A spinning model was bought {spinner.CallCount} requests; the bound is two "
+                            + "executions, one refusal, one termination.");
+    if (executions != 2)
+        throw new Exception($"The spinning call ran {executions} times; it must run exactly twice before the "
+                            + "refusal.");
+    if (!spinResults.Any(text => text.Contains(ToolSpinGuard.RefusalMarker, StringComparison.Ordinal))
+        || !spinResults.Any(text => text.StartsWith(ToolSpinGuard.TerminationMarker, StringComparison.Ordinal)))
+        throw new Exception("The spin run produced neither the refusal nor the termination sentence.");
+    Console.WriteLine("PASS: a spinning model gets two executions, one refusal, then the turn — four requests, "
+                      + "no more.");
     return;
 }
 if (args.Contains("--check-ai-workspace"))
@@ -7540,6 +7638,14 @@ sealed class InsistentToolClient : IChatClient
     public ChatOptions? LastOptions { get; private set; }
     public IList<ChatMessage> LastRequest { get; private set; } = [];
 
+    /// <summary>How many tool calls this client returns before it answers in text — the model deciding the
+    /// investigation is done, which is the only thing that ends the loop now that there is no round cap.</summary>
+    public int RoundsBeforeAnswering { get; init; } = int.MaxValue;
+
+    /// <summary>Ask for the same call every round instead of varying the argument. This is the spin shape, and
+    /// it is what the spin guard's refusal and termination are measured against end to end.</summary>
+    public bool SameCallEveryRound { get; init; }
+
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("Checks only use the streaming path.");
@@ -7552,9 +7658,19 @@ sealed class InsistentToolClient : IChatClient
         CallCount++;
         LastOptions = options;
         LastRequest = messages.ToList();
+        if (CallCount > RoundsBeforeAnswering)
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("查完了，结论如下。")]);
+            yield break;
+        }
         yield return new ChatResponseUpdate(ChatRole.Assistant, new List<AIContent>
         {
-            new FunctionCallContent($"call-{CallCount}", "get_projects", new Dictionary<string, object?>()),
+            // A distinct argument per round on purpose when the fixture is investigating: the spin guard
+            // refuses an identical repeat, and that probe sets SameCallEveryRound to ask for the other thing.
+            new FunctionCallContent($"call-{CallCount}", "get_projects",
+                SameCallEveryRound
+                    ? new Dictionary<string, object?>()
+                    : new Dictionary<string, object?> { ["round"] = CallCount }),
             new TextContent($"第 {CallCount} 轮"),
         });
         await Task.Yield();

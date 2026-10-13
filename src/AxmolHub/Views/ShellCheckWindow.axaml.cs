@@ -526,12 +526,6 @@ public partial class ShellCheckWindow : Window
         // ── A tool call that arrived as prose ──
         // The fixture lives with the plan check below, which needs the same bytes; see <see cref="LeakedCall"/>.
         var leakedCall = LeakedCallAfter("让我先确认「计划任务」到底记在哪。");
-        Check(ControlTokens.IsLeakedCall(leakedCall)
-              && !ControlTokens.IsLeakedCall("| Name | Value |\n| --- | --- |\n| answer | 42 |")
-              && !ControlTokens.IsLeakedCall("普通的中文，加上 <tag> 标记，都不算泄漏"),
-            "控制标记检测认的是这套 token 的形状，真表格与正常尖括号都不误伤");
-        Check(ControlTokens.Strip(leakedCall) == "让我先确认「计划任务」到底记在哪。",
-            "剥离只带走那几行标记，模型真正说的那句话留下");
 
         var fixtureSession = shell.Chat.ActiveConversation?.Id;
         var leakedSession = shell.Chat.StartConversation();
@@ -540,28 +534,20 @@ public partial class ShellCheckWindow : Window
         await panel.SendForCheckAsync("查一下计划任务记在哪");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        // The complaint was never that the reply looked odd — it was that a wall of pipes went into the Markdown
-        // engine and came back a bordered grid. So the text is on screen and no viewer was ever handed it.
-        Check(panel.FlowText.Contains("search_text", StringComparison.Ordinal)
-              && !panel.HasMarkdownHolding("search_text"),
-            "泄漏的工具调用按原文呈现，不再被 Markdown 引擎排成带边框的表格");
-        Check(panel.LastNoticeTextForCheck?.Contains(HubStrings.Get("ChatToolCallLeaked"), StringComparison.Ordinal) == true,
-            "模型把调用写成正文时，状态条说清这次调用没有执行（实际提示 "
-            + (panel.LastNoticeTextForCheck ?? "（没有提示）") + "）");
-        // The next request is the one that decides whether this stays a one-off. A leaked turn replayed as an
-        // assistant message reads as "this is how you answer here", and in one real session it is exactly what
-        // made the same call come back four times. The transcript still holds the bytes as they arrived — that
-        // is what preserved the evidence — so what is asserted is the pair: clean on the wire, untouched on disk.
+        // The reply arrived as markup and stays in the transcript exactly as it arrived. What keeps that a
+        // one-off is the wire rather than a scrubber: every request of a tool session carries its declarations,
+        // so the endpoint always has a schema to decode against and no request is ever the tool-less shape a
+        // thinking model answers in its native markup. The request after the leaked turn is the one that proves it.
         await panel.SendForCheckAsync("那再看一眼别的地方");
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(leakedClient?.LastMessages is { } replayed
-              && !replayed.Any(message => message.Text.Contains("DSML", StringComparison.Ordinal)),
-            "上一轮泄漏的标记不再回灌给模型（送到 "
+        Check(leakedClient?.LastOptions?.Tools is { Count: > 0 },
+            "泄漏轮之后的请求仍带着工具声明——会话里不存在缺 schema 的请求（实际声明 "
+            + (leakedClient?.LastOptions?.Tools?.Count ?? -1) + " 个，"
             + (leakedClient?.LastMessages?.Count ?? -1) + " 条消息）");
         Check(shell.Chat.StoredCopyForCheck(leakedSession.Id)?.Messages.Any(
                   message => message.Text.Contains("DSML", StringComparison.Ordinal)) == true,
-            "回灌洗干净了，会话文件里那一轮仍按到达时的原样存着");
+            "会话文件里那一轮仍按到达时的原样存着");
         // Put the fixture back exactly as it was: the assertions after this one read the active session and count
         // the rows in the list, so a check that leaves a session behind tests its own leftovers.
         shell.Chat.ClientOverride = null;
@@ -1315,38 +1301,35 @@ public partial class ShellCheckWindow : Window
               && compressedCopy.Messages.Count == 10,
             "摘要落盘并记录压缩边界，原始对话仍保留以供查看");
 
-        // A leaked tool call must not be able to take up residence in the summary. The summary is read by every
-        // later request, so one that carries the markup teaches the shape to the model that has to read it — and
-        // the leak starts coming back on its own. The guard sits on the write, not only on the read: a summary
-        // that is nothing but markup used to pass a length check, get stored as a success, and then strip back to
-        // nothing on every request after it — the session lost its summarized history with a counter still
-        // claiming the compaction had worked.
+        // A summarizing request runs over a transcript saturated with tool calls, and it carries the session's
+        // declarations for their schema while running nothing itself: that history with no declarations at all
+        // is the shape a model answers in its native call markup, and a stored summary of that shape would
+        // teach every request that follows. What is asserted is the declaration on the wire and a summary that
+        // reads back exactly as the model wrote it.
         var beforeLeaky = shell.Chat.ActiveConversation?.Id;
         var leaky = shell.Chat.StartConversation();
         for (var turn = 0; turn < 12; turn++)
             shell.Chat.SeedTurnForCheck(leaky.Id, turn == 5 ? leakedCall : "第 " + turn + " 条普通对话内容");
         ScriptedChatClient? leakySummarizer = null;
-        shell.Chat.ClientOverride = (_, _) => leakySummarizer = new ScriptedChatClient(["## Task\n" + leakedCall]);
+        shell.Chat.ClientOverride = (_, _) => leakySummarizer = new ScriptedChatClient(["## Task\n压缩任务的正常摘要"]);
         var leakyCompressed = await shell.Chat.CompressContextAsync(leaky.Id);
         shell.Chat.ClientOverride = null;
         var leakyCopy = shell.Chat.StoredCopyForCheck(leaky.Id);
-        Check(leakyCompressed && leakySummarizer?.LastMessages is { } handed
-              && !handed.Any(message => message.Text.Contains("DSML", StringComparison.Ordinal)),
-            "压缩请求带去的转录不含那几行标记，摘要模型学不到这个形状（送到 "
-            + (leakySummarizer?.LastMessages?.Count ?? -1) + " 条消息）");
-        Check(leakyCopy?.ContextSummary == "## Task\n让我先确认「计划任务」到底记在哪。"
-              && !shell.Chat.PreparedSystemPromptForCheck(leaky.Id).Contains("DSML", StringComparison.Ordinal),
-            "摘要在落盘前就只剩模型真正说过的话，标记从来没有进过会话文件（存到「"
+        Check(leakyCompressed && leakySummarizer?.LastOptions?.Tools is { Count: > 0 },
+            "压缩请求带着会话的工具声明、转录原样送去（声明 "
+            + (leakySummarizer?.LastOptions?.Tools?.Count ?? -1) + " 个，成功=" + leakyCompressed + "）");
+        Check(leakyCopy?.ContextSummary == "## Task\n压缩任务的正常摘要"
+              && shell.Chat.PreparedSystemPromptForCheck(leaky.Id).Contains("压缩任务的正常摘要", StringComparison.Ordinal),
+            "摘要按模型写的样子落盘、后续提示词读得回来（存到「"
             + (leakyCopy?.ContextSummary ?? "null") + "」）");
-        // The summary that is nothing but the call. There is no sentence left to keep, so this is the case that
-        // used to be filed as a successful compaction while carrying no history at all.
+        // An empty answer is a failed compaction, not a success: no summary text means nothing was summarized.
         var emptyLeaky = shell.Chat.StartConversation();
         for (var turn = 0; turn < 12; turn++)
             shell.Chat.SeedTurnForCheck(emptyLeaky.Id, "第 " + turn + " 条普通对话内容");
         var refusedAudits = new List<string>();
         var savedRefusedAudit = shell.Chat.AuditWrite;
         shell.Chat.AuditWrite = line => refusedAudits.Add(line);
-        shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient([LeakedCall]);
+        shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient([""]);
         var emptyLeakyCompressed = await shell.Chat.CompressContextAsync(emptyLeaky.Id);
         shell.Chat.ClientOverride = null;
         shell.Chat.AuditWrite = savedRefusedAudit;
@@ -1354,7 +1337,7 @@ public partial class ShellCheckWindow : Window
         Check(!emptyLeakyCompressed && string.IsNullOrEmpty(emptyLeakyCopy?.ContextSummary)
               && emptyLeakyCopy?.ContextSummaryThroughMessageCount == 0
               && refusedAudits.Any(line => line.Contains("Compaction refused", StringComparison.Ordinal)),
-            "只有标记的摘要被当作压缩失败拒绝掉：压缩边界不推进、不把空摘要记成一次成功，且留下一行说清为什么"
+            "空摘要被当作压缩失败拒绝掉：压缩边界不推进、不把空摘要记成一次成功，且留下一行说清为什么"
             + "（成功=" + emptyLeakyCompressed + "，边界 "
             + (emptyLeakyCopy?.ContextSummaryThroughMessageCount ?? -1) + "）");
         shell.Chat.DeleteConversation(leaky.Id);
@@ -4550,10 +4533,10 @@ public partial class ShellCheckWindow : Window
     }
 
     /// <summary>
-    /// A tool call a thinking model wrote out as prose, transcribed from a real reply. The bars are written as
+    /// A tool call a thinking model wrote out as prose, transcribed from a real reply \u2014 the shape that reached
+    /// the chat when a request asked for tool work without declaring any tool. The bars are written as
     /// <c>\uFF5C</c> rather than typed, because the byte is the whole point: a fixture that used the ASCII "|" a
-    /// Markdown table is made of would test a shape nobody sends, and would pass while the detector it tests
-    /// reads a different character.
+    /// Markdown table is made of would be a shape no gateway forwards.
     /// </summary>
     private const string Bars = "\uFF5C\uFF5CDSML\uFF5C\uFF5C";
 
@@ -4618,36 +4601,6 @@ public partial class ShellCheckWindow : Window
 
         try
         {
-            chat.ClientOverride = (_, _) => new ScriptedChatClient([LeakedCall]);
-            var leakedPlan = chat.StartConversation();
-            chat.OpenConversation(leakedPlan.Id);
-            chat.SelectMode(ChatModes.Plan);
-            chat.TryEnqueueSend(leakedPlan.Id, "请先给出计划", null, out _);
-            await WaitForIdleAsync(chat);
-            // Any non-empty answer in plan mode becomes a review card, and the card cannot tell a plan from a
-            // tool call the model wrote out as prose. Approving one used to feed that markup back as a user
-            // instruction — the one role the model trusts most — which is how a single leaked call went on
-            // answering for the rest of a real session.
-            var leakedPlanIndex = -1;
-            for (var index = leakedPlan.Messages.Count - 1; index >= 0; index--)
-                if (leakedPlan.Messages[index].PlanApprovalState == PlanApprovalStates.Pending)
-                {
-                    leakedPlanIndex = index;
-                    break;
-                }
-
-            var turnsBeforeRefusal = leakedPlan.Messages.Count;
-            var refused = !chat.TryResolvePlanApproval(leakedPlan.Id, leakedPlanIndex,
-                PlanApprovalStates.Approved, out var leakedRefusal);
-            Check(leakedPlanIndex >= 0 && refused
-                  && leakedRefusal == "ChatPlanLeakedCall"
-                  && HubStrings.Get(leakedRefusal!) != leakedRefusal
-                  && leakedPlan.Messages.Count == turnsBeforeRefusal
-                  && leakedPlan.Messages[leakedPlanIndex].PlanApprovalState == PlanApprovalStates.Pending,
-                "写成正文的工具调用不会被批准成计划：给出自己的拒绝理由、不追加任何用户指令，卡片仍留在原处等修改"
-                + "（拒绝键 " + (leakedRefusal ?? "无") + "）");
-            chat.DeleteConversation(leakedPlan.Id);
-
             ScriptedChatClient? planClient = null;
             chat.ClientOverride = (_, _) => planClient = new ScriptedChatClient([plan]);
 
@@ -5704,6 +5657,23 @@ public partial class ShellCheckWindow : Window
             Dispatcher.UIThread.RunJobs();
             Check(panel.PendingApprovalCardsForCheck == 0,
                 "「自动审批」下的工作区命令根本不弹审批卡——一条命令一张卡就是用户说的那个「总弹」");
+
+            // The same session, switched to Ask: its history now carries a real tool call, and a request over
+            // call-saturated history that declares nothing is the shape a thinking model answers in its native
+            // markup — the wrap-up leak's sibling, reachable by flipping a mode. The names the history used ride
+            // along for their schema and are executed by nothing (the invoking client is only built for `tools`),
+            // so the endpoint can decode the history while Ask still means nothing acts. The negative half —
+            // Ask over tool-free history sends nothing at all — is asserted in the search section.
+            chat.SelectMode(ChatModes.Ask);
+            chat.TryEnqueueSend(autoRunSession.Id, "那刚才那条命令是在哪个目录跑的？", null, out _);
+            await WaitForIdleAsync(chat);
+            Check(autoRunClient.LastOptions?.Tools is { Count: > 0 } askedDeclarations
+                  && askedDeclarations.Any(declaration => declaration.Name == "run_command"),
+                "切到「只问不答」后，带工具历史的会话仍带着它用过的声明供端点解码（实际 "
+                + (autoRunClient.LastOptions?.Tools is { Count: > 0 } names
+                    ? string.Join(",", names.Select(name => name.Name))
+                    : "无") + "）");
+            chat.SelectMode(ChatModes.Agent);
 
             // The same call, the same sandbox, the strict tier: it still parks. Without this line the cell above
             // could be reporting a gate that stopped working rather than a tier that moved.
@@ -6764,8 +6734,9 @@ public partial class ShellCheckWindow : Window
         var savedWindow = fixtureProvider?.MaxContextTokens;
         if (fixtureProvider is not null) fixtureProvider.MaxContextTokens = 8192;
         var session = chat.StartConversation(providerId);
-        // Five calls rather than the eight the loop allows: each one is a request, and the reply that follows is
-        // another, so the fixture has to stay inside the iteration cap it is not testing.
+        // Five calls rather than a dozen: each one is a request, and the reply that follows is another, so the
+        // fixture stays small on purpose — the loop has no round cap, and this check is about compaction, not
+        // about how long a loop may run.
         var client = new ApprovalChatClient
         {
             CallsRemaining = 5,
@@ -7439,6 +7410,10 @@ public partial class ShellCheckWindow : Window
     {
         public const string Answer = "批准之后接着说的话";
 
+        /// <summary>The options of the request that was just made, so a check can read what would have gone on
+        /// the wire — the same field <see cref="ScriptedChatClient"/> keeps, for the same reason.</summary>
+        public Microsoft.Extensions.AI.ChatOptions? LastOptions { get; private set; }
+
         public int CallsRemaining { get; set; } = 1;
         public int Requests { get; private set; }
 
@@ -7485,6 +7460,7 @@ public partial class ShellCheckWindow : Window
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests++;
+            LastOptions = options;
             if (Requests >= 2)
             {
                 FollowUpReached?.TrySetResult(true);

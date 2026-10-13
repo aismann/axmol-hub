@@ -178,8 +178,19 @@ internal sealed class ConversationRun : IDisposable
         {
             _text.Clear();
             _reasoning.Clear();
+            _spinStopped = false;
         }
     }
+
+    private bool _spinStopped;
+
+    /// <summary>Set when the spin guard refused the same signature a second time and ended the loop with
+    /// <c>Terminate</c>. The stream then ends without any text — the model was asking, not answering — and
+    /// without this the person would be told the model "returned no content", which blames the wrong thing:
+    /// the model answered every question it was asked, it was just asking the same one too many times.</summary>
+    internal void NoteSpinStopped() => Volatile.Write(ref _spinStopped, true);
+
+    internal bool SpinStopped => Volatile.Read(ref _spinStopped);
 
     /// <summary>Re-arms the inactivity deadline for the next chunk. A parked run has no stream, so nothing
     /// re-arms it — waiting for a human is not the same as stalling — and neither does a tool that owns the run,

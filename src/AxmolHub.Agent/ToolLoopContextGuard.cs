@@ -23,6 +23,10 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
     /// buys nothing and loses the answer.</summary>
     private const int SmallestWorthEliding = 512;
 
+    /// <summary>What an elided result starts with. <see cref="ToolSpinGuard"/> reads it too: a repeat after an
+    /// elision is Hub having asked for the re-call, and must not count as a spin.</summary>
+    public const string ElidedResultPrefix = "[elided:";
+
     /// <summary>
     /// Asked once before every request the loop makes, whether the user has added something to the conversation.
     ///
@@ -58,7 +62,29 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
         var list = messages.ToList();
         if (PendingInterjection is { } ask && AtToolBoundary(list) && await ask().ConfigureAwait(false) is { } interjection)
             list.Add(interjection);
-        return Elide(list, budgetTokens);
+        var elided = Elide(list, budgetTokens);
+        NoteElided(elided);
+        return elided;
+    }
+
+    /// <summary>
+    /// The call ids whose results this run has elided off the wire. The invoking client's own message list
+    /// keeps the original bytes — elision rewrites only what goes out — so <see cref="ToolSpinGuard"/> cannot
+    /// see an elision from that list alone, and without this a re-call Hub literally asked for in the
+    /// placeholder would count as a spin. Grows over one run; call ids are unique per call, so a re-run's fresh
+    /// id is never confused with the elided one it replaced.
+    /// </summary>
+    public IReadOnlySet<string> ElidedCallIds => _elidedCallIds;
+
+    private readonly HashSet<string> _elidedCallIds = new(StringComparer.Ordinal);
+
+    private void NoteElided(List<ChatMessage> elided)
+    {
+        foreach (var message in elided)
+        foreach (var content in message.Contents)
+            if (content is FunctionResultContent result && TextOf(result) is { Length: > 0 } text
+                && text.StartsWith(ElidedResultPrefix, StringComparison.Ordinal))
+                _elidedCallIds.Add(result.CallId);
     }
 
     /// <summary>Whether this list ends where a person may legitimately be answered: on the results of the calls
@@ -106,7 +132,7 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
                 // FunctionResultContent carries the call id but not the tool name in this version of
                 // Microsoft.Extensions.AI, so the placeholder describes the size rather than the tool.
                 contents.Add(new FunctionResultContent(result.CallId,
-                    $"[elided: {text.Length} characters of tool output — call the tool again if you need this]"));
+                    $"{ElidedResultPrefix} {text.Length} characters of tool output — call the tool again if you need this]"));
                 changed = true;
             }
             else if (content is DataContent picture)

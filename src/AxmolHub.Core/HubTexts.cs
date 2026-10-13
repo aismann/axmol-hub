@@ -614,17 +614,14 @@ public static class HubTexts
         ["ChatRateLimited"] = ("模型服务在限流，稍后再试：", "The model provider is rate-limiting requests, try again shortly: "),
         ["ChatTimedOut"] = ("模型请求超时，请检查网络或服务状态后重试。", "The model request timed out. Check your connection or the provider status and try again."),
         ["ChatNoResponse"] = ("模型没有返回内容，请重试或检查模型配置。", "The model returned no content. Try again or check the model configuration."),
+        // Said when the model asked for the same call twice after being refused, and the turn was ended rather
+        // than paid for a third time. Not a failure and not silence: everything it found is above this line.
+        ["ChatToolSpinStopped"] = ("模型反复请求同一个调用，本轮到此为止——上面已有的结果都还在。换一种问法或直接给出指示即可继续。",
+            "The model kept asking for the same call, so this turn ended here — everything it found is above. Ask differently, or give an instruction, to continue."),
         ["ChatCancelled"] = ("已停止。", "Stopped."),
         // Not an error and not silent: the earlier turns were replaced by a summary, so a reply that seems to
         // have forgotten something has a reason the user can see.
         ["ChatContextCompacted"] = ("已自动压缩较早的上下文。", "Compacted the earlier context automatically."),
-        // The model wrote its tool call out as text instead of sending one, so no tool ran and the reply is
-        // markup. The block on screen already says which of the two it is not, and a reader who is not told
-        // spends the evening wondering why the build never started.
-        ["ChatToolCallLeaked"] = ("模型把工具调用当成了正文输出，这次调用没有执行。", "The model wrote its tool call as text instead of sending it, so nothing ran."),
-        // The same failure seen from the review card: the markup looks like a plan the model laid out, and
-        // approving it would tell the model to carry out its own mistake. Say what it is instead.
-        ["ChatPlanLeakedCall"] = ("这段回复是模型写出来的工具调用，不是计划，没有可批准执行的内容。", "This reply is a tool call the model wrote out as text, not a plan, so there is nothing here to approve."),
         // The plan is still on the transcript and its document is not on disk — Hub keeps only the most recent
         // plans, or somebody deleted the file. Approving would send an instruction with no plan under it, so the
         // card refuses and says which of its two halves is missing.

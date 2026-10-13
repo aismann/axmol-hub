@@ -30,11 +30,11 @@ public static class ChatClientFactory
     /// unasserted, and one SDK bump away from becoming a different number that nobody chose, on a request path
     /// where a retry is what makes a rate-limited provider feel like a broken connection.</para>
     ///
-    /// <para>The budget this has to be read against: a turn may run <see cref="ChatPipeline.MaximumToolIterations"/>
-    /// tool round-trips, and every one of them is a request that can now be attempted three times — up to
-    /// 48 requests in a turn, each of which can sit out the app's own idle timeout while the provider's
-    /// <c>Retry-After</c> says how long the next attempt waits. That is why the number stays small and why the
-    /// checks count the requests rather than trusting the policy.</para>
+    /// <para>The budget this has to be read against: the tool loop carries no per-turn round cap — the model
+    /// ends it by answering — and every round-trip is a request that can now be attempted three times, so a
+    /// long investigation multiplies the two together, each attempt able to sit out the app's own idle timeout
+    /// while the provider's <c>Retry-After</c> says how long the next attempt waits. That is why the number
+    /// stays small and why the checks count the requests rather than trusting the policy.</para>
     /// </summary>
     public const int MaxRetries = 2;
 
