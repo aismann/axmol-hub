@@ -8826,13 +8826,17 @@ public partial class ShellCheckWindow : Window
         // A built-in preset storing null in the archive no longer wipes the manifest-declared window. This
         // chain was the root cause of "every model runs at 8192": the file stored null, load never backfilled
         // the manifest value, and every `?? 8192` fell through to that 2023-era number.
+        //
+        // The number below is the 2026-10-13 retune's, and it happens to equal the fallback — which is why the
+        // second cell also demands IsDeclared. A window that reads 256,000 because the preset said so and one
+        // that reads it because nobody said anything are the same integer and opposite facts.
         var presetProvider = shell.Chat.Providers.FirstOrDefault(
             candidate => candidate.Id == "orcarouter");
-        Check(presetProvider?.MaxContextTokens == 128000,
+        Check(presetProvider?.MaxContextTokens == 256000,
             "内置预设声明的窗口不再被存档里的 null 抹掉（实际 "
             + (presetProvider?.MaxContextTokens?.ToString(System.Globalization.CultureInfo.CurrentCulture) ?? "空") + "）");
         var presetWindow = ContextBudget.For(presetProvider, presetProvider?.Model);
-        Check(presetWindow.Tokens == 128000 && presetWindow.IsDeclared
+        Check(presetWindow.Tokens == 256000 && presetWindow.IsDeclared
               && presetWindow.ConversationRoom < presetWindow.Tokens - ContextBudget.MinimumOutputReserveTokens,
             "默认网关按它自己声明的窗口计，并先留出回答的那一份（窗口 "
             + presetWindow.Tokens.ToString("N0", System.Globalization.CultureInfo.CurrentCulture)

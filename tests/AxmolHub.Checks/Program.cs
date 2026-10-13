@@ -1439,8 +1439,12 @@ if (args.Contains("--check-ai-sessions"))
 
     var openAiProvider = AiProviderManifest.CreateBuiltIn("openai")!;
     var deepSeekProvider = AiProviderManifest.CreateBuiltIn("deepseek")!;
+    // The ladder as the shipped manifest names it. `ultra` came off in the 2026-10-13 retune, and this list is a
+    // restatement rather than a read-back on purpose: copying the manifest would assert only that the parser
+    // agrees with itself, while naming the tiers catches a projection that drops or reorders one of them. When
+    // the manifest changes again, this line and the one below are the two that have to be told.
     if (!ModelCatalog.SupportsReasoningEffort(openAiProvider, "gpt-6.1-sol")
-        || ModelCatalog.EffortsFor(openAiProvider, "gpt-6.1-sol") is not ["low", "medium", "high", "xhigh", "max", "ultra"])
+        || ModelCatalog.EffortsFor(openAiProvider, "gpt-6.1-sol") is not ["low", "medium", "high", "xhigh", "max"])
         throw new Exception("Declared reasoning tiers should still load, per model, and decide what is offered.");
     // "Nobody told us" is no longer the same as "it cannot". The assertion this replaces demanded that an
     // unknown model report no support at all — and that is precisely why the tier menu never appeared for the
@@ -1453,7 +1457,7 @@ if (args.Contains("--check-ai-sessions"))
         throw new Exception("The 'default' tier is not a strength; it must never go on the wire as one.");
     var openAiReasoning = ModelCatalog.ReasoningFor(openAiProvider, "gpt-6.1-sol");
     if (openAiReasoning is not { DefaultEffort: ChatReasoningEfforts.Low }
-        || !openAiReasoning.Efforts.SequenceEqual(["low", "medium", "high", "xhigh", "max", "ultra"]))
+        || !openAiReasoning.Efforts.SequenceEqual(["low", "medium", "high", "xhigh", "max"]))
         throw new Exception("GPT-6.1-Sol's declared reasoning choices or default were not loaded.");
     var parsedReasoning = ModelList.ParseMetadata(Encoding.UTF8.GetBytes(
         """{"object":"list","data":[{"id":"deepseek-flash","effort":{"supported_levels":["low","high","max"],"default_level":"high"}},{"id":"deepseek-v4-pro","effort":{"supported_levels":["low","high","max"],"default_level":"high"}}]}"""));
