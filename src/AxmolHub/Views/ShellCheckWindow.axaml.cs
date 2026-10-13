@@ -2470,8 +2470,9 @@ public partial class ShellCheckWindow : Window
         var children = new List<string>();
         try
         {
+            var askPhase = 0;
             chat.ClientOverride = (_, id) => id == parent.Id
-                ? new SpawnAskingChatClient()
+                ? new SpawnAskingChatClient($"第 {++askPhase} 问")
                 : new ScriptedChatClient(["子会话查完了，结论就两行。"]);
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
@@ -6846,8 +6847,13 @@ public partial class ShellCheckWindow : Window
         var workspace = ScratchDirectory.Resolve("compaction-workspace");
         var logFile = MemoryLog.FileFor(workspace, DateTimeOffset.Now);
         if (System.IO.File.Exists(logFile)) System.IO.File.Delete(logFile);
-        System.IO.File.WriteAllText(System.IO.Path.Combine(workspace, "big.txt"),
-            string.Concat(Enumerable.Range(1, 4000).Select(index => $"row-{index:D4} " + new string('y', 40) + "\n")));
+        // Five files, not one path asked five times: the spin guard refuses the third byte-identical call inside
+        // a window — correctly, that is a loop — and a check about the context window must not be spent on it.
+        // The guard's own cells live in --check-ai-tools.
+        var bigRows = string.Concat(
+            Enumerable.Range(1, 4000).Select(index => $"row-{index:D4} " + new string('y', 40) + "\n"));
+        for (var file = 1; file <= 5; file++)
+            System.IO.File.WriteAllText(System.IO.Path.Combine(workspace, $"big-{file}.txt"), bigRows);
 
         // A threshold test owns its threshold. This provider declares no window, and the fallback for an
         // undescribed model is a hosted-sized number now rather than the 2023 default of 8192 — so the fixture
@@ -6864,7 +6870,10 @@ public partial class ShellCheckWindow : Window
         {
             CallsRemaining = 5,
             ToolName = "read_file",
-            Arguments = new Dictionary<string, object?> { ["path"] = "big.txt" },
+            ArgumentsByCall = call => new Dictionary<string, object?>
+            {
+                ["path"] = $"big-{Math.Min(5, call)}.txt",
+            },
         };
         try
         {
@@ -6954,7 +6963,9 @@ public partial class ShellCheckWindow : Window
             {
                 CallsRemaining = 2,
                 ToolName = "read_file",
-                Arguments = new Dictionary<string, object?> { ["path"] = "big.txt" },
+                // Two identical asks are under the guard's repeat limit, and this fixture is about a window that
+                // cannot be compressed at all — the same path twice is the simplest way to fill it.
+                Arguments = new Dictionary<string, object?> { ["path"] = "big-1.txt" },
             };
             chat.OpenConversation(stuck.Id);
             chat.TryEnqueueSend(stuck.Id, "在小窗口上反复压缩", null, out _);
@@ -7546,6 +7557,12 @@ public partial class ShellCheckWindow : Window
 
         public Dictionary<string, object?> Arguments { get; set; } = new();
 
+        /// <summary>The arguments of the call about to be filed, asked instead of <see cref="Arguments"/> when
+        /// set. A fixture that needs several results out of one tool has to vary its signature: the spin guard
+        /// refuses the third byte-identical call in a window on purpose, so a check that is about something else
+        /// cannot ask five times for the same path.</summary>
+        public Func<int, Dictionary<string, object?>>? ArgumentsByCall { get; set; }
+
         /// <summary>Calls asked for in <b>one</b> response, used instead of <see cref="ToolName"/> when set. A real
         /// gateway hands back several calls from a single reply however the request asked it not to — that is the
         /// shape that stranded an approved result at the wrong end of the transcript, and no number of
@@ -7614,7 +7631,8 @@ public partial class ShellCheckWindow : Window
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant,
                     [new Microsoft.Extensions.AI.FunctionCallContent(
-                        "call-" + Requests, ToolName, Arguments)]);
+                        "call-" + Requests, ToolName,
+                        ArgumentsByCall is { } byCall ? byCall(Requests) : Arguments)]);
             }
             else
             {
@@ -7770,8 +7788,13 @@ public partial class ShellCheckWindow : Window
     /// <summary>A scripted stream that asks for <c>spawn_session</c> on its first two responses and then answers:
     /// one run trying to start two children is the only way to show the per-answer limit is enforced by the app
     /// and not just by the table. The arguments use the schema's own names, because a call that binds by a
-    /// different name proves nothing about what a model would send.</summary>
-    private sealed class SpawnAskingChatClient : Microsoft.Extensions.AI.IChatClient
+    /// different name proves nothing about what a model would send.
+    ///
+    /// <para>The task text belongs to the check because the spin guard reads the <b>persisted</b> transcript: two
+    /// sends asking byte-identically are one signature to it, and the second send would then be refused as a
+    /// repeat before its call ever reached the spawn rules — the assertion would be measuring a different
+    /// component's refusal. Two asks inside one send stay identical on purpose; that pair is the limit under test.</para></summary>
+    private sealed class SpawnAskingChatClient(string phase) : Microsoft.Extensions.AI.IChatClient
     {
         private int _calls;
 
@@ -7794,7 +7817,7 @@ public partial class ShellCheckWindow : Window
                     [new Microsoft.Extensions.AI.FunctionCallContent(
                         $"spawn-{_calls}", "spawn_session", new Dictionary<string, object?>
                         {
-                            ["task"] = "把两个断言文件读完，只回 5 行结论，然后发回派生你的那条会话",
+                            ["task"] = $"把两个断言文件读完，只回 5 行结论，然后发回派生你的那条会话（{phase}）",
                             ["mode"] = "agent",
                             ["inherit_workspace"] = false,
                         })]);
@@ -8950,8 +8973,12 @@ public partial class ShellCheckWindow : Window
         // model list land together.
         var approved = new DeviceCodeProbeHandler(
             """{"access_token":"ghu-copilot-probe","token_type":"bearer","scope":"read:user"}""");
+        // gpt-6-luna is not decoration: adoption keeps a reported row only when it is already enabled or named in
+        // the preset's defaultEnabledModels (ChatWorkspace's intersection), and GitHub's chat default is
+        // manifest-retuned — this fixture went stale once when that name moved off gpt-5-mini. Retune the preset
+        // and retune this body with it.
         var catalog = new ModelListProbeHandler(
-            """{"data":[{"id":"gpt-5-mini","model_picker_enabled":true,"is_chat_default":true,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions","/responses"],"capabilities":{"type":"chat","limits":{"max_context_window_tokens":264000},"supports":{"vision":true,"reasoning_effort":["low","medium","high"]}}},{"id":"exec-agent-a","model_picker_enabled":false,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","limits":{"max_context_window_tokens":128000}}},{"id":"text-embedding-3-small","model_picker_enabled":false,"policy":{"state":"disabled"},"capabilities":{"type":"embeddings"}},{"id":"gpt-4o","model_picker_enabled":false,"policy":{"state":"enabled"},"capabilities":{"type":"chat","limits":{"max_context_window_tokens":128000}}}]}""");
+            """{"data":[{"id":"gpt-6-luna","model_picker_enabled":true,"is_chat_default":true,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions","/responses"],"capabilities":{"type":"chat","limits":{"max_context_window_tokens":264000},"supports":{"vision":true,"reasoning_effort":["low","medium","high"]}}},{"id":"exec-agent-a","model_picker_enabled":false,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","limits":{"max_context_window_tokens":128000}}},{"id":"text-embedding-3-small","model_picker_enabled":false,"policy":{"state":"disabled"},"capabilities":{"type":"embeddings"}},{"id":"gpt-4o","model_picker_enabled":false,"policy":{"state":"enabled"},"capabilities":{"type":"chat","limits":{"max_context_window_tokens":128000}}}]}""");
         settings.UseOAuthHandlerForCheck(approved);
         settings.UseModelListHandlerForCheck(catalog);
         await settings.RunDeviceCodeFlowForCheck("github-copilot");
@@ -8973,14 +9000,14 @@ public partial class ShellCheckWindow : Window
         var offeredModels = shell.Chat.Providers
             .First(candidate => candidate.Id == "github-copilot").Models
             .ConvertAll(model => model.Name);
-        Check(offeredModels.Contains("gpt-5-mini") && !offeredModels.Contains("exec-agent-a")
+        Check(offeredModels.Contains("gpt-6-luna") && !offeredModels.Contains("exec-agent-a")
               && !offeredModels.Contains("gpt-4o") && !offeredModels.Contains("text-embedding-3-small"),
             "只采纳目录里真的能挑的那一行，其余三类各自被 capability type、picker 与 policy 挡掉（实际 ["
             + string.Join(",", offeredModels) + "]）");
         Check(AxmolHub.Agent.ChatClientFactory.ProtocolFor(
-                  shell.Chat.Providers.First(candidate => candidate.Id == "github-copilot"), "gpt-5-mini")
+                  shell.Chat.Providers.First(candidate => candidate.Id == "github-copilot"), "gpt-6-luna")
               == ModelProtocols.Chat,
-            "gpt-5-mini 同时给了两个端点，取 chat 而不是 responses");
+            "gpt-6-luna 同时给了两个端点，取 chat 而不是 responses");
 
         // Leave the provider list the way the checks after this one expect it.
         if (landed is not null) shell.Chat.RemoveCredential(landed.Id);
