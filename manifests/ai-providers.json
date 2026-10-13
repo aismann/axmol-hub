@@ -62,6 +62,28 @@
       "keyValidation": { "type": "httpGetModels", "path": "/models" }
     },
     {
+      "id": "xiaomi",
+      "name": "Xiaomi MiMo",
+      "description": "Xiaomi MiMo's OpenAI-compatible API on the pay-as-you-go endpoint (api.xiaomimimo.com). Create an sk- key in the MiMo API console; the model list is read from the endpoint after you authenticate.",
+      "descriptionZh": "小米 MiMo 的 OpenAI 兼容接口（按量付费，api.xiaomimimo.com）。在 MiMo 开放平台创建 sk- 开头的密钥，鉴权后从接口拉取可用模型列表。",
+      "baseUrl": "https://api.xiaomimimo.com/v1",
+      "defaultEnabledModels": ["mimo-v2.6-pro", "mimo-v2.6-flash"],
+      "maxContextTokens": 1048576,
+      "authMethods": ["apiKey"],
+      "keyValidation": { "type": "httpGetModels", "path": "/models" }
+    },
+    {
+      "id": "xiaomi-token-plan-cn",
+      "name": "Xiaomi MiMo Token Plan (CN)",
+      "description": "Xiaomi MiMo Token Plan, China cluster: a flat-rate subscription for AI coding tools (token-plan-cn.xiaomimimo.com). Use a tp- key from the Token Plan console; pay-as-you-go sk- keys belong to the plain Xiaomi MiMo preset.",
+      "descriptionZh": "小米 MiMo 套餐版（中国集群，token-plan-cn.xiaomimimo.com）：面向 AI 编程工具的固定订阅套餐，使用套餐页面 tp- 开头的密钥；按量付费的 sk- 密钥请使用普通 Xiaomi MiMo 预设。",
+      "baseUrl": "https://token-plan-cn.xiaomimimo.com/v1",
+      "defaultEnabledModels": ["mimo-v2.6-pro", "mimo-v2.6-flash"],
+      "maxContextTokens": 1048576,
+      "authMethods": ["apiKey"],
+      "keyValidation": { "type": "httpGetModels", "path": "/models" }
+    },
+    {
       "id": "github-copilot",
       "name": "GitHub Copilot",
       "description": "Your existing GitHub Copilot subscription, used as a model endpoint. Sign in with a code you can enter on any device, or paste a personal access token instead. Requests are billed against your Copilot premium requests, and the model list comes from GitHub with each model's real context window.",
