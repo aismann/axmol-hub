@@ -119,7 +119,8 @@ public sealed class ConversationStore(string root)
         return bytes;
     }
 
-    /// <summary>Session headers, pinned first then newest first. Rebuilds the index when it is absent or unreadable.</summary>
+    /// <summary>Session headers, pinned first then most recently engaged first. Rebuilds the index when it is
+    /// absent or unreadable.</summary>
     public List<ConversationSummary> List()
     {
         lock (_indexGate)
@@ -223,9 +224,13 @@ public sealed class ConversationStore(string root)
     private void WriteIndex(IEnumerable<ConversationSummary> rows)
         => StateStore.WriteJson(IndexPath, new SessionIndexFile { Sessions = [.. Order(rows)] });
 
-    /// <summary>The single ordering rule for the session list: pinned first, then most recently updated.</summary>
+    /// <summary>The single ordering rule for the session list: pinned first, then most recently engaged.
+    /// Engagement is a person acting or a run ending — not mid-run transcript writes — so several parallel
+    /// conversations answering at once do not reshuffle the list with every tool round. Rows from before the
+    /// key existed fall back to their last update time.</summary>
     private static IEnumerable<ConversationSummary> Order(IEnumerable<ConversationSummary> summaries)
-        => summaries.OrderByDescending(summary => summary.Pinned).ThenByDescending(summary => summary.UpdatedAt);
+        => summaries.OrderByDescending(summary => summary.Pinned)
+            .ThenByDescending(summary => summary.EngagedAt ?? summary.UpdatedAt);
 
     /// <summary>
     /// What <c>index.json</c> holds: the headers, wrapped in an object that can carry a shape marker. The envelope

@@ -623,6 +623,26 @@ public partial class ShellCheckWindow : Window
         Check(seededSecond && sidebar.ConversationCount == 2
               && sidebar.ConversationListText.Contains("第二个会话", StringComparison.Ordinal),
             "会话写入第一条消息后才出现在历史列表");
+
+        // Parallel answers must not reshuffle the list: a model reply landing in the older conversation is
+        // transcript activity, not engagement. The row the person messaged most recently stays where it was.
+        // Dedicated rows: they are removed below so the fixtures around them keep their conversation counts.
+        var orderEarlier = shell.Chat.StartConversation();
+        shell.Chat.SeedTurnForCheck(orderEarlier.Id, "先问的会话");
+        var orderLater = shell.Chat.StartConversation();
+        shell.Chat.SeedTurnForCheck(orderLater.Id, "后问的会话");
+        sidebar.Reload();
+        var orderBeforeReply = sidebar.GroupRowIdsForCheck(SessionGroupKey.Recent);
+        var seededReply = shell.Chat.SeedAssistantReplyForCheck(orderEarlier.Id, "后补的助手回复");
+        sidebar.Reload();
+        var orderAfterReply = sidebar.GroupRowIdsForCheck(SessionGroupKey.Recent);
+        Check(seededReply && orderBeforeReply.SequenceEqual(orderAfterReply)
+              && orderAfterReply.FirstOrDefault() == orderLater.Id,
+            "模型回复落库不改变会话排序：多个会话并行输出时左侧列表不跳动（实际顺序 "
+            + string.Join(" / ", orderAfterReply) + "）");
+        shell.Chat.DeleteConversation(orderEarlier.Id);
+        shell.Chat.DeleteConversation(orderLater.Id);
+        sidebar.Reload();
         Check(sidebar.SessionMenuCount == 2 && sidebar.SessionHasDeleteMenu(saved.Id),
             "每个会话项提供独立的操作菜单（含删除）");
         Check(sidebar.SessionMenuHasAccessibleHitArea(saved.Id),

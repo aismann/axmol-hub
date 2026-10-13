@@ -307,7 +307,17 @@ public sealed class Conversation
     /// It is also what the depth rule reads — a child does not get children — so it is stored rather than derived.</summary>
     public string? SpawnedBy { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>When the transcript last gained a turn — every turn, including model replies and tool results.
+    /// This is activity time, not list order: <see cref="EngagedAt"/> is what the sidebar sorts by.</summary>
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>When this conversation last deserved to move in the sidebar: a person acted on it, a run as a
+    /// whole finished, or a run parked needing a decision. Mid-run transcript writes (streamed replies, tool
+    /// calls and tool results) deliberately do not advance it, otherwise parallel conversations answering at
+    /// once reshuffle the list with every tool round. Nullable for files written before the field existed;
+    /// ordering falls back to <see cref="UpdatedAt"/> until the first engagement lands.</summary>
+    public DateTimeOffset? EngagedAt { get; set; }
 
     /// <summary>Pinned conversations sort above the rest regardless of recency. Kept on the conversation
     /// itself (not only the index) so a rebuild from the message files restores the pin.</summary>
@@ -351,15 +361,25 @@ public sealed class Conversation
         ProviderId = providerId,
         CreatedAt = DateTimeOffset.Now,
         UpdatedAt = DateTimeOffset.Now,
+        EngagedAt = DateTimeOffset.Now,
     };
 
-    /// <summary>Appends a turn and advances <see cref="UpdatedAt"/>; the first user turn also sets the title.</summary>
+    /// <summary>Appends a turn and advances <see cref="UpdatedAt"/>; the first user turn also sets the title.
+    /// Only a turn the person typed advances <see cref="EngagedAt"/>: an assistant or tool turn is the model
+    /// still answering and must not move the row, and a user turn a peer session injected
+    /// (<see cref="ChatTurn.InjectedFrom"/>) is machine-authored despite wearing the user role.</summary>
     public void Append(ChatTurn turn)
     {
         Messages.Add(turn);
         UpdatedAt = turn.At;
+        if (turn.Role == ChatRoles.User && turn.InjectedFrom is null) EngagedAt = turn.At;
         if (Title.Length == 0 && turn.Role == ChatRoles.User) Title = DeriveTitle(turn.Text);
     }
+
+    /// <summary>Advances the list order key without adding a turn — the run itself reached a moment the person
+    /// should see (it finished, or it parked waiting for a decision). <see cref="UpdatedAt"/> is intentionally
+    /// left alone: no transcript activity happened.</summary>
+    public void MarkEngaged(DateTimeOffset? at = null) => EngagedAt = at ?? DateTimeOffset.Now;
 
     /// <summary>
     /// Gives every tool call that has no result one, so the history stays replayable: a provider rejects an
@@ -530,6 +550,11 @@ public sealed class ConversationSummary
     public string ProviderId { get; set; } = "";
     public int MessageCount { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>The list order key carried on the header so ordering never opens a transcript. Null on rows
+    /// rebuilt from files written before it existed; readers then fall back to <see cref="UpdatedAt"/>.</summary>
+    public DateTimeOffset? EngagedAt { get; set; }
+
     public bool Pinned { get; set; }
 
     /// <summary>Whether the user put this session away. On the header for the same reason the pin is: the sidebar
@@ -559,6 +584,7 @@ public sealed class ConversationSummary
         ProviderId = conversation.ProviderId,
         MessageCount = conversation.Messages.Count,
         UpdatedAt = conversation.UpdatedAt,
+        EngagedAt = conversation.EngagedAt,
         Pinned = conversation.Pinned,
         Archived = conversation.Archived,
         WorkspaceRoot = conversation.WorkspaceRoot,

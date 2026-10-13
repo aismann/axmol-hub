@@ -2724,6 +2724,9 @@ public sealed class ChatWorkspace : IDisposable
                 : 0,
             CreatedAt = DateTimeOffset.Now,
             UpdatedAt = DateTimeOffset.Now,
+            // A fork is the person starting a conversation, so it sorts by the fork moment, not by the
+            // inherited prefix's last turn.
+            EngagedAt = DateTimeOffset.Now,
             BranchSourceId = source.Id,
             BranchSourceIndex = index,
         };
@@ -2899,6 +2902,13 @@ public sealed class ChatWorkspace : IDisposable
     /// give those sessions something in them rather than just starting them.</summary>
     internal bool SeedTurnForCheck(string conversationId, string text)
         => _sessions.TryUpdate(conversationId, opened => opened.Append(ChatTurn.User(text)));
+
+    /// <summary>Appends one assistant turn through the real write path without scripting a run. For the
+    /// self-check only: it stands in for a reply landing in a background conversation while a different one
+    /// stays the conversation the person engaged most recently, which is the list-order rule being pinned.</summary>
+    internal bool SeedAssistantReplyForCheck(string conversationId, string text)
+        => _sessions.TryUpdate(conversationId, opened =>
+            opened.Append(new ChatTurn(ChatRoles.Assistant, text, DateTimeOffset.Now)));
 
     /// <summary>An assistant reply carrying the searches its endpoint reported, appended through the same write
     /// path a run uses. For the self-check only, and it goes through the store rather than a scripted stream
@@ -3588,7 +3598,12 @@ public sealed class ChatWorkspace : IDisposable
             // Recorded as waiting *before* the stream is told to end: a call that is cancelled but not recorded
             // would disappear, and the model's request would go with it.
             _sessions.TryUpdate(run.ConversationId, opened =>
-                MarkPending(opened, call.CallId, decision.Preview, run.ConversationId == _active?.Id));
+            {
+                MarkPending(opened, call.CallId, decision.Preview, run.ConversationId == _active?.Id);
+                // Parking asks the person for a decision, so the conversation surfaces in the list once. The
+                // tool rounds that follow the answer never move it again (see Conversation.EngagedAt).
+                opened.MarkEngaged();
+            });
             run.ParkForApproval();
             run.SuspendForApproval();
             Changed?.Invoke();
@@ -3726,6 +3741,9 @@ public sealed class ChatWorkspace : IDisposable
             var at = opened.IndexOfToolCall(callId);
             var call = opened.Messages[at];
             opened.Messages[at] = call with { ApprovalState = ChatApprovalStates.Approved };
+            // A card answer is the person engaging with this conversation, so it takes its place by that
+            // moment rather than by the model's next tool round.
+            opened.MarkEngaged();
             // The session's own list stays, and stays written here rather than derived at read time: it is the
             // record that <i>this</i> conversation is the one where a person said to stop asking, and 16 sessions
             // already on disk answer from it.
@@ -4634,6 +4652,11 @@ public sealed class ChatWorkspace : IDisposable
                               && MarkCompletedPlanPending(run.ConversationId);
             run.Finish(result);
             _runs.Remove(run.ConversationId);
+            // The run as a whole reached an end — an answer, a failure, a timeout, or a stop — so the
+            // conversation surfaces in the list exactly once. The streamed replies and tool rounds along the
+            // way never moved it (Conversation.EngagedAt), which is what keeps the list still while parallel
+            // runs answer. A late write after the session was deleted is refused here like anywhere else.
+            _sessions.TryUpdate(run.ConversationId, opened => opened.MarkEngaged());
             Changed?.Invoke();
             RunsChanged?.Invoke(run.ConversationId);
             if (pendingPlan) AttentionRequired?.Invoke(run.ConversationId, ChatAttentionKind.PlanApproval);

@@ -171,9 +171,10 @@ public partial class ChatSidebar : UserControl
         // The workspace groups hang under one heading, and the plain chats are its sibling rather than a bucket
         // among them: "is this row about a project or just a chat" is the first thing the list answers, and it
         // answers it by shape rather than by making a folder name readable at 11 DIP. Within a group the order is
-        // the store's own — pinned rows stay at the front, then most recently updated — and grouping a list that
-        // is already sorted keeps that order without sorting twice. A pinned session pulls its own workspace to
-        // the front of the heading, which is all pinning can mean now there is no separate list for it.
+        // the store's own — pinned rows stay at the front, then most recently engaged (a person acting or a run
+        // ending, never mid-run model/tool writes, so parallel answers do not reshuffle the list) — and grouping a
+        // list that is already sorted keeps that order without sorting twice. A pinned session pulls its own
+        // workspace to the front of the heading, which is all pinning can mean now there is no separate list for it.
         var workspaces = WorkspaceBuckets(live, query);
         ConversationList.Children.Add(BuildGroupHeader(new SessionBucket(
             SessionGroupKey.Workspaces, HubStrings.Get("GroupWorkspaces"), null, [])));

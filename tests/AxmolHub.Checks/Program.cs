@@ -1343,15 +1343,16 @@ if (args.Contains("--check-ai-sessions"))
     if (store.List().Any(summary => summary.Id == conversation.Id)) throw new Exception("Deleted conversation is still listed.");
     Console.WriteLine("PASS: ConversationStore deletes conversations and their index entries.");
 
-    // Pinned sessions sort above newer ones, and the pin survives an index round-trip.
+    // Pinned sessions sort above more recently engaged ones, and the pin survives an index round-trip.
     var older = Conversation.Create("orcarouter");
     older.Append(ChatTurn.User("older"));
     older.UpdatedAt = DateTimeOffset.Now.AddHours(-1);
+    older.EngagedAt = older.UpdatedAt;
     store.Save(older);
     var newer = Conversation.Create("orcarouter");
     newer.Append(ChatTurn.User("newer"));
     store.Save(newer);
-    if (store.List()[0].Id != newer.Id) throw new Exception("The most recently updated conversation did not sort first.");
+    if (store.List()[0].Id != newer.Id) throw new Exception("The most recently engaged conversation did not sort first.");
     older.Pinned = true;
     store.Save(older);
     var byPin = store.List();
@@ -1359,6 +1360,59 @@ if (args.Contains("--check-ai-sessions"))
     Console.WriteLine("PASS: ConversationStore sorts pinned conversations first.");
     store.Delete(older.Id);
     store.Delete(newer.Id);
+
+    // The sidebar orders by engagement, not transcript activity: a model reply or tool round landing while
+    // parallel runs answer must not reshuffle the list. The person's own turn is the key; machine turns are not.
+    var engagementBase = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+    var background = Conversation.Create("orcarouter");
+    background.Append(new ChatTurn(ChatRoles.User, "asked first", engagementBase));
+    // The answer lands much later — tool call, tool result, assistant reply — every one with a newer timestamp.
+    background.Append(ChatTurn.FunctionCall("bg-call", "read_file", "{}") with { At = engagementBase.AddMinutes(10) });
+    background.Append(ChatTurn.FunctionResult("bg-call", "ok") with { At = engagementBase.AddMinutes(11) });
+    background.Append(new ChatTurn(ChatRoles.Assistant, "done", engagementBase.AddMinutes(12)));
+    var foreground = Conversation.Create("orcarouter");
+    foreground.Append(new ChatTurn(ChatRoles.User, "asked second", engagementBase.AddMinutes(5)));
+    store.Save(background);
+    store.Save(foreground);
+    var engagementOrder = store.List();
+    if (engagementOrder[0].Id != foreground.Id || engagementOrder[1].Id != background.Id)
+        throw new Exception("Mid-run model/tool turns moved a conversation above one the person engaged more recently.");
+    if (background.EngagedAt != engagementBase || background.UpdatedAt != engagementBase.AddMinutes(12))
+        throw new Exception("Machine turns must advance UpdatedAt but leave the engagement key untouched.");
+    // The person's next turn reopens the conversation; a turn injected by a peer session is machine-authored.
+    background.Append(new ChatTurn(ChatRoles.User, "again", engagementBase.AddMinutes(20)));
+    background.Append(new ChatTurn(ChatRoles.User, "peer note", engagementBase.AddMinutes(30)) { InjectedFrom = foreground.Id });
+    store.Save(background);
+    if (store.List()[0].Id != background.Id || background.EngagedAt != engagementBase.AddMinutes(20))
+        throw new Exception("Only a person-authored turn may advance the engagement key; a machine turn did.");
+    if (store.List().First(summary => summary.Id == background.Id).EngagedAt != engagementBase.AddMinutes(20))
+        throw new Exception("The engagement key did not survive into the index header.");
+    // MarkEngaged is the run-ending/parking door: it advances the list key without touching transcript time.
+    var beforeMark = background.UpdatedAt;
+    background.MarkEngaged(engagementBase.AddMinutes(40));
+    if (background.EngagedAt != engagementBase.AddMinutes(40) || background.UpdatedAt != beforeMark)
+        throw new Exception("MarkEngaged must advance the list key without touching UpdatedAt.");
+    Console.WriteLine("PASS: the session list orders by engagement, so parallel replies do not reshuffle it.");
+    store.Delete(background.Id);
+    store.Delete(foreground.Id);
+
+    // A session file written before the engagement key existed falls back to its last update time, instead of
+    // sorting at the epoch and losing its place forever.
+    var legacy = Conversation.Create("orcarouter");
+    legacy.Append(new ChatTurn(ChatRoles.User, "old", engagementBase.AddMinutes(-30)));
+    legacy.EngagedAt = null;
+    legacy.UpdatedAt = engagementBase.AddMinutes(15);
+    store.Save(legacy);
+    var pivot = Conversation.Create("orcarouter");
+    pivot.Append(new ChatTurn(ChatRoles.User, "pivot", engagementBase.AddMinutes(10)));
+    store.Save(pivot);
+    var fallbackOrder = store.List();
+    var legacyRow = fallbackOrder.First(summary => summary.Id == legacy.Id);
+    if (fallbackOrder[0].Id != legacy.Id || legacyRow.EngagedAt is not null)
+        throw new Exception("A pre-engagement session did not fall back to UpdatedAt for its place.");
+    Console.WriteLine("PASS: sessions without an engagement key fall back to their update time.");
+    store.Delete(legacy.Id);
+    store.Delete(pivot.Id);
 
     // Workspace grouping. The sidebar groups sessions by the directory they work in, so two spellings of one
     // directory have to make one group, and the header row has to carry enough to do that without opening a
