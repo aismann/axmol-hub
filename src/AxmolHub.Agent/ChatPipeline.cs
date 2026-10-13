@@ -28,6 +28,15 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
     /// <summary>A tool that keeps failing is a stuck loop, not a hard problem; three in a row ends the turn.</summary>
     public const int MaximumConsecutiveToolErrors = 3;
 
+    /// <summary>
+    /// The key under which the manifest's declared body fields ride on <see cref="ChatOptions"/>, so a wire that
+    /// builds its own request can read them.
+    ///
+    /// <para>Namespaced with the app's own name because <c>AdditionalProperties</c> is a shared bag: the connectors
+    /// put their own keys in it, and a collision would silently feed someone else's field into this one.</para>
+    /// </summary>
+    public const string RequestOptionsKey = "axmol.requestOptions";
+
     /// <summary>What is left for the conversation once the tool declarations have taken their share never goes
     /// below this. A model whose whole window is smaller than its own schemas is a configuration mistake, and
     /// the honest failure for that is one oversized request the provider can name, not an empty prompt.</summary>
@@ -577,6 +586,19 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         var askForStreamUsage = provider.WantsStreamUsage;
         if (requestOptions is { Count: > 0 } || askForStreamUsage)
         {
+            // The same declared fields, handed to whichever wire ends up building the body. The patch below is the
+            // only way to reach an OpenAI chat body's top level from a connector-built client — which is why it
+            // exists, and why it stops there: the responses body has no `messages` to patch, and a body this app
+            // writes itself needs no escape hatch at all. Parking the declaration on the options is what keeps one
+            // manifest field meaning the same thing on every wire instead of being a chat-only feature by accident.
+            if (requestOptions is { Count: > 0 })
+            {
+                // The property is typed non-nullable and arrives null unless a caller filled it — measured here,
+                // not assumed from the signature. Creating it only for a provider that declared something keeps
+                // every ordinary request carrying an options object with nothing extra in it.
+                options.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                options.AdditionalProperties[RequestOptionsKey] = requestOptions;
+            }
             options.RawRepresentationFactory = _ =>
             {
                 var rawOptions = new OpenAI.Chat.ChatCompletionOptions();

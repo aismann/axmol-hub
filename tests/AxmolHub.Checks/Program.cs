@@ -1562,6 +1562,26 @@ if (args.Contains("--check-ai-sessions"))
         throw new Exception($"DeepSeek reasoning effort and thinking mode were not sent as raw request fields: {reasoningPatch ?? "<null>"}");
     Console.WriteLine("PASS: DeepSeek effort and thinking settings reach the OpenAI-compatible request.");
 
+    // The same declared fields, read off the options rather than off the connector. The patch above is how a body
+    // built by the OpenAI SDK gets a field the SDK never modelled; a wire whose body this app writes itself has no
+    // patch to reach, so the declaration has to arrive as data on the request. Both carriers are asserted because
+    // they can drift apart, and only one of them reaches any wire today.
+    if (reasoningClient.LastOptions?.AdditionalProperties?.GetValueOrDefault(ChatPipeline.RequestOptionsKey)
+        is not IReadOnlyDictionary<string, System.Text.Json.JsonElement> carried
+        || !carried.ContainsKey("thinking"))
+        throw new Exception("The declared body fields reached the OpenAI patch but not the options a body built here would read.");
+    Console.WriteLine("PASS: the declared body fields also ride the options, where a wire with no SDK connector can read them.");
+
+    // And the negative half: a model with nothing declared gains no bag, so a body builder cannot invent a field
+    // from a manifest that never named one.
+    var quietCarrierClient = new FakeChatClient(["ok"]);
+    await foreach (var _ in new ChatPipeline(quietCarrierClient).SendAsync(
+                       deepSeekProvider, [ChatTurn.User("test")], modelName: "undeclared-model")) { }
+    if (quietCarrierClient.LastOptions?.AdditionalProperties is { } quietExtras
+        && quietExtras.ContainsKey(ChatPipeline.RequestOptionsKey))
+        throw new Exception("An undescribed model arrived carrying declared request fields nobody declared.");
+    Console.WriteLine("PASS: nothing is declared onto a request for a model that was never described.");
+
     var defaultDeepSeekClient = new FakeChatClient(["ok"]);
     await foreach (var _ in new ChatPipeline(defaultDeepSeekClient).SendAsync(
                        deepSeekProvider,
