@@ -117,17 +117,23 @@
        15px reads as a solid blob, while the caret-plus-stem shape stays legible on the small round button.
        The bounding box is deliberately SQUARE (12x12, centred on the 24 grid): the glyph sits in a square
        slot with Stretch=Uniform, and any leftover axis keeps that slack — which Avalonia leaves on the
-       right, so a taller-than-wide arrow renders visibly off-centre. The stop square is square for the same
-       reason. -->
+       right, so a taller-than-wide arrow renders visibly off-centre. Hub.Icon.Stop keeps its box square for
+       the same reason; only its corners are cut. -->
   <StreamGeometry x:Key="Hub.Icon.Send">M12 18V6M6 12L12 6L18 12</StreamGeometry>
 
   <!-- A downward arrow = scroll to the latest message, the vertical mirror of the send glyph. Stroked, and
        square-bounded (12x12 centred) for the same reason Send is. -->
   <StreamGeometry x:Key="Hub.Icon.ArrowDown">M12 6V18M6 12L12 18L18 12</StreamGeometry>
 
-  <!-- A solid square = stop, the same button's other state. It contrasts with the arrow by fill rather than
-       by colour, so the two states are distinguishable even in a monochrome screenshot. -->
-  <StreamGeometry x:Key="Hub.Icon.Stop">M7.3 7.3H16.7V16.7H7.3Z</StreamGeometry>
+  <!-- A solid rounded square = stop, the same button's other state. It contrasts with the arrow by fill rather
+       than by colour, so the two states are distinguishable even in a monochrome screenshot. The corners are
+       rounded at r=1.8 on this grid — 19% of the square's side, which measures as ~3 DIP in the 15.5 px the slot
+       actually draws, and stays a square rather than drifting toward a circle. Reasons for rounding at all: a
+       square corner would be the only hard edge in an otherwise radius-4..15 shell, and a radius small enough to
+       blend into the antialiasing reads as a slip rather than as a decision (a 2 DIP corner did). The corners
+       only cut the shape — the box stays 9.4 wide and square, centred on 12,12, because Stretch="Uniform" parks
+       any leftover axis as slack on one side (see Hub.Icon.Send above). -->
+  <StreamGeometry x:Key="Hub.Icon.Stop">M9.1 7.3H14.9A1.8 1.8 0 0 1 16.7 9.1V14.9A1.8 1.8 0 0 1 14.9 16.7H9.1A1.8 1.8 0 0 1 7.3 14.9V9.1A1.8 1.8 0 0 1 9.1 7.3Z</StreamGeometry>
 
   <!-- A panel with a divider = sidebar toggle, matching the shape GitHub Copilot Desktop uses. Stroked. -->
   <StreamGeometry x:Key="Hub.Icon.Panel">M4.5 5H19.5V19H4.5 Z M10 5V19</StreamGeometry>

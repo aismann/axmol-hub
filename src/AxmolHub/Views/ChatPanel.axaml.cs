@@ -4567,12 +4567,22 @@ public partial class ChatPanel : UserControl
     /// <summary>The round button on its own, so a check can render just the circle and its glyph.</summary>
     internal Control SendButtonForCheck => SendButton;
 
-    /// <summary>The colour the glyph is drawn in, read from its live brush. A pixel mask must not hardcode
-    /// it: <c>Hub.Accent</c> is a different blue per theme, and a literal would fail on a theme switch.</summary>
+    /// <summary>The colour the glyph is drawn in, read from its live brush. The arrow is stroked and the stop
+    /// square is filled, so both ends have to be read — the fill used to come back transparent. A pixel mask
+    /// must not hardcode it: <c>Hub.Accent</c> is a different blue per theme, and a literal would fail on a
+    /// theme switch.</summary>
     internal Color SendGlyphColorForCheck
-        => SendButton.Content is Avalonia.Controls.Shapes.Path { Stroke: ISolidColorBrush brush }
-            ? brush.Color
+        => SendButton.Content is Avalonia.Controls.Shapes.Path path
+            ? (path.Stroke as ISolidColorBrush)?.Color
+              ?? (path.Fill as ISolidColorBrush)?.Color
+              ?? Colors.Transparent
             : Colors.Transparent;
+
+    /// <summary>The plate the glyph sits on: the other end of the line <see cref="SendGlyphColorForCheck"/>
+    /// reads, so a pixel check can measure the ink as a fraction between two live colours rather than against
+    /// a hardcoded blue.</summary>
+    internal Color SendPlateColorForCheck
+        => SendButton.Background is ISolidColorBrush brush ? brush.Color : Colors.Transparent;
 
     /// <summary>
     /// Where the glyph's slot sits inside the button, in DIP, plus the width the hidden "…" affordance

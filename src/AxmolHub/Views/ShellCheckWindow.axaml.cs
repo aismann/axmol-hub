@@ -383,6 +383,11 @@ public partial class ShellCheckWindow : Window
         Check(Math.Abs(glyphLayout.Dx) <= 0.75 && Math.Abs(glyphLayout.Dy) <= 0.75,
             "发送图元槽在圆钮内居中（dx=" + Fmt(glyphLayout.Dx) + "，dy=" + Fmt(glyphLayout.Dy)
             + "，槽宽=" + Fmt(glyphLayout.SlotWidth) + "）");
+        // The other half of that invariant is the glyph's own box, read off the resource rather than the pixels:
+        // the stop square's corners are cut inside the box (HubIcons.axaml says how far), and a rounding that
+        // moved an edge instead of cutting a corner would hand Stretch="Uniform" an overhang to park on one side.
+        Check(FitsItsSquareSlot("Hub.Icon.Stop"),
+            "停止方块在 24 网格上的包围盒仍是 9.4 见方且居中于 12,12（圆角只削角，不动边中点）");
         var glyphShot = System.IO.Path.Combine(ScratchDirectory.Resolve("send-glyph"), "send.png");
         var glyphFrame = SmokeCapture.Capture(panel.SendButtonForCheck, glyphShot);
         var inkCentered = SendGlyphInkIsCentered(glyphShot, panel.SendGlyphColorForCheck,
@@ -961,6 +966,16 @@ public partial class ShellCheckWindow : Window
             + "，活动左沿 " + Fmt(panel.LiveActivityLeftForCheck) + "）");
         Check(panel.SendIconIsStopForCheck && panel.SendButtonEnabledForCheck,
             "流式进行中发送按钮切换为停止图标并保持可点（点它即取消）");
+        // The stop square's corners are rounded (Hub.Icon.Stop's own comment carries the radius and the reason),
+        // and a 2 DIP radius on a 15 DIP square is invisible to the build: it has to be measured off the pixels.
+        // Taken here, where the button really shows the square, with the box left empty so a click would stop.
+        var stopShot = System.IO.Path.Combine(ScratchDirectory.Resolve("send-glyph"), "stop.png");
+        var stopFrame = SmokeCapture.Capture(panel.SendButtonForCheck, stopShot);
+        var stopRounded = StopGlyphCornersAreRounded(stopShot, panel.SendPlateColorForCheck,
+            panel.SendGlyphColorForCheck, out var stopCornerInk, out var stopEdgeInk);
+        Check(!stopFrame.IsBlank() && stopRounded,
+            "停止方块的四个角比四边中点淡，圆角确实画了出来（角最暗一格占方格面积 "
+            + Fmt(stopCornerInk) + " ≤ 0.60，四边中点最空一格 " + Fmt(stopEdgeInk) + " ≥ 0.85）");
         Check(panel.ChatActivityVisibleForCheck
               && panel.ChatActivityTextForCheck == HubStrings.Get("ChatPreparing"),
             "等待首个文本块时显示准备状态");
@@ -8057,6 +8072,157 @@ public partial class ShellCheckWindow : Window
         inkWidth = maxX - minX + 1;
         inkHeight = maxY - minY + 1;
         return true;
+    }
+
+    /// <summary>
+    /// Whether the stop square is drawn with rounded corners. A 2–3 DIP radius on a 15 DIP square removes about
+    /// 1 DIP² out of 225 — under 2% of the glyph — so neither an average coverage nor a total-ink count can see
+    /// it through the shape's own antialiased rim. What does separate the two shapes is the pixel in each corner:
+    /// with the corner cut it holds none of the square's own area (measured 0.00 at r=1.8), while a square corner
+    /// fills it (measured 1.00). Every probe is therefore scored as "ink, as a fraction of the <em>box</em> that
+    /// this pixel lies inside" — a pixel straddling the box edge is light without being rounded, which is exactly
+    /// the confusion to avoid, and it is why the probe at the corner is compared against the box rather than
+    /// against the picture.
+    ///
+    /// The box is <em>measured</em> rather than taken from the slot's layout size: the middle row and column of a
+    /// square are straight edges, so the half-coverage crossing on each gives the edge to a fraction of a pixel.
+    /// The drawn edge disagreed with the laid-out 15 DIP slot by about that much — and a rounding error the size
+    /// of the answer, folded into the answer, is a check that reports a share over 1 and cannot be trusted to say
+    /// which shape it saw. The four edge midpoints are probed the same way and must stay full, so "the corners are
+    /// rounded" cannot be satisfied by a square that merely shrank. Nothing here tells a rounded square from an
+    /// inscribed circle: the two agree at every point this measures, and which one the icon is stays a shape
+    /// decision rather than a measurement.
+    ///
+    /// Both ends of the ink scale come from the live controls (<c>Hub.Accent</c> under <c>Hub.TextOnAccent</c>),
+    /// so a theme switch moves them together and no colour is written down twice. <c>Capture</c> renders at
+    /// 96 DPI, so one pixel is one DIP.
+    /// </summary>
+    private static bool StopGlyphCornersAreRounded(string png, Avalonia.Media.Color plate,
+        Avalonia.Media.Color glyph, out double cornerInk, out double edgeInk)
+    {
+        cornerInk = 0;
+        edgeInk = 1;
+
+        var pixels = SmokeCapture.ReadBgra(png, out var width, out var height, out var stride);
+        if (width < 8 || height < 8) return false;
+
+        var dr = glyph.R - plate.R;
+        var dg = glyph.G - plate.G;
+        var db = glyph.B - plate.B;
+        var lengthSquared = ((double)dr * dr) + ((double)dg * dg) + ((double)db * db);
+        if (lengthSquared <= 0) return false;
+
+        // The pixel's ink share, projected onto the plate→glyph line: 0 is bare plate, 1 is the glyph's colour.
+        double Ink(int x, int y)
+        {
+            var o = (y * stride) + (x * 4);
+            if (pixels[o + 3] < 250) return 0;
+            var f = (((pixels[o + 2] - plate.R) * dr) + ((pixels[o + 1] - plate.G) * dg)
+                     + ((pixels[o] - plate.B) * db)) / lengthSquared;
+            return Math.Clamp(f, 0, 1);
+        }
+
+        var ink = new double[width * height];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++) ink[(y * width) + x] = Ink(x, y);
+        }
+
+        // Walking inward along one pixel line, the first pixel at half coverage or more carries the edge on its own
+        // outer side, so the edge's position follows from that pixel's own coverage.
+        static bool EdgeOf(double[] coverage, int from, int step, out double edge)
+        {
+            for (var i = from; i >= 0 && i < coverage.Length; i += step)
+            {
+                if (coverage[i] < 0.5) continue;
+                edge = step > 0 ? i + (1 - coverage[i]) : i + coverage[i];
+                return true;
+            }
+
+            edge = 0;
+            return false;
+        }
+
+        var middleRow = new double[width];
+        for (var x = 0; x < width; x++) middleRow[x] = ink[((height / 2) * width) + x];
+        var middleColumn = new double[height];
+        for (var y = 0; y < height; y++) middleColumn[y] = ink[(y * width) + (width / 2)];
+
+        if (!EdgeOf(middleRow, 0, 1, out var left) || !EdgeOf(middleRow, width - 1, -1, out var right)
+            || !EdgeOf(middleColumn, 0, 1, out var top) || !EdgeOf(middleColumn, height - 1, -1, out var bottom))
+            return false;
+        if (right - left < 4 || bottom - top < 4) return false;
+
+        // The outermost pixel columns and rows the box touches, and a window of two pixels per probe so that one
+        // half-covered pixel cannot decide the answer by itself.
+        var lowX = (int)Math.Floor(left);
+        var highX = (int)Math.Ceiling(right) - 1;
+        var lowY = (int)Math.Floor(top);
+        var highY = (int)Math.Ceiling(bottom) - 1;
+        if (highX - lowX < 3 || highY - lowY < 3 || highX >= width || highY >= height) return false;
+        var nearLowX = lowX + 1;
+        var nearHighX = highX - 1;
+        var nearLowY = lowY + 1;
+        var nearHighY = highY - 1;
+        // The middle of an edge, clamped so the window stays inside the outermost two columns and rows.
+        var middleX = Math.Clamp((int)Math.Floor((left + right) / 2), lowX + 1, highX - 1);
+        var middleY = Math.Clamp((int)Math.Floor((top + bottom) / 2), lowY + 1, highY - 1);
+
+        // How much of this pixel the glyph's box covers: outside the box the plate is still there, and a light
+        // pixel there says nothing about a corner.
+        double BoxFraction(int x, int y)
+        {
+            var fx = Math.Min(x + 1.0, right) - Math.Max((double)x, left);
+            var fy = Math.Min(y + 1.0, bottom) - Math.Max((double)y, top);
+            return Math.Max(0, fx) * Math.Max(0, fy);
+        }
+
+        // A probe's score: the emptiest (corners — one square corner is enough to fail) or the average (edges)
+        // share of ink over the pixels that hold enough of the box to mean anything.
+        double Score(int x0, int x1, int y0, int y1, bool emptiest)
+        {
+            var total = 0.0;
+            var count = 0;
+            var lowest = 1.0;
+            for (var y = y0; y <= y1; y++)
+            {
+                for (var x = x0; x <= x1; x++)
+                {
+                    var box = BoxFraction(x, y);
+                    if (box < 0.25) continue;
+                    var share = Ink(x, y) / box;
+                    if (share < lowest) lowest = share;
+                    total += share;
+                    count++;
+                }
+            }
+
+            if (count == 0) return -1;
+            return emptiest ? lowest : total / count;
+        }
+
+        var corners = new[]
+        {
+            Score(lowX, nearLowX, lowY, nearLowY, true),
+            Score(nearHighX, highX, lowY, nearLowY, true),
+            Score(lowX, nearLowX, nearHighY, highY, true),
+            Score(nearHighX, highX, nearHighY, highY, true),
+        };
+        var edges = new[]
+        {
+            Score(middleX, middleX + 1, lowY, nearLowY, false),
+            Score(middleX, middleX + 1, nearHighY, highY, false),
+            Score(lowX, nearLowX, middleY, middleY + 1, false),
+            Score(nearHighX, highX, middleY, middleY + 1, false),
+        };
+        if (corners.Any(value => value < 0) || edges.Any(value => value < 0)) return false;
+
+        cornerInk = corners.Max();
+        edgeInk = edges.Min();
+        // 0.60 sits between what the two shapes measure (cut corners 0.00–0.25, square corners 1.00) with room on
+        // both sides, and 0.85 lets the antialiased rim of a full edge through without letting a shrunken square
+        // pass the second half.
+        return cornerInk <= 0.6 && edgeInk >= 0.85;
     }
 
     /// <summary>
