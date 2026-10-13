@@ -2306,6 +2306,36 @@ public partial class ShellCheckWindow : Window
                   && idleLine.Contains("the 0.3s inactivity deadline", StringComparison.Ordinal)
                   && idleLine.Contains(" chars of reasoning and 0 of text buffered", StringComparison.Ordinal),
                 "空闲超时在日志里说清窗口与当时攒下的内容，事后能分网络与模型（实际「" + (idleLine ?? "无") + "」）");
+
+            // A notice belongs to the conversation it is about. A run that ends while the person reads another
+            // session must not paint its reason onto that transcript, and must still have it ready when they
+            // come back — the two halves of the same rule, and the second one is what used to be lost.
+            var background = chat.StartConversation();
+            var front = chat.StartConversation();
+            chat.ClientOverride = (_, id) => id == background.Id
+                ? new StalledChatClient(TimeSpan.FromSeconds(10))
+                : new ScriptedChatClient(["眼前的回答"]);
+            chat.OpenConversation(front.Id);
+            chat.TryEnqueueSend(background.Id, "后台卡住的提问", null, out _);
+            await WaitForRunAsync(chat, background.Id);
+
+            Check(!chat.IsRunning(background.Id) && !panel.NoticeVisibleForCheck,
+                "后台会话的超时提示不画到眼前的会话上");
+
+            chat.OpenConversation(background.Id);
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.LastNoticeTextForCheck == HubStrings.Get("ChatTimedOut"),
+                "切回结束的后台会话，它当时的超时提示还在（实际「" + (panel.LastNoticeTextForCheck ?? "无") + "」）");
+
+            // The person spoke again in that session, so the line is history rather than news.
+            chat.ClientOverride = (_, _) => new ScriptedChatClient(["回来之后的回答"]);
+            chat.TryEnqueueSend(background.Id, "回来之后又问一句", null, out _);
+            await WaitForRunAsync(chat, background.Id);
+            Dispatcher.UIThread.RunJobs();
+            Check(!chat.IsRunning(background.Id) && !panel.NoticeVisibleForCheck
+                  && background.Messages.Count(turn => turn.Role == ChatRoles.User) == 2,
+                "本人在该会话再说一句，旧的超时提示就退休（提问 "
+                + background.Messages.Count(turn => turn.Role == ChatRoles.User) + " 条）");
         }
         finally
         {

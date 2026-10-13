@@ -248,9 +248,12 @@ public partial class ChatPanel : UserControl
         };
         _chat.RunCompleted += (conversationId, outcome) =>
         {
-            if (conversationId != _chat.ViewedConversationId) return;
-            RenderMessages();
-            AppendRunNotice(outcome);
+            var viewed = conversationId == _chat.ViewedConversationId;
+            if (viewed) RenderMessages();
+            // Filed for whichever session ended, ahead of the guard below: a run that finished while the person
+            // was reading another conversation still owes them the reason when they come back.
+            AppendRunNotice(conversationId, outcome);
+            if (!viewed) return;
             UpdateSendState();
             ConversationStateChanged?.Invoke();
             // A run that just finished can have moved the repository without Hub's file tool ever being part of
@@ -2815,22 +2818,31 @@ public partial class ChatPanel : UserControl
         return button;
     }
 
-    /// <summary>Appends a one-line notice: neutral (model changed, cancellation) or danger (errors).</summary>
     /// <summary>
-    /// The last thing the app had to say about a run, and how many of the person's own messages had been sent
-    /// when it was said. A notice is the tail of the transcript until the person speaks again — which is the rule
-    /// that keeps it surviving a rebuild of that transcript without outliving the news it carried.
+    /// The last thing the app had to say about each conversation, and how many of the person's own messages had
+    /// been sent when it was said. A notice is the tail of the transcript until the person speaks again — which is
+    /// the rule that keeps it surviving a rebuild of that transcript without outliving the news it carried.
+    ///
+    /// <para>It is keyed by conversation rather than a single slot because a run does not end in step with what is
+    /// on screen: the reason a session stopped while the person read another one is still news when they come
+    /// back, and holding it in one shared field would either lose it or paint it onto the wrong transcript.</para>
     /// </summary>
-    private (string ConversationId, string Text, bool Danger, int OwnTurns)? _notice;
+    private readonly Dictionary<string, (string Text, bool Danger, int OwnTurns)> _notices =
+        new(StringComparer.Ordinal);
 
     private void AppendNotice(string text, bool danger)
     {
         var viewed = _chat.ActiveConversation;
-        _notice = (viewed?.Id ?? "", text, danger,
+        RememberNotice(viewed?.Id ?? "", text, danger,
             viewed?.Messages.Count(turn => turn.Role == ChatRoles.User) ?? 0);
         RenderNotice();
         ScrollToEnd();
     }
+
+    /// <summary>Files what a run or an action had to say for one conversation. The line reaches the screen through
+    /// <see cref="RenderNotice"/>, which paints only the conversation being looked at.</summary>
+    private void RememberNotice(string conversationId, string text, bool danger, int ownTurns)
+        => _notices[conversationId] = (text, danger, ownTurns);
 
     /// <summary>Paints the stored notice, if it still is news: same conversation, nothing of the person's said
     /// since. Called from the render path, so a rebuild cannot erase it and a new message cannot be answered by
@@ -2839,14 +2851,23 @@ public partial class ChatPanel : UserControl
     private void RenderNotice()
     {
         NoticeHost.Children.Clear();
-        if (_notice is not { } notice) return;
-
         var viewed = _chat.ActiveConversation;
         var conversationId = viewed?.Id ?? "";
+        // A notice is news about a conversation; when that conversation is gone the line has no subject left, so
+        // it leaves with it rather than keeping a key nothing will ever view again. The sidebar list is not the
+        // test for "gone" — a session nobody has spoken in holds no row there, and that is exactly the session an
+        // attachment refusal gets filed on.
+        foreach (var stale in _notices.Keys
+                     .Where(id => id.Length > 0 && id != conversationId
+                                  && !_chat.Conversations.Any(session => session.Id == id))
+                     .ToList())
+            _notices.Remove(stale);
+        if (!_notices.TryGetValue(conversationId, out var notice)) return;
+
         var ownTurns = viewed?.Messages.Count(turn => turn.Role == ChatRoles.User) ?? 0;
-        if (conversationId != notice.ConversationId || ownTurns != notice.OwnTurns)
+        if (ownTurns != notice.OwnTurns)
         {
-            _notice = null;
+            _notices.Remove(conversationId);
             return;
         }
 
@@ -3344,17 +3365,22 @@ public partial class ChatPanel : UserControl
         bubble.Glyph.ApplyPhase(phase, Math.Max(1, bubble.ToolCount));
     }
 
-    /// <summary>Says how a run ended. The reason is recorded where it happened rather than inferred here from
-    /// exception types, which is how "the user pressed stop" and "the stream stalled" used to blur together.</summary>
-    private void AppendRunNotice(RunOutcome outcome)
+    /// <summary>Says how a run ended, on the transcript of the session that ended — not on whichever one happens
+    /// to be on screen. The reason is recorded where it happened rather than inferred here from exception types,
+    /// which is how "the user pressed stop" and "the stream stalled" used to blur together.</summary>
+    private void AppendRunNotice(string conversationId, RunOutcome outcome)
     {
         if (outcome.NoticeKey is { } key)
-        {
-            AppendNotice(HubStrings.Get(key) + (outcome.Detail ?? ""), outcome.NoticeDanger);
-            return;
-        }
+            RememberNotice(conversationId, HubStrings.Get(key) + (outcome.Detail ?? ""),
+                outcome.NoticeDanger, outcome.UserTurns);
+        else if (!outcome.ReceivedText)
+            RememberNotice(conversationId, HubStrings.Get("ChatNoResponse"), true, outcome.UserTurns);
 
-        if (!outcome.ReceivedText) AppendNotice(HubStrings.Get("ChatNoResponse"), danger: true);
+        // A session that finished out of sight is filed and left alone: repainting or scrolling it would move
+        // the reading position of the conversation the person is actually looking at.
+        if (conversationId != _chat.ViewedConversationId) return;
+        RenderNotice();
+        ScrollToEnd();
     }
 
     private ConversationRun? ViewedRun

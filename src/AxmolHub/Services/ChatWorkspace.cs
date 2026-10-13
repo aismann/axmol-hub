@@ -4683,11 +4683,19 @@ public sealed class ChatWorkspace : IDisposable
             // conversation surfaces in the list exactly once. The streamed replies and tool rounds along the
             // way never moved it (Conversation.EngagedAt), which is what keeps the list still while parallel
             // runs answer. A late write after the session was deleted is refused here like anywhere else.
-            _sessions.TryUpdate(run.ConversationId, opened => opened.MarkEngaged());
+            // Counted here because the workspace is the only place still holding this transcript once the run is
+            // gone: a reply that ended out of sight has no bubble to read its age from when the person returns.
+            var userTurns = 0;
+            _sessions.TryUpdate(run.ConversationId, opened =>
+            {
+                opened.MarkEngaged();
+                userTurns = opened.Messages.Count(turn => turn.Role == ChatRoles.User);
+            });
             Changed?.Invoke();
             RunsChanged?.Invoke(run.ConversationId);
             if (pendingPlan) AttentionRequired?.Invoke(run.ConversationId, ChatAttentionKind.PlanApproval);
-            RunCompleted?.Invoke(run.ConversationId, new RunOutcome(result, receivedText, noticeKey, danger, detail));
+            RunCompleted?.Invoke(run.ConversationId,
+                new RunOutcome(result, receivedText, noticeKey, danger, detail, userTurns));
             run.Dispose();
             // Last, after the slot is really gone: a wake waiting for one may only start once this run has left
             // the registry, or the fleet would be one session over its own cap.

@@ -452,4 +452,8 @@ internal readonly record struct RunOutcome(
     bool ReceivedText,
     string? NoticeKey,
     bool NoticeDanger,
-    string? Detail);
+    string? Detail,
+    // How many of the person's own messages the transcript held at that moment. The panel ages a notice out on
+    // the next one, and a run that ended out of sight has no bubble of its own to read the count from — the
+    // workspace is the only place still holding that conversation here.
+    int UserTurns);
