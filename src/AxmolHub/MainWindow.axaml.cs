@@ -1587,6 +1587,12 @@ public partial class MainWindow : Window
 
         _workspace.StatusChanged += text => Status.Text = text;
 
+        // The rail's bottom-left line names the default engine, and every gated change ends in a Refresh that
+        // raises this. Without the subscription the line kept the version it was built with until the next
+        // construction, data-root switch or language change — "set default engine" moved the state and the
+        // engines page, and left the shell's own chrome saying the previous version.
+        _workspace.Changed += SyncRailEngineLine;
+
         // Nothing here disables a surface while work runs, and nothing here announces it either: the strip's
         // cancel reads the queue itself (UpdateTaskSlot), which is the single place that knows whether there
         // is a change to stop. The gate answers a refused press with a sentence instead of grey.
@@ -1828,6 +1834,11 @@ public partial class MainWindow : Window
                .Any(text => ThemeProbe.IsToken(text.Foreground, "Hub.PreviewBadgeForeground"));
 
     internal void SetPreviewBadgeVisibleForCheck(bool visible) => PreviewBadge.IsVisible = visible;
+
+    /// <summary>The rail's bottom-left line (the default engine's version), for the shell self-check. It lives
+    /// beside the brand hooks because it is the same footer the ⋯ menu sits in, and it is read by name so the
+    /// check can prove the line follows <c>DefaultEnginePath</c> without reaching for the field.</summary>
+    internal string RailEngineLineForCheck => BrandLine.Text ?? "";
 
     /// <summary>
     /// The assistant's state, for the shell self-check to assert against — and to install a scripted chat
@@ -2467,16 +2478,30 @@ public partial class MainWindow : Window
         ToolTip.SetTip(BottomMenuButton, HubStrings.Get("BottomMenuTip"));
 
         // The WPF version hard-codes "AXMOL 2.11 LTS" in the bottom-left. The Avalonia version
-        // computes it from the **default engine** at runtime: hard-coding the version number would
-        // become wrong the day v3 ships — exactly the A1 (single-engine version binding) class of bug.
-        var state = _workspace.State;
-        var engine = state.Engines.FirstOrDefault(candidate => candidate.Path == state.DefaultEnginePath);
-        BrandLine.Text = engine is null ? "AXMOL" : "AXMOL " + engine.Version;
+        // computes it from the **default engine** at runtime — see <see cref="SyncRailEngineLine"/>.
+        SyncRailEngineLine();
 
         // The WPF version hard-codes "Windows x64". The Avalonia version runs on three platforms and
         // computes it from the real host.
         var os = OperatingSystem.IsWindows() ? "Windows" : OperatingSystem.IsMacOS() ? "macOS" : "Linux";
         HostLine.Text = os + " " + RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// The rail's bottom line names the default engine and its version, so it is derived state rather than
+    /// chrome: it is rewritten by the repaint that follows any state change (<see cref="WireWorkspace"/>
+    /// subscribes it to <see cref="HubWorkspace.Changed"/>) instead of only by <see cref="InitializeChrome"/>,
+    /// which runs at construction, at a data-root switch and at a language change and nowhere else.
+    ///
+    /// The WPF version hard-codes "AXMOL 2.11 LTS" here. Reading the version off the default engine is what
+    /// keeps that line from becoming wrong the day v3 ships — exactly the A1 (single-engine version binding)
+    /// class of bug.
+    /// </summary>
+    private void SyncRailEngineLine()
+    {
+        var state = _workspace.State;
+        var engine = state.Engines.FirstOrDefault(candidate => candidate.Path == state.DefaultEnginePath);
+        BrandLine.Text = engine is null ? "AXMOL" : "AXMOL " + engine.Version;
     }
 
     /// <summary>

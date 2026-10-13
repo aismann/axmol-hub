@@ -10446,6 +10446,50 @@ public partial class ShellCheckWindow : Window
             "空数据根下达 0 行且空态文案可见");
         emptyShell.Close();
 
+        // The default engine is shell state, so switching it has to reach the shell's own chrome and not only the
+        // pages: the rail's bottom-left line is derived from DefaultEnginePath, and a shell that wrote it only
+        // inside InitializeChrome kept saying the previous version until the next restart, data-root switch or
+        // language change. The press goes through the real button, because "the event chain is wired" is the half
+        // that calling the workspace directly would not prove.
+        var railEngine = shell.Workspace.State.Engines
+            .FirstOrDefault(engine => engine.Path == shell.Workspace.State.DefaultEnginePath);
+        var otherEngine = railEngine is null
+            ? null
+            : shell.Workspace.State.Engines.FirstOrDefault(engine => engine.Path != railEngine.Path);
+        var defaultButton = NamedDescendant<Button>(installs, "DefaultButton");
+        if (railEngine is null || otherEngine is null || defaultButton is null || grid is null
+            || shell.Workspace.SelectedEngine is null)
+        {
+            // A failed assertion rather than an unguarded press: a change whose work delegate throws (no
+            // selection) opens the typed error dialog, and under --verify-shell that modal has nobody to click it.
+            Check(false, "切换默认引擎的断言要两行引擎、一个选中项和一个「设为默认」按钮（实际 "
+                + shell.Workspace.State.Engines.Count + " 个引擎，选中 "
+                + (shell.Workspace.SelectedEngine?.Version ?? "<null>") + "）");
+            return;
+        }
+
+        // The gesture a user makes: pick the other row, then press "set default".
+        grid.SelectedItem = otherEngine;
+        Dispatcher.UIThread.RunJobs();
+        defaultButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitUntilAsync(() => shell.RailEngineLineForCheck == "AXMOL " + otherEngine.Version);
+        Check(shell.Workspace.State.DefaultEnginePath == otherEngine.Path
+              && shell.RailEngineLineForCheck == "AXMOL " + otherEngine.Version,
+            "引擎页「设为默认」后侧栏左下角当场换成新版本（实际「" + shell.RailEngineLineForCheck + "」）");
+
+        // A change that is still running refuses the next one, so the gate has to be empty before the second press.
+        await WaitUntilAsync(() => !shell.Workspace.IsBusy);
+
+        // Put the fixture back: the settings group reads the default engine, and every group after this one assumes
+        // the fixture's own selection rather than this check's.
+        grid.SelectedItem = railEngine;
+        Dispatcher.UIThread.RunJobs();
+        defaultButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitUntilAsync(() => shell.RailEngineLineForCheck == "AXMOL " + railEngine.Version);
+        Check(shell.Workspace.State.DefaultEnginePath == railEngine.Path
+              && shell.RailEngineLineForCheck == "AXMOL " + railEngine.Version,
+            "默认引擎与侧栏左下角都还给了 fixture（" + railEngine.Version + "）");
+
         await Task.CompletedTask;
     }
 
