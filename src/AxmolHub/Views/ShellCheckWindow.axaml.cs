@@ -400,6 +400,15 @@ public partial class ShellCheckWindow : Window
         panel.SetComposerFocusForCheck(false);
         shell.UpdateLayout();
 
+        // The input box is a raised card, not a strip of the sidebar's chrome. Its fill must resolve to the
+        // card surface and sit at least six levels off the reading page behind it. The bug this pins is the
+        // old one: the composer and the spine were Hub.SurfaceAlt, a card nobody could tell from the panel.
+        // IsToken compares the resolved colour, so reverting the frame to SurfaceAlt turns this cell red.
+        Check(ThemeProbe.IsToken(panel.ComposerBackgroundForCheck, "Hub.Surface")
+              && ThemeProbe.Separates(ThemeProbe.TokenColor("Hub.Surface"),
+                  ThemeProbe.TokenColor("Hub.Background")),
+            "输入框是浮起卡片：底色与阅读页可分（" + ThemeProbe.Describe(panel.ComposerBackgroundForCheck) + "）");
+
         // A scripted stream: the send path must append the user turn, then stream the reply into the flow.
         // The Markdown it carries is deliberately the full element set the chat can receive: heading,
         // inline code, link, bare URL, list, table and a fenced block.

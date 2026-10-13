@@ -581,7 +581,7 @@
     <!-- ==================== Sidebar ==================== -->
     <Grid Grid.Row="1" Grid.Column="0" ColumnDefinitions="*,5">
       <Border x:Name="Sidebar" Grid.Column="0"
-              Background="{DynamicResource Hub.SurfaceAlt}"
+              Background="{DynamicResource Hub.SurfaceChrome}"
               BorderBrush="{DynamicResource Hub.BorderSubtle}"
               BorderThickness="0,0,1,0"
               Padding="14,12,12,18" Width="300"
@@ -829,7 +829,7 @@
       <Border x:Name="InspectorResizeGrip" Grid.Column="0" Background="Transparent"
               Cursor="SizeWestEast" IsVisible="False" />
       <Border x:Name="Inspector" Grid.Column="1" Width="360" ClipToBounds="True"
-              Background="{DynamicResource Hub.SurfaceAlt}"
+              Background="{DynamicResource Hub.SurfaceChrome}"
               BorderBrush="{DynamicResource Hub.BorderSubtle}" BorderThickness="1,0,0,0">
         <ContentControl x:Name="InspectorHost" />
       </Border>
@@ -852,7 +852,7 @@
        comment on the two buttons). The picture viewer below is deliberately not built this way — it is modal,
        its own Escape is enough, and nothing on the bar is what dismisses it. -->
   <Grid x:Name="InspectorExpandHost" Grid.Row="1" IsVisible="False">
-    <Border x:Name="InspectorExpandSurface" Background="{DynamicResource Hub.SurfaceAlt}" ClipToBounds="True">
+    <Border x:Name="InspectorExpandSurface" Background="{DynamicResource Hub.SurfaceChrome}" ClipToBounds="True">
       <ContentControl x:Name="InspectorExpandContent" />
     </Border>
   </Grid>

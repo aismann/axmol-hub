@@ -17,8 +17,12 @@
     <ResourceDictionary x:Key="Dark">
 
       <SolidColorBrush x:Key="Hub.Background" Color="#1E1E1E" />
-      <SolidColorBrush x:Key="Hub.Surface" Color="#292929" />
+      <SolidColorBrush x:Key="Hub.Surface" Color="#2E2E2E" />
       <SolidColorBrush x:Key="Hub.SurfaceAlt" Color="#242424" />
+      <!-- The spine: sidebar and inspector column. In dark it sits *below* the reading page so the page
+           reads as the forward surface and the spine recedes; in light it is a touch darker than the page,
+           the macOS / ChatGPT convention. Separate from SurfaceAlt (the composer/log card) on purpose. -->
+      <SolidColorBrush x:Key="Hub.SurfaceChrome" Color="#1A1A1A" />
       <SolidColorBrush x:Key="Hub.SurfaceRaised" Color="#353535" />
       <SolidColorBrush x:Key="Hub.SurfaceSunken" Color="#202020" />
       <SolidColorBrush x:Key="Hub.ProviderSurface" Color="#252525" />
@@ -116,6 +120,7 @@
       <SolidColorBrush x:Key="Hub.Background" Color="#F4F5F7" />
       <SolidColorBrush x:Key="Hub.Surface" Color="#FFFFFF" />
       <SolidColorBrush x:Key="Hub.SurfaceAlt" Color="#EDEEF2" />
+      <SolidColorBrush x:Key="Hub.SurfaceChrome" Color="#E8E9ED" />
       <!-- A light theme has nowhere above white to lift a surface, so "raised" here means "one step above the well
            it sits in": the chips and attachment pills live on SurfaceAlt (the composer), and the value below was
            within five levels of it — a chip that was there and could not be seen. The border each of them draws is

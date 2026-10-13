@@ -4141,6 +4141,7 @@ public partial class ChatPanel : UserControl
     internal void SetComposerFocusForCheck(bool focused) => SetComposerFocus(focused);
     internal bool ComposerFocusedForCheck => ComposerFrame.Classes.Contains("focused");
     internal IBrush? ComposerBorderBrushForCheck => ComposerFrame.BorderBrush;
+    internal IBrush? ComposerBackgroundForCheck => ComposerFrame.Background;
     internal bool SendButtonEnabledForCheck => SendButton.IsEnabled;
     internal bool PermissionChipEnabledForCheck => PermissionChip.IsEnabled;
     internal bool ChatActivityVisibleForCheck => _live is { Timer: not null };
