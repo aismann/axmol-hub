@@ -894,12 +894,15 @@ public static class HubTexts
         ["ToolApprovalAskHint"] = ("除只读查询外，每个操作都先问一次，包括跑命令",
             "Everything except a read asks first, commands included"),
         ["ToolApprovalAuto"] = ("自动审批", "Auto-approve"),
-        ["ToolApprovalAutoHint"] = ("工作目录里的写入和命令直接执行；抓屏、派生子会话、换工作目录仍要问",
-            "Writes and commands inside the workspace run on their own; the screen, a child session and a new "
-            + "working directory still ask"),
+        // Both hints name the rebuild, because it is the one thing in the sandbox that no longer runs on its own:
+        // a settings page that promised otherwise would be the second record of this rule, and the rule has to be
+        // readable from every place that states it.
+        ["ToolApprovalAutoHint"] = ("工作目录里的写入和一般命令直接执行；重新构建、抓屏、派生子会话、换工作目录仍要问",
+            "Writes and ordinary commands inside the workspace run on their own; a rebuild, the screen, a child "
+            + "session and a new working directory still ask"),
         ["ToolApprovalFull"] = ("完全访问", "Full access"),
-        ["ToolApprovalFullHint"] = ("什么都不再问，包括抓屏和这个版本没登记过的工具",
-            "Nothing asks any more, including the screen and any tool this build does not know"),
+        ["ToolApprovalFullHint"] = ("除了重新构建，什么都不再问，包括抓屏和这个版本没登记过的工具",
+            "Nothing asks any more except a rebuild, including the screen and any tool this build does not know"),
         ["ToolPermission"] = ("工具权限", "Tool permission"),
         ["ToolPermissionHint"] = ("助手动手之前的默认严格程度。单个会话可以在聊天里改，不影响这里。", "How strict the assistant is by default before it acts. A single session can override this in the chat without changing it here."),
         // The app-wide trust list: what a card's "always allow" writes, seen where it can be taken back. The hint

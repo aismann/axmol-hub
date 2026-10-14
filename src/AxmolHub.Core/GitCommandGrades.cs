@@ -1,5 +1,5 @@
-using System.Text;
 using System.Text.Json;
+using Token = AxmolHub.Core.ShellCommandLine.Token;
 
 namespace AxmolHub.Core;
 
@@ -23,6 +23,10 @@ namespace AxmolHub.Core;
 /// <i>unrecognised git verb</i> is the exception and goes up: an extension or alias outside the read set
 /// (<c>git lfs install</c>, <c>git flow feature start</c>) can move the tree, and nothing about a verb nobody
 /// recognised says it will not.
+///
+/// <para>The line is split by <see cref="ShellCommandLine"/>, the same reader
+/// <see cref="BuildCommandGrades"/> uses: two classifiers with two tokenizers would answer two different
+/// questions about one command string.</para>
 /// </summary>
 public enum GitGrade
 {
@@ -50,14 +54,6 @@ public enum GitGrade
 /// </summary>
 public static class GitCommandGrades
 {
-    /// <summary>Segments past this are not looked at. A line with thirty separators is not one a person can
-    /// approve anyway, and the cap keeps a pathological argument bounded.</summary>
-    public const int MaxSegments = 32;
-
-    /// <summary>How much of a command line is read. Every segment's head token arrives long before this, so the
-    /// cut costs nothing in accuracy; the limit is on parsing an absurd argument.</summary>
-    public const int MaxCommandCharacters = 8000;
-
     /// <summary>Verbs that only read. A verb missing from both sets lands on
     /// <see cref="GitGrade.GitUnclassifiable"/>, which asks, so an omission costs a card rather than opening a
     /// hole — which is why the write set is allowed to be short.</summary>
@@ -85,21 +81,6 @@ public static class GitCommandGrades
     private static readonly HashSet<string> GlobalFlagsWithValues = new(StringComparer.OrdinalIgnoreCase)
     {
         "-C", "-c", "--exec-path", "--git-dir", "--namespace", "--super-prefix", "--work-tree",
-    };
-
-    /// <summary>Shells whose command payload is itself a command line, and so worth parsing again.</summary>
-    private static readonly HashSet<string> ShellNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "bash", "cmd", "dash", "ksh", "pwsh", "powershell", "sh", "zsh",
-    };
-
-    /// <summary>Programs that only arrange somebody else's execution, so the verb to grade is the next token's.
-    /// <c>env</c> and <c>nohup</c> are the ones a build script really uses, and <c>sudo</c> is the one that would
-    /// otherwise hide a write behind the most privileged prefix available; without them <c>env git commit</c>
-    /// would read as "a program called env ran".</summary>
-    private static readonly HashSet<string> PassThroughNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "command", "env", "nohup", "sudo", "time", "timeout",
     };
 
     /// <summary>Whether a grade has to cost more than the sandbox tier. Reads are not here on purpose.</summary>
@@ -134,12 +115,8 @@ public static class GitCommandGrades
 
     private static GitGrade Grade(string? command, int depth)
     {
-        if (string.IsNullOrWhiteSpace(command)) return GitGrade.NotGit;
-        var text = command!.Trim();
-        if (text.Length > MaxCommandCharacters) text = text[..MaxCommandCharacters];
-
         var worst = GitGrade.NotGit;
-        foreach (var segment in SplitSegments(text))
+        foreach (var segment in ShellCommandLine.SegmentsOf(command))
         {
             var grade = GradeSegment(segment, depth);
             if (Rank(grade) > Rank(worst)) worst = grade;
@@ -156,96 +133,25 @@ public static class GitCommandGrades
         _ => 0,
     };
 
-    /// <summary>One parsed word of the command line. <see cref="Quoted"/> is kept because <c>"git commit"</c>
-    /// is one argument to <c>echo</c> rather than a git call, while <c>"git" commit</c> really is one.</summary>
-    private readonly record struct Token(string Text, bool Quoted);
-
-    /// <summary>Split on the shell's sequence separators — <c>&amp;&amp;</c>, <c>||</c>, <c>|</c>, <c>;</c>,
-    /// <c>&amp;</c>, newline — with quoting respected, so a separator inside a commit message invents no segment.
-    /// Redirect characters split too, which leaves heads like <c>2></c> and <c>1</c> that nobody recognises: they
-    /// grade as <see cref="GitGrade.NotGit"/>, and the real verb is still read in its own segment.</summary>
-    private static List<List<Token>> SplitSegments(string command)
-    {
-        var segments = new List<List<Token>>();
-        var current = new List<Token>();
-        var buffer = new StringBuilder();
-        var quotedInBuffer = false;
-
-        void FlushToken()
-        {
-            if (buffer.Length == 0) return;
-            current.Add(new Token(buffer.ToString(), quotedInBuffer));
-            buffer.Clear();
-            quotedInBuffer = false;
-        }
-
-        void FlushSegment()
-        {
-            FlushToken();
-            if (current.Count == 0) return;
-            segments.Add(current);
-            current = new List<Token>();
-        }
-
-        for (var i = 0; i < command.Length; i++)
-        {
-            if (segments.Count >= MaxSegments) break;
-            var c = command[i];
-            if (c is '"' or '\'')
-            {
-                quotedInBuffer = true;
-                var quote = c;
-                i++;
-                while (i < command.Length && command[i] != quote)
-                {
-                    // Only a double-quoted string honours the backslash escape; inside single quotes every
-                    // character is literal, which is git's own rule and the one a shell follows.
-                    if (quote == '"' && command[i] == '\\' && i + 1 < command.Length && command[i + 1] == quote) i++;
-                    buffer.Append(command[i]);
-                    i++;
-                }
-                continue;
-            }
-            if (char.IsWhiteSpace(c))
-            {
-                if (c is '\n' or '\r') FlushSegment();
-                else FlushToken();
-                continue;
-            }
-            if (c is ';' or '|' or '&' or '<' or '>')
-            {
-                FlushToken();
-                if ((c == '|' || c == '&') && i + 1 < command.Length && command[i + 1] == c) i++;
-                FlushSegment();
-                continue;
-            }
-            buffer.Append(c);
-        }
-        FlushSegment();
-        return segments;
-    }
-
     /// <summary>Grade one segment by its head word, after any environment prefix. <paramref name="depth"/>
     /// bounds the recursion through a shell payload or a pass-through program, so a self-nesting argument
     /// cannot walk itself out of the answer.</summary>
     private static GitGrade GradeSegment(List<Token> segment, int depth)
     {
-        var index = 0;
-        while (index < segment.Count && IsEnvironmentAssignment(segment[index])) index++;
+        var index = ShellCommandLine.HeadIndex(segment);
         if (index >= segment.Count) return GitGrade.NotGit;
 
-        var head = segment[index];
-        var name = ExecutableName(head.Text);
+        var name = ShellCommandLine.ExecutableName(segment[index].Text);
         if (name.Length == 0) return GitGrade.NotGit;
         if (string.Equals(name, "git", StringComparison.Ordinal)) return GradeGitCall(segment, index + 1);
         if (depth < 2)
         {
-            if (ShellNames.Contains(name))
+            if (ShellCommandLine.IsShell(name))
             {
-                var payload = CommandPayload(segment, index + 1);
+                var payload = ShellCommandLine.CommandPayload(segment, index + 1);
                 return payload is null ? GitGrade.NotGit : Grade(payload, depth + 1);
             }
-            if (PassThroughNames.Contains(name)) return GradeTail(segment, index + 1, depth);
+            if (ShellCommandLine.IsPassThrough(name)) return GradeTail(segment, index + 1, depth);
         }
         return GitGrade.NotGit;
     }
@@ -261,49 +167,20 @@ public static class GitCommandGrades
         for (var i = from; i < segment.Count; i++)
         {
             var token = segment[i];
-            if (IsEnvironmentAssignment(token)) continue;
+            if (ShellCommandLine.IsEnvironmentAssignment(token)) continue;
             if (token.Text.StartsWith('-') && !token.Quoted) continue;
-            var name = ExecutableName(token.Text);
+            var name = ShellCommandLine.ExecutableName(token.Text);
             if (name.Length == 0) continue;
             if (string.Equals(name, "git", StringComparison.Ordinal)) return GradeGitCall(segment, i + 1);
             if (depth >= 2) continue;
-            if (ShellNames.Contains(name))
+            if (ShellCommandLine.IsShell(name))
             {
-                var payload = CommandPayload(segment, i + 1);
+                var payload = ShellCommandLine.CommandPayload(segment, i + 1);
                 return payload is null ? GitGrade.NotGit : Grade(payload, depth + 1);
             }
-            if (PassThroughNames.Contains(name)) return GradeTail(segment, i + 1, depth + 1);
+            if (ShellCommandLine.IsPassThrough(name)) return GradeTail(segment, i + 1, depth + 1);
         }
         return GitGrade.NotGit;
-    }
-
-    /// <summary><c>LC_ALL=C git status</c>: an assignment before the program is not the program.</summary>
-    private static bool IsEnvironmentAssignment(Token token)
-    {
-        if (token.Quoted) return false;
-        var at = token.Text.IndexOf('=');
-        if (at <= 0) return false;
-        for (var i = 0; i < at; i++)
-        {
-            var c = token.Text[i];
-            // A leading '-' makes this an option that happens to carry a value (--pretty=format:%h), not a
-            // variable, and options are never skipped as a prefix.
-            if (char.IsLetterOrDigit(c) || c is '_' or ':' or '$' or '.') continue;
-            return false;
-        }
-        return true;
-    }
-
-    /// <summary>The program a segment runs, as a bare lower-cased name: <c>git</c>, <c>git.exe</c>,
-    /// <c>/usr/bin/git</c> and <c>C:\Program Files\Git\bin\git.exe</c> name one program, and PowerShell's call
-    /// operator is decoration on it.</summary>
-    private static string ExecutableName(string text)
-    {
-        var trimmed = text.Trim().TrimStart('&', '.');
-        if (trimmed.Length == 0) return "";
-        var name = Path.GetFileName(trimmed.Replace('\\', '/'));
-        if (name.Length >= 4 && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
-        return name.ToLowerInvariant();
     }
 
     /// <summary>Read the verb after <c>git</c>, skipping its own options.</summary>
@@ -418,37 +295,5 @@ public static class GitCommandGrades
                 : GitGrade.GitWrite;
         }
         return defaultWrite ? GitGrade.GitWrite : GitGrade.GitRead;
-    }
-
-    /// <summary>
-    /// The command payload of a shell started for one command: <c>pwsh -c "git push"</c> is <c>git push</c> as
-    /// far as this classifier is concerned, because treating it as "a shell ran and nothing happened" is exactly
-    /// the route a model takes around a rule it dislikes. Everything after the flag is taken, so the unquoted
-    /// <c>cmd /c git push</c> form finds its verb too.
-    ///
-    /// Two blind spots are accepted and named, because closing them would cost a card for every script run: a
-    /// payload held in a variable (<c>pwsh -c $cmd</c> after <c>$cmd="git push"</c>) and a script file
-    /// (<c>bash deploy.sh</c>). Both sit on the read side of a ladder that only goes up, and the same shapes are
-    /// invisible to every client's subcommand rules.
-    /// </summary>
-    private static string? CommandPayload(List<Token> segment, int rest)
-    {
-        for (var i = rest; i < segment.Count; i++)
-        {
-            var flag = segment[i].Text.ToLowerInvariant();
-            if (flag is not ("-c" or "-lc" or "-command" or "/c" or "/lc")) continue;
-            if (i + 1 >= segment.Count) return null;
-            var first = segment[i + 1].Text;
-            // A variable rather than a command line: nothing here can see inside it.
-            if (first.Length == 0 || first[0] is '$' or '%') return null;
-            var payload = new StringBuilder();
-            for (var j = i + 1; j < segment.Count; j++)
-            {
-                if (payload.Length > 0) payload.Append(' ');
-                payload.Append(segment[j].Text);
-            }
-            return payload.ToString();
-        }
-        return null;
     }
 }

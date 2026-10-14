@@ -275,9 +275,20 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                 builder.Append(Environment.NewLine)
                     .Append("It was still running after Hub gave up on killing it, so it may still hold files in "
                             + "the workspace.");
-            builder.Append(Environment.NewLine)
-                .Append("timeout_seconds counts silence, not total runtime, so raise it only if the command really "
-                        + "stopped printing. Do not retry the same command unchanged.");
+            if (BuildCommandGrades.IsBuild(command))
+                // The one place the old sentence was a lie. "Do not retry the same command unchanged" told a model
+                // that a changed flag had earned it another run, and a second compile beside the one Hub just
+                // stopped is how a build tree ends half-written: killing the tree does not reach the detached
+                // MSBuild nodes, VBCSCompiler or the dotnet build server, which outlive this process by design.
+                // What the model owes here is not a cleverer command line, it is a question.
+                builder.Append(Environment.NewLine)
+                    .Append("This was a build, and build services detach from the process tree Hub killed, so "
+                            + "compilation may still be going under the hood. Do not retry it with different flags "
+                            + "and do not clean anything: tell the user what it printed and ask how to proceed.");
+            else
+                builder.Append(Environment.NewLine)
+                    .Append("timeout_seconds counts silence, not total runtime, so raise it only if the command "
+                            + "really stopped printing. Do not retry the same command unchanged.");
             return builder.ToString();
         }
         catch (Exception ex)
@@ -286,7 +297,17 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         }
 
         var output = Shaped(result.Output, result.Error);
-        return $"{header} · exit: {result.ExitCode}{Environment.NewLine}{output}";
+        var body = $"{header} · exit: {result.ExitCode}{Environment.NewLine}{output}";
+        if (result.ExitCode != 0 && BuildCommandGrades.IsBuild(command))
+            // Only for a build: a failing `ls` does not need a lecture, and a sentence that lectures about everything
+            // gets skimmed for the one case where it is true. A compile that stopped partway leaves some outputs new
+            // and some stale, and the two halves are indistinguishable from the exit code alone — so the next build
+            // is the user's call, not a retry with a different flag.
+            return body + Environment.NewLine
+                   + "The build failed, which can leave the tree half new: outputs from before this run and outputs "
+                   + "from it are now mixed. Do not retry it with changed flags and do not delete anything to fix "
+                   + "it. Read what the compiler said, and ask the user before running another build.";
+        return body;
     }
 
     [Description("Set the directory this session's file and command tools are confined to. Nothing outside it can "

@@ -351,7 +351,10 @@ public partial class ChatPanel
             .ToList();
         // The header carries the worst tier in the group, because that is what the answer agrees to: a card for two
         // writes and a screen capture has to read like a screen capture. Each row keeps its own evidence below.
-        var risk = risks.Contains(ToolRisk.SystemCommand) ? ToolRisk.SystemCommand
+        // A build is ranked above the reach tier for the one reason that matters on this card: what the person is
+        // being asked to spend is the tree, and nothing they do after this answer can put it back.
+        var risk = risks.Contains(ToolRisk.BuildCommand) ? ToolRisk.BuildCommand
+            : risks.Contains(ToolRisk.SystemCommand) ? ToolRisk.SystemCommand
             : risks.Contains(ToolRisk.WorkspaceWrite) ? ToolRisk.WorkspaceWrite
             : _chat.RiskFor(conversationId, turn.ToolName ?? "", turn.ToolArguments);
         var title = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
@@ -359,17 +362,20 @@ public partial class ChatPanel
         {
             Classes = { "approval-risk" },
             // The tier picks the glyph, and the two extremes are the ones a person has to tell apart at a glance:
-            // full-access geometry for something that reaches past the sandbox, the ask geometry for a write.
-            // Everything below that — a command inside the session's own directory, a note, a peer session's
-            // history — takes the auto glyph, which until this tier existed had nothing to draw.
+            // full-access geometry for the tiers that cannot be waived — what reaches past the sandbox, and what
+            // burns the build tree — the ask geometry for a write. Everything below that — a command inside the
+            // session's own directory, a note, a peer session's history — takes the auto glyph, which until this
+            // tier existed had nothing to draw.
             Data = ThemeGeometry(risk switch
             {
-                ToolRisk.SystemCommand => "Hub.Icon.PermissionFull",
+                ToolRisk.SystemCommand or ToolRisk.BuildCommand => "Hub.Icon.PermissionFull",
                 ToolRisk.WorkspaceWrite => "Hub.Icon.PermissionAsk",
                 _ => "Hub.Icon.PermissionAuto",
             }),
         };
-        if (risk == ToolRisk.SystemCommand) glyph.Classes.Add("system-command");
+        // The class is the plate that says "no button here will make this stop asking", which is the message both
+        // top tiers carry; naming it after one of them would be the older, narrower claim.
+        if (risk is ToolRisk.SystemCommand or ToolRisk.BuildCommand) glyph.Classes.Add("system-command");
         title.Children.Add(glyph);
         title.Children.Add(new TextBlock
         {
@@ -446,10 +452,12 @@ public partial class ChatPanel
 
         var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0) };
         // "Always allow" renamed to its consequence: the grant is app-wide now, and the bare word promised more
-        // than it does. It is not offered on the tier that reaches past the sandbox, because a button that changed
-        // nothing is a button that teaches the ladder is decoration — the gate ignores a grant on that tier. And it
-        // is not offered on a group, because a grant is about one tool while the card is about several: clicking it
-        // here would stop future questions for tools the person has not seen one at a time.
+        // than it does. It is not offered on a tier a grant cannot open — ToolApprovalPolicy.IsGrantable is the same
+        // question the gate asks, so a button that changed nothing cannot appear on a card whose call the gate will
+        // keep parking: what reaches past the sandbox, a question, or a rebuild. A button the gate ignores would
+        // teach the ladder is decoration. And it is not offered on a group, because a grant is about one tool while
+        // the card is about several: clicking it here would stop future questions for tools the person has not seen
+        // one at a time.
         var secondary = new StackPanel
         {
             Name = "ApprovalSecondaryActions",
@@ -457,7 +465,7 @@ public partial class ChatPanel
             Spacing = 4,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        if (group.Count == 1 && risk != ToolRisk.SystemCommand)
+        if (group.Count == 1 && ToolApprovalPolicy.IsGrantable(risk))
         {
             var always = new Button
             {

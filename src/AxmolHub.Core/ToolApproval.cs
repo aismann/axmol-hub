@@ -18,6 +18,10 @@ public enum ToolRisk
     /// workspace and the URL both came from a request the person made, and a build or a documentation page is the
     /// ordinary shape of it. It is still action, so a card shows in the strict tier.
     ///
+    /// <para>The one command in this tier that no longer lives here is a rebuild: that moved to
+    /// <see cref="BuildCommand"/>, which asks even under 自动审批, so "a command inside the directory I chose" is
+    /// not quite the same promise it was before.</para>
+    ///
     /// <para>Said plainly, because the old wording was a lie by half: an outbound fetch's consequences do
     /// <b>not</b> stay in that directory. The tier holds for a different reason — a <c>run_command</c> in the same
     /// sandbox has been able to reach the same address silently since this table was written, so putting the named,
@@ -37,6 +41,21 @@ public enum ToolRisk
     /// tool this build has never heard of. A new name lands here rather than nowhere: an unknown tool is the one
     /// least able to vouch for itself, and no "always allow" grant opens this tier.</summary>
     SystemCommand,
+
+    /// <summary>Runs a build, or takes away the derived state one depends on — what
+    /// <see cref="BuildCommandGrades"/> recognises in a command line.
+    ///
+    /// <para>This is the tier that <b>does not stop asking</b>, and it is here because of a failure on the user's
+    /// own machine rather than a category: an assistant that decided to rebuild twice while a compile was already
+    /// running left the tree half new, and no later approval can repair that. A cancel cannot rescue it either —
+    /// <see cref="ProcessRunner"/> kills the process tree that is still attached, while MSBuild's node reuse,
+    /// <c>VBCSCompiler</c> and the <c>dotnet</c> build server detach and outlive it.</para>
+    ///
+    /// <para>So the consequence is not ranked above <see cref="SystemCommand"/> (a screen capture is nobody's
+    /// build) — what is different is <b>who may waive it</b>. A <c>full</c> answer means "do not interrupt me
+    /// about permissions", and it does not mean "you may wreck my build cache"; a corrupt cache is not
+    /// undoable by a card. Which is why this tier asks in every mode and no grant opens it.</para></summary>
+    BuildCommand,
 
     /// <summary>The assistant's own notes, written inside a directory Hub owns. Never asks — a note that costs
     /// a card is a note that never gets written — but every write is audited, and the path guard still runs.</summary>
@@ -89,14 +108,20 @@ public static class ToolApprovalPolicy
     /// the middle means "trusted by default", and only an added tier <i>above</i> this one should ever ask.
     ///
     /// <para><see cref="ToolRisk.AskUser"/> answers above the mode switch rather than inside it, which is the
-    /// only place a mode cannot reach: <c>Full => false</c> would delete every question, and a person who has
+    /// only place a mode cannot reach: <c>Full =&gt; false</c> would delete every question, and a person who has
     /// said "do not ask permission" has not thereby said "answer for me". The mode is what chooses whether a
     /// question can be <i>avoided</i> — by not declaring the tool at all — and that decision lives in the tool
-    /// list, not here.</para></summary>
+    /// list, not here.</para>
+    ///
+    /// <para><see cref="ToolRisk.BuildCommand"/> answers in the same place for a different reason. It is not a
+    /// question and not a reach past the sandbox; it is an action whose result cannot be undone by anything that
+    /// happens later, so no mode is allowed to speak for it. "Full access" is a sentence about interruptions, and
+    /// a wrecked build cache is not one.</para></summary>
     public static bool RequiresApproval(string? mode, ToolRisk risk) => risk switch
     {
         ToolRisk.AssistantNote => false,
         ToolRisk.AskUser => true,
+        ToolRisk.BuildCommand => true,
         _ => ToolApprovalModes.Normalize(mode) switch
         {
             ToolApprovalModes.Full => false,
@@ -104,6 +129,18 @@ public static class ToolApprovalPolicy
             _ => risk != ToolRisk.ReadOnly,
         },
     };
+
+    /// <summary>Whether a 「总是允许」 grant could ever cover this tier — asked in one place because two
+    /// independent answers ("does the grant pass the gate", "does the card offer the button") that disagree would
+    /// be a button that does nothing or a grant that was never honoured.
+    ///
+    /// <para>Three tiers are not grantable, for three different reasons. <see cref="ToolRisk.SystemCommand"/>: a
+    /// grant is about permission and that tier is about reach, so one click on a file write cannot buy the screen.
+    /// <see cref="ToolRisk.AskUser"/>: a grant is <i>answering on the person's behalf</i>, which for that call is
+    /// not a waived permission but a fabricated result. <see cref="ToolRisk.BuildCommand"/>: the grant is permanent
+    /// and the damage is not undoable, so every rebuild needs the person awake.</para></summary>
+    public static bool IsGrantable(ToolRisk risk)
+        => risk is not (ToolRisk.SystemCommand or ToolRisk.AskUser or ToolRisk.BuildCommand);
 }
 
 /// <summary>

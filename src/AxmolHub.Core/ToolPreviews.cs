@@ -91,12 +91,17 @@ public static class ToolPreviews
             : WorkspaceTools.DefaultCommandTimeoutSeconds;
         var head = $"{shell.Label} · {root} · idle timeout {timeout}s";
         var grade = GitCommandGrades.Grade(Text(arguments, "command"));
-        var flag = grade switch
-        {
-            GitGrade.GitWrite => "\ngit write · moves the index, the working tree, or history",
-            GitGrade.GitUnclassifiable => "\ngit subcommand Hub does not recognise · treated as a write",
-            _ => "",
-        };
+        // The rebuild line is first because the tier is decided in that order, and it answers the same doubt the git
+        // line answers: a person on 自动审批 who watches `cmake --build` park will read the card as a bug in the
+        // mode unless it says what is at stake — the tree, and derived state no later approval can put back.
+        var flag = BuildCommandGrades.IsBuild(Text(arguments, "command"))
+            ? "\nrebuild · compiles into this directory, or removes what a build already wrote"
+            : grade switch
+            {
+                GitGrade.GitWrite => "\ngit write · moves the index, the working tree, or history",
+                GitGrade.GitUnclassifiable => "\ngit subcommand Hub does not recognise · treated as a write",
+                _ => "",
+            };
         return $"{head}{flag}\n{Text(arguments, "command")}";
     }
 

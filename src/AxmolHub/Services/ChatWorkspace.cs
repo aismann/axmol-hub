@@ -3672,17 +3672,19 @@ public sealed class ChatWorkspace : IDisposable
             // three-mode ladder would be a decoration: what decides a call would be whichever verb was clicked
             // last, rather than what the call can do.
             //
-            // The question tier is excluded for a different reason than the one above it. SystemCommand stays
-            // askable-under-grant because a grant is about permission and that tier is about reach; AskUser is
-            // excluded because a grant is <i>answering on the person's behalf</i>, which for this call is not a
-            // waived permission but a fabricated result. Nobody ever said "always let me decide what the assistant
-            // should do" by clicking a button on one file write.
+            // The three tiers a grant cannot open are listed once, in Core, because the gate and the card's button
+            // have to disagree with nobody: SystemCommand stays askable-under-grant because a grant is about
+            // permission and that tier is about reach; AskUser is excluded because a grant is <i>answering on the
+            // person's behalf</i>, which for that call is not a waived permission but a fabricated result;
+            // BuildCommand because the grant is permanent and a wrecked build tree is not something a later card can
+            // undo. Nobody ever said "always let me decide what the assistant should do" by clicking a button on one
+            // file write, and nobody ever said "you may rebuild whenever you feel like it" either.
             CallVerdict Judge(ChatPipeline.ToolCallInfo member)
             {
                 var risk = ChatTools.RiskOf(member.Name, member.ArgumentsJson, scope.Workspace, projects);
                 var asks = risk == ToolRisk.AskUser;
                 var sessionGrant = ToolTrust.Contains(conversation.AutoApprovedTools, member.Name);
-                var granted = risk is not (ToolRisk.SystemCommand or ToolRisk.AskUser)
+                var granted = ToolApprovalPolicy.IsGrantable(risk)
                               && (sessionGrant || ToolTrust.Contains(TrustedTools, member.Name));
                 // Nothing to show, so nothing to wait on. Letting it through hands the call to the tool's own body,
                 // which answers with the sentence about what the model got wrong — the alternative is a card that
@@ -4086,12 +4088,13 @@ public sealed class ChatWorkspace : IDisposable
     }
 
     /// <summary>Whether a grant for this call could ever be honoured — see
-    /// <see cref="GateToolCallAsync"/>, where the same tier test is what makes a grant buy a pass.</summary>
+    /// <see cref="GateToolCallAsync"/>, where the same tier test is what makes a grant buy a pass. One predicate in
+    /// Core answers it, so a card cannot offer a button the gate would ignore.</summary>
     private bool IsGrantable(string conversationId, string toolName, string? argumentsJson)
     {
         var scope = ScopeFor(conversationId);
-        return ChatTools.RiskOf(toolName, argumentsJson, scope.Workspace, ProjectPaths(scope))
-               is not (ToolRisk.SystemCommand or ToolRisk.AskUser);
+        return ToolApprovalPolicy.IsGrantable(
+            ChatTools.RiskOf(toolName, argumentsJson, scope.Workspace, ProjectPaths(scope)));
     }
 
     /// <summary>Runs what one answered decision owes: every still-unanswered call of the response the person

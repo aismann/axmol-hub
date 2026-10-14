@@ -5868,6 +5868,12 @@ public partial class ShellCheckWindow : Window
         // One response asking for three writes. This is the shape the batch card exists for: three decisions the
         // person is asked to make as one, in one card that has to fit above the composer without covering it.
         var tripleSession = chat.StartConversation();
+        // The one call 完全访问 must still ask about. Kept a session of its own rather than folded into the
+        // full-access fixtures above, because those answer with a read or a `Get-Location` — commands whose tier the
+        // mode is allowed to wave through — and this cell's whole claim is that the mode does <b>not</b> reach a
+        // rebuild. It is refused, never approved: the tool is real, and a self-check that ran `cmake --build` would
+        // be the exact thing the rule exists to stop.
+        var buildSession = chat.StartConversation();
         var readClient = new ApprovalChatClient();
         var parkClient = new ApprovalChatClient();
         var denyClient = new ApprovalChatClient();
@@ -5879,6 +5885,7 @@ public partial class ShellCheckWindow : Window
         var askRunClient = new ApprovalChatClient { ToolName = "run_command" };
         var movedClient = new ApprovalChatClient();
         var tripleClient = new ApprovalChatClient();
+        var buildClient = new ApprovalChatClient { ToolName = "run_command" };
         var grantClient = new ApprovalChatClient { ToolName = "run_command" };
         var peerClient = new ApprovalChatClient { ToolName = "run_command" };
         // Chosen so the cell is safe even when the rule it tests is broken: `tmp/` is gitignored and the index is
@@ -5971,6 +5978,7 @@ public partial class ShellCheckWindow : Window
                 var id when id == askRunSession.Id => askRunClient,
                 var id when id == movedSession.Id => movedClient,
                 var id when id == tripleSession.Id => tripleClient,
+                var id when id == buildSession.Id => buildClient,
                 var id when id == fetchSession.Id => fetchClient,
                 var id when id == searchSession.Id => searchClient,
                 var id when id == searchedSession.Id => searchedClient,
@@ -6017,7 +6025,8 @@ public partial class ShellCheckWindow : Window
             batchClient.Thinking = [batchThinking];
             foreach (var session in new[] { readSession, parkSession, denySession, supersededSession, restartSession,
                     badgeSession, batchSession, autoRunSession, askRunSession, movedSession, grantSession, peerSession,
-                    gitWriteSession, fetchSession, searchSession, searchedSession, longCardSession, tripleSession })
+                    gitWriteSession, fetchSession, searchSession, searchedSession, longCardSession, tripleSession,
+                    buildSession })
                 chat.SetWorkspaceRoot(session.Id, workspace);
 
             // ── what the mode answers are, in priority order ──
@@ -6081,7 +6090,15 @@ public partial class ShellCheckWindow : Window
             Check(ChatTools.RiskOf("run_command", Command("git status"), sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", Command("git -C sub diff HEAD"), sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", Command("git log --oneline -5"), sandbox) == ToolRisk.WorkspaceCommand
-                  && ChatTools.RiskOf("run_command", Command("cmake --build build"), sandbox) == ToolRisk.WorkspaceCommand
+                  && ChatTools.RiskOf("run_command", Command("cmake --build build"), sandbox) == ToolRisk.BuildCommand
+                  // The order, asserted where the two ladders are read: a line that carries a git write <i>and</i> a
+                  // build must land on the tier that asks under 完全访问, not on the one full access answers.
+                  && ChatTools.RiskOf("run_command", Command("pwsh -c \"git commit -m x && cmake --build build\""), sandbox) == ToolRisk.BuildCommand
+                  && ChatTools.RiskOf("run_command", Command("git commit -m x && cmake --build build"), sandbox) == ToolRisk.BuildCommand
+                  // …while a build the classifier cannot name keeps the sandbox tier — the fail-open the plan named
+                  // out loud, recorded here so it is a known shape and not an accident: still inside the sandbox,
+                  // still holding the change gate, so the worst it does is skip the question.
+                  && ChatTools.RiskOf("run_command", Command("cmd /c build.bat"), sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", null, sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", Command("git commit -m x"), sandbox) == ToolRisk.SystemCommand
                   && ChatTools.RiskOf("run_command", Command("git add -A && git commit -m x"), sandbox) == ToolRisk.SystemCommand
@@ -6091,7 +6108,7 @@ public partial class ShellCheckWindow : Window
                   // when there is no directory to decide with.
                   && ChatTools.RiskOf("run_command", Command("git lfs install"), sandbox) == ToolRisk.SystemCommand
                   && ChatTools.RiskOf("run_command", Command("git status"), WorkspaceToolScope.Empty) == ToolRisk.SystemCommand,
-                "git 写命令按子命令升到最高档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照样升，认不出的子命令按写处理");
+                "git 写命令按子命令升到最高档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照样升，认不出的子命令按写处理；构建与带构建的混合段升到重建档");
 
             // web_fetch on its own line rather than folded into the aggregate above, because of a specific negative
             // control: deleting its arm drops the name into the fallback, and the fallback answers SystemCommand —
@@ -6558,6 +6575,39 @@ public partial class ShellCheckWindow : Window
                       System.IO.File.Exists(System.IO.Path.Combine(workspace, name))),
                 "一次批准跑完整批：三个文件都写了，每条结果紧贴自己那条调用，转录仍可重放（工具结果 "
                 + (afterTriple?.Messages.Count(turn => turn.Role == ChatRoles.Tool) ?? -1) + " 条）");
+
+            // The tier that answers above the mode switch, driven end to end: 完全访问 is the mode whose whole promise
+            // is that nothing interrupts, and a rebuild is the one action it does not cover. Asserted through the
+            // gate rather than as a table cell because the failure being guarded is a card that never appears — the
+            // command runs silently, the tree goes half new, and the user finds out from the compiler.
+            chat.SetApprovalMode(buildSession.Id, ToolApprovalModes.Full);
+            buildClient.Arguments = new Dictionary<string, object?> { ["command"] = "cmake --build build" };
+            chat.OpenConversation(buildSession.Id);
+            chat.TryEnqueueSend(buildSession.Id, "把引擎编一下", null, out _);
+            var buildCallId = await WaitForPendingCallAsync(buildSession);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(buildCallId is not null && panel.PendingApprovalCardsForCheck == 1
+                  && panel.ApprovalCardTextForCheck.Contains("cmake --build build", StringComparison.Ordinal)
+                  // The grant button is not drawn here: it would be a promise that the next rebuild is silent, and
+                  // the gate ignores it, so the button would teach the person that the ladder is decoration.
+                  && !panel.ApprovalCardActionsForCheck.Contains("ApprovalAllowAlways")
+                  && panel.ComposerInputEnabledForCheck,
+                "完全访问下重新构建照样挂卡、卡上没有「总是允许」（卡 " + panel.PendingApprovalCardsForCheck
+                + "，按钮 " + panel.ApprovalCardActionsForCheck + "）");
+            var buildAnswers = buildClient.Answers;
+            chat.TryResolveApproval(buildSession.Id, buildCallId ?? "", approved: false, alwaysAllow: false, out _);
+            await WaitUntilAsync(() => buildClient.Answers > buildAnswers);
+            var afterBuild = chat.StoredCopyForCheck(buildSession.Id);
+            Check(afterBuild is not null
+                  && afterBuild.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 1
+                  && afterBuild.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                       && (turn.Text ?? "").Contains(ToolApprovalResults.Denied, StringComparison.Ordinal))
+                  && afterBuild.Messages.Count(turn => turn.ApprovalState == ChatApprovalStates.Denied) == 1
+                  && afterBuild.FirstMispairedToolCallId() is null,
+                "构建被拒之后模型拿到的是「别重试」那句，且这条调用答完了（工具结果 "
+                + (afterBuild?.Messages.Count(turn => turn.Role == ChatRoles.Tool) ?? -1) + " 条）");
 
             // The other half of 「总是允许」: a grant is supposed to outlive the session that made it, because a new
             // task used to start asking from zero. Asserted across two sessions — the one that clicks and a peer
@@ -7483,7 +7533,7 @@ public partial class ShellCheckWindow : Window
             foreach (var id in new[] { readSession.Id, parkSession.Id, denySession.Id, supersededSession.Id,
                     restartSession.Id, badgeSession.Id, batchSession.Id, autoRunSession.Id, askRunSession.Id,
                     movedSession.Id, grantSession.Id, peerSession.Id, gitWriteSession.Id, screenSession.Id,
-                    fetchSession.Id, longCardSession.Id, tripleSession.Id,
+                    fetchSession.Id, longCardSession.Id, tripleSession.Id, buildSession.Id,
                     searchSession.Id, searchedSession.Id })
                 chat.DeleteConversation(id);
             await WaitForIdleAsync(chat);

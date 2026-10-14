@@ -99,26 +99,37 @@ internal static class ChatTools
     };
 
     /// <summary>
-    /// A command's tier: the directory it will run in, and what the command does to a repository.
+    /// A command's tier: the directory it will run in, and what the command does to a repository or to a build.
     ///
-    /// The root comes from the same check the tool body runs before it spawns the shell
+    /// <para>The root comes from the same check the tool body runs before it spawns the shell
     /// (<see cref="WorkspacePaths.VerifyCommandRoot"/>, which <c>WorkspaceTools.RunCommand</c> calls first), so
     /// "this call is exempt" and "this call stays in the sandbox" are one expression rather than two that can
     /// drift apart. A missing, protected or link-ridden root is not a workspace command, and a command with no
-    /// sandbox asks in every tier but full.
+    /// sandbox asks in every tier but full.</para>
     ///
-    /// The verb is the second half, and it is the reason the arm is a method: <c>git reset --hard</c> does run in
-    /// the directory the person chose, and still moves state no file tool can hand back, so it belongs on the same
+    /// <para>The verb is the second half, and it is the reason the arm is a method: <c>git reset --hard</c> does run
+    /// in the directory the person chose, and still moves state no file tool can hand back, so it belongs on the same
     /// tier as the screen and another session — the one tier a 「总是允许」 grant cannot open (see the gate in
-    /// <c>ChatWorkspace</c>) and the one that keeps asking under 自动审批. Git *reads* stay on the sandbox tier
+    /// <c>ChatWorkspace</c>) and the one that keeps asking under 自动审批. Git <i>reads</i> stay on the sandbox tier
     /// where every established client leaves them: a model that has to ask permission to see <c>git status</c>
-    /// answers from a file it read three turns ago instead, which is a worse guard, not a stricter one.
+    /// answers from a file it read three turns ago instead, which is a worse guard, not a stricter one.</para>
+    ///
+    /// <para><b>A build is asked about before a git verb is</b>, and that order is the rule rather than a detail:
+    /// <c>pwsh -c "git commit -m x &amp;&amp; cmake --build build"</c> under 完全访问 must still produce a card, and if
+    /// the git read decided the tier the line would land on <see cref="ToolRisk.SystemCommand"/> — which full access
+    /// answers silently, with the compile attached to it. The two ladders disagree on purpose as well as on order:
+    /// git grades a bare <c>status</c> as a read and this one does not care, because what is protected here is the
+    /// output directory, not the index.</para>
     /// </summary>
     private static ToolRisk RunCommandRisk(WorkspaceToolScope scope, string? argumentsJson)
-        => WorkspacePaths.VerifyCommandRoot(scope.WorkspaceRoot, scope.Guards) != WorkspacePathVerdict.Allowed
-           || GitCommandGrades.Elevates(GitCommandGrades.CommandOf(argumentsJson))
+    {
+        if (WorkspacePaths.VerifyCommandRoot(scope.WorkspaceRoot, scope.Guards) != WorkspacePathVerdict.Allowed)
+            return ToolRisk.SystemCommand;
+        if (BuildCommandGrades.CommandOf(argumentsJson)) return ToolRisk.BuildCommand;
+        return GitCommandGrades.Elevates(GitCommandGrades.CommandOf(argumentsJson))
             ? ToolRisk.SystemCommand
             : ToolRisk.WorkspaceCommand;
+    }
 
     /// <summary>Finds a registered tool by name. The path that executes an <i>approved</i> call needs this,
     /// because it invokes the function itself instead of handing the call back to the model loop.</summary>

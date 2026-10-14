@@ -4004,6 +4004,40 @@ if (args.Contains("--check-ai-tools"))
     if (stalled.Contains("without producing any output", StringComparison.Ordinal))
         throw new Exception("A stalled command was still reported as having produced nothing.");
 
+    // The same stall, read as what it is when the command was a build. The old advice — "do not retry the same
+    // command unchanged" — told a model that a changed flag had earned it another run, and the second compile is
+    // the exact thing this rule exists to stop: killing the process tree does not reach the detached MSBuild nodes,
+    // VBCSCompiler or the dotnet build server, so the first build may still be writing while the retry starts. The
+    // fixture is a build that says one line and then goes quiet: `Remove-Item build` errors on the missing
+    // directory (so the stall has output to keep, which is the other half of the cell) and grades as a cache break.
+    var stalledBuild = await tools.RunCommand(
+        OperatingSystem.IsWindows()
+            ? "Remove-Item build -ErrorAction SilentlyContinue; Write-Output 'Configuring done'; Start-Sleep -Seconds 20"
+            : "rm -rf build 2>/dev/null; echo 'Configuring done'; sleep 20", 3);
+    if (!stalledBuild.Contains("This was a build", StringComparison.Ordinal)
+        || !stalledBuild.Contains("ask how to proceed", StringComparison.Ordinal))
+        throw new Exception($"A stalled build was given the ordinary timeout advice:{Environment.NewLine}{stalledBuild}");
+    if (stalledBuild.Contains("Do not retry the same command unchanged", StringComparison.Ordinal))
+        throw new Exception("A stalled build was still told to retry it changed, which is the side door this closes.");
+    if (!stalledBuild.Contains("Configuring done", StringComparison.Ordinal))
+        throw new Exception("The stalled build lost the line it printed before going silent.");
+
+    // A build that exits non-zero leaves the tree half new, and nothing in the exit code says how far it got. The
+    // caution is for that case alone — a failing `ls` does not get a lecture — so the same assertion also checks
+    // that an ordinary non-build failure keeps the plain result, because a warning on every exit code is a warning
+    // that gets ignored on the one exit code that needs it.
+    var failedBuild = await tools.RunCommand("dotnet build AxmolHub-NoSuch.csproj", 120);
+    if (!failedBuild.Contains("exit: 1", StringComparison.Ordinal)
+        || !failedBuild.Contains("The build failed", StringComparison.Ordinal)
+        || !failedBuild.Contains("ask the user before running another build", StringComparison.Ordinal))
+        throw new Exception($"A failed build came back without the half-written-tree caution:{Environment.NewLine}{failedBuild}");
+    var failedRead = await tools.RunCommand(
+        OperatingSystem.IsWindows() ? "Get-Content no-such-file.txt" : "cat no-such-file.txt", 30);
+    if (failedRead.Contains("The build failed", StringComparison.Ordinal))
+        throw new Exception("An ordinary failing read was lectured about build caches.");
+    Console.WriteLine("PASS: a stalled or failed build is told to ask the user instead of retrying with different "
+        + "flags, and every other command keeps the plain answer.");
+
     // A process that survives its own kill must not wedge the tool, so every wait after the kill is bounded. No
     // real process can be made unkillable on purpose, which is what the StopProcess seam is for: it reports "it
     // did not die" while the fixture sleeps twelve seconds by itself. Eight seconds is the bound that turns a
@@ -4458,7 +4492,17 @@ if (args.Contains("--check-ai-tools"))
         || Preview("run_command", """{"command":"git --no-pager diff HEAD"}""").Contains("git write", StringComparison.Ordinal)
         || commandPreview.Contains("git write", StringComparison.Ordinal))
         throw new Exception("A command that moves nothing in git carried the git flag anyway.");
-    Console.WriteLine("PASS: a command that writes to git says so on its card, and a git read does not.");
+    // The rebuild card, and the pair that proves the two flags are decided rather than pasted: a build says what it
+    // spends, a cache break says the same thing, and a `git status` beside them claims neither.
+    if (!commandPreview.Contains("rebuild · compiles into this directory", StringComparison.Ordinal))
+        throw new Exception($"A build card did not say why it parks under 自动审批:{Environment.NewLine}{commandPreview}");
+    if (!Preview("run_command", """{"command":"rm -rf build"}""").Contains("rebuild ·", StringComparison.Ordinal))
+        throw new Exception("A cache break previewed as an ordinary file deletion.");
+    if (Preview("run_command", """{"command":"git status"}""").Contains("rebuild ·", StringComparison.Ordinal)
+        || Preview("run_command", """{"command":"ls build"}""").Contains("rebuild ·", StringComparison.Ordinal))
+        throw new Exception("A command that compiles nothing carried the rebuild flag.");
+    Console.WriteLine("PASS: a command that writes to git says so on its card, and a git read does not; a rebuild "
+        + "says that it is one, and a read that merely names the build directory does not.");
     var workspacePreview = Preview("set_workspace", JsonSerializer.Serialize(new { path = workspace }));
     if (!workspacePreview.Contains("exists"))
         throw new Exception($"A workspace preview did not state the facts:{Environment.NewLine}{workspacePreview}");
@@ -5112,8 +5156,8 @@ if (args.Contains("--check-ai-web-search"))
 
 if (args.Contains("--check-ai-tool-policy"))
 {
-    // The permission model is one pure function over two small enums, so all eighteen cells are asserted rather
-    // than sampled: a transposed table is the difference between "auto lets a build run" and "auto stops at a
+    // The permission model is one pure function over two small enums, so every cell is asserted rather than
+    // sampled: a transposed table is the difference between "auto lets a build run" and "auto stops at a
     // build", and neither reads as an error at compile time.
     var table = new (string Mode, ToolRisk Risk, bool Expected)[]
     {
@@ -5143,6 +5187,13 @@ if (args.Contains("--check-ai-tool-policy"))
         (ToolApprovalModes.Ask, ToolRisk.AskUser, true),
         (ToolApprovalModes.Auto, ToolRisk.AskUser, true),
         (ToolApprovalModes.Full, ToolRisk.AskUser, true),
+        // The rebuild rows are the same shape as the question rows for a different reason, and they are the whole
+        // point of this tier: a rebuild asks in every mode. Moved the arm inside the switch and only the
+        // full-access cell goes red — which is exactly the bug the user reported (a client that rebuilt on its own
+        // while a compile was running), so this cell is the one that has to stay.
+        (ToolApprovalModes.Ask, ToolRisk.BuildCommand, true),
+        (ToolApprovalModes.Auto, ToolRisk.BuildCommand, true),
+        (ToolApprovalModes.Full, ToolRisk.BuildCommand, true),
     };
     foreach (var (mode, risk, expected) in table)
     {
@@ -5150,6 +5201,127 @@ if (args.Contains("--check-ai-tool-policy"))
             throw new Exception($"Approval decision for {mode} × {risk} was wrong.");
     }
     Console.WriteLine("PASS: the approval decision table asks exactly where it should.");
+
+    // Which tiers a 「总是允许」 grant cannot open, as its own table: the gate and the card's button read this one
+    // predicate now, so the failure this guards against — a button that parks a call the gate would keep parking —
+    // cannot come back by editing one side. Three tiers, three reasons, and a new tier defaults to grantable, so
+    // forgetting to name it here is a visible omission rather than a silent one.
+    var grantable = new (ToolRisk Risk, bool Expected)[]
+    {
+        (ToolRisk.ReadOnly, true),
+        (ToolRisk.WorkspaceWrite, true),
+        (ToolRisk.WorkspaceCommand, true),
+        (ToolRisk.AssistantNote, true),
+        (ToolRisk.SystemCommand, false),
+        (ToolRisk.AskUser, false),
+        (ToolRisk.BuildCommand, false),
+    };
+    foreach (var (risk, expected) in grantable)
+    {
+        if (ToolApprovalPolicy.IsGrantable(risk) != expected)
+            throw new Exception($"A grant {(expected ? "should" : "must never")} open {risk}, and it does not agree.");
+    }
+    Console.WriteLine("PASS: no grant opens the reach tier, the question tier or the rebuild tier, and every other "
+        + "tier stays grantable.");
+
+    // What a command line has to look like before Hub asks the person awake about it. Asserted as a table because
+    // the shape of the failure is a miss: a builder nobody recognised keeps the sandbox tier and rebuilds silently,
+    // while a false positive stops the model from compiling at all. Both halves matter, so the negatives are rows
+    // too — the ones that read like a build from a distance (`ls build`, `cat build/x.log`) are the ones a
+    // substring match would catch.
+    var buildCases = new (string Command, bool Expected)[]
+    {
+        // The engine's own spellings, which is what the user was reporting.
+        ("cmake --build build", true),
+        ("cmake --build build --config Debug", true),
+        ("cmake --build build --target clean", true),
+        ("cmake -B build", true),
+        ("cmake -S samples/cpp -B build", true),
+        ("cmake --fresh -B build", true),
+        ("cmake --build --preset dev", true),
+        ("cmake -UCACHE_option", true),
+        ("msbuild app.vcxproj", true),
+        ("ninja -C build", true),
+        ("make -j8", true),
+        ("mingw32-make clean", true),
+        ("xcodebuild -project App.xcodeproj", true),
+        ("ndk-build APP_ABI=arm64-v8a", true),
+        ("gradle assembleRelease", true),
+        ("./gradlew.bat clean assembleRelease", true),
+        ("dotnet build src/AxmolHub/AxmolHub.csproj", true),
+        ("dotnet msbuild app.csproj", true),
+        ("dotnet publish -c Release", true),
+        ("dotnet test", true),
+        ("dotnet run --project src/AxmolHub", true),
+        ("dotnet clean", true),
+        ("dotnet restore", true),
+        ("dotnet --nologo build app.csproj", true),
+        // The engine's setup script, started directly and started through a shell.
+        ("./setup.ps1 -android", true),
+        ("setup.sh android", true),
+        ("pwsh -File setup.ps1 -android", true),
+        // The cache half of the rule: what a person means by "it rebuilt from scratch", said in a shell.
+        ("git clean -fdx", true),
+        ("git -C repo clean -fdx", true),
+        ("rm -rf build", true),
+        ("rm -rf ./build/", true),
+        ("rm -rf build-windows out .cxx", true),
+        ("rm CMakeCache.txt", true),
+        ("Remove-Item -Recurse -Force build", true),
+        ("rd /s /q build", true),
+        ("del build\\CMakeCache.txt", true),
+        // Wrapped, mixed and prefixed: the segment that builds makes the line build, and a wrapper's own arguments
+        // do not hide it. This is the same route the git ladder closes, and one shared tokenizer is what lets both
+        // see it — two tokenizers would let `cmake --build build && git status` be one classifier's business only.
+        ("pwsh -c \"cmake --build build\"", true),
+        ("cmd /c \"dotnet test\"", true),
+        ("sh -c \"make && git status\"", true),
+        ("git status && cmake --build build", true),
+        ("cmake --build build && git status", true),
+        ("timeout 300 cmake --build build", true),
+        ("env -i LC_ALL=C ninja", true),
+        ("$env:X=1; cmake --build build", true),
+        // Not builds. A read that names the build directory, a file that merely sits under it, git's own reads and
+        // writes, and a dotnet verb that touches nothing.
+        ("git status", false),
+        ("git diff HEAD", false),
+        ("git commit -m x", false),
+        ("ls build", false),
+        ("ls -la build/", false),
+        ("cat build/x.log", false),
+        ("Get-Content build/output.log", false),
+        ("cmake --version", false),
+        ("cmake --help", false),
+        ("cmake", false),
+        ("dotnet --info", false),
+        ("dotnet ef database update", false),
+        ("rm src/main.cpp", false),
+        ("rm notes.md", false),
+        ("mkdir build", false),
+        ("echo cmake --build build", false),
+        // A word that only looks like a cache directory: matched by name, not by substring.
+        ("rm rebuild-notes.md", false),
+        ("rm -rf ~/Documents", false),
+        // Nothing to grade.
+        ("", false),
+        ("   ", false),
+    };
+    foreach (var (command, expected) in buildCases)
+    {
+        var actual = BuildCommandGrades.IsBuild(command);
+        if (actual != expected)
+            throw new Exception($"「{command}」 graded as a build={actual}, expected {expected}.");
+    }
+    // The argument wrapper the gate actually calls, including the shapes that must keep the tier the call had.
+    if (BuildCommandGrades.CommandOf(null) || BuildCommandGrades.CommandOf("{}")
+        || BuildCommandGrades.CommandOf("not json") || BuildCommandGrades.CommandOf("{\"other\":1}")
+        || BuildCommandGrades.CommandOf("{\"command\":\"\"}"))
+        throw new Exception("An unreadable or unrelated argument read as a build.");
+    if (!BuildCommandGrades.CommandOf("{\"command\":\"cmake --build build\",\"timeout_seconds\":60}")
+        || BuildCommandGrades.CommandOf("{\"command\":\"git status\"}"))
+        throw new Exception("The command-argument reader missed a build, or found one in a read.");
+    Console.WriteLine($"PASS: all {buildCases.Length} command lines answer the one question this tier asks — does "
+        + "it compile, or does it take the cache away from something that compiles.");
 
     // Fail closed on anything unrecognized, including null: the settings file is user-editable, and a newer
     // Hub may write a mode this build has never heard of.
