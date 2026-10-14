@@ -30,6 +30,11 @@ namespace AxmolHub.Core;
 /// <param name="Web">The host's side of an outbound fetch: the setting that allows it and the socket that makes it.
 /// Null in a scope with nothing to send with — <c>web_fetch</c> then says so out loud rather than pretending the
 /// address was bad, which is the only way a zero-network self-check and a real Hub answer the same question.</param>
+/// <param name="TakeChangeGate">The host's one-change-at-a-time gate, asked for the duration of a command that may
+/// change state. Null in a scope with no queue to share — a self-check, or a tool run outside a window. The host
+/// answers null when something is already changing (a build, an engine install) or when another assistant command
+/// holds it, and a command that could not be given the gate is refused rather than run anyway: what is protected is
+/// the disk, not the schedule.</param>
 public sealed record WorkspaceToolScope(
     string? WorkspaceRoot,
     WorkspaceGuards Guards,
@@ -43,7 +48,8 @@ public sealed record WorkspaceToolScope(
     ScreenCaptureBridge? Screen = null,
     Action<IReadOnlyList<ChatImage>>? RecordFrames = null,
     WebBridge? Web = null,
-    IReadOnlyList<WorkspaceProject>? Projects = null)
+    IReadOnlyList<WorkspaceProject>? Projects = null,
+    Func<string, IDisposable?>? TakeChangeGate = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
@@ -209,6 +215,34 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             return WorkspacePaths.ResultFor(verdict, context.WorkspaceRoot ?? "");
         if (string.IsNullOrWhiteSpace(command)) return "Refused: the command is empty. Do not retry it.";
 
+        // Anything but a git read holds Hub's one-change-at-a-time gate for its duration. What is being kept apart
+        // is not a slow command but two of them writing one output directory: a build interrupted or doubled leaves
+        // a tree half new, and no later card can undo that. A git *read* is exempt for two reasons — it cannot
+        // touch a build tree, and the exemption is what keeps the gate cheap, since the model reads the repository
+        // constantly and every `git status` would otherwise put a few hundred milliseconds between the person and
+        // their own build button. Note this is the gate, not the concurrency class: a git read is excluded from
+        // both, for different reasons (see <see cref="ToolConcurrency"/>).
+        IDisposable? gate = null;
+        if (context.TakeChangeGate is { } take && GitCommandGrades.Grade(command) != GitGrade.GitRead)
+        {
+            gate = take("run_command");
+            if (gate is null) return ToolApprovalResults.Busy;
+        }
+
+        try
+        {
+            return await RunInShellAsync(command, timeout_seconds, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Released on every road out, the cancellation included: a run the person stopped must not leave the
+            // gate held, or Hub would report itself busy with nothing running.
+            gate?.Dispose();
+        }
+    }
+
+    private async Task<string> RunInShellAsync(string command, int timeout_seconds, CancellationToken cancellationToken)
+    {
         var shell = CommandShells.ForCurrent();
         var root = Path.GetFullPath(context.WorkspaceRoot!);
         var seconds = Math.Clamp(timeout_seconds, 1, MaxCommandTimeoutSeconds);

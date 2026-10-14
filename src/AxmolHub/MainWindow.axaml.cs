@@ -410,6 +410,9 @@ public partial class MainWindow : Window
         _chat.AuditWrite = _workspace.Log.Write;
         _chat.LogProvider = () => _workspace.Log;
         _chat.EngineRootsProvider = () => [.. _workspace.State.Engines.Select(engine => engine.Path)];
+        // Read through the field on every call, not captured: switching the data root replaces _workspace, and a
+        // seam that kept the old one would have the assistant hold the gate of a workspace nobody is looking at.
+        _chat.ChangeGateProvider = subject => _workspace.TakeChangeGate(subject);
     }
 
     private ChatWorkspace.HubReadOnlySnapshot CreateReadOnlyChatSnapshot()
@@ -1646,6 +1649,11 @@ public partial class MainWindow : Window
         => AssistantSearchButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     internal void ClickAssistantNewForCheck()
         => AssistantNewButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+    /// <summary>Takes the change gate the way an assistant command does — through the seam, not by calling the
+    /// workspace directly — so a self-check can prove the seam points at the workspace that is live <b>now</b>
+    /// rather than the one it was wired to at startup. Null means the seam is not wired at all.</summary>
+    internal IDisposable? TakeAssistantGateForCheck(string subject) => _chat.ChangeGateProvider?.Invoke(subject);
 
     /// <summary>The title bar's title text as shown, for the shell self-check.</summary>
     internal string PageTitleText => PageTitle.Text ?? "";

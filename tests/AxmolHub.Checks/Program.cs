@@ -4042,6 +4042,70 @@ if (args.Contains("--check-ai-tools"))
     Console.WriteLine("PASS: run_command names its sandbox, redacts secrets, keeps both ends, keeps what a stall "
                       + "already printed, comes back from a process that survives its kill, and speaks UTF-8.");
 
+    // ── run_command holds Hub's one-change-at-a-time gate ──
+    // The assistant and the build button used to be mutually invisible: an AI `cmake --build` and a UI build could
+    // both start against one output directory, each believing the other's busy signal was somebody else's business.
+    // The tool now asks the host for the gate first, and a command that could not be given it is refused rather than
+    // queued — a wait reads to the model as a hang, and a build that looks hung is what makes an agent start a second
+    // one. The scope above passes no gate at all, which is the self-check road: commands simply are not serialised.
+    var gateMarker = Path.Combine(workspace, "src", "gate-marker.txt").Replace('\\', '/');
+    var gateTaken = 0;
+    var gateReleased = 0;
+    var refusedTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "gated", [], log,
+        _ => Task.FromResult(""), TakeChangeGate: _ => null));
+    var gateRefused = await refusedTools.RunCommand($"echo marker > '{gateMarker}'");
+    if (gateRefused != ToolApprovalResults.Busy || File.Exists(gateMarker))
+        throw new Exception($"A command refused the gate either did not say so or ran anyway:{Environment.NewLine}{gateRefused}");
+    if (!gateRefused.Contains("Do not retry", StringComparison.Ordinal))
+        throw new Exception("The busy refusal did not tell the model what not to do, which is a retry loop waiting to happen.");
+
+    var openTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "gated", [], log,
+        _ => Task.FromResult(""), TakeChangeGate: _ =>
+        {
+            gateTaken++;
+            return new GateHandoff(() => gateReleased++);
+        }));
+    var gateRan = await openTools.RunCommand("echo gate-open");
+    if (gateTaken != 1 || gateReleased != 1 || !gateRan.Contains("exit: 0", StringComparison.Ordinal))
+        throw new Exception($"A command that got the gate did not run and hand it back (took {gateTaken}, released {gateReleased}).");
+
+    // The road the person takes when they press the ✕ on the reply: the tool body throws rather than returning, so
+    // a release that only happened on the success path would leave Hub reporting itself busy forever with nothing
+    // running. A pre-cancelled token is exactly that road, and it throws before the process even starts.
+    using var stoppedGate = new CancellationTokenSource();
+    stoppedGate.Cancel();
+    gateTaken = 0;
+    gateReleased = 0;
+    var threwOnStop = false;
+    try
+    {
+        _ = await openTools.RunCommand("echo never", cancellationToken: stoppedGate.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        threwOnStop = true;
+    }
+
+    if (!threwOnStop || gateTaken != 1 || gateReleased != 1)
+        throw new Exception($"A stopped run left the gate held (took {gateTaken}, released {gateReleased}, threw {threwOnStop}).");
+
+    // A git *read* is exempt, and this is the cell that keeps the exemption honest: the tier already says it asks
+    // nothing, the model reads the repository constantly, and `git status` refreshes the index rather than a build
+    // tree. With a host that hands out no gate at all, the read still reaches the shell.
+    var gitGateAsked = 0;
+    var gitTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "gated", [], log,
+        _ => Task.FromResult(""), TakeChangeGate: _ =>
+        {
+            gitGateAsked++;
+            return null;
+        }));
+    var gitRead = await gitTools.RunCommand("git status");
+    if (gitGateAsked != 0 || !gitRead.Contains("shell:", StringComparison.Ordinal)
+        || gitRead.Contains("already running a change", StringComparison.Ordinal))
+        throw new Exception($"A git read was treated as a change (gate asked {gitGateAsked} times):{Environment.NewLine}{gitRead}");
+    Console.WriteLine("PASS: a changing command takes the gate, refuses out loud when it cannot, gives it back on every "
+                      + "road out including a stop, and a git read never asks for it.");
+
     // ── set_workspace: choosing the sandbox is itself guarded ──
     if (!(await tools.SetWorkspace("relative/path")).Contains("not an absolute path", StringComparison.Ordinal)
         || !(await tools.SetWorkspace(Path.Combine(toolRoot, "nope"))).Contains("does not exist", StringComparison.Ordinal)
@@ -8261,4 +8325,11 @@ file sealed class BareSecretStore : ISecretStore
     public string? Read(string providerId) => null;
     public void Write(string providerId, string key) { }
     public void Delete(string providerId) { }
+}
+
+/// <summary>A change-gate handoff that records its own release, so an assertion can tell "the command finished and
+/// gave the gate back" from "the gate was taken and nobody remembers where it went".</summary>
+file sealed class GateHandoff(Action onRelease) : IDisposable
+{
+    public void Dispose() => onRelease();
 }

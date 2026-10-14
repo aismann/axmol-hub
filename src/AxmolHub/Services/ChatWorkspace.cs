@@ -53,6 +53,12 @@ public sealed class ChatWorkspace : IDisposable
     /// constructed with.</summary>
     internal Func<IReadOnlyList<string>>? EngineRootsProvider { get; set; }
 
+    /// <summary>Hub's one-change-at-a-time gate, asked for by a shell command that may change state. Set by the
+    /// shell, because the queue is the shell's; null in a run with no shell (a self-check), where there is nothing
+    /// to be serialised against. A null answer from the gate means somebody else is changing this, and the command
+    /// refuses rather than waiting — see <c>WorkspaceTools.RunCommand</c>.</summary>
+    internal Func<string, IDisposable?>? ChangeGateProvider { get; set; }
+
     /// <summary>Hub's activity log. Command output goes through it in full, so a result truncated for the model
     /// can still name a file where nothing was lost.</summary>
     internal Func<HubLog?>? LogProvider { get; set; }
@@ -545,7 +551,11 @@ public sealed class ChatWorkspace : IDisposable
                 // state it as an attribute of the workspace. Null with no snapshot reads as "nothing extra is
                 // known", which is a different claim from "this is not a project" and only the first is ours.
                 snapshot?.Projects.Select(project => new WorkspaceProject(project.Path, project.Name,
-                    project.EngineVersion, project.Platform, project.Configuration)).ToArray()),
+                    project.EngineVersion, project.Platform, project.Configuration)).ToArray(),
+                // A command that may change state asks for the gate, and refuses itself when the gate is taken
+                // rather than waiting behind a build it cannot see: a wait reads to the model as a hang, and a
+                // build that looks hung is what makes an agent start a second one.
+                ChangeGateProvider),
             // Null on a session file written before the setting existed reads as allowed, which is the only
             // honest reading of "nobody ever turned it off". Read here rather than at the call site because the
             // tool list is assembled once per request and a parked question can be answered long after.
