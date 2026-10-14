@@ -1,5 +1,6 @@
 <Styles xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ae="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
         xmlns:ctxt="clr-namespace:ColorTextBlock.Avalonia;assembly=ColorTextBlock.Avalonia"
         x:Class="AxmolHub.HubMarkdownStyles">
 
@@ -14,9 +15,11 @@
     Later index in the same collection is the only thing that beats it, which is what
     MarkdownMessageRenderer.Render sets up here.
 
-    So: every markdown element rule lives in this file, not in ChatPanel.axaml. Only the controls the
-    renderer builds itself (the code editor and its copy button) stay there, since nothing competes
-    for them.
+    So: every rule about what the renderer draws lives in this file, not in ChatPanel.axaml. That
+    includes the two controls the renderer builds itself — the code editor and its copy button —
+    because the same renderer feeds the inspector's plan tab, which is not inside ChatPanel, and a
+    rule written there reached only the chat half (the plan tab's copy button fell back to the base
+    Button theme and showed no icon at all).
   -->
 
   <!-- Body text. The theme leaves Foreground alone but sets FontSize 14, so both belong here. -->
@@ -72,6 +75,51 @@
   <Style Selector=".Markdown_Avalonia_MarkdownViewer TextBlock.CodeBlock">
     <Setter Property="FontFamily" Value="{DynamicResource Hub.Font.Mono}" />
     <Setter Property="FontSize" Value="13" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+  </Style>
+
+  <!-- The fenced block's editor and its copy button are built by MarkdownMessageRenderer in code
+       (class names only, no Content), so both their chrome and the icon live here as a template. -->
+  <Style Selector=".Markdown_Avalonia_MarkdownViewer ae|TextEditor.markdown-code-editor">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    <Setter Property="FontFamily" Value="{DynamicResource Hub.Font.Mono}" />
+    <Setter Property="FontSize" Value="13" />
+  </Style>
+  <Style Selector=".Markdown_Avalonia_MarkdownViewer Button.markdown-code-copy">
+    <Setter Property="Width" Value="22" />
+    <Setter Property="Height" Value="22" />
+    <Setter Property="MinWidth" Value="22" />
+    <Setter Property="MinHeight" Value="22" />
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="Margin" Value="0" />
+    <Setter Property="CornerRadius" Value="5" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+    <Setter Property="HorizontalContentAlignment" Value="Center" />
+    <Setter Property="VerticalContentAlignment" Value="Center" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <Border Name="Frame"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="{TemplateBinding CornerRadius}">
+          <Path Width="15"
+                Height="15"
+                Stretch="Uniform"
+                Data="{StaticResource Hub.Icon.Copy}"
+                Fill="Transparent"
+                Stroke="{TemplateBinding Foreground}"
+                StrokeThickness="1.8" />
+        </Border>
+      </ControlTemplate>
+    </Setter>
+  </Style>
+  <Style Selector=".Markdown_Avalonia_MarkdownViewer Button.markdown-code-copy:pointerover">
+    <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
   </Style>
 

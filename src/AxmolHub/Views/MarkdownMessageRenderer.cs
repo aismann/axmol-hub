@@ -238,7 +238,12 @@ internal static class MarkdownMessageRenderer
                            && button.HorizontalAlignment == Avalonia.Layout.HorizontalAlignment.Right
                            && Equals(ToolTip.GetTip(button), HubStrings.Get("CopyCode"))
                            && button.GetVisualAncestors().OfType<Border>()
-                               .Any(border => border.Classes.Contains("hub-code-block-layout")))
+                               .Any(border => border.Classes.Contains("hub-code-block-layout"))
+                           // The icon comes entirely from the style's template (the button carries no
+                           // Content), so a style that no longer matches leaves an empty plate behind
+                           // and every other line above still passes. The Path is what says it draws.
+                           && button.GetVisualDescendants().OfType<Avalonia.Controls.Shapes.Path>()
+                               .Any(path => path.Data is not null))
            && !viewer.GetVisualDescendants().OfType<Label>()
                .Any(label => label.Classes.Contains("LangInfo"));
 

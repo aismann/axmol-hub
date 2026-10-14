@@ -1,7 +1,6 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="using:AxmolHub"
-             xmlns:ae="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
              x:Class="AxmolHub.ChatPanel"
              x:DataType="local:ChatPanel">
 
@@ -10,50 +9,10 @@
       Markdown document elements (text, headings, links, code blocks, tables) are styled in
       Theme/HubMarkdownStyles.axaml instead of here: the markdown theme is inserted into the viewer's
       own Styles collection, which is closer to the content than this UserControl's, so a rule written
-      here silently loses. Only the controls our renderer creates are safe to style below.
+      here silently loses. The renderer's own controls (the code editor and its copy button) belong
+      there too: the same renderer feeds the inspector's plan tab, which lives outside this tree, and
+      a style written here reaches only this half of it.
     -->
-    <Style Selector="ae|TextEditor.markdown-code-editor">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
-      <Setter Property="FontFamily" Value="{DynamicResource Hub.Font.Mono}" />
-      <Setter Property="FontSize" Value="13" />
-    </Style>
-    <Style Selector="Button.markdown-code-copy">
-      <Setter Property="Width" Value="22" />
-      <Setter Property="Height" Value="22" />
-      <Setter Property="MinWidth" Value="22" />
-      <Setter Property="MinHeight" Value="22" />
-      <Setter Property="Padding" Value="0" />
-      <Setter Property="Margin" Value="0" />
-      <Setter Property="CornerRadius" Value="5" />
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderBrush" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
-      <Setter Property="HorizontalContentAlignment" Value="Center" />
-      <Setter Property="VerticalContentAlignment" Value="Center" />
-      <Setter Property="Template">
-        <ControlTemplate>
-          <Border Name="Frame"
-                  Background="{TemplateBinding Background}"
-                  BorderBrush="{TemplateBinding BorderBrush}"
-                  BorderThickness="{TemplateBinding BorderThickness}"
-                  CornerRadius="{TemplateBinding CornerRadius}">
-            <Path Width="15"
-                  Height="15"
-                  Stretch="Uniform"
-                  Data="{StaticResource Hub.Icon.Copy}"
-                  Fill="Transparent"
-                  Stroke="{TemplateBinding Foreground}"
-                  StrokeThickness="1.8" />
-          </Border>
-        </ControlTemplate>
-      </Setter>
-    </Style>
-    <Style Selector="Button.markdown-code-copy:pointerover">
-      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
-    </Style>
 
     <!-- User message: a right-aligned subtle pill, no border, no speaker label. -->
     <Style Selector="Border.user-pill">

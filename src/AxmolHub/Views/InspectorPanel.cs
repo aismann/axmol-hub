@@ -623,6 +623,24 @@ internal sealed class InspectorPanel : UserControl
             ? block.Text ?? ""
             : "";
 
+    /// <summary>Runs the pass that installs the fenced block's toolbar on the plan's own viewer, the way the
+    /// renderer's LayoutUpdated hook does it for the chat. Split from the read below so the check states both
+    /// halves: first the toolbar gets built, then it is asked whether it draws.</summary>
+    internal void ApplyPlanSyntaxHighlightingForCheck()
+    {
+        if (_planHost.Content is MarkdownScrollViewer viewer)
+            MarkdownMessageRenderer.ApplySyntaxHighlighting(viewer);
+    }
+
+    /// <summary>Whether the plan's fenced code block carries a copy button that actually paints its icon. The
+    /// button is built with no Content at all — the glyph comes entirely from a template — and this pane is the
+    /// renderer's audience outside ChatPanel, which is exactly where a style written in ChatPanel.axaml never
+    /// reached: the button fell back to the base Button theme and showed an empty plate with only its tooltip.
+    /// The icon being there is therefore a property worth asserting on its own.</summary>
+    internal bool PlanCopyIconForCheck
+        => _planHost.Content is MarkdownScrollViewer viewer
+           && MarkdownMessageRenderer.HasCopyToolbar(viewer);
+
     /// <summary>How many buttons the header holds. Exactly three, the three tabs: the pane's other two controls
     /// moved to the title bar, and a check that only ever pressed those would stay green while a second, dead pair
     /// was still painted in here. Counted off the header itself rather than off the pane, because the body has

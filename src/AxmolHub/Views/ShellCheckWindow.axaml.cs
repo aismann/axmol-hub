@@ -3725,6 +3725,25 @@ public partial class ShellCheckWindow : Window
               && ReferenceEquals(shell.InspectorPaneForCheck, tabPane),
             "计划与改动两页一次 git 都不问，换页也不重造面板（外壳记的是「"
             + shell.InspectorTabForCheck + "」）");
+        // The plan tab is the renderer's audience outside ChatPanel, and it is where a style written only in
+        // ChatPanel.axaml went unnoticed: the copy button carries no Content — its icon is entirely the
+        // template's — so without the style it fell back to the base Button theme and painted an empty plate
+        // behind a working tooltip. Drive the pane through its own repaint path, install the toolbar the way
+        // the renderer does, then read the icon back off the template.
+        var iconPane = shell.InspectorPaneForCheck;
+        iconPane?.Reload(
+            "# Plan\n\n```cpp\nint main() {}\n```",
+            [],
+            static _ => ("", default),
+            null,
+            "plan");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        iconPane?.ApplyPlanSyntaxHighlightingForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(iconPane is { } paintedPlan && paintedPlan.PlanCopyIconForCheck,
+            "计划页代码块的复制按钮画出图标：复制图标跟渲染器走，不是只写在聊天面板作用域里的样式");
         shell.CloseInspector();
         chat.DeleteConversation(tabSession.Id);
         panel.Reload();
