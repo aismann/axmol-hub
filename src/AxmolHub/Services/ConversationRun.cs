@@ -58,6 +58,10 @@ internal enum ChatAttentionKind
 /// user asked to stop and a stream that stalled are different events with different messages, and a session
 /// that runs long while it keeps producing is healthy, not overdue.
 ///
+/// The one source that measures the stream carries two windows, because the silence before a round's first frame
+/// and the silence after a chunk of it are not the same event: the first is a request the gateway has not begun
+/// to answer, the second is a stream that stopped. Which one was armed is kept, so a timeout can name it.
+///
 /// The run also keeps how long this answer has been working, and that is the one number a view cannot own: the
 /// bubble displaying it is thrown away the moment the user looks at another session, so a reply that restarted
 /// its clock on the way back would be saying something untrue about the time it took.
@@ -69,9 +73,22 @@ internal sealed class ConversationRun : IDisposable
     private readonly StringBuilder _reasoning = new();
     private readonly CancellationTokenSource _stop = new();
     private readonly TimeSpan _idleTimeout;
+    private readonly TimeSpan _firstFrameTimeout;
     private CancellationTokenSource _idle = new();
     private CancellationTokenSource _suspend = new();
     private CancellationTokenSource _linked;
+    // Which window is currently armed, kept because the audit line has to name the deadline that fired rather
+    // than recite a constant, and which of the two it was is the difference between a stream that stopped and a
+    // round that never got to speak.
+    private TimeSpan _armed;
+
+    // 1 while the round in flight has produced no frame yet. An int rather than a bool because the pipeline's
+    // thread writes it and a view reads it while deciding what to say.
+    private int _awaitingFirstFrame = 1;
+    private int _retryWaiting;
+    private int _retryWaits;
+    private long _retryWaitedTicks;
+    private long _retryDelayTicks;
     private string? _steerText;
     private string? _steerContext;
     private IReadOnlyList<byte[]>? _steerPictures;
@@ -99,12 +116,13 @@ internal sealed class ConversationRun : IDisposable
 
     public bool IsStreaming => Phase == RunPhase.Streaming;
 
-    internal ConversationRun(string conversationId, TimeSpan idleTimeout)
+    internal ConversationRun(string conversationId, TimeSpan idleTimeout, TimeSpan firstFrameTimeout)
     {
         ConversationId = conversationId;
         _idleTimeout = idleTimeout;
+        _firstFrameTimeout = firstFrameTimeout;
         _linked = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token, _idle.Token, _suspend.Token);
-        Touch();
+        BeginRound();
     }
 
     /// <summary>How long this answer has been working, minus any stretch it spent parked on a tool approval. Read
@@ -122,9 +140,15 @@ internal sealed class ConversationRun : IDisposable
         }
     }
 
-    /// <summary>The silence a stream is allowed before this run counts as dead. Read where a failure gets named:
-    /// an audit line saying a run timed out is worth nothing unless it also says what it was owed.</summary>
-    internal TimeSpan IdleWindow => _idleTimeout;
+    /// <summary>The silence this run was owed when its deadline fired — the round's first frame or the next chunk
+    /// of an answer already talking. Read where a failure gets named: an audit line saying a run timed out is
+    /// worth nothing unless it also says what it was owed, and the two windows mean different things.</summary>
+    internal TimeSpan IdleWindow => _armed;
+
+    /// <summary>Whether the round now in flight has produced nothing at all yet. It is what separates "the stream
+    /// stopped" from "the request never started", which is the one distinction a user can act on — the first is a
+    /// provider, the second is usually a prompt the provider is still chewing on.</summary>
+    internal bool AwaitingFirstFrame => Volatile.Read(ref _awaitingFirstFrame) == 1;
 
     /// <summary>Banks the stretch just run and stops the clock. Called when the run parks on an approval and when
     /// it finishes, so the last number a viewer reads is the one the answer actually earned.</summary>
@@ -183,7 +207,9 @@ internal sealed class ConversationRun : IDisposable
 
     /// <summary>Starts the next segment. The previous one was written to the transcript, so the buffer must not
     /// carry it into the bubble again — and the thinking must not be carried either, or the second assistant
-    /// message of a tool loop would be charged with the first one's reasoning.</summary>
+    /// message of a tool loop would be charged with the first one's reasoning. The deadline is re-armed for the
+    /// round this segment is about to ask for: between segments is the one stretch that owes a first frame and
+    /// had no window of its own, which is how a steered turn inherited the leftover of the answer before it.</summary>
     internal void BeginSegment()
     {
         lock (_gate)
@@ -192,6 +218,8 @@ internal sealed class ConversationRun : IDisposable
             _reasoning.Clear();
             _spinStopped = false;
         }
+
+        BeginRound();
     }
 
     private bool _spinStopped;
@@ -204,15 +232,36 @@ internal sealed class ConversationRun : IDisposable
 
     internal bool SpinStopped => Volatile.Read(ref _spinStopped);
 
-    /// <summary>Re-arms the inactivity deadline for the next frame of output. A parked run has no stream, so
-    /// nothing re-arms it — waiting for a human is not the same as stalling — and neither does a tool that owns
-    /// the run, which is silent by nature; <see cref="EndTool"/> restarts the count once the tool comes back.</summary>
+    /// <summary>Re-arms the inactivity deadline for the next frame of output, on the silence window: this round
+    /// has already spoken, so a gap now means the stream stopped. A parked run has no stream, so nothing re-arms
+    /// it — waiting for a human is not the same as stalling — and neither does a tool that owns the run, which is
+    /// silent by nature; <see cref="EndTool"/> restarts the count once the tool comes back.</summary>
     internal void Touch()
     {
         if (_parked || Volatile.Read(ref _toolRunning) != 0) return;
+        Volatile.Write(ref _awaitingFirstFrame, 0);
+        Arm(_idleTimeout);
+    }
+
+    /// <summary>Arms the deadline for a round whose request has not been answered yet. This is a longer window
+    /// than <see cref="Touch"/> uses, and the difference is not caution about a slow provider — it is that the
+    /// stretch being measured is a different thing. After a tool result lands, the next silence is upload plus
+    /// the gateway's own queue plus the prefill of a transcript that can run to two hundred thousand tokens, and
+    /// none of it says the stream died. The first frame of the round hands the run back to
+    /// <see cref="Touch"/>, and never back to this window.</summary>
+    internal void BeginRound()
+    {
+        if (_parked || Volatile.Read(ref _toolRunning) != 0) return;
+        Volatile.Write(ref _awaitingFirstFrame, 1);
+        Arm(_firstFrameTimeout);
+    }
+
+    private void Arm(TimeSpan window)
+    {
+        _armed = window;
         // CancelAfter is a no-op once the source fired and throws once it is disposed; disposal happens only
         // after the pump is finished with this run.
-        if (!_idle.IsCancellationRequested) _idle.CancelAfter(_idleTimeout);
+        if (!_idle.IsCancellationRequested) _idle.CancelAfter(window);
     }
 
     /// <summary>Hands the run to a tool for the duration. No model output is owed while it runs, so the
@@ -226,13 +275,51 @@ internal sealed class ConversationRun : IDisposable
         _idle.CancelAfter(Timeout.InfiniteTimeSpan);
     }
 
-    /// <summary>The tool came back, or was refused: the deadline counts again from now. A refused call never
-    /// entered the bracket, so ending it for one simply re-arms.</summary>
+    /// <summary>The tool came back, or was refused: the deadline counts again from now, and from now what is
+    /// owed is a first frame rather than another chunk — the round that follows a result has to be built, sent
+    /// and read before it can say anything. A refused call never entered the bracket, so ending it for one
+    /// simply re-arms.</summary>
     internal void EndTool()
     {
         Interlocked.Exchange(ref _toolRunning, 0);
-        Touch();
+        BeginRound();
     }
+
+    /// <summary>Hands the run to the retry policy's sleep for the duration. The tool bracket's reasoning applies
+    /// one layer further down: while the pipeline is obeying a provider's <c>Retry-After</c> there is no stream
+    /// to be silent about, and a deadline that fired through that wait reported a rate limit as a dead connection
+    /// — which is the wrong diagnosis and sends a person to check the wrong thing. The user's stop still cancels
+    /// the wait, because it travels on the same token.</summary>
+    internal void BeginRetryWait(int attempt, TimeSpan delay)
+    {
+        if (_parked) return;
+        Interlocked.Exchange(ref _retryWaiting, attempt);
+        Interlocked.Exchange(ref _retryDelayTicks, delay.Ticks);
+        Interlocked.Increment(ref _retryWaits);
+        Interlocked.Add(ref _retryWaitedTicks, delay.Ticks);
+        _idle.CancelAfter(Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>The wait is over and the next attempt is on its way: what that round owes is still a first frame,
+    /// so the deadline comes back as the round's window rather than the silence one.</summary>
+    internal void EndRetryWait()
+    {
+        Interlocked.Exchange(ref _retryWaiting, 0);
+        BeginRound();
+    }
+
+    /// <summary>Whether a rate-limit wait is in progress, and what it was asked for: the attempt now pending and
+    /// how long the provider said to wait. A bubble rebuilt after a conversation switch reads this rather than
+    /// remembering it, because a wait that is still happening is still worth saying.</summary>
+    internal bool RetryWaiting => Volatile.Read(ref _retryWaiting) != 0;
+
+    internal (int Attempt, TimeSpan Delay) RetryWaitNotice()
+        => (Volatile.Read(ref _retryWaiting), TimeSpan.FromTicks(Interlocked.Read(ref _retryDelayTicks)));
+
+    /// <summary>What the retries cost this run, for the audit line that has to say whether a silence was the
+    /// provider's doing.</summary>
+    internal (int Waits, TimeSpan Waited) RetryCost()
+        => (Volatile.Read(ref _retryWaits), TimeSpan.FromTicks(Interlocked.Read(ref _retryWaitedTicks)));
 
     internal void RequestStop() => _stop.Cancel();
 
@@ -268,7 +355,7 @@ internal sealed class ConversationRun : IDisposable
         _parked = false;
         Phase = RunPhase.Streaming;
         ResumeClock();
-        Touch();
+        BeginRound();
 
         // Nothing holds the old token any more — the stream that used it ended when the run parked.
         staleLinked.Dispose();

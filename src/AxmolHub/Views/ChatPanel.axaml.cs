@@ -241,6 +241,15 @@ public partial class ChatPanel : UserControl
             if (_live is not { } live || live.Run.ConversationId != conversationId) return;
             live.Status.Text = SearchActivityText(notice);
         };
+        // A retry wait is the provider saying "not yet" and the pipeline obeying, which is work rather than a
+        // stall — so it takes the same one line the tool and the search use, and gives it back when the attempt
+        // goes out. Out of sight it is still the run that holds the fact, for the bubble rebuilt later.
+        _chat.RetryWaitChanged += (conversationId, waiting) =>
+        {
+            if (_live is not { } live || live.Run.ConversationId != conversationId) return;
+            live.Status.Text = waiting ? RetryActivityText(live.Run.RetryWaitNotice())
+                : live.ShowedText ? HubStrings.Get("ChatGenerating") : HubStrings.Get("ChatPreparing");
+        };
         _chat.RunsChanged += conversationId =>
         {
             if (conversationId == _chat.ViewedConversationId) RenderMessages();
@@ -1716,6 +1725,14 @@ public partial class ChatPanel : UserControl
             HubStrings.Get("ActivityRowWebSearched"),
             first.Length <= 48 ? first : first[..48] + "…");
     }
+
+    /// <summary>The bubble's status line while the pipeline sits out a provider's retry delay. The denominator is
+    /// the policy's own number rather than a guess, so the line cannot drift from how many attempts exist.</summary>
+    private static string RetryActivityText((int Attempt, TimeSpan Delay) wait)
+        => string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get("ChatRetryWaitFormat"), wait.Attempt, Agent.ChatClientFactory.MaxRetries + 1,
+            wait.Delay.TotalSeconds < 1 ? wait.Delay.TotalSeconds.ToString("0.#")
+                : Math.Round(wait.Delay.TotalSeconds).ToString("0"));
 
     /// <summary>
     /// Where the answer came from, under the reply that used it. One quiet line: 「来源」 and as many hosts as the
@@ -3296,6 +3313,9 @@ public partial class ChatPanel : UserControl
             ToolCount = run.CompletedToolCalls,
             ToolRunning = run.IsToolRunning,
         };
+        // A wait already in progress is the reason this reply is late, and the event that said so fired while the
+        // session was out of sight: read the fact off the run rather than wait for it to happen again.
+        if (run.RetryWaiting) status.Text = RetryActivityText(run.RetryWaitNotice());
         bubble.Timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
         bubble.Timer.Tick += (_, _) =>
         {

@@ -2319,26 +2319,42 @@ public partial class ShellCheckWindow : Window
             + (renamedOnDisk?.Messages.Count ?? -1) + " 条）");
 
         // An inactivity deadline is not a user stop, and the two messages must not be guessed from each other.
+        // And one inactivity deadline is not two: a round that never produced a frame is a round the provider has
+        // not started answering, which is judged by the longer window — the exact shape that killed three real
+        // sessions on 2026-10-14 at 120.0s holding nothing, while a 23-minute turn on a smaller transcript
+        // streamed fine. Both halves run through the real send path, for the same reason the re-arm does.
+        var thinkingAudits = new List<string>();
+        var savedAuditWrite = chat.AuditWrite;
         var savedIdleTimeoutValue = chat.IdleTimeout;
-        chat.IdleTimeout = TimeSpan.FromMilliseconds(150);
+        var savedFirstFrameValue = chat.FirstFrameTimeout;
+        chat.AuditWrite = line => thinkingAudits.Add(line);
+        chat.FirstFrameTimeout = TimeSpan.FromMilliseconds(150);
         chat.ClientOverride = (_, _) => new StalledChatClient(TimeSpan.FromSeconds(10));
         chat.OpenConversation(third.Id);
         chat.TryEnqueueSend(third.Id, "卡住的提问", null, out _);
         await WaitForRunAsync(chat, third.Id);
 
-        Check(!chat.IsRunning(third.Id) && panel.LastNoticeTextForCheck == HubStrings.Get("ChatTimedOut"),
-            "空闲超时给出超时提示而不是「已停止」（实际「" + panel.LastNoticeTextForCheck + "」）");
-        chat.IdleTimeout = savedIdleTimeoutValue;
+        Check(!chat.IsRunning(third.Id) && panel.LastNoticeTextForCheck == HubStrings.Get("ChatNoFirstFrame"),
+            "一轮从未起流时给「没开始」的提示而不是「已停止」（实际「" + panel.LastNoticeTextForCheck + "」）");
+        var neverStarted = thinkingAudits.Find(line => line.Contains("Idle timeout", StringComparison.Ordinal));
+        Check(neverStarted is not null
+              && neverStarted.Contains("the 0.15s first-frame deadline", StringComparison.Ordinal)
+              && neverStarted.Contains("0 chars of reasoning and 0 of text buffered", StringComparison.Ordinal),
+            "从未起流的超时在日志里点名首帧窗与当时攒下的内容，事后能分网络与模型（实际「"
+            + (neverStarted ?? "无") + "」）");
+        thinkingAudits.Clear();
+
+        // A short first-frame window is not a licence to wait for a whole one: this cell's next fixtures stream
+        // and then go quiet, so the silence window is what must be live, and the first-frame arm has to stay out
+        // of the way without becoming the 120s that would hit the suite's own ceiling.
+        chat.FirstFrameTimeout = TimeSpan.FromSeconds(30);
 
         // The deadline measures silence, not the absence of prose. A model that thinks for longer than the window
         // has to survive it — this is the exact shape that killed every long MiMo answer at 120.00s — and a stream
         // that stops after one delta has to die anyway, so a re-arm cannot quietly become a no-op. Both run
         // through the real send path, because a re-arm the pipeline never reaches would pass a unit test.
-        var thinkingAudits = new List<string>();
-        var savedAuditWrite = chat.AuditWrite;
         var thinking = chat.StartConversation();
         var stalled = chat.StartConversation();
-        chat.AuditWrite = line => thinkingAudits.Add(line);
         chat.IdleTimeout = TimeSpan.FromMilliseconds(300);
         try
         {
@@ -2378,6 +2394,7 @@ public partial class ShellCheckWindow : Window
             // come back — the two halves of the same rule, and the second one is what used to be lost.
             var background = chat.StartConversation();
             var front = chat.StartConversation();
+            chat.FirstFrameTimeout = TimeSpan.FromMilliseconds(300);
             chat.ClientOverride = (_, id) => id == background.Id
                 ? new StalledChatClient(TimeSpan.FromSeconds(10))
                 : new ScriptedChatClient(["眼前的回答"]);
@@ -2390,7 +2407,7 @@ public partial class ShellCheckWindow : Window
 
             chat.OpenConversation(background.Id);
             Dispatcher.UIThread.RunJobs();
-            Check(panel.LastNoticeTextForCheck == HubStrings.Get("ChatTimedOut"),
+            Check(panel.LastNoticeTextForCheck == HubStrings.Get("ChatNoFirstFrame"),
                 "切回结束的后台会话，它当时的超时提示还在（实际「" + (panel.LastNoticeTextForCheck ?? "无") + "」）");
 
             // The person spoke again in that session, so the line is history rather than news.
@@ -2407,6 +2424,75 @@ public partial class ShellCheckWindow : Window
         {
             chat.AuditWrite = savedAuditWrite;
             chat.IdleTimeout = savedIdleTimeoutValue;
+            chat.FirstFrameTimeout = savedFirstFrameValue;
+        }
+
+        // A provider that says "not yet" is being obeyed, not answered: the wait is work the pipeline is doing,
+        // so it must neither be counted as stream silence nor pass unnoticed. --check-ai-providers proves the real
+        // client policy reports it with the provider's own number; this is the other half — the run survives a
+        // wait several times its window, the row under the bubble names the pending attempt, and what fires when
+        // the wait ends is the round's first-frame window with the wait counted in the line. Driven through
+        // ChatWorkspace's own callback, so the check exercises the wiring and not a copy of it.
+        var throttled = chat.StartConversation();
+        var throttleAudits = new List<string>();
+        var savedThrottleAudit = chat.AuditWrite;
+        var savedThrottleIdle = chat.IdleTimeout;
+        var savedThrottleFirstFrame = chat.FirstFrameTimeout;
+        chat.AuditWrite = line => throttleAudits.Add(line);
+        chat.IdleTimeout = TimeSpan.FromMilliseconds(200);
+        chat.FirstFrameTimeout = TimeSpan.FromMilliseconds(400);
+        try
+        {
+            chat.ClientOverride = (_, _) => new StalledChatClient(TimeSpan.FromSeconds(30));
+            chat.OpenConversation(throttled.Id);
+            chat.TryEnqueueSend(throttled.Id, "被限流的提问", null, out _);
+            Check(await WaitForConditionAsync(() => chat.IsRunning(throttled.Id)),
+                "被限流的会话进入了运行");
+            var waitingRun = chat.RunFor(throttled.Id)!;
+            chat.NoteRetryWait(waitingRun, 2, TimeSpan.FromSeconds(3));
+            Dispatcher.UIThread.RunJobs();
+
+            Check(waitingRun.RetryWaiting && panel.ChatActivityTextForCheck.Contains("2/3", StringComparison.Ordinal),
+                "限流等待写在气泡既有的一行状态上（实际「" + panel.ChatActivityTextForCheck + "」）");
+            await Task.Delay(1200);
+            Check(chat.IsRunning(throttled.Id) && waitingRun.RetryWaiting,
+                "等待期间两条窗口都不开火，运行记录还活着（等了 1.2s，是首帧窗的三倍）");
+
+            chat.NoteRetryWait(waitingRun, 0, TimeSpan.Zero);
+            Check(!waitingRun.RetryWaiting, "等待结束就不再声称在等");
+            await WaitForRunAsync(chat, throttled.Id);
+
+            var waitLine = throttleAudits.Find(line => line.Contains("Idle timeout", StringComparison.Ordinal));
+            Check(!chat.IsRunning(throttled.Id)
+                  && panel.LastNoticeTextForCheck == HubStrings.Get("ChatTimedOutAfterRetries")
+                  && waitLine is not null
+                  && waitLine.Contains("the 0.4s first-frame deadline", StringComparison.Ordinal)
+                  && waitLine.Contains("after 1 rate-limit wait(s) totalling 3s", StringComparison.Ordinal),
+                "等待用尽后本轮仍欠首帧，提示与日志都把限流累计说清楚（实际「" + (waitLine ?? "无") + "」，提示「"
+                + panel.LastNoticeTextForCheck + "」）");
+
+            // A rebuilt bubble reads the wait off the run rather than remembering it, so switching away and back
+            // mid-wait still says the truth about why the reply is late.
+            var rebuilt = chat.StartConversation();
+            chat.ClientOverride = (_, _) => new StalledChatClient(TimeSpan.FromSeconds(30));
+            chat.OpenConversation(rebuilt.Id);
+            chat.TryEnqueueSend(rebuilt.Id, "切走再切回的限流", null, out _);
+            Check(await WaitForConditionAsync(() => chat.IsRunning(rebuilt.Id)),
+                "第二个被限流的会话进入了运行");
+            chat.NoteRetryWait(chat.RunFor(rebuilt.Id)!, 3, TimeSpan.FromSeconds(1));
+            chat.OpenConversation(throttled.Id);
+            chat.OpenConversation(rebuilt.Id);
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.ChatActivityTextForCheck.Contains("3/3", StringComparison.Ordinal),
+                "会话切走再切回，进行中的等待从运行记录重建而不是丢掉（实际「" + panel.ChatActivityTextForCheck + "」）");
+            chat.NoteRetryWait(chat.RunFor(rebuilt.Id)!, 0, TimeSpan.Zero);
+            await WaitForRunAsync(chat, rebuilt.Id);
+        }
+        finally
+        {
+            chat.AuditWrite = savedThrottleAudit;
+            chat.IdleTimeout = savedThrottleIdle;
+            chat.FirstFrameTimeout = savedThrottleFirstFrame;
         }
 
         // What the model said before asking for a tool belongs ahead of that call in the record; a replay that
@@ -4763,6 +4849,7 @@ public partial class ShellCheckWindow : Window
     {
         var chat = shell.Chat;
         var savedIdleTimeout = chat.IdleTimeout;
+        var savedFirstFrameTimeout = chat.FirstFrameTimeout;
         var observer = chat.StartConversation();
         var approvedSession = chat.StartConversation();
         var rejectedSession = chat.StartConversation();
@@ -4773,6 +4860,9 @@ public partial class ShellCheckWindow : Window
             => attentionCounts[conversationId] = attentionCounts.GetValueOrDefault(conversationId) + 1;
         chat.AttentionRequired += CountAttention;
         chat.IdleTimeout = TimeSpan.FromSeconds(5);
+        // Both windows, for the same reason as the ask-user cell: a plan card parks, and what is armed
+        // while it waits is the round's window rather than the silence one.
+        chat.FirstFrameTimeout = TimeSpan.FromSeconds(5);
 
         async Task RunPlanInBackgroundAsync(Conversation session)
         {
@@ -5328,6 +5418,7 @@ public partial class ShellCheckWindow : Window
         {
             chat.ClientOverride = null;
             chat.IdleTimeout = savedIdleTimeout;
+            chat.FirstFrameTimeout = savedFirstFrameTimeout;
             chat.AttentionRequired -= CountAttention;
             foreach (var session in new[] { observer, approvedSession, rejectedSession, twoPlanSession })
                 chat.DeleteConversation(session.Id);
@@ -5349,6 +5440,7 @@ public partial class ShellCheckWindow : Window
     {
         var chat = shell.Chat;
         var savedIdleTimeout = chat.IdleTimeout;
+        var savedFirstFrameTimeout = chat.FirstFrameTimeout;
         var savedPreferencesProvider = chat.PreferencesProvider;
         var observer = chat.StartConversation();
         var cardSession = chat.StartConversation();
@@ -5399,6 +5491,9 @@ public partial class ShellCheckWindow : Window
             ],
         };
         chat.IdleTimeout = TimeSpan.FromSeconds(5);
+        // Both windows: a card that parks is armed with the round's window now, and a fixture that lets
+        // only the silence one expire would sit on the default until the suite's own ceiling.
+        chat.FirstFrameTimeout = TimeSpan.FromSeconds(5);
         try
         {
             chat.ClientOverride = (_, conversationId) => conversationId switch
@@ -5564,6 +5659,7 @@ public partial class ShellCheckWindow : Window
         {
             chat.ClientOverride = null;
             chat.IdleTimeout = savedIdleTimeout;
+            chat.FirstFrameTimeout = savedFirstFrameTimeout;
             chat.PreferencesProvider = savedPreferencesProvider;
             foreach (var session in new[] { observer, cardSession, skipSession, owedSession })
                 chat.DeleteConversation(session.Id);
@@ -5585,6 +5681,7 @@ public partial class ShellCheckWindow : Window
     {
         var chat = shell.Chat;
         var savedIdleTimeout = chat.IdleTimeout;
+        var savedFirstFrameTimeout = chat.FirstFrameTimeout;
         var savedPreferencesProvider = chat.PreferencesProvider;
         var readSession = chat.StartConversation();
         var parkSession = chat.StartConversation();
@@ -6466,6 +6563,11 @@ public partial class ShellCheckWindow : Window
             // because a decision made after a restart is made against the file, not against memory.
             chat.OpenConversation(parkSession.Id);
             chat.IdleTimeout = TimeSpan.FromMilliseconds(150);
+            // Both windows, not the one that used to exist: a call that arrived and then parked leaves the run
+            // armed with the *round's* window, because the tool bracket's release is what re-armed it. Shortening
+            // only the silence one would make the deadline below never fire, and the assertion would be waiting
+            // for an event that the product no longer produces at 150ms.
+            chat.FirstFrameTimeout = TimeSpan.FromMilliseconds(150);
             chat.TryEnqueueSend(parkSession.Id, "写一个文件", null, out _);
             var parkedCallId = await WaitForPendingCallAsync(parkSession);
             var parked = chat.StoredCopyForCheck(parkSession.Id);
@@ -6724,6 +6826,7 @@ public partial class ShellCheckWindow : Window
 
             // Refusing is an ending: the model is told it was refused, and it is not asked to talk about it.
             chat.IdleTimeout = savedIdleTimeout;
+            chat.FirstFrameTimeout = savedFirstFrameTimeout;
             chat.SetApprovalMode(denySession.Id, ToolApprovalModes.Ask);
             chat.OpenConversation(denySession.Id);
             chat.TryEnqueueSend(denySession.Id, "别写", null, out _);
@@ -7124,6 +7227,7 @@ public partial class ShellCheckWindow : Window
             chat.WebFetchHttp = null;
             chat.ClientOverride = null;
             chat.IdleTimeout = savedIdleTimeout;
+            chat.FirstFrameTimeout = savedFirstFrameTimeout;
             foreach (var id in new[] { readSession.Id, parkSession.Id, denySession.Id, supersededSession.Id,
                     restartSession.Id, badgeSession.Id, batchSession.Id, autoRunSession.Id, askRunSession.Id,
                     movedSession.Id, grantSession.Id, peerSession.Id, gitWriteSession.Id, screenSession.Id,

@@ -38,8 +38,9 @@ public static class ChatClientFactory
     ///
     /// <para>The budget this has to be read against: the tool loop carries no per-turn round cap — the model
     /// ends it by answering — and every round-trip is a request that can now be attempted three times, so a
-    /// long investigation multiplies the two together, each attempt able to sit out the app's own idle timeout
-    /// while the provider's <c>Retry-After</c> says how long the next attempt waits. That is why the number
+    /// long investigation multiplies the two together. Each wait in between is the provider's own
+    /// <c>Retry-After</c>, and <see cref="IdleAwareRetryPolicy"/> hands it to the run so the inactivity deadline
+    /// stands down for it rather than mistaking an obeyed limit for a dead stream. That is why the number
     /// stays small and why the checks count the requests rather than trusting the policy.</para>
     /// </summary>
     public const int MaxRetries = 2;
@@ -85,13 +86,21 @@ public static class ChatClientFactory
     /// URL and answers from memory), so nothing is billed and no gateway is contacted. An injected transport is
     /// <b>not</b> disposed here, the same rule the app's three <see cref="System.Net.Http.HttpClient"/> seams
     /// follow: whoever supplied it owns it.</para>
+    ///
+    /// <para><paramref name="onRetryWait"/> is how the owner of a run learns that the pipeline is sitting out a
+    /// retry delay: called with the attempt now pending and the length of the wait, then with <c>0</c> once the
+    /// wait is over. The policy that does the sleeping lives below the streaming enumerator, where waiting for a
+    /// provider's <c>Retry-After</c> is indistinguishable from a provider that has stopped answering — and the
+    /// caller's inactivity deadline measures exactly that silence, so without this notice a rate limit reads as a
+    /// dead stream. Optional because a compaction request and the scripted clients have no run to tell.</para>
     /// </summary>
     public static IChatClient Create(
         Core.ModelProvider provider,
         string? modelOverride,
         ReasoningTable? reasoning,
         string? interactionId = null,
-        System.Net.Http.HttpMessageHandler? transport = null)
+        System.Net.Http.HttpMessageHandler? transport = null,
+        Action<int, TimeSpan>? onRetryWait = null)
     {
         if (string.IsNullOrWhiteSpace(provider.BaseUrl))
             throw new InvalidOperationException($"Provider '{provider.Name}' has no base URL.");
@@ -134,8 +143,9 @@ public static class ChatClientFactory
 #pragma warning disable OPENAI001 // OpenAI.Responses is marked experimental in the 2.14 SDK.
             var options = new ResponsesClientOptions { Endpoint = new Uri(provider.BaseUrl) };
             // The retry decision is stated on both wires from one constant, so the two cannot drift into two
-            // different numbers of attempts.
-            options.RetryPolicy = new ClientRetryPolicy(MaxRetries);
+            // different numbers of attempts — and both wrap it in the same policy, so a wait is reported on
+            // whichever wire the model answers on.
+            options.RetryPolicy = new IdleAwareRetryPolicy(MaxRetries, onRetryWait);
             if (transport is not null)
                 options.Transport = new HttpClientPipelineTransport(new System.Net.Http.HttpClient(transport));
             if (headers is not null)
@@ -148,7 +158,7 @@ public static class ChatClientFactory
         }
 
         var chatOptions = new OpenAIClientOptions { Endpoint = new Uri(provider.BaseUrl) };
-        chatOptions.RetryPolicy = new ClientRetryPolicy(MaxRetries);
+        chatOptions.RetryPolicy = new IdleAwareRetryPolicy(MaxRetries, onRetryWait);
         if (transport is not null)
             chatOptions.Transport = new HttpClientPipelineTransport(new System.Net.Http.HttpClient(transport));
         if (reasoning is not null)

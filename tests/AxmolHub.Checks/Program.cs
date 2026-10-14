@@ -270,6 +270,42 @@ if (args.Contains("--check-ai-providers"))
                       + "and the provider's words come back as "
                       + exhausted[..Math.Min(96, exhausted.Length)].Replace('\n', '·').Replace("\r", "") + ".");
 
+    // ── The wait, reported instead of mistaken for a dead stream ──
+    // The sleeping happens in the client pipeline, below the enumerator that re-arms a run's inactivity deadline,
+    // so an obeyed Retry-After used to be indistinguishable from a provider that had stopped answering — and the
+    // deadline usually fired first and blamed the network. This asks the transport for three seconds and reads
+    // back what the policy tells its owner: the attempt now pending, the delay the provider named, and the
+    // release. The delay is asserted exactly because the exponential default is never exact; a number that came
+    // from jitter would fail here rather than look like coverage. Costs the suite three seconds, and that is the
+    // point — three seconds of a wait is what a user was being told to go check their cable for.
+    var slowWire = new RateLimitWire(failFirst: 1, retryAfterSeconds: 3);
+    var notices = new List<string>();
+    var seen = new List<TimeSpan>();
+    try
+    {
+        await foreach (var update in ChatClientFactory.Create(retryProvider, "m", null, null, slowWire,
+                           onRetryWait: (attempt, delay) =>
+                           {
+                               seen.Add(delay);
+                               notices.Add(attempt == 0 ? "released" : $"attempt {attempt}");
+                           }).GetStreamingResponseAsync(retryMessages, new ChatOptions()))
+            _ = update;
+    }
+    catch (Exception ex)
+    {
+        slowWire.Failure = ex.GetType().Name;
+    }
+
+    if (slowWire.Attempts != 2 || notices.Count != 2 || notices[0] != "attempt 2" || notices[1] != "released"
+        || seen[0] != TimeSpan.FromSeconds(3))
+        throw new Exception($"A rate limit that named a three-second wait reported [{string.Join(" | ", notices)}] "
+                            + $"over {slowWire.Attempts} attempt(s) with delays "
+                            + $"[{string.Join(", ", seen.Select(s => s.TotalSeconds.ToString("0.###")))}]"
+                            + (slowWire.Failure.Length > 0 ? ", " + slowWire.Failure : ""));
+    Console.WriteLine("PASS: the retry wait is reported with the provider's own number — " + notices[0] + " after "
+                      + seen[0].TotalSeconds.ToString("0.#") + "s, then released, over " + slowWire.Attempts
+                      + " attempts.");
+
     // Which failures are a rate limit, judged on the words providers actually use, and which must stay plain. The
     // rule fails twice over if it is loose in either direction: a 429 that reads as a generic failure points a
     // person at credentials and settings that are fine, and anything else that reads as a limit tells them to wait
@@ -8037,7 +8073,8 @@ sealed class WireRecorder : System.Net.Http.HttpMessageHandler
 /// the pipeline made. The retry path is otherwise invisible from this repository: the policy that implements it
 /// lives in a dependency, so without a counter here nothing knows how many requests a turn really costs, and a
 /// dropped retry would look exactly like a working channel that simply was not needed today.</summary>
-file sealed class RateLimitWire(int failFirst, bool always = false) : System.Net.Http.HttpMessageHandler
+file sealed class RateLimitWire(int failFirst, bool always = false, int retryAfterSeconds = 0)
+    : System.Net.Http.HttpMessageHandler
 {
     public int Attempts;
     public bool SawRetryAfter;
@@ -8056,8 +8093,10 @@ file sealed class RateLimitWire(int failFirst, bool always = false) : System.Net
                     + "\"code\":\"rate_limit_exceeded\"}}", Encoding.UTF8, "application/json"),
             };
             // Zero, not absent: the policy has to be seen reading the provider's own wait, and a real delay would
-            // make the suite depend on a clock.
-            throttled.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.Zero);
+            // make the suite depend on a clock. The cells that measure the wait ask for seconds instead — see the
+            // hook below the streaming retry cell, where the number has to be the provider's, not the jitter's.
+            throttled.Headers.RetryAfter =
+                new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(retryAfterSeconds));
             SawRetryAfter = true;
             return System.Threading.Tasks.Task.FromResult(throttled);
         }

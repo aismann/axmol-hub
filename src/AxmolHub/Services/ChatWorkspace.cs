@@ -76,6 +76,12 @@ public sealed class ChatWorkspace : IDisposable
     /// to show (a search with no query yet reads differently from one that has both queries and sources).</summary>
     internal event Action<string, ServerSearchNotice>? ServerSearchChanged;
 
+    /// <summary>This session's request is sitting out a provider's retry wait, or has stopped doing so. A rate
+    /// limit is work the pipeline is doing rather than a stream that died, so it earns a line on the same status
+    /// the tool and the search use — and without it the only trace of an obeyed limit is a timeout that blames
+    /// the network. The bool is the bracket: true while waiting, false when the attempt goes out.</summary>
+    internal event Action<string, bool>? RetryWaitChanged;
+
     public ChatWorkspace(string dataRoot)
     {
         _dataRoot = dataRoot;
@@ -2832,14 +2838,24 @@ public sealed class ChatWorkspace : IDisposable
     /// </summary>
     internal const int MaxConcurrentRuns = 3;
 
-    /// <summary>How long a run may go without the endpoint sending anything. It is an inactivity deadline rather
-    /// than a total one: a reply that keeps arriving is not overdue however long it takes, and a stream that
-    /// stopped arriving is dead at any elapsed time. "Anything" is every frame the pipeline is handed — which is
-    /// what makes a model that thinks for two minutes in reasoning deltas a working session rather than a stalled
-    /// one. It measures the stream alone: the deadline stands down while a tool owns the run, where the tool's own
-    /// silence bound judges that stretch and answers with output the model reads instead of a notice, and nothing
-    /// re-arms it while a call waits for a person.</summary>
+    /// <summary>How long a run may go without the endpoint sending anything, once it has sent something. It is an
+    /// inactivity deadline rather than a total one: a reply that keeps arriving is not overdue however long it
+    /// takes, and a stream that stopped arriving is dead at any elapsed time. "Anything" is every frame the
+    /// pipeline is handed — which is what makes a model that thinks for two minutes in reasoning deltas a working
+    /// session rather than a stalled one. It measures the stream alone: the deadline stands down while a tool owns
+    /// the run, where the tool's own silence bound judges that stretch and answers with output the model reads
+    /// instead of a notice, and nothing re-arms it while a call waits for a person.</summary>
     internal TimeSpan IdleTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>How long a round may take to produce its <b>first</b> frame. Kept apart from
+    /// <see cref="IdleTimeout"/> because the two measure different things, and reading one as the other is how a
+    /// healthy session got killed: after a tool result lands, the silence is the request being built, uploaded,
+    /// queued by the gateway and prefilled — on a transcript of a hundred and eighty thousand tokens that
+    /// legitimately takes longer than a stream ever should. A round that has spoken and then gone quiet is still
+    /// judged by the 120s above, and the handover is one-way: the first frame arms the silence window and nothing
+    /// hands it back. Measured on the provider's own numbers, 2026-10-14: three runs died at 120s holding zero
+    /// frames, at 181,918 and 198,814 input tokens, while a 23-minute turn on 110,787 streamed fine.</summary>
+    internal TimeSpan FirstFrameTimeout = TimeSpan.FromSeconds(300);
 
     /// <summary>
     /// Keyed by conversation id, and dispatcher-confined like everything else the panel reads: the pump only
@@ -3817,7 +3833,7 @@ public sealed class ChatWorkspace : IDisposable
             return null;
         }
 
-        run = new ConversationRun(conversationId, IdleTimeout);
+        run = new ConversationRun(conversationId, IdleTimeout, FirstFrameTimeout);
         run.ParkForApproval();
         _runs[conversationId] = run;
         RunsChanged?.Invoke(conversationId);
@@ -4195,7 +4211,7 @@ public sealed class ChatWorkspace : IDisposable
             waiting.Dispose();
         }
 
-        var run = new ConversationRun(conversationId, IdleTimeout);
+        var run = new ConversationRun(conversationId, IdleTimeout, FirstFrameTimeout);
         _runs[conversationId] = run;
         _ = PumpSegmentsAsync(run);
         RunsChanged?.Invoke(conversationId);
@@ -4298,14 +4314,22 @@ public sealed class ChatWorkspace : IDisposable
             // The one failure nobody can diagnose from the sentence they are handed: "timed out" covers a dead
             // network, an endpoint that buffers the whole thinking block, and a model that is simply slow. What
             // was buffered when the deadline fired says which — reasoning with no text is a stream that was
-            // alive, nothing at all is a stream that stopped.
+            // alive, nothing at all is a stream that stopped. Which window was armed says the same thing from the
+            // side the person can act on: a round that never got to speak is retried, and one that went quiet
+            // halfway through is not necessarily; a third possibility, invisible until the wait was reported, is
+            // that the provider never took the request at all and Hub spent the window obeying its Retry-After.
+            var (waits, waited) = run.RetryCost();
             Audit(run.ConversationId, stopped
                 ? $"Cancelled by the user after {run.Elapsed.TotalSeconds:0}s on {request.Value.ModelName}"
-                : $"Idle timeout: the {run.IdleWindow.TotalSeconds:0.###}s inactivity deadline fired on "
+                : $"Idle timeout: the {run.IdleWindow.TotalSeconds:0.###}s "
+                  + $"{(run.AwaitingFirstFrame ? "first-frame" : "inactivity")} deadline fired on "
                   + $"{request.Value.ModelName} ({request.Value.Provider.Name}) with "
-                  + $"{run.LiveReasoning.Length} chars of reasoning and {run.LiveText.Length} of text buffered");
+                  + $"{run.LiveReasoning.Length} chars of reasoning and {run.LiveText.Length} of text buffered"
+                  + (waits > 0 ? $", after {waits} rate-limit wait(s) totalling {waited.TotalSeconds:0.#}s" : ""));
             return (stopped ? RunResult.Cancelled : RunResult.TimedOut,
-                stopped ? "ChatCancelled" : "ChatTimedOut", !stopped, null);
+                stopped ? "ChatCancelled" : !run.AwaitingFirstFrame ? "ChatTimedOut"
+                    : waits > 0 ? "ChatTimedOutAfterRetries" : "ChatNoFirstFrame",
+                !stopped, null);
         }
         catch (TimeoutException ex)
         {
@@ -4725,6 +4749,19 @@ public sealed class ChatWorkspace : IDisposable
         return null;
     }
 
+    /// <summary>What one retry wait does to a run: the deadline stands down for it, then comes back armed for the
+    /// round the next attempt still owes, and the status line says which attempt is pending and for how long.
+    /// Attempt 0 is the release, which arrives even when the wait itself was cancelled, so the bracket closes
+    /// either way. Reached from the client pipeline's thread, which is why it takes the run rather than looking it
+    /// up — <see cref="_runs"/> is dispatcher-confined. The suite drives the same call to assert the wait neither
+    /// kills the run nor passes for a dead stream.</summary>
+    internal void NoteRetryWait(ConversationRun run, int attempt, TimeSpan delay)
+    {
+        if (attempt == 0) run.EndRetryWait();
+        else run.BeginRetryWait(attempt, delay);
+        RaiseOnUi(() => RetryWaitChanged?.Invoke(run.ConversationId, attempt != 0));
+    }
+
     private IAsyncEnumerable<string> StreamAsync(ChatRequest request, ConversationRun run)
     {
         // One table per segment. It is rebuilt from the message list before every HTTP request the loop makes,
@@ -4732,7 +4769,8 @@ public sealed class ChatWorkspace : IDisposable
         // turns are the source of truth by then.
         var reasoning = new ReasoningTable();
         var client = ClientOverride?.Invoke(request.Provider, run.ConversationId)
-                     ?? ChatClientFactory.Create(request.Provider, request.ModelName, reasoning);
+                     ?? ChatClientFactory.Create(request.Provider, request.ModelName, reasoning,
+                         onRetryWait: (attempt, delay) => NoteRetryWait(run, attempt, delay));
         var pipeline = new ChatPipeline(client, reasoning);
         return pipeline.SendAsync(
             request.Provider,
