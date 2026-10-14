@@ -499,12 +499,15 @@ public partial class MainWindow : Window
         }
         var title = _chat.SessionTitleFor(conversationId);
         if (string.IsNullOrWhiteSpace(title)) title = HubStrings.Get("Conversation");
-        var titleKey = kind == ChatAttentionKind.PlanApproval
-            ? "ChatPlanNotificationTitle"
-            : "ChatToolApprovalNotificationTitle";
-        var bodyKey = kind == ChatAttentionKind.PlanApproval
-            ? "ChatPlanNotificationBody"
-            : "ChatToolApprovalNotificationBody";
+        // A switch rather than a chain of ternaries: there are three kinds now, and the third one is the case a
+        // person most needs told apart — being asked to decide is not the same interruption as being asked to
+        // allow, and a notification that says "approval" for a question teaches them to ignore the wrong one.
+        var (titleKey, bodyKey) = kind switch
+        {
+            ChatAttentionKind.PlanApproval => ("ChatPlanNotificationTitle", "ChatPlanNotificationBody"),
+            ChatAttentionKind.UserQuestion => ("ChatQuestionNotificationTitle", "ChatQuestionNotificationBody"),
+            _ => ("ChatToolApprovalNotificationTitle", "ChatToolApprovalNotificationBody"),
+        };
         _attention.Show(HubStrings.Get(titleKey),
             string.Format(System.Globalization.CultureInfo.CurrentCulture, HubStrings.Get(bodyKey), title),
             conversationId);

@@ -2917,7 +2917,7 @@ if (args.Contains("--check-ai-context"))
     if (EveryCallAnsweredBesideItself(ChatPipeline.ToChatMessages(parked.Messages)))
         throw new Exception("The fixture no longer reproduces the rejected order, so it proves nothing.");
     // An existence check cannot see ordering problems — precisely why it failed to block this 400, so pin it here.
-    if (parked.CloseUnansweredToolCalls("superseded") != 0)
+    if (parked.CloseUnansweredToolCalls(_ => "superseded") != 0)
         throw new Exception("The existence-based repair claimed to fix a transcript it cannot see.");
     if (parked.FirstMispairedToolCallId() != "call_00_run")
         throw new Exception($"The adjacency check blamed the wrong call ({parked.FirstMispairedToolCallId()}).");
@@ -4996,7 +4996,7 @@ if (args.Contains("--check-ai-web-search"))
 
 if (args.Contains("--check-ai-tool-policy"))
 {
-    // The permission model is one pure function over two small enums, so all fifteen cells are asserted rather
+    // The permission model is one pure function over two small enums, so all eighteen cells are asserted rather
     // than sampled: a transposed table is the difference between "auto lets a build run" and "auto stops at a
     // build", and neither reads as an error at compile time.
     var table = new (string Mode, ToolRisk Risk, bool Expected)[]
@@ -5020,6 +5020,13 @@ if (args.Contains("--check-ai-tool-policy"))
         (ToolApprovalModes.Ask, ToolRisk.AssistantNote, false),
         (ToolApprovalModes.Auto, ToolRisk.AssistantNote, false),
         (ToolApprovalModes.Full, ToolRisk.AssistantNote, false),
+        // And the mirror image: a question stops the run in every mode, including the one whose whole promise is
+        // that nothing asks. These three are the only thing standing between "full access means answer for me"
+        // and the tier being read before the mode switch — put the arm below the switch and the table still
+        // compiles, every other cell still passes, and questions simply stop existing.
+        (ToolApprovalModes.Ask, ToolRisk.AskUser, true),
+        (ToolApprovalModes.Auto, ToolRisk.AskUser, true),
+        (ToolApprovalModes.Full, ToolRisk.AskUser, true),
     };
     foreach (var (mode, risk, expected) in table)
     {
@@ -5373,6 +5380,92 @@ if (args.Contains("--check-ai-tool-policy"))
         || GitCommandGrades.CommandOf("{\"command\":\"git status\",\"timeout_seconds\":5}") != GitGrade.GitRead)
         throw new Exception("The command-argument reader graded a call it should have left on its old tier.");
     Console.WriteLine("PASS: a run_command with nothing readable in its arguments keeps the tier it had.");
+
+    // A question the card cannot be built from must not park: the run would sit waiting on a card that shows
+    // nothing. So the shape rules are the gate's guard, and they are asserted here rather than trusted to the
+    // schema — a gateway is free to answer a tool call with anything its own model wanted.
+    var good = """{"question":"Where should the retry live?","options":[{"label":"In the caller"},{"label":"In the transport","detail":"Covers every caller."}]}""";
+    if (!AskUserQuestion.TryParse(good, out var asked, out var choices, out var refusal)
+        || asked != "Where should the retry live?" || choices.Count != 2
+        || choices[0].Letter != "A" || choices[1].Letter != "B"
+        || choices[0].Detail.Length != 0 || choices[1].Detail != "Covers every caller.")
+        throw new Exception($"A well-formed question was refused ({refusal}) or came back reshaped.");
+    if (!AskUserQuestion.TryParse(
+            """{"question":"q","options":[{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"}]}""",
+            out _, out var four, out _) || four.Count != 4 || four[3].Letter != "D")
+        throw new Exception("The fourth option did not arrive, or was not lettered D.");
+
+    foreach (var (label, json) in new (string, string)[]
+             {
+                 ("one option", """{"question":"q","options":[{"label":"only"}]}"""),
+                 ("five options", """{"question":"q","options":[{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"},{"label":"e"}]}"""),
+                 ("no question", """{"options":[{"label":"a"},{"label":"b"}]}"""),
+                 ("blank label", """{"question":"q","options":[{"label":"a"},{"label":"   "}]}"""),
+                 ("duplicate labels", """{"question":"q","options":[{"label":"Same"},{"label":"same"}]}"""),
+                 ("options not an array", """{"question":"q","options":"a or b"}"""),
+                 ("not JSON at all", "question: q, options: a, b"),
+             })
+    {
+        if (AskUserQuestion.TryParse(json, out _, out _, out var why) || why.Length == 0)
+            throw new Exception($"A question with {label} was accepted, or refused with nothing to say.");
+    }
+
+    // A label over the limit is clipped, not fatal: the choice the model meant to offer is still worth showing,
+    // and losing the whole question over one character would trade a clipped word for a lost turn.
+    if (!AskUserQuestion.TryParse(
+            $$"""{"question":"q","options":[{"label":"{{new string('x', AskUserQuestion.LabelLimit + 40)}}"},{"label":"b"}]}""",
+            out _, out var clipped, out _)
+        || clipped[0].Label.Length != AskUserQuestion.LabelLimit
+        || !clipped[0].Label.EndsWith('…'))
+        throw new Exception("An over-long label was not clipped to the limit with an ellipsis.");
+
+    // What the person's answer becomes on the way back to the model. Pinned here because the card is the only
+    // other reader of these, and a view that composed transcript text would drift from it silently.
+    if (AskUserQuestion.Answered("Where?", choices[1]) != "The user answered \"B: In the transport\" to \"Where?\"."
+        || AskUserQuestion.AnsweredInOwnWords("Where?", "put it in the retry helper")
+               != "The user answered \"Where?\" in their own words: \"put it in the retry helper\".")
+        throw new Exception("The answer text no longer names the letter, the label and the question together.");
+    // Skipping says "decide yourself", and refusing says "ask what to do instead" — the second one handed to a
+    // skipped question is a loop, because it ends by telling the model to go back to the thing just skipped.
+    if (ToolApprovalResults.QuestionSkipped.Contains("ask the user what to do", StringComparison.OrdinalIgnoreCase)
+        || !ToolApprovalResults.QuestionSkipped.Contains("Do not ask it again", StringComparison.Ordinal))
+        throw new Exception("A skipped question now tells the model to ask again, which is a re-ask loop.");
+    Console.WriteLine("PASS: a question parses into lettered options, refuses what no card can show, and answers in the model's terms.");
+
+    // An unanswered question and an unrun action leave different facts behind. The caller picks the sentence per
+    // call, so this is the one place the two can be told apart without a window.
+    var mixed = Conversation.Create("orcarouter");
+    mixed.Append(ChatTurn.User("do it"));
+    mixed.Messages.Add(ChatTurn.FunctionCall("q1", "ask_user", good));
+    mixed.Messages.Add(ChatTurn.FunctionCall("w1", "file_write", """{"path":"x.cpp"}"""));
+    mixed.CloseUnansweredToolCalls(turn => turn.ToolName == "ask_user"
+        ? ToolApprovalResults.QuestionUnanswered
+        : ToolApprovalResults.Superseded);
+    var questionResult = mixed.Messages.First(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId == "q1");
+    var writeResult = mixed.Messages.First(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId == "w1");
+    if (questionResult.Text != ToolApprovalResults.QuestionUnanswered
+        || writeResult.Text != ToolApprovalResults.Superseded
+        || !questionResult.Text.Contains("Do not ask it again", StringComparison.Ordinal))
+        throw new Exception("An unanswered question was closed with the sentence meant for an unrun action.");
+    if (mixed.Messages[2] != questionResult || mixed.Messages[4] != writeResult)
+        throw new Exception("A synthetic result was written where the provider cannot replay it.");
+    Console.WriteLine("PASS: a question nobody answered is closed as a question, beside its own call.");
+
+    // The session's own choice about being asked is three-state on purpose, and the third state is the one every
+    // file already on disk is in: no property means nobody ever turned it off.
+    var askRoundTrip = Conversation.Create("orcarouter");
+    askRoundTrip.AskUserEnabled = false;
+    policyStore.Save(askRoundTrip);
+    if (policyStore.Load(askRoundTrip.Id) is not { AskUserEnabled: false } switchedOff)
+        throw new Exception("A session that switched questions off came back asking.");
+    if (Conversation.Create("orcarouter").AskUserEnabled is not null)
+        throw new Exception("A new session does not default to allowed.");
+    // Deleted, like every other session this group saves. The scratch root is one directory reused across
+    // groups and across runs, so a leftover with today's engagement time sorts above the fixed 2026-01 dates
+    // the sessions group orders by — and that group fails on a later run for a reason that has nothing to do
+    // with it.
+    policyStore.Delete(askRoundTrip.Id);
+    Console.WriteLine("PASS: a session's choice about being asked round-trips, and silence from an old file means asked.");
     return;
 }
 if (args.Contains("--check-ai-cross-session"))

@@ -461,16 +461,26 @@
       <Setter Property="RenderTransform" Value="rotate(-90deg)" />
     </Style>
 
-    <!-- ── Plan review: a flat lettered list over the composer ──
+    <!-- ── A lettered list over the composer: plan review, and a question the model asked ──
          The options are lines, not plates: nothing a person does to the card — hovering it, choosing a line,
-         putting the caret in the revision line — may move anything, so the row heights are fixed and the revision
-         line is a line of text rather than a box inside a box. Only what is typed changes the geometry.
-         Selection lives entirely in the letter cap, which lifts off the card and takes the accent ring. -->
+         putting the caret in the answer line — may move anything, so the row heights are fixed and the typed line
+         is a line of text rather than a box inside a box. Only what is typed changes the geometry.
+         Selection lives entirely in the letter cap, which lifts off the card and takes the accent ring.
+         One set of setters for both cards, written as a second selector on each rather than copied: they are the
+         same object at the same height, and two style blocks would drift the first time one of them was tuned. -->
     <Style Selector="TextBlock.plan-review-title">
       <Setter Property="FontSize" Value="13" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
       <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <!-- A plan's title is two words; a question is a sentence the person has to read, so it wraps and sits at the
+         top of its row instead of centring against a button that is not there. -->
+    <Style Selector="TextBlock.question-title">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
     <Style Selector="Button.plan-review-open">
       <Setter Property="Background" Value="Transparent" />
@@ -487,7 +497,7 @@
     </Style>
     <!-- MinHeight 0 because the theme's 34 would house an 18px cap in a plate, and a plate is what this list
          stopped having. The padding is what the cap plus its hover hint needs and no more. -->
-    <Style Selector="Button.plan-review-option">
+    <Style Selector="Button.plan-review-option, Button.question-option">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="MinHeight" Value="0" />
@@ -495,7 +505,7 @@
       <Setter Property="CornerRadius" Value="8" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
     </Style>
-    <Style Selector="Button.plan-review-option:pointerover">
+    <Style Selector="Button.plan-review-option:pointerover, Button.question-option:pointerover">
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
     </Style>
     <!-- An idle cap is an outline: a key on the card, not a plate on the card. The armed cap lifts to
@@ -504,7 +514,7 @@
          levels off Hub.SurfaceAlt in dark and is pure white in light, where a light theme has nowhere to lift a
          surface, so the letter would read in one theme and vanish in the other. The ring carries the state on its
          own even over a hovered row, whose fill lands one level off the lifted cap. -->
-    <Style Selector="Border.plan-review-key">
+    <Style Selector="Border.plan-review-key, Border.question-key">
       <Setter Property="Width" Value="18" />
       <Setter Property="Height" Value="18" />
       <Setter Property="CornerRadius" Value="5" />
@@ -513,17 +523,17 @@
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
-    <Style Selector="Border.plan-review-key TextBlock">
+    <Style Selector="Border.plan-review-key TextBlock, Border.question-key TextBlock">
       <Setter Property="FontSize" Value="11" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
       <Setter Property="HorizontalAlignment" Value="Center" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
-    <Style Selector="Button.plan-review-option.selected Border.plan-review-key">
+    <Style Selector="Button.plan-review-option.selected Border.plan-review-key, Button.question-option.selected Border.question-key">
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.AccentBorder}" />
     </Style>
-    <Style Selector="Button.plan-review-option.selected Border.plan-review-key TextBlock">
+    <Style Selector="Button.plan-review-option.selected Border.plan-review-key TextBlock, Button.question-option.selected Border.question-key TextBlock">
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
     <Style Selector="TextBlock.plan-review-label">
@@ -532,11 +542,23 @@
       <Setter Property="VerticalAlignment" Value="Center" />
       <Setter Property="Margin" Value="10,0,0,0" />
     </Style>
+    <!-- A question's label is the same line, but it is not alone on its row: the detail under it is what makes the
+         row two lines tall, so the pair has to sit as a block rather than each centring itself against half the row. -->
+    <Style Selector="TextBlock.question-label">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="TextBlock.question-detail">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
     <!-- The revision line is the second option, not a panel under it, so it borrows `message-edit`'s treatment:
          no plate, no ring, no padding. With zero border thickness the theme's focus rule has nothing to paint,
          which is the point — the caret is the only thing that appears when the line is entered. Its left margin is
          the label's, so the caret lands under A's text. -->
-    <Style Selector="TextBox.plan-feedback">
+    <Style Selector="TextBox.plan-feedback, TextBox.question-free">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="MinHeight" Value="0" />

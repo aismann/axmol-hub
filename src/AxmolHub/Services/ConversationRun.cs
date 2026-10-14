@@ -35,10 +35,18 @@ internal enum RunResult
     Parked,
 }
 
+/// <summary>Which of the three things a session can stop and wait on has just arrived. The kind chooses the words
+/// of the notification and nothing else: the badge counts pending decisions without distinguishing them, and the
+/// card that opens is chosen by the transcript state, not by this.</summary>
 internal enum ChatAttentionKind
 {
     ToolApproval,
     PlanApproval,
+
+    /// <summary>The assistant asked a question mid-run. Its own kind because a person who has stepped away needs
+    /// to know which of the two they are being called back for: one is a request to allow something, the other is
+    /// a request for information only they have.</summary>
+    UserQuestion,
 }
 
 /// <summary>

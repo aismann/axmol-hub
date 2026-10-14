@@ -378,6 +378,7 @@ public partial class ChatPanel : UserControl
         AddHandler(InputElement.KeyDownEvent, (_, e) =>
         {
             if (TryChoosePlanOptionByKey(e)) return;
+            if (TryChooseQuestionOptionByKey(e)) return;
             if (e.Key != Key.Escape) return;
             if (DecisionHost.IsVisible)
             {
@@ -388,7 +389,7 @@ public partial class ChatPanel : UserControl
                     // the question while the person is mid-sentence is that interruption again. Only the card's own
                     // revision line turns Escape into "leave this line"; the composer's box falls through to the
                     // layers under this one, where Escape still stops the reply.
-                    if (box.Name == "PlanFeedbackBox")
+                    if (box.Name is "PlanFeedbackBox" or "QuestionAnswerBox")
                     {
                         DecisionHost.Focus();
                         e.Handled = true;
@@ -989,6 +990,28 @@ public partial class ChatPanel : UserControl
             };
             menu.Items.Add(item);
         }
+
+        // Whether the model may stop and ask is neither of the two choices above it, and the row says so by where
+        // it sits and what it is ticked by: 计划 and 目标 pick what this session can reach, this picks whether a
+        // person is willing to be interrupted to settle something the repository cannot answer. It reads the
+        // session on the way in and writes the session on the way out, so the tick cannot disagree with the
+        // conversation it belongs to — which is the failure this menu's mode rows used to have.
+        var askUser = new MenuItem
+        {
+            Header = HubStrings.Get("ChatAskUserMenuItem"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _chat.ActiveAskUserEnabled,
+            Tag = "ask-user",
+        };
+        ToolTip.SetTip(askUser, HubStrings.Get("ChatAskUserMenuTip"));
+        askUser.Click += (_, _) =>
+        {
+            // Derived from the session, not from the row's own new tick: the two agree today, and the day they
+            // do not it is the control that is wrong.
+            _chat.SelectAskUserEnabled(!_chat.ActiveAskUserEnabled);
+            menu.Hide();
+        };
+        menu.Items.Add(askUser);
 
         var addFolder = new MenuItem { Header = HubStrings.Get("ChatAddLocalFolder") };
         addFolder.Click += async (_, _) => await AddLocalFolderAsync();
@@ -2586,11 +2609,16 @@ public partial class ChatPanel : UserControl
     {
         // A write that never had to ask still changed the file, so it gets a line of its own naming the file
         // rather than the tool: who was asked is a permission detail, what moved is the record.
+        var asked = turn.ToolName == AskUserTool.ToolName;
         var line = turn.ApprovalState is { Length: > 0 } state
             ? $"{HubStrings.Get(state switch
                 {
                     ChatApprovalStates.Approved => "ChatApprovalResolvedApproved",
                     ChatApprovalStates.Denied => "ChatApprovalResolvedDenied",
+                    ChatApprovalStates.Answered => "ChatQuestionResolved",
+                    // A question nobody answered was still asked, so "not executed" is not a fact about it — the
+                    // thing that did not happen was the reply.
+                    ChatApprovalStates.Superseded when asked => "ChatQuestionResolvedSuperseded",
                     _ => "ChatApprovalResolvedSuperseded",
                 })} · {turn.ToolName ?? ""}"
             : string.Format(System.Globalization.CultureInfo.CurrentCulture,
@@ -4018,6 +4046,116 @@ public partial class ChatPanel : UserControl
     /// <summary>The card's painted height. The flat list's whole promise is that choosing a line moves nothing,
     /// and a hand-checked margin is exactly the kind of 8px thing that comes back, so the height is measured.</summary>
     internal double PlanReviewCardHeightForCheck => PlanApprovalCards.FirstOrDefault()?.Bounds.Height ?? 0;
+
+    // ── seams for a question the model asked ──
+
+    /// <summary>The host, but only while the decision it is holding is a question. Same one-slot rule as the plan
+    /// cards: the host shows one owed decision at a time, so "which one" is answered by the stored call.</summary>
+    private IEnumerable<Border> QuestionCards
+        => DecisionHost.IsVisible && _decisionCallId is { } callId && IsPendingQuestion(callId)
+            ? [DecisionHost] : [];
+
+    private Border? QuestionCard => QuestionCards.FirstOrDefault();
+
+    /// <summary>The option letters the card offers, in order, with <c>"free"</c> last — the free-text line is a
+    /// row of the list, and a check that could not see it could not prove it is inside the clip either.</summary>
+    internal string[] QuestionChoicesForCheck
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .Where(button => button.Classes.Contains("question-option"))
+            .Select(button => button.Tag as string ?? "").ToArray() ?? [];
+
+    internal string QuestionSelectedChoiceForCheck
+        => QuestionChoicesForCheck.FirstOrDefault(tag =>
+            QuestionCard?.GetLogicalDescendants().OfType<Button>()
+                .FirstOrDefault(row => row.Tag as string == tag)?.Classes.Contains("selected") == true) ?? "";
+
+    internal bool QuestionContinueEnabledForCheck
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Name == "QuestionContinueButton")?.IsEnabled == true;
+
+    internal bool QuestionHasSkipForCheck
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .Any(button => button.Tag as string == "ChatQuestionSkip") == true;
+
+    /// <summary>Anything on the card that could be read as the grant button. The question card has no such control,
+    /// and the negative is what matters: a 「总是允许」 here would let one click silence every later question.</summary>
+    internal bool QuestionOffersAlwaysAllowForCheck
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .Any(button => button.Tag as string is { Length: > 0 } tag
+                           && tag.Contains("Always", StringComparison.Ordinal)) == true;
+
+    internal string QuestionTitleForCheck
+        => QuestionCard?.GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(text => text.Classes.Contains("question-title"))?.Text ?? "";
+
+    internal string QuestionLabelForCheck(string letter)
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(row => row.Tag as string == letter)?
+            .GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(text => text.Classes.Contains("question-label"))?.Text ?? "";
+
+    private TextBox? QuestionAnswerBox => QuestionCard?.GetLogicalDescendants().OfType<TextBox>()
+        .FirstOrDefault(box => box.Name == "QuestionAnswerBox");
+
+    internal string QuestionFreeTextForCheck => QuestionAnswerBox?.Text ?? "";
+
+    internal void SetQuestionFreeTextForCheck(string text)
+    {
+        if (QuestionAnswerBox is { } box) box.Text = text;
+    }
+
+    internal void ClickQuestionChoiceForCheck(string letter)
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(row => row.Tag as string == letter)
+            ?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+    internal void ClickQuestionContinueForCheck()
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Name == "QuestionContinueButton")
+            ?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+    internal void ClickQuestionSkipForCheck()
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Tag as string == "ChatQuestionSkip")
+            ?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+    /// <summary>Presses a key on the question card through the routed event, from the composer's box or from the
+    /// card's own free-text line. <paramref name="inFreeLine"/> is what makes the negative half real: with the
+    /// caret in that line, A and B are letters, and only the handler's third gate knows the difference.</summary>
+    internal bool PressQuestionCardKeyForCheck(Key key, bool inFreeLine = false)
+    {
+        var source = inFreeLine ? (Control?)QuestionAnswerBox : DecisionHost;
+        if (source is null) return false;
+        var args = new KeyEventArgs
+        {
+            RoutedEvent = InputElement.KeyDownEvent,
+            Key = key,
+            KeyModifiers = KeyModifiers.None,
+            Source = source,
+        };
+        source.RaiseEvent(args);
+        return args.Handled;
+    }
+
+    /// <summary>The card's painted height, measured the same way the plan card's is: the four-option clip case is a
+    /// pixel fact, and a class name cannot report that 「继续」 fell outside the host.</summary>
+    internal double QuestionCardHeightForCheck => QuestionCard?.Bounds.Height ?? 0;
+
+    /// <summary>Whether the footer is still inside the host's own bounds. The host clips, so a card that outgrows
+    /// it keeps a visible-but-unreachable answer button unless this is measured at the far end of the range.</summary>
+    internal bool QuestionContinueInsideHostForCheck
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Name == "QuestionContinueButton") is { } button
+           && button.Bounds.Bottom <= QuestionCard.Bounds.Bottom + 0.5;
+
+    /// <summary>The transcript's waiting lines, as written. A question and an action both park a run and both
+    /// leave one muted line behind; if those lines say the same thing, the person scrolling back cannot tell
+    /// whether their answer was a decision or a permission.</summary>
+    internal string[] TranscriptWaitingLinesForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+            .Where(border => border.Classes.Contains("approval-pending-line"))
+            .SelectMany(border => border.GetLogicalDescendants().OfType<TextBlock>())
+            .Select(text => text.Text ?? "").ToArray();
 
     /// <summary>The card as a visual, for the frames a check photographs.</summary>
     internal Border? PlanReviewCardForCheck => PlanApprovalCards.FirstOrDefault();

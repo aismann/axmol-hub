@@ -29,6 +29,10 @@ public static class ToolPreviews
             "spawn_session" => SpawnPreview(arguments, scope),
             "memory_write" => MemoryPreview(arguments),
             "memory_read" => $"memory_read · {Text(arguments, "scope")} · {Text(arguments, "name")}",
+            // Not a preview of an action: there is nothing this call would do, so the line carries the question
+            // itself. The card reads the stored arguments directly rather than this string — a question's text is
+            // immutable model output and needs no freezing, unlike a diff of a file that can change under it.
+            "ask_user" => AskUserQuestion.Preview(argumentsJson),
             "read_file" => $"read_file · {Text(arguments, "path")}",
             "search_text" => $"search_text · {Text(arguments, "pattern")} · "
                              + $"{(Text(arguments, "glob") is { Length: > 0 } glob ? glob : "any text file")} · in "

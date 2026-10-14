@@ -267,6 +267,18 @@ public sealed class Conversation
     /// would have given then.</summary>
     public string Routing { get; set; } = ChatRouting.Manual;
 
+    /// <summary>Whether this session's model may stop and ask a question mid-run.
+    ///
+    /// <para>Nullable, and <c>null</c> means allowed: a session file written before this existed has no property
+    /// at all, and the honest reading of "nobody ever turned this off" is that it is on. Writing the default to
+    /// every session on first open would be a migration, and this store does not do those.</para>
+    ///
+    /// <para>Its own axis, deliberately: <see cref="Mode"/> decides what the session may reach and the approval
+    /// mode decides whether reaching it needs permission. Neither is a statement about whether a person is
+    /// willing to be asked, which is why turning this off removes the tool from the declaration list rather than
+    /// letting the model ask into a void.</para></summary>
+    public bool? AskUserEnabled { get; set; }
+
     /// <summary>
     /// The last token count the model itself reported for this session's input, and the companions that make it
     /// usable: which reply it belongs to, and which model said it.
@@ -386,9 +398,14 @@ public sealed class Conversation
     /// assistant message whose call is left unanswered. A call can be left hanging by a fork, by an edit, by a
     /// restart mid-approval, or by a message arriving while a call waits for permission — all of which end up
     /// here, because this runs at the top of every new reply rather than at each of those four places.
+    ///
+    /// <para>The sentence is asked for per call rather than passed in once because "this call was not executed" is
+    /// true of a write and false of a question: a question that went unanswered <i>was</i> put to somebody, and a
+    /// model told only that it did not run has no way to learn that the decision is now its own. The caller names
+    /// which is which — this class does not know what any tool is, and must not start.</para>
     /// </summary>
     /// <returns>How many calls were closed.</returns>
-    public int CloseUnansweredToolCalls(string reason)
+    public int CloseUnansweredToolCalls(Func<ChatTurn, string> reasonFor)
     {
         var answered = Messages
             .Where(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 })
@@ -403,7 +420,7 @@ public sealed class Conversation
             if (answered.Contains(callId)) continue;
 
             Messages[i] = turn with { ApprovalState = ChatApprovalStates.Superseded };
-            Messages.Insert(i + 1, ChatTurn.FunctionResult(callId, reason, failed: true));
+            Messages.Insert(i + 1, ChatTurn.FunctionResult(callId, reasonFor(turn), failed: true));
             answered.Add(callId);
             closed++;
             i++;

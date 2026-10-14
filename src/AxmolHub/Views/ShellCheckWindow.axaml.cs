@@ -1465,6 +1465,7 @@ public partial class ShellCheckWindow : Window
         await CheckParallelRunsAsync(shell, panel, sidebar);
         await CheckToolApprovalAsync(shell, panel, sidebar);
         await CheckPlanApprovalAsync(shell, panel);
+        await CheckAskUserAsync(shell, panel);
         await CheckAutoCompactionAsync(shell, panel, checkProvider.Id);
         await CheckOverflowRecoveryAsync(shell, panel, checkModel);
         await CheckUsageReadBackAsync(shell, panel, checkModel);
@@ -5307,6 +5308,242 @@ public partial class ShellCheckWindow : Window
     }
 
     /// <summary>
+    /// A question the model asked, the card it parks on, and the answer that resumes the run. Scripted end to
+    /// end: the call comes from a fixture client, so the gate, the card and the resume are all the production
+    /// path with nothing on the wire.
+    /// </summary>
+    private async Task CheckAskUserAsync(MainWindow shell, ChatPanel panel)
+    {
+        var chat = shell.Chat;
+        var savedIdleTimeout = chat.IdleTimeout;
+        var savedPreferencesProvider = chat.PreferencesProvider;
+        var observer = chat.StartConversation();
+        var cardSession = chat.StartConversation();
+        var skipSession = chat.StartConversation();
+        var owedSession = chat.StartConversation();
+        var questionArguments = new Dictionary<string, object?>
+        {
+            ["question"] = "重试逻辑放在哪一层？",
+            ["options"] = new object?[]
+            {
+                new Dictionary<string, object?> { ["label"] = "放在调用方 (Recommended)" },
+                new Dictionary<string, object?> { ["label"] = "放在传输层", ["detail"] = "覆盖所有调用方，但会改公共签名。" },
+                new Dictionary<string, object?> { ["label"] = "抽一个独立的 helper" },
+                new Dictionary<string, object?> { ["label"] = "这一轮先不做" },
+            },
+        };
+        var cardClient = new ApprovalChatClient
+        {
+            ToolName = AskUserTool.ToolName,
+            Arguments = questionArguments,
+        };
+        var skipClient = new ApprovalChatClient
+        {
+            ToolName = AskUserTool.ToolName,
+            Arguments = questionArguments,
+        };
+        // One response, two questions. A model is asked for one call per reply and does not always agree, and the
+        // only honest way to show that the second one is not lost is to answer the first and watch the run park
+        // again on the card that is still owed.
+        var owedClient = new ApprovalChatClient
+        {
+            // The batch answers once and is then cleared, and the fixture's own default would have the second
+            // request ask a third question — which would leave the run parked and read as a resume that never
+            // happened. Zero here is what makes "the reply went on" a claim rather than an artifact.
+            CallsRemaining = 0,
+            Batch =
+            [
+                (AskUserTool.ToolName, new Dictionary<string, object?>(questionArguments)),
+                (AskUserTool.ToolName, new Dictionary<string, object?>
+                 {
+                     ["question"] = "那超时呢？",
+                     ["options"] = new object?[]
+                     {
+                         new Dictionary<string, object?> { ["label"] = "跟重试放在一起" },
+                         new Dictionary<string, object?> { ["label"] = "单独配" },
+                     },
+                 }),
+            ],
+        };
+        chat.IdleTimeout = TimeSpan.FromSeconds(5);
+        try
+        {
+            chat.ClientOverride = (_, conversationId) => conversationId switch
+            {
+                var id when id == cardSession.Id => cardClient,
+                var id when id == skipSession.Id => skipClient,
+                var id when id == owedSession.Id => owedClient,
+                _ => new ScriptedChatClient(["不该被使用"]),
+            };
+
+            // The axis this whole change turns on: a session with the loosest permission setting still stops for
+            // a question. Asserted through the real gate rather than the policy table, because the table cell
+            // cannot tell "the tier is read before the mode" from "this call never reached the tier".
+            chat.OpenConversation(cardSession.Id);
+            chat.SelectMode(ChatModes.Agent);
+            Check(chat.SetApprovalMode(cardSession.Id, ToolApprovalModes.Full)
+                  && chat.ApprovalModeFor(cardSession.Id) == ToolApprovalModes.Full,
+                "夹具会话确实跑在完全访问下（实际「" + chat.ApprovalModeFor(cardSession.Id) + "」）");
+            chat.TryEnqueueSend(cardSession.Id, "重试这块我拿不准", null, out _);
+            chat.OpenConversation(observer.Id);
+            await WaitForIdleAsync(chat);
+            var parkedCallId = cardSession.Messages.LastOrDefault(
+                turn => turn.ToolName == AskUserTool.ToolName)?.ToolCallId;
+            Check(parkedCallId is not null
+                  && cardSession.Messages.Any(turn => turn.ToolCallId == parkedCallId
+                      && turn.ApprovalState == ChatApprovalStates.Pending)
+                  && cardSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 0,
+                "完全访问模式下模型的提问照样停住，且没有替它写出结果（停在 " + cardSession.Messages.Count + " 条）");
+
+            chat.OpenConversation(cardSession.Id);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var placement = panel.DecisionHostPlacementForCheck;
+            Check(panel.QuestionChoicesForCheck.SequenceEqual(["A", "B", "C", "D", "free"])
+                  && panel.QuestionHasSkipForCheck && panel.QuestionTitleForCheck.Contains("重试逻辑放在哪一层", StringComparison.Ordinal)
+                  && placement is not null && placement.Value.BottomRelativeToFrame <= 0,
+                "提问卡排在输入框上方、与输入框同列：四个字母选项加一行自己写的，页脚是跳过与继续（实际 "
+                + string.Join("/", panel.QuestionChoicesForCheck) + "，卡底相对输入框 "
+                + (placement?.BottomRelativeToFrame ?? double.NaN) + "）");
+            // The host clips at its own ceiling, and four options under a wrapped question is the far end of the
+            // range. A card that pushed 「继续」 outside would leave the run parked forever with no way out but
+            // another message, so the footer's own bounds are what gets read, not the class names on it.
+            Check(panel.QuestionCardHeightForCheck > 0 && panel.QuestionContinueInsideHostForCheck
+                  && panel.ComposerInputEnabledForCheck,
+                "四个选项时继续按钮仍在卡片内、没被裁掉，输入框也照旧可用（卡高 "
+                + panel.QuestionCardHeightForCheck + "）");
+            Check(!panel.QuestionContinueEnabledForCheck,
+                "什么都没选、也没写字时继续是禁用的：一次看起来只是点了个框的操作不该花掉一次请求");
+            // The cap is a shortcut, and a shortcut that fires while somebody is typing in the line beside it is
+            // an interruption of exactly the kind the charter forbids above the composer.
+            panel.ClickQuestionChoiceForCheck("free");
+            panel.SetQuestionFreeTextForCheck("都行，你定");
+            Check(!panel.PressQuestionCardKeyForCheck(Key.A, inFreeLine: true)
+                  && panel.QuestionSelectedChoiceForCheck == "free"
+                  && panel.QuestionFreeTextForCheck == "都行，你定"
+                  && panel.QuestionContinueEnabledForCheck,
+                "光标在自己的答案行里时 A 是字母：不换选中项、不吞已写的字，而写进内容之后继续活了");
+            // The other half of the same rule: the line is armed by the caret, but it is the text that makes the
+            // answer worth sending. An armed-and-empty line must not be able to spend a request.
+            panel.SetQuestionFreeTextForCheck("");
+            Check(!panel.QuestionContinueEnabledForCheck,
+                "把答案行清空之后继续又禁用了，选中项还停在这一行");
+            Check(panel.QuestionOffersAlwaysAllowForCheck == false,
+                "提问卡上没有「以后都不问」：一次点击不该把后来所有的问题都消音");
+            Check(panel.TranscriptWaitingLinesForCheck.Any(
+                      line => line.Contains("等你回答", StringComparison.Ordinal))
+                  && !panel.TranscriptWaitingLinesForCheck.Any(
+                      line => line.Contains("等你批准", StringComparison.Ordinal)),
+                "转录里的待回答问题写的是等你回答，不是等你批准（实际 "
+                + string.Join(" / ", panel.TranscriptWaitingLinesForCheck) + "）");
+
+            panel.SetQuestionFreeTextForCheck("");
+            panel.ClickQuestionChoiceForCheck("B");
+            Check(panel.QuestionSelectedChoiceForCheck == "B" && panel.QuestionContinueEnabledForCheck,
+                "点 B 就是选中 B，继续跟着活了（实际停在 " + panel.QuestionSelectedChoiceForCheck + "）");
+            panel.ClickQuestionContinueForCheck();
+            await WaitForIdleAsync(chat);
+            var answered = chat.StoredCopyForCheck(cardSession.Id);
+            var answerAt = answered?.Messages.FindIndex(turn => turn.Role == ChatRoles.Tool
+                && turn.ToolCallId == parkedCallId) ?? -1;
+            Check(answerAt > 0
+                  && answered!.Messages[answerAt - 1].ToolCallId == parkedCallId
+                  && answered.Messages[answerAt].Text
+                      == "The user answered \"B: 放在传输层\" to \"重试逻辑放在哪一层？\"."
+                  && answered.Messages[answerAt].Role == ChatRoles.Tool
+                  && answered.Messages.Any(turn => turn.Role == ChatRoles.Assistant
+                      && turn.Text == ApprovalChatClient.Answer),
+                "选中一项再点继续，回答原样写回这一次调用旁边，回复接着往下说（结果落在第 " + answerAt + " 条）");
+            Check(chat.RunFor(cardSession.Id) is null,
+                "答完之后这条会话不再有挂着的运行");
+
+            // Escape is the quiet no. It has to land as "you decide", not as the refusal sentence — that one ends
+            // by telling the model to go ask the user what to do, which is the question that was just skipped.
+            chat.OpenConversation(skipSession.Id);
+            chat.TryEnqueueSend(skipSession.Id, "再问一次", null, out _);
+            await WaitForIdleAsync(chat);
+            chat.OpenConversation(skipSession.Id);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var skipCallId = skipSession.Messages.LastOrDefault(
+                turn => turn.ToolName == AskUserTool.ToolName)?.ToolCallId;
+            // Pressed on the card, not in the composer: a caret in the input box outranks the card by the
+            // charter's own rule, so Escape there is not an answer to the question and must stay that way.
+            panel.PressQuestionCardKeyForCheck(Key.Escape);
+            await WaitForIdleAsync(chat);
+            var skipped = chat.StoredCopyForCheck(skipSession.Id);
+            Check(skipCallId is not null
+                  && skipped?.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                      && turn.ToolCallId == skipCallId
+                      && turn.Text == ToolApprovalResults.QuestionSkipped) == true
+                  && skipped.Messages.All(turn => turn.Text != ToolApprovalResults.Denied),
+                "Esc 是跳过不是拒绝：模型收到的是「你自己定」，不是那句「去问用户该怎么办」（那会变成一个重问循环）");
+
+            // Two questions owed by one response. The second is invisible until the first is answered — that is
+            // the one-slot host — so what proves it is not lost is the run parking again on it.
+            chat.OpenConversation(owedSession.Id);
+            chat.TryEnqueueSend(owedSession.Id, "两件都要问", null, out _);
+            await WaitForIdleAsync(chat);
+            chat.OpenConversation(owedSession.Id);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var owedCalls = owedSession.Messages
+                .Where(turn => turn.ToolName == AskUserTool.ToolName && turn.ToolCallId is not null)
+                .Select(turn => turn.ToolCallId!).ToArray();
+            panel.ClickQuestionChoiceForCheck("A");
+            panel.ClickQuestionContinueForCheck();
+            await WaitForIdleAsync(chat);
+            Dispatcher.UIThread.RunJobs();
+            Check(owedCalls.Length == 2
+                  && owedSession.Messages.Any(turn => turn.ToolCallId == owedCalls[1]
+                      && turn.ApprovalState == ChatApprovalStates.Pending)
+                  && panel.QuestionTitleForCheck.Contains("那超时呢", StringComparison.Ordinal)
+                  && chat.RunFor(owedSession.Id) is { } stillParked && !chat.IsRunning(owedSession.Id),
+                "两个问题挂在一起时答完一个，另一个接着从卡上起来，运行仍然停在那张欠着的卡上（实际 "
+                + panel.QuestionTitleForCheck + "）");
+            panel.ClickQuestionChoiceForCheck("A");
+            panel.ClickQuestionContinueForCheck();
+            await WaitForIdleAsync(chat);
+            Check(owedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 2
+                  && chat.RunFor(owedSession.Id) is null,
+                "第二个答完之后两条结果都在，运行收尾（实际 "
+                + owedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) + " 条）");
+
+            // The other axis: switched off means the model is never told the capability exists. Asserted on the
+            // declaration list rather than on a parked call, because a tool that is declared and then ignored
+            // would still let the model ask into a void — and that is the failure this cell exists to catch.
+            var offScope = new ChatToolScope(chat.HubSnapshotProvider?.Invoke(),
+                new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "ask-off", [], null, null),
+                AskUserEnabled: false);
+            var onScope = new ChatToolScope(chat.HubSnapshotProvider?.Invoke(),
+                new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "ask-on", [], null, null));
+            Check(offScope.AskUserEnabled == false && onScope.AskUserEnabled
+                  && new[] { ChatModes.Plan, ChatModes.Agent }.All(mode =>
+                      !ChatTools.CreateFor(mode, offScope).Any(tool => tool.Name == AskUserTool.ToolName)
+                      && ChatTools.CreateFor(mode, onScope).Any(tool => tool.Name == AskUserTool.ToolName))
+                  && !ChatTools.CreateFor(ChatModes.Ask, onScope).Any(tool => tool.Name == AskUserTool.ToolName),
+                "「遇到选择时问我」关掉以后，计划与 Agent 的工具列表里根本没有 ask_user —— 不是问了没人答（询问档本来就不给工具）");
+        }
+        finally
+        {
+            chat.ClientOverride = null;
+            chat.IdleTimeout = savedIdleTimeout;
+            chat.PreferencesProvider = savedPreferencesProvider;
+            foreach (var session in new[] { observer, cardSession, skipSession, owedSession })
+                chat.DeleteConversation(session.Id);
+            await WaitForIdleAsync(chat);
+            panel.Reload();
+            shell.NavigateTo("Assistant");
+            Dispatcher.UIThread.RunJobs();
+            Check(chat.RunningCount == 0,
+                "自检清理：提问夹具没有留下运行（实际 " + chat.RunningCount + " 路）");
+        }
+    }
+
+    /// <summary>
     /// The permission gate and the state a call waits in. A parked call is a fact about the session file and the
     /// run registry, so all of it runs on scripted clients: no network, and no waiting on a model that would
     /// have to be asked nicely to request a tool.
@@ -5667,7 +5904,7 @@ public partial class ShellCheckWindow : Window
                 new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "schema", [], null, null)));
             var schema = string.Join("\n", agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
                 .Select(tool => tool.JsonSchema.GetRawText()));
-            Check(agentTools.Count == 19
+            Check(agentTools.Count == 20
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Select(tool => tool.Name)
                       .All(name => name.Contains('_', StringComparison.Ordinal))
                   && schema.Contains("old_string") && schema.Contains("new_string")
@@ -5677,8 +5914,30 @@ public partial class ShellCheckWindow : Window
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "capture_screen")
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "spawn_session")
                   && !schema.Contains("oldString") && !schema.Contains("ignoreCase"),
-                "Agent 档注册十八个工具、名字都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
+                "Agent 档注册二十个工具、名字都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
                 + agentTools.Count + " 个）");
+
+            // ask_user's own schema cell, kept out of the line above for the reason that line already gives: a
+            // count assertion is the one every new tool trips, and a missing keyword hides behind the number that
+            // already moved. minItems and maxItems are the whole reason this tool is written by hand instead of
+            // generated from a signature — AIFunctionFactoryOptions has no hook for them in this version — so if
+            // they ever go missing, the fix is the custom class, not a silent drop back to a plain delegate.
+            var questionSchema = agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
+                .First(tool => tool.Name == AskUserTool.ToolName).JsonSchema;
+            var questionOptions = questionSchema.GetProperty("properties").GetProperty("options");
+            Check(questionOptions.GetProperty("minItems").GetInt32() == AskUserQuestion.MinimumOptions
+                  && questionOptions.GetProperty("maxItems").GetInt32() == AskUserQuestion.MaximumOptions
+                  && questionSchema.GetProperty("required").EnumerateArray()
+                      .Select(value => value.GetString())
+                      .Contains("question", StringComparer.Ordinal)
+                  && questionOptions.GetProperty("items").GetProperty("properties")
+                      .EnumerateObject().Select(property => property.Name).OrderBy(name => name)
+                      .SequenceEqual(["detail", "label"])
+                  && AskUserTool.Policy.Contains("(Recommended)", StringComparison.Ordinal)
+                  // The card always offers a free-text line, so a model that authors its own "other" option has
+                  // spent one of its four choices on an answer the person already has.
+                  && AskUserTool.Policy.Contains("not to ask permission to proceed", StringComparison.Ordinal),
+                "ask_user 的 schema 自己写了 2 到 4 个选项的上下限，说明里点名了推荐位与「别拿来要许可」");
 
             // web_fetch's own schema cell, kept out of the line above on purpose: the count assertion is the one a
             // new tool always trips, and folding a parameter name into it would let a missing "max_characters"
@@ -5736,12 +5995,19 @@ public partial class ShellCheckWindow : Window
                 Check(titled.Contains("window \"P5 shell", StringComparison.Ordinal),
                     "审批卡点名了目标命中的那条窗口，而不是一句「要截屏」（实际「" + titled + "」）");
             }
+            var planTools = ChatTools.CreateFor(ChatModes.Plan, new ChatToolScope(
+                chat.HubSnapshotProvider?.Invoke(),
+                new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "schema", [], null, null)));
             Check(ChatTools.CreateFor(ChatModes.Ask, ChatToolScope.Empty).Count == 0
-                  && ChatTools.CreateFor(ChatModes.Plan, new ChatToolScope(
-                      chat.HubSnapshotProvider?.Invoke(),
-                      new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "schema", [], null, null)))
-                      .All(tool => ChatTools.RiskOf(tool.Name, null, WorkspaceToolScope.Empty) == ToolRisk.ReadOnly),
-                "「询问审批」不给任何工具，「计划」只给只读的那些（空沙箱下判读，说明它们免批与目录无关）");
+                  // Read-only apart from the one tool that reaches nobody but a person. Leaving it out of the
+                  // exemption would be the narrower mistake: 计划 exists to settle requirements before anything is
+                  // built, so it is the mode that most needs to ask — and a question reads no file and writes none,
+                  // so nothing about the mode's promise is weakened by it.
+                  && planTools.Where(tool => tool.Name != AskUserTool.ToolName)
+                      .All(tool => ChatTools.RiskOf(tool.Name, null, WorkspaceToolScope.Empty) == ToolRisk.ReadOnly)
+                  && planTools.Any(tool => tool.Name == AskUserTool.ToolName)
+                  && ChatTools.RiskOf(AskUserTool.ToolName, null, WorkspaceToolScope.Empty) == ToolRisk.AskUser,
+                "「询问审批」不给任何工具，「计划」除了问一句以外只给只读的那些（空沙箱下判读，说明它们免批与目录无关）");
 
             // The agent prompt carries the working discipline the tools cannot enforce: verify with the project's
             // own command before claiming a result, and re-run into a file when the output was cut short. It also
@@ -7206,11 +7472,15 @@ public partial class ShellCheckWindow : Window
             await WaitForIdleAsync(chat);
             var quiet = chat.StoredCopyForCheck(unreported.Id);
             var quietUsage = chat.TranscriptUsageForCheck(unreported.Id);
+            // The ceiling is "a plausible conversation", not a number to hit: it catches an estimate that read a
+            // silent gateway as zero, and it has to move whenever a tool declaration is added, because every
+            // schema rides every request. ask_user's took roughly 400 of these tokens, which is why the headroom
+            // is now a fifth rather than a hair — a bound this one sits on breaks for the next tool too.
             Check(quiet?.LastInputTokens == 0 && quiet.LastUsageAt is null
                   && quietUsage.EffectiveWindow == ContextBudget.FallbackTokens
                   && quietUsage.Source == CapabilitySource.Fallback
                   && !quietUsage.IsMeasured
-                  && quietUsage.Used < 5_000 && quietUsage.Used > 0,
+                  && quietUsage.Used < 6_000 && quietUsage.Used > 0,
                 "从不报用量的网关不会被读成 0，这条会话仍然按估算计量（实测 " + quietUsage.Used
                 + "/" + quietUsage.Room + "，窗口 " + quietUsage.EffectiveWindow + "）");
             // The rows are the whole point of the meter: a category that never made it into the total is a

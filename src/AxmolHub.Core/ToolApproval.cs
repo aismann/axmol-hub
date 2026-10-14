@@ -41,6 +41,18 @@ public enum ToolRisk
     /// <summary>The assistant's own notes, written inside a directory Hub owns. Never asks — a note that costs
     /// a card is a note that never gets written — but every write is audited, and the path guard still runs.</summary>
     AssistantNote,
+
+    /// <summary>The assistant asking a question instead of acting. This is not a permission tier and does not
+    /// behave like one: nothing is being authorized, and the call has no body to run — the person's answer
+    /// <i>is</i> the tool's result, so the tier decides whether the run stops, never whether it may proceed.
+    ///
+    /// <para>Every established client keeps this on its own axis rather than folding it into approval. GitHub
+    /// Copilot's <c>--allow-all</c> documents itself as still stopping "when it reaches a decision point" and
+    /// suppresses questions only through a separate <c>--no-ask-user</c>; its question type is not even a member
+    /// of the permission-request union. opencode is the counter-example, routing its question tool through the
+    /// permission system — which is exactly what a mode that reasons about tiers rather than tool names cannot
+    /// copy, since "full access" would then mean "answer for me".</para></summary>
+    AskUser,
 }
 
 /// <summary>
@@ -74,10 +86,17 @@ public static class ToolApprovalPolicy
     /// The assistant's own notes are exempt in every mode; everything else follows the table. The auto arm names
     /// only the top tier rather than listing what it allows, which is what lets a new tier that stays inside the
     /// sandbox (<see cref="ToolRisk.WorkspaceCommand"/>) go through without a second edit here: adding a tier in
-    /// the middle means "trusted by default", and only an added tier <i>above</i> this one should ever ask.</summary>
+    /// the middle means "trusted by default", and only an added tier <i>above</i> this one should ever ask.
+    ///
+    /// <para><see cref="ToolRisk.AskUser"/> answers above the mode switch rather than inside it, which is the
+    /// only place a mode cannot reach: <c>Full => false</c> would delete every question, and a person who has
+    /// said "do not ask permission" has not thereby said "answer for me". The mode is what chooses whether a
+    /// question can be <i>avoided</i> — by not declaring the tool at all — and that decision lives in the tool
+    /// list, not here.</para></summary>
     public static bool RequiresApproval(string? mode, ToolRisk risk) => risk switch
     {
         ToolRisk.AssistantNote => false,
+        ToolRisk.AskUser => true,
         _ => ToolApprovalModes.Normalize(mode) switch
         {
             ToolApprovalModes.Full => false,
@@ -102,6 +121,20 @@ public static class ToolApprovalResults
 
     /// <summary>The tool is gone — renamed or dropped between the request and the approval.</summary>
     public const string Unavailable = "This tool is no longer available, so the approved call was not executed.";
+
+    /// <summary>A question the person dismissed with Escape. Deliberately <b>not</b> <see cref="Denied"/>: that
+    /// sentence ends with "ask the user what to do instead", so handing it to a skipped question instructs the
+    /// model to ask the very thing it was just told no answer to. Skipping is a hand-over of the decision, and
+    /// the text has to say so in those terms.</summary>
+    public const string QuestionSkipped =
+        "The user skipped this question. Do not ask it again; make the call yourself and say which option you took.";
+
+    /// <summary>A question that never got an answer because something newer arrived first. <see cref="Superseded"/>
+    /// reads as "nothing ran", which for a question is the wrong fact — the model still has an open decision it
+    /// may believe somebody else settled.</summary>
+    public const string QuestionUnanswered =
+        "This question was never answered: a newer message took its place. Do not ask it again; if it still "
+        + "matters, decide yourself and say which option you took.";
 }
 
 /// <summary>
@@ -167,6 +200,13 @@ public static class ChatApprovalStates
 
     /// <summary>Someone refused it; a result saying so follows, and the model is told not to retry.</summary>
     public const string Denied = "denied";
+
+    /// <summary>A question that got its answer. Its own state rather than <see cref="Approved"/> because the two
+    /// words describe different acts and the transcript row has to be able to say which one happened: a call that
+    /// was approved went on to <i>run</i>, and a question that was answered is finished the moment it is replied
+    /// to. Nothing branches on this being terminal except the row's own label — every guard in the app asks
+    /// whether a call is still <see cref="Pending"/>, which is why a new terminal state is safe to add.</summary>
+    public const string Answered = "answered";
 
     /// <summary>A newer message came in first. The call never ran, and its synthetic result says so — an
     /// assistant turn carrying a call with no result would be rejected by the provider on replay.</summary>

@@ -709,6 +709,32 @@ public static class HubTexts
         ["ChatPlanOptionApprove"] = ("批准并开始实施", "Approve and start implementing"),
         ["ChatPlanOptionRevise"] = ("我要修改计划", "Suggest changes to the plan"),
         ["ChatPlanFeedbackPlaceholder"] = ("说说计划要改哪里…", "Tell me what to change…"),
+        // ── A question the model asked ──
+        // The third thing the composer can be parked on. Its own title rather than 「{tool} 想要执行一个操作」
+        // because nothing wants to run: the row above the box is a request for information, and reading it as a
+        // request for permission is how a person approves something they were only meant to answer.
+        ["ChatQuestionTitleFormat"] = ("助手在问：{0}", "The assistant is asking: {0}"),
+        // The free-text line is Hub's, never the model's — its placeholder is the only place that says so, and it
+        // has to, because a fifth option the model invented and a place to disagree with all four look the same.
+        ["ChatQuestionFreeLabel"] = ("都不对，我自己写…", "None of these — I'll say in my own words…"),
+        ["ChatQuestionSkip"] = ("跳过", "Skip"),
+        ["ChatQuestionWaitingLine"] = ("{0} 在等你回答，答案在输入区", "{0} is waiting for your answer in the composer"),
+        ["ChatQuestionResolved"] = ("已回答", "Answered"),
+        ["ChatQuestionResolvedSuperseded"] = ("没回答（换了话题）", "Unanswered (the conversation moved on)"),
+        // The card keeps 「继续」 dead until something is armed, so this is a race between a click and a repaint
+        // rather than a thing a person does on purpose — which is why it is a notice and not a disabled button.
+        ["ChatQuestionUnanswered"] = ("没有选中任何一项，也没有写答案", "Nothing was chosen and nothing was written"),
+        ["ChatQuestionNotificationTitle"] = ("助手在等你回答", "The assistant has a question"),
+        ["ChatQuestionNotificationBody"] = ("会话「{0}」中的助手需要你做一个选择。",
+            "The assistant in 「{0}」 needs you to make a choice."),
+        // Named for what it does rather than for the word the mode selector already spent: this row is not about
+        // whether the assistant may act, and the tip has to say that, because 「完全访问」 reads as "stop asking
+        // me about anything" to everybody who has ever used a permission dialog.
+        ["ChatAskUserMenuItem"] = ("遇到选择时问我", "Ask me at a choice point"),
+        ["ChatAskUserMenuTip"] = ("助手拿不准、又只能由你定时停下来问一句。与审批模式无关：完全访问也不会替你回答，"
+            + "关掉它助手就自己决定，并把它选了哪个写进结果。",
+            "Stops to ask when only you can settle something. Independent of the approval mode: full access does "
+            + "not answer for you, and switching this off makes the assistant decide and record which option it took."),
         // ── Steering needs a second tap ──
         // A steer cancels the segment being generated and is the routing table's strongest signal, so the first
         // Enter only shows what would be sent. The consequence lives in the tooltip rather than as a second

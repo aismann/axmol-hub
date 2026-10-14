@@ -18,13 +18,21 @@ namespace AxmolHub;
 internal static class ChatTools
 {
     /// <summary>The tools for one request. <c>ask</c> mode gets none: a session that may not act should not be
-    /// offered the chance to. <c>plan</c> gets the read-only ones, which is what its prompt already claims.</summary>
+    /// offered the chance to. <c>plan</c> gets the read-only ones, which is what its prompt already claims —
+    /// plus the question tool, which is not read-only and never was a permission question either way: it reads
+    /// nothing and changes nothing, it stops the run and waits for a person.</summary>
     public static IReadOnlyList<AITool> CreateFor(string mode, ChatToolScope scope) => mode switch
     {
         ChatModes.Ask => [],
-        ChatModes.Plan => ReadOnlyTools(scope),
-        _ => [.. ReadOnlyTools(scope), .. ActingTools(scope)],
+        ChatModes.Plan => [.. ReadOnlyTools(scope), .. AskingTools(scope)],
+        _ => [.. ReadOnlyTools(scope), .. ActingTools(scope), .. AskingTools(scope)],
     };
+
+    /// <summary>The question tool, or nothing. Switched off means the model is never told the capability exists,
+    /// which is the only shape of "don't ask me" that cannot leave a run parked on a question nobody will read —
+    /// a declared-but-ignored tool still gets called.</summary>
+    private static IEnumerable<AITool> AskingTools(ChatToolScope scope)
+        => scope.AskUserEnabled ? [new AskUserTool()] : [];
 
     /// <summary>
     /// Risk by name, arguments and the sandbox the call runs in. The arguments decide two of them: a memory note
@@ -82,6 +90,11 @@ internal static class ChatTools
         "memory_write" => ScopeOf(argumentsJson) == MemoryScope.Workspace
             ? ToolRisk.AssistantNote
             : ToolRisk.WorkspaceWrite,
+        // Spelled out for the standing reason, and it bites harder here than anywhere: the unknown-name arm below
+        // still parks, so a missing line like this reads as working while drawing the question with the
+        // full-access glyph, logging it as a reach past the sandbox, and telling the card its 「总是允许」 is
+        // unavailable. Three claims about asking somebody a question, all of them false.
+        "ask_user" => ToolRisk.AskUser,
         _ => ToolRisk.SystemCommand,
     };
 

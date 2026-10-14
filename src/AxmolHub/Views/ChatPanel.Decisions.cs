@@ -14,14 +14,15 @@ using Path = Avalonia.Controls.Shapes.Path;
 namespace AxmolHub;
 
 /// <summary>
-/// The two decisions a parked run can owe, and the one confirmation a running reply can owe — all three asked in
-/// a strip above the composer rather than in a transcript row a person had scrolled away from.
+/// The three decisions a parked run can owe — an action to approve, a plan to review, a question to answer — and
+/// the one confirmation a running reply can owe, all of them asked in a strip above the composer rather than in a
+/// transcript row a person had scrolled away from.
 ///
 /// They live in one partial because they are one idea: something the person must answer before the composer
-/// means what it looks like it means. A pending call and a pending plan share a host (one slot, so two cards
-/// can never stack); a steer confirmation gets its own strip because it must show the draft while leaving the box
-/// the draft goes back to. Both strips sit above the frame and neither takes the input box away: a decision is a
-/// question, and a question has never been a reason to throw away what somebody is writing.
+/// means what it looks like it means. A pending call, a pending plan and a pending question share a host (one
+/// slot, so two cards can never stack); a steer confirmation gets its own strip because it must show the draft
+/// while leaving the box the draft goes back to. Both strips sit above the frame and neither takes the input box
+/// away: a decision is a question, and a question has never been a reason to throw away what somebody is writing.
 /// </summary>
 public partial class ChatPanel
 {
@@ -35,6 +36,12 @@ public partial class ChatPanel
     /// <summary>Which plan option is armed. The letter keys and the pointer both choose it and Continue acts on
     /// what it says, so there is always exactly one.</summary>
     private string _planSelectedOption = ChatPlanStates.Approve;
+
+    /// <summary>Which option of the question card is armed, or null when the armed answer is the free-text line —
+    /// or nothing yet. Its own field rather than a second life for the plan's, because the plan's default is a
+    /// meaning ("A is pre-armed, and it is the answer that costs nothing to leave chosen") and a question's is
+    /// not: pre-arming one of four options would let a stray Enter commit a choice nobody made.</summary>
+    private string? _questionSelectedLetter;
 
     /// <summary>A draft waiting for its second tap, with the session it was typed in: switching conversations
     /// must not carry it along, and coming back must not have lost it.</summary>
@@ -219,6 +226,7 @@ public partial class ChatPanel
         var conversation = _chat?.ActiveConversation;
         string? callId = null;
         var planIndex = -1;
+        ChatTurn? pendingCall = null;
         if (conversation is not null)
         {
             for (var index = 0; index < conversation.Messages.Count; index++)
@@ -227,10 +235,17 @@ public partial class ChatPanel
                 // A plan outranks a call only in the sense that the two cannot coexist in this build; the
                 // branch is a clamp on a state a newer session file could carry, not a rule with teeth here.
                 if (turn.PlanApprovalState == PlanApprovalStates.Pending) { planIndex = index; break; }
-                if (turn.ApprovalState == ChatApprovalStates.Pending && callId is null) callId = turn.ToolCallId;
+                if (turn.ApprovalState != ChatApprovalStates.Pending || callId is not null) continue;
+                callId = turn.ToolCallId;
+                pendingCall = turn;
             }
         }
 
+        // Which of the two a pending call is asking for is read off the call, not kept beside it: the arguments on
+        // the turn are the whole record, and a card rebuilt after a restart has to reach the same answer the gate
+        // reached. A question and an approval share the slot and the shape of the decision; they differ in every
+        // word on the card, so the branch has to happen before anything is built.
+        var asks = pendingCall?.ToolName == AskUserTool.ToolName;
         var same = callId == _decisionCallId && planIndex == _decisionPlanIndex;
         _decisionCallId = callId;
         _decisionPlanIndex = planIndex;
@@ -246,10 +261,13 @@ public partial class ChatPanel
         {
             DecisionHost.Child = planIndex >= 0
                 ? BuildPlanReviewHost(conversation.Id, planIndex)
-                : BuildToolApprovalCard(conversation.Id, callId!, conversation.Messages.First(
-                    turn => turn.ToolCallId == callId));
+                : asks
+                    ? BuildQuestionCard(conversation.Id, callId!, pendingCall!)
+                    : BuildToolApprovalCard(conversation.Id, callId!, pendingCall!);
             _planSelectedOption = ChatPlanStates.Approve;
+            _questionSelectedLetter = null;
             MarkPlanSelection();
+            if (asks) MarkQuestionSelection();
         }
 
         DecisionHost.IsVisible = true;
@@ -260,12 +278,13 @@ public partial class ChatPanel
         // only reachable after something has been clicked: a key the window itself holds never travels down this
         // panel's route. Never on top of a draft — taking that focus is the interruption this whole strip exists to
         // avoid. And never on a repaint, which must not move a caret somebody is using.
-        if (!same && planIndex >= 0 && (InputBox.Text ?? "").Length == 0) DecisionHost.Focus();
+        if (!same && (planIndex >= 0 || asks) && (InputBox.Text ?? "").Length == 0) DecisionHost.Focus();
     }
 
     /// <summary>Escape on the host answers it the quiet way: a pending call is refused (one Denied result, the
-    /// model is not asked again), a pending plan is rejected (recorded, plan mode kept). Both hand the keyboard
-    /// back, which is the point of a keyboard exit.</summary>
+    /// model is not asked again), a pending plan is rejected (recorded, plan mode kept), a pending question is
+    /// <i>skipped</i> — which is not the same answer and does not get the same sentence, because a refusal tells
+    /// the model to go back and ask. All three hand the keyboard back, which is the point of a keyboard exit.</summary>
     private void DismissDecisionByEscape()
     {
         var conversation = _chat.ActiveConversation;
@@ -273,9 +292,19 @@ public partial class ChatPanel
         if (_decisionPlanIndex >= 0)
             ResolvePlanApproval(conversation.Id, _decisionPlanIndex, PlanApprovalStates.Rejected);
         else if (_decisionCallId is { } callId)
-            ResolveApproval(conversation.Id, callId, approved: false, alwaysAllow: false);
+        {
+            if (IsPendingQuestion(callId)) ResolveQuestion(conversation.Id, callId, null, null, skipped: true);
+            else ResolveApproval(conversation.Id, callId, approved: false, alwaysAllow: false);
+        }
         InputBox.Focus();
     }
+
+    /// <summary>Whether the call the host is asking about is a question rather than an action wanting permission.
+    /// Read from the stored turn so Escape, the letter keys and the card itself cannot disagree about which one
+    /// they are acting on after a restart.</summary>
+    private bool IsPendingQuestion(string callId)
+        => _chat?.ActiveConversation?.Messages.FirstOrDefault(
+            turn => turn.ToolCallId == callId)?.ToolName == AskUserTool.ToolName;
 
     // ── content: a pending tool call ──
 
@@ -431,7 +460,12 @@ public partial class ChatPanel
         row.Children.Add(new TextBlock
         {
             Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ChatApprovalWaitingLine"), turn.ToolName ?? ""),
+                // Two different waits, and the row has to say which. "等批准" over a question tells the person
+                // their job is to permit something, when the run is actually stopped for information only they
+                // have — and it is the only sentence about this decision a reader who scrolled away will see.
+                HubStrings.Get(turn.ToolName == AskUserTool.ToolName
+                    ? "ChatQuestionWaitingLine"
+                    : "ChatApprovalWaitingLine"), turn.ToolName ?? ""),
         });
         Grid.SetColumn(row.Children[1], 1);
         line.Child = row;
@@ -441,6 +475,261 @@ public partial class ChatPanel
             DecisionHost.Focus();
         };
         return line;
+    }
+
+    // ── content: a question the model asked ──
+
+    /// <summary>
+    /// The question, its choices, and the two ways out of it. Same slot, same lettered list as the plan review,
+    /// because it is the same kind of thing — a decision the run is stopped on — and a card that looked different
+    /// each time the app asked would teach nobody anything.
+    ///
+    /// <para>Not a StackPanel: the host clips at its own MaxHeight, and four options under a wrapped question is
+    /// already past it on a short window. The list is the row that gives way, so 「继续」 stays inside the clip at
+    /// every height — the footer is the part that has to be reachable, and a card whose answer button was cut off
+    /// is a run parked forever.</para>
+    /// </summary>
+    private Control BuildQuestionCard(string conversationId, string callId, ChatTurn turn)
+    {
+        // The gate only parks a question that parses, and the arguments on the turn are the whole record, so a
+        // card rebuilt after a restart reaches the same answer here. If they no longer read as a question the
+        // transcript has moved under us: fall back to the signpost line rather than draw an empty card.
+        if (!AskUserQuestion.TryParse(turn.ToolArguments, out var question, out var choices, out _))
+            return BuildApprovalPendingLine(turn);
+
+        var card = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
+
+        var title = new TextBlock
+        {
+            Classes = { "question-title" },
+            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatQuestionTitleFormat"), question),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        Grid.SetRow(title, 0);
+        card.Children.Add(title);
+
+        var options = new StackPanel { Name = "QuestionOptions", Spacing = 2, Margin = new Thickness(0, 8, 0, 0) };
+        foreach (var choice in choices) options.Children.Add(BuildQuestionOptionRow(conversationId, callId, choice));
+        // The free-text line belongs to the list and not beside it: it is the fifth answer, and putting it outside
+        // the scroll would make it the one thing that survives a clipped card — which reads as the only choice.
+        options.Children.Add(BuildQuestionFreeRow(conversationId, callId));
+        var scroll = new ScrollViewer
+        {
+            Name = "QuestionListScroll",
+            Content = options,
+            ClipToBounds = true,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+        Grid.SetRow(scroll, 1);
+        card.Children.Add(scroll);
+
+        var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0) };
+        var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var skip = new Button
+        {
+            Name = "QuestionSkipButton",
+            Classes = { "plan-review-cancel" },
+            Tag = "ChatQuestionSkip",
+        };
+        var skipRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        skipRow.Children.Add(new TextBlock { Text = HubStrings.Get("ChatQuestionSkip"), VerticalAlignment = VerticalAlignment.Center });
+        skipRow.Children.Add(new TextBlock { Classes = { "plan-review-kbd" }, Text = "Esc" });
+        skip.Content = skipRow;
+        skip.Click += (_, _) => ResolveQuestion(conversationId, callId, null, null, skipped: true);
+        var continueButton = new Button
+        {
+            Name = "QuestionContinueButton",
+            Classes = { "approval-action", "approval-allow" },
+            Content = HubStrings.Get("Continue"),
+            Tag = "ChatQuestionContinue",
+            IsEnabled = false,
+        };
+        continueButton.Click += (_, _) => CommitQuestion(conversationId, callId);
+        right.Children.Add(skip);
+        right.Children.Add(continueButton);
+        Grid.SetColumn(right, 1);
+        footer.Children.Add(right);
+        Grid.SetRow(footer, 2);
+        card.Children.Add(footer);
+
+        return card;
+    }
+
+    /// <summary>One lettered choice. The cap is the keyboard shortcut and the row is the click, and both land in
+    /// <see cref="ChooseQuestionOption"/> so the two cannot drift apart.</summary>
+    private Control BuildQuestionOptionRow(string conversationId, string callId, AskUserQuestion.Option choice)
+    {
+        var row = new Button
+        {
+            Classes = { "question-option" },
+            // The letter, not the label: labels are model-authored text and a check that matched on one would
+            // break the day a fixture reworded it.
+            Tag = choice.Letter,
+        };
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("26,*") };
+        grid.Children.Add(new Border
+        {
+            Classes = { "question-key" },
+            Child = new TextBlock { Text = choice.Letter },
+        });
+        var text = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock { Classes = { "question-label" }, Text = choice.Label });
+        // A detail the model did not write is not a row to leave in — an empty line under every label would be
+        // chrome, and the charter's answer to that is to remove it.
+        if (choice.Detail.Length > 0)
+            text.Children.Add(new TextBlock { Classes = { "question-detail" }, Text = choice.Detail });
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+
+        row.Content = grid;
+        row.Click += (_, _) => ChooseQuestionOption(choice.Letter);
+        return row;
+    }
+
+    /// <summary>The line that is not one of the model's options. It carries no letter cap: it is not a fifth choice
+    /// the assistant authored, and giving it a key would let a keyboard press pick an answer nobody wrote.</summary>
+    private Control BuildQuestionFreeRow(string conversationId, string callId)
+    {
+        var row = new Button
+        {
+            Classes = { "question-option" },
+            // The same token <see cref="ChooseQuestionOption"/> arms with, because the row's Tag is what
+            // MarkQuestionSelection compares the armed answer against. A second spelling here would leave the
+            // free line never lighting up no matter what was chosen, and every other cell would still pass.
+            Tag = FreeAnswer,
+        };
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("26,*") };
+        grid.Children.Add(new Border { Classes = { "question-key" }, Child = new TextBlock { Text = "✎" } });
+        var box = new TextBox
+        {
+            Name = "QuestionAnswerBox",
+            Classes = { "question-free" },
+            PlaceholderText = HubStrings.Get("ChatQuestionFreeLabel"),
+        };
+        // Enter inside the line is "send this answer" and Shift+Enter is a newline, exactly as in the plan's
+        // revision line. The AcceptsReturn box swallows Enter before any bubble handler sees it, so this has to
+        // be a tunnel handler.
+        box.AddHandler(InputElement.KeyDownEvent, (_, e) =>
+        {
+            if (e.Key != Key.Enter || e.KeyModifiers.HasFlag(KeyModifiers.Shift)) return;
+            e.Handled = true;
+            CommitQuestion(conversationId, callId);
+        }, RoutingStrategies.Tunnel);
+        box.PropertyChanged += (_, e) =>
+        {
+            // The caret is the choosing, as in the plan card: focus arms the line, typed text only re-reads
+            // Continue's enabled state — text left from a previous draft must not outvote an explicit click.
+            if (e.Property == InputElement.IsFocusedProperty) ChooseQuestionOption(free: true);
+            else if (e.Property == TextBox.TextProperty) MarkQuestionSelection();
+        };
+        Grid.SetColumn(box, 1);
+        grid.Children.Add(box);
+
+        row.Content = grid;
+        row.Click += (_, _) => ChooseQuestionOption(free: true, focusBox: box);
+        return row;
+    }
+
+    /// <summary>Arms one answer. Every door — the pointer, the letter key, the caret landing in the free line —
+    /// comes through here, so "the key does what the click does" is one implementation rather than two.</summary>
+    private void ChooseQuestionOption(string? letter = null, bool free = false, TextBox? focusBox = null)
+    {
+        _questionSelectedLetter = free ? FreeAnswer : letter;
+        MarkQuestionSelection();
+        focusBox?.Focus();
+    }
+
+    /// <summary>The armed-answer marker for the free-text line, and the same string the row carries as its Tag.
+    /// One constant because they are compared to each other. No model-authored letter collides with it: options
+    /// are A to D.</summary>
+    private const string FreeAnswer = "free";
+
+    private TextBox? FindQuestionAnswerBox()
+        => DecisionHost.GetLogicalDescendants().OfType<TextBox>()
+            .FirstOrDefault(box => box.Name == "QuestionAnswerBox");
+
+    /// <summary>Paints the armed row and re-reads Continue. Nothing armed is a real state here, unlike the plan
+    /// card: an empty answer would reach the model as a tool result with no content in it, which some bridges
+    /// reject outright and the model reads as "no preference" at best.</summary>
+    private void MarkQuestionSelection()
+    {
+        if (DecisionHost.Child is not Grid card) return;
+        var options = card.Children.OfType<ScrollViewer>().FirstOrDefault(scroll => scroll.Name == "QuestionListScroll")
+            ?.Content as StackPanel;
+        if (options is null) return;
+        foreach (var row in options.Children.OfType<Button>())
+            row.Classes.Set("selected", Equals(row.Tag as string, _questionSelectedLetter));
+
+        var continueButton = card.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Name == "QuestionContinueButton");
+        if (continueButton is null) return;
+        var typed = (_questionSelectedLetter == FreeAnswer
+            ? FindQuestionAnswerBox()?.Text ?? ""
+            : "").Trim();
+        continueButton.IsEnabled = _questionSelectedLetter is { Length: > 0 } armed
+                                   && (armed != FreeAnswer || typed.Length > 0);
+    }
+
+    /// <summary>The letter keys arm a question's options. The same three gates as the plan card, and the third one
+    /// is the one that matters more here: with the caret in the free-text line, A and B are letters.</summary>
+    private bool TryChooseQuestionOptionByKey(KeyEventArgs e)
+    {
+        if (_decisionCallId is not { } callId || !DecisionHost.IsVisible) return false;
+        if (!IsPendingQuestion(callId)) return false;
+        if (e.KeyModifiers != KeyModifiers.None) return false;
+        if (e.Source is TextBox) return false;
+        var letter = e.Key switch
+        {
+            Key.A => "A",
+            Key.B => "B",
+            Key.C => "C",
+            Key.D => "D",
+            _ => null,
+        };
+        if (letter is null) return false;
+        // Only a key that names an option on this card arms anything. Without the test, D on a two-option question
+        // would silently select nothing and eat the keystroke.
+        if (!QuestionOffers(callId, letter)) return false;
+        ChooseQuestionOption(letter);
+        e.Handled = true;
+        return true;
+    }
+
+    /// <summary>Whether the parked question actually offers this letter.</summary>
+    private bool QuestionOffers(string callId, string letter)
+    {
+        var turn = _chat?.ActiveConversation?.Messages.FirstOrDefault(candidate => candidate.ToolCallId == callId);
+        return turn is not null
+               && AskUserQuestion.TryParse(turn.ToolArguments, out _, out var choices, out _)
+               && choices.Any(choice => choice.Letter == letter);
+    }
+
+    /// <summary>Hands the armed answer to the workspace, which words it and resumes the run. Nothing armed is
+    /// already kept from reaching here by Continue's disabled state; the empty check is the same rule one more
+    /// time, because Enter on the free line arrives by a route that never passes the button.</summary>
+    private void CommitQuestion(string conversationId, string callId)
+    {
+        if (_questionSelectedLetter == FreeAnswer)
+        {
+            var words = (FindQuestionAnswerBox()?.Text ?? "").Trim();
+            if (words.Length == 0) return;
+            ResolveQuestion(conversationId, callId, null, words, skipped: false);
+            return;
+        }
+
+        if (_questionSelectedLetter is { Length: > 0 } letter)
+            ResolveQuestion(conversationId, callId, letter, null, skipped: false);
+    }
+
+    /// <summary>A refusal is spoken out loud rather than swallowed, as everywhere else in this strip: a card that
+    /// did nothing after a click reads as a broken button, and here it also leaves a parked run looking alive.</summary>
+    private void ResolveQuestion(
+        string conversationId, string callId, string? letter, string? ownWords, bool skipped)
+    {
+        if (_chat.TryResolveQuestion(conversationId, callId, letter, ownWords, skipped, out var refusalKey)) return;
+        AppendNotice(HubStrings.Get(refusalKey ?? "ChatApprovalGone"), danger: true);
     }
 
     // ── content: a pending plan ──
