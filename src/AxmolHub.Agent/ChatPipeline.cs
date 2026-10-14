@@ -734,11 +734,13 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         if (tools is { Count: > 0 })
         {
             options.Tools = [.. tools];
-            // Asked for, not relied on. Measured against DeepSeek this goes out on the wire and the model answers
-            // with two and three calls anyway, so nothing may assume one call arrives per response — the loop
-            // pairs each call with its own result and parks one approval at a time regardless. A check that
-            // wants the multi-call shape is <c>batchClient.Batch</c> in the shell checks.
-            options.AllowMultipleToolCalls = false;
+            // And that is all it does. The knob that would ask the endpoint for at most one call per response is
+            // deliberately left unset, twice over: Hub used to send `parallel_tool_calls: false` and measured
+            // against DeepSeek the request said one while the answer brought two and three — a promise the caller
+            // could not keep and the transcript could not rely on. And the benchmark clients send no such field
+            // either; several calls in one reply is the shape their loops are built around, which is what the
+            // batch judge above is for. A check wanting the multi-call shape on purpose is `batchClient.Batch` in
+            // the shell checks, and `MultiCallChatClient` in the headless ones.
             any = true;
         }
         if (effectiveReasoningEffort is not null)

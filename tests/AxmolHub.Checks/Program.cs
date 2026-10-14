@@ -1866,6 +1866,12 @@ if (args.Contains("--check-ai-sessions"))
         throw new Exception("The tool loop did not send the function call and result back to the model.");
     if (!toolClient.LastOptions!.Tools!.Any(tool => tool.Name == "get_projects"))
         throw new Exception("The allowed read-only tool was not exposed in chat options.");
+    // The one knob in this file that used to tell the endpoint "at most one call per response". It is not sent any
+    // more — the gateway that ignored it is the same one that answers with three calls today, and a flag nobody
+    // obeys is a flag that only lies about what the client asked for. Pinned as absent rather than as a value, so
+    // the request reads as leaving the choice where it belongs: with the provider.
+    if (toolClient.LastOptions.AllowMultipleToolCalls is not null)
+        throw new Exception($"A request went out suppressing parallel tool calls: {toolClient.LastOptions.AllowMultipleToolCalls}.");
     streamed.Clear();
     Console.WriteLine("PASS: ChatPipeline completes the read-only function-call loop.");
 
@@ -3204,8 +3210,8 @@ if (args.Contains("--check-ai-context"))
     if (insistent.CallCount != 46)
         throw new Exception($"The loop made {insistent.CallCount} requests instead of ending on the model's own answer at round 46.");
     if (answered.Length == 0) throw new Exception("The loop ended without leaving the user any text.");
-    if (insistent.LastOptions?.AllowMultipleToolCalls != false)
-        throw new Exception("A request went out still allowing several tool calls in one response.");
+    if (insistent.LastOptions?.AllowMultipleToolCalls is not null)
+        throw new Exception("A forty-six-round loop went out asking the endpoint for one call at a time.");
     if (insistent.LastOptions?.Tools is not { Count: > 0 })
         throw new Exception("The final request went out with the tool declarations taken off — the shape that turns "
                             + "a model still wanting to call into markup written into its answer.");
