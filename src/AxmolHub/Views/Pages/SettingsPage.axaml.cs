@@ -1378,23 +1378,6 @@ public partial class SettingsPage : UserControl
             Classes = { "reveal" },
         };
 
-        // Changing the bound method is secondary: it first clears the credential. Hidden until hover.
-        if (provider.CanAuthenticate && provider.EffectiveAuthMethods.Count > 1)
-        {
-            var change = new Button
-            {
-                Content = HubStrings.Get("ChangeAuthMethod"),
-                Classes = { "quiet" },
-                FontSize = 11,
-                Padding = new Thickness(6, 3),
-                VerticalAlignment = VerticalAlignment.Center,
-                Tag = SectionTags.ChangeAuthMethod,
-            };
-            ToolTip.SetTip(change, HubStrings.Get("ChangeAuthMethodHint"));
-            change.Click += async (_, _) => await ChangeAuthMethodAsync(provider);
-            reveal.Children.Add(change);
-        }
-
         // Custom providers own their identity fields; a built-in is pinned by the manifest and has no
         // configuration left to edit on this page.
         if (provider.IsCustom)
@@ -1415,7 +1398,7 @@ public partial class SettingsPage : UserControl
         if (ChatWorkspace.CanRemoveProvider(provider))
         {
             // Always visible: removing a provider is a primary management action, not a hover secret.
-            // The pencil and change-method stay on the reveal cluster.
+            // The custom-provider pencil stays on the reveal cluster.
             var remove = new Button
             {
                 Content = BuildRemoveIcon(),
@@ -1866,8 +1849,9 @@ public partial class SettingsPage : UserControl
         if (provider.Models.Count == 0 && !modelDraftOpen)
         {
             // Empty state is one quiet line. The toolbar already carries ＋ 手动添加 and 🔍 浏览目录 —
-            // a second 「添加模型」 here is the same action twice. The only extra is the auth CTA when the
-            // provider cannot fetch a catalog yet.
+            // a second 「添加模型」 or an auth CTA here would be the same actions twice. Unauthenticated
+            // providers say what to do; the header 鉴权 button is the only entry, and a successful auth
+            // fetches the catalog by itself.
             var empty = new StackPanel { Spacing = 8, Tag = SectionTags.ModelsEmpty };
             empty.Children.Add(new TextBlock
             {
@@ -1878,20 +1862,6 @@ public partial class SettingsPage : UserControl
                 FontSize = 11,
                 TextWrapping = TextWrapping.Wrap,
             });
-
-            if (provider.RequiresCredential && !IsLinked(provider) && provider.CanAuthenticate)
-            {
-                var auth = new Button
-                {
-                    Content = HubStrings.Get("AuthenticateAndFetchModels"),
-                    Classes = { "primary" },
-                    FontSize = 11,
-                    Padding = new Thickness(10, 4),
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                };
-                auth.Click += async (_, _) => await AuthenticateProviderAsync(provider);
-                empty.Children.Add(auth);
-            }
 
             listContent.Children.Add(empty);
             section.Children.Add(listContent);
@@ -2710,7 +2680,7 @@ public partial class SettingsPage : UserControl
     /// callback and the failure messages — the dialog's part was only to ask which route, and pretending
     /// otherwise would put two owners on one flow.</para>
     /// </summary>
-    private async Task AuthenticateProviderAsync(ModelProvider provider, bool forceChooseMethod = false)
+    private async Task AuthenticateProviderAsync(ModelProvider provider)
     {
         if (_chat is null) return;
         if (Owner() is not { } owner) return;
@@ -2721,16 +2691,10 @@ public partial class SettingsPage : UserControl
             return;
         }
 
-        // Bound method: prefer an explicit choice, else the live credential's source, else the sole declared
-        // method. Dual-method with no binding falls through to the dialog's choice step.
-        var bound = forceChooseMethod
-            ? null
-            : BoundAuthMethod(provider);
-
         var outcome = await AuthDialog.ShowAsync(
             owner,
             provider,
-            initialMethod: bound,
+            initialMethod: BoundAuthMethod(provider),
             checkKey: key => _chat.CheckApiKeyAsync(provider.Id, key));
 
         // Null is the user closing the dialog without choosing. Anything else is one of the two routes, and
@@ -2776,31 +2740,6 @@ public partial class SettingsPage : UserControl
         if (provider.PreferredAuthMethod is { Length: > 0 } preferred) return preferred;
         var methods = provider.EffectiveAuthMethods;
         return methods.Count == 1 ? methods[0] : null;
-    }
-
-    /// <summary>
-    /// Clears the current credential and re-enters method choice. The entry is secondary (hover-revealed):
-    /// switching methods is rare, and the button that does it must not sit next to 鉴权 looking equally
-    /// primary.
-    /// </summary>
-    private async Task ChangeAuthMethodAsync(ModelProvider provider)
-    {
-        if (_chat is null) return;
-
-        if (Owner() is { } owner)
-        {
-            var confirmed = await HubDialog.ShowAsync(
-                owner,
-                HubStrings.Get("ChangeAuthMethod"),
-                provider.Name + "\n\n" + HubStrings.Get("ChangeAuthMethodConfirm"),
-                HubDialogButtons.OkCancel);
-            if (confirmed != HubDialogResult.Ok) return;
-        }
-
-        _chat.DisconnectProvider(provider.Id);
-        _chat.SetPreferredAuthMethod(provider.Id, null);
-        RebuildProviderGroups();
-        await AuthenticateProviderAsync(provider, forceChooseMethod: true);
     }
 
     /// <summary>The top-level window, used as the dialog owner. <c>null</c> in a design-time host, in which
@@ -2911,6 +2850,10 @@ public partial class SettingsPage : UserControl
         bool ShowsModelSection,
         /// <summary>The section is present but the endpoint listed nothing (or has not been asked yet).</summary>
         bool ShowsModelEmptyState,
+        /// <summary>Buttons living inside the empty-state stack (should stay zero — toolbar/header own the actions).</summary>
+        int EmptyStateButtonCount,
+        /// <summary>A change-auth-method control is present (should stay false — disconnect then authenticate).</summary>
+        bool HasChangeAuthMethodButton,
         /// <summary>True only if the legacy provider-list refresh control is present; it should stay false.</summary>
         bool HasRefreshButton,
         /// <summary>Legacy rule count; outlined model cards intentionally keep this at zero.</summary>
@@ -3010,6 +2953,12 @@ public partial class SettingsPage : UserControl
         // The empty-state line and model controls are looked up by tag rather than by position.
         var showsModelEmptyState = modelSection?.GetLogicalDescendants()
             .Any(node => (node as Control)?.Tag as string == SectionTags.ModelsEmpty) ?? false;
+        var emptyStateButtonCount = modelSection?.GetLogicalDescendants()
+            .OfType<StackPanel>()
+            .FirstOrDefault(stack => stack.Tag as string == SectionTags.ModelsEmpty)?
+            .GetLogicalDescendants().OfType<Button>().Count() ?? 0;
+        var hasChangeAuthMethodButton = content.GetVisualDescendants().OfType<Button>()
+            .Any(button => button.Tag as string == SectionTags.ChangeAuthMethod);
         var hasRefresh = modelSection?.GetLogicalDescendants()
             .OfType<Button>()
             .Any(button => button.Tag as string == SectionTags.RefreshModels) ?? false;
@@ -3101,6 +3050,8 @@ public partial class SettingsPage : UserControl
             hasProviderHeaderDivider,
             showsModelSection && !modelsHidden,
             showsModelEmptyState,
+            emptyStateButtonCount,
+            hasChangeAuthMethodButton,
             hasRefresh,
             modelDividers);
     }
@@ -3359,6 +3310,7 @@ public partial class SettingsPage : UserControl
         // button is there" from "the button says the right thing for this state", and those are different
         // failures with the same shape in the tree.
         internal const string AuthButton = "provider-auth-button";
+        /// <summary>Historical tag for the removed change-method control; kept so a regression that reintroduces it fails.</summary>
         internal const string ChangeAuthMethod = "provider-change-auth-method";
         internal const string NoCredential = "provider-no-credential";
 

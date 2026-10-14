@@ -9674,6 +9674,13 @@ public partial class ShellCheckWindow : Window
                 + (unauthGroup?.ModelNames.Length ?? -1) + " 行）");
         Check(unauthenticated is not null && unauthGroup is { HasAddModelButton: true },
             "未鉴权时手动添加模型仍然可用（本地列表不依赖密钥）");
+        // No extra CTAs in the empty state or the header: auth success fetches the catalog by itself, and
+        // method change is disconnect → authenticate. A second entry would be noise next to 鉴权.
+        Check(unauthGroup is { HasChangeAuthMethodButton: false },
+            "分组没有「更换方式」入口（换方式 = 断开后再鉴权）");
+        Check(unauthGroup is { EmptyStateButtonCount: 0 },
+            "未鉴权空态不放鉴权/添加 CTA（头部鉴权与工具栏已各有一份，实际 "
+                + (unauthGroup?.EmptyStateButtonCount ?? -1) + " 个按钮）");
 
         // A keyless provider is the exemption that used to justify the hide rule: Ollama never has a
         // credential, so a "hide until linked" rule made its models unreachable forever.
