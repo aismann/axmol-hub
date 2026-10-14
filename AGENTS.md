@@ -80,7 +80,7 @@ never be committed.
 ## Commit style
 
 Follow the repository's existing convention: a short one-line title in the imperative mood, with a
-`type:` prefix when it fits — `feat:`, `fix:`, `docs:`, `chore:`. Examples from this repository:
+`type:` prefix when it fits — `feat:`, `fix:`, `docs:`, `misc:`. Examples from this repository:
 
 ```text
 feat: collect commit range into release notes
