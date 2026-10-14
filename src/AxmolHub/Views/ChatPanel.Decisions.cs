@@ -33,6 +33,11 @@ public partial class ChatPanel
     /// <summary>The turn index of the plan the host is reviewing, or -1.</summary>
     private int _decisionPlanIndex = -1;
 
+    /// <summary>The session and the three numbers the band above the composer is currently showing. Same purpose as
+    /// <see cref="_decisionCallId"/>: a repaint has to be able to tell "nothing moved" from "another file changed",
+    /// and the transcript's length cannot tell them apart because a write is recorded by replacing a turn.</summary>
+    private string _changesPillStamp = "";
+
     /// <summary>Which plan option is armed. The letter keys and the pointer both choose it and Continue acts on
     /// what it says, so there is always exactly one.</summary>
     private string _planSelectedOption = ChatPlanStates.Approve;
@@ -300,6 +305,84 @@ public partial class ChatPanel
         // panel's route. Never on top of a draft — taking that focus is the interruption this whole strip exists to
         // avoid. And never on a repaint, which must not move a caret somebody is using.
         if (!same && (planIndex >= 0 || asks) && (InputBox.Text ?? "").Length == 0) DecisionHost.Focus();
+    }
+
+    /// <summary>
+    /// Brings the band above the composer in step with what this session has changed.
+    ///
+    /// <para>Like the decision host this reads persisted transcript state and nothing else — not the run, not a
+    /// phase — because a tally somebody can click has to keep telling the truth after the round that produced it
+    /// is over, and after a restart. It is also why the band is the row <i>farthest</i> from the input box: it is
+    /// the one thing up here that is not owed an answer, and a question must never be pushed behind a readout.</para>
+    ///
+    /// <para>The stamp is the four computed numbers rather than a message count. A write is recorded by replacing a
+    /// turn, not by appending one, so a parked call that gets answered leaves the list exactly as long and the
+    /// tally exactly as wrong if the gate counts entries. Equal numbers mean nothing was rebuilt, which is what
+    /// keeps a repaint per streamed token from rebuilding a control nobody asked to move.</para>
+    /// </summary>
+    private void RefreshChangesPill()
+    {
+        var conversation = _chat?.ActiveConversation;
+        var (files, added, removed) = ChatChanges.Summary(conversation);
+        var stamp = $"{conversation?.Id}:{files}:{added}:{removed}";
+        if (stamp == _changesPillStamp) return;
+        _changesPillStamp = stamp;
+        if (conversation is null || files == 0)
+        {
+            ChangesPillHost.IsVisible = false;
+            ChangesPillHost.Child = null;
+            return;
+        }
+
+        ChangesPillHost.Child = BuildChangesPill(conversation.Id, files, added, removed);
+        ChangesPillHost.IsVisible = true;
+    }
+
+    /// <summary>How far this session has moved the workspace, and the way into the list behind it.
+    ///
+    /// <para>It is the run's own chip wearing a wider plate, on purpose: same classes, so the green and the red are
+    /// the same two tokens rather than a second opinion about them. The plate is framed where the run's chip is
+    /// not because this one stands alone above the composer instead of sitting beside a sentence.</para>
+    ///
+    /// <para>The file count comes from <see cref="ChatChanges.Summary"/>, which is the same scan that fills the
+    /// pane this opens — so the number on the plate is literally the number of rows behind the click, and not a
+    /// second account of the same work.</para>
+    /// </summary>
+    private Control BuildChangesPill(string conversationId, int files, int added, int removed)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        row.Children.Add(new TextBlock
+        {
+            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatChangesPillFormat"), files),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        if (added > 0) row.Children.Add(new TextBlock
+        {
+            Classes = { "file-chip-add" },
+            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("InspectorAddedFormat"), added),
+        });
+        if (removed > 0) row.Children.Add(new TextBlock
+        {
+            Classes = { "file-chip-del" },
+            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("InspectorRemovedFormat"), removed),
+        });
+        var pill = new Button
+        {
+            Classes = { "file-chip-action" },
+            Tag = "ComposerOpenChanges",
+            Content = new Border { Classes = { "file-chip", "changes-pill" }, Child = row },
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(pill, HubStrings.Get("InspectorOpenChanges"));
+        pill.Click += (_, _) => OpenInspector?.Invoke("changes", -1);
+        return pill;
     }
 
     /// <summary>Escape on the host answers it the quiet way: a pending call is refused (one Denied result, the

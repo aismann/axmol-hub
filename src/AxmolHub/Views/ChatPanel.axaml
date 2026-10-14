@@ -695,6 +695,19 @@
     <Style Selector="Button.file-chip-action:pointerover > Border.file-chip">
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderHover}" />
     </Style>
+    <!-- The tally above the composer is the run's chip grown into its own row, so it wears the same classes and
+        inherits the same green and red rather than being handed a copy of them. What differs is the plate: a thing
+        the eye is sent to on purpose needs a frame it can find, and Hub.BorderSubtle is the same colour as
+        Hub.SurfaceRaised in the dark variant — a raised card framed with it draws no frame at all. Declared after
+        Border.file-chip because at equal specificity the later rule is the one that wins, and Avalonia will not
+        say so. -->
+    <Style Selector="Border.changes-pill">
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+      <Setter Property="CornerRadius" Value="{DynamicResource Hub.Radius.Pill}" />
+      <Setter Property="Padding" Value="10,3" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="ClipToBounds" Value="True" />
+    </Style>
     <!-- One folded tool exchange, and the detail it reveals when clicked. The collapsed row names the action; the
          toggle underneath it lays the whole exchange out (arguments in, payload back) so the concrete operation is
          readable on the page instead of stranded one hover away in a tooltip. A bare transparent template keeps the
@@ -1162,31 +1175,46 @@
              into the composer rather than sent: a chip is an offer, and the person still decides. -->
         <WrapPanel x:Name="SuggestionPanel" Classes="suggestion-row" />
       </StackPanel>
-
-      <Button x:Name="ScrollToBottomButton" Classes="scroll-bottom"
-              VerticalAlignment="Bottom" Margin="0,0,0,14" IsVisible="False">
-        <Path Width="14" Height="14" Stretch="Uniform" Data="{StaticResource Hub.Icon.ArrowDown}" />
-      </Button>
+      <!-- The way back down to the newest line used to float here, at the bottom of this cell. It moved into the
+           band above the composer, beside the change tally, because two centered plates stacked one over the other
+           read as one broken object — and because a floating plate over the transcript is chrome the charter has no
+           room for. See the band below. -->
     </Grid>
 
-    <!-- Composer: centered to the same column. The rows above the frame are the things owed an answer, oldest on
-         top, so the closest card to the box is the most recent event. Row 0 is the decision host — a pending call
-         or a pending plan; row 1 the steer-confirm strip, where a second tap stands between Enter and a steer,
-         because a steer is the routing table's strongest signal and worth reading once before it is said. Nothing
-         is cancelled either way: the sentence waits for the step in flight. Row 3 is the workspace picker's slot —
-         outside the frame on purpose, and collapsed to nothing once the chat has started.
+    <!-- Composer: centered to the same column. The rows above the frame are ordered by what they owe the person.
+         Row 0 is the band — the session's change tally and the way back down to the newest line. It is the only
+         thing up here that is not owed an answer, and that is exactly why it sits farthest from the box: a question
+         keeps the row nearest the input, so nothing a person has to reply to is ever pushed behind a readout.
+         Row 1 is the decision host — a pending call or a pending plan; row 2 the steer-confirm strip, where a
+         second tap stands between Enter and a steer, because a steer is the routing table's strongest signal and
+         worth reading once before it is said. Nothing is cancelled either way: the sentence waits for the step in
+         flight. Row 4 is the workspace picker's slot — outside the frame on purpose, and collapsed to nothing once
+         the chat has started.
          Both strips are siblings of the frame, never children of it: the input box stays live and its draft stays
          visible while a question is waiting, which is the whole reason they moved. -->
-    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto">
-      <Border x:Name="DecisionHost" Classes="decision-host" Grid.Row="0"
+    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+      <!-- The band holds two controls that are shown together more often than not — a run that is writing while
+           the person is reading back is the ordinary state of a long task — so they share one centered row rather
+           than each taking one. The row's height is reserved by whether the transcript <i>can</i> scroll, not by
+           whether it happens to be scrolled: measured without the reservation the row grows from 22 to 28 the
+           moment the plate rises, which retakes height from the transcript under whoever is reading it. -->
+      <Panel x:Name="ComposerBand" Grid.Row="0" HorizontalAlignment="Center" Margin="0,0,0,6">
+        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+          <Border x:Name="ChangesPillHost" IsVisible="False" />
+          <Button x:Name="ScrollToBottomButton" Classes="scroll-bottom" IsVisible="False">
+            <Path Width="14" Height="14" Stretch="Uniform" Data="{StaticResource Hub.Icon.ArrowDown}" />
+          </Button>
+        </StackPanel>
+      </Panel>
+      <Border x:Name="DecisionHost" Classes="decision-host" Grid.Row="1"
               IsVisible="False" />
-      <Border x:Name="SteerConfirmHost" Classes="steer-confirm" Grid.Row="1"
+      <Border x:Name="SteerConfirmHost" Classes="steer-confirm" Grid.Row="2"
               IsVisible="False" MaxWidth="820" />
       <!-- The frame wears Hub.Surface — the same raised card the settings card wears — not Hub.SurfaceAlt.
            SurfaceAlt is the sidebar's chrome plane; the input box must float *above* the reading page and
            read as a card, not sit on the same gray strip as the spine. In dark that lifts it off #1E1E1E;
            in light it becomes a white card on the #F4F5F7 page. The shell check pins the separation. -->
-      <Border x:Name="ComposerFrame" Classes="composer" Grid.Row="2"
+      <Border x:Name="ComposerFrame" Classes="composer" Grid.Row="3"
               Background="{DynamicResource Hub.Surface}" CornerRadius="14"
               HorizontalAlignment="Stretch" MaxWidth="820" ClipToBounds="True"
               Margin="0,6,0,0" Padding="14,12,12,10">
@@ -1267,7 +1295,7 @@
       <!-- The sandbox the file and command tools are confined to, named by the folder itself. It sits outside
            the frame because it is not a per-request setting: the directory is what the session is born into,
            and the row collapses to nothing once the first message has been sent (see RefreshComposerChoices). -->
-      <StackPanel Grid.Row="3" MaxWidth="820" HorizontalAlignment="Stretch" Margin="0,2,0,4">
+      <StackPanel Grid.Row="4" MaxWidth="820" HorizontalAlignment="Stretch" Margin="0,2,0,4">
         <Button x:Name="WorkspaceChip" Classes="workspace-chip">
           <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
             <Path Width="12" Height="12" Stretch="Uniform" Data="{StaticResource Hub.Icon.Folder}"

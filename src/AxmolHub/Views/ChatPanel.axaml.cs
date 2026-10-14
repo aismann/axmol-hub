@@ -438,6 +438,10 @@ public partial class ChatPanel : UserControl
         // place both can be brought in step with whatever just changed.
         RefreshDecisionHost();
         RefreshSteerConfirm();
+        // And the band above them, which outlives the round that filled it: a tally somebody can click has to keep
+        // telling the truth after the run ends and after a restart, so it reads the transcript here too rather than
+        // being driven from a run event that stops firing.
+        RefreshChangesPill();
         // The right-hand column is the third surface that reads the transcript rather than the run registry. It
         // repaints only when the transcript grew, so a reply streaming text costs no pane rebuild.
         RefreshInspectorIfTranscriptMoved();
@@ -3498,7 +3502,16 @@ public partial class ChatPanel : UserControl
         var viewport = MessageScroller.Viewport.Height;
         var atBottom = MessageScroller.Offset.Y + viewport >= extent - StickEpsilon;
         _stickToBottom = atBottom;
-        ScrollToBottomButton.IsVisible = extent > viewport + StickEpsilon && !atBottom;
+        var scrollable = extent > viewport + StickEpsilon;
+        ScrollToBottomButton.IsVisible = scrollable && !atBottom;
+        // The band's height is reserved by whether the transcript <i>can</i> scroll, never by where the reading
+        // position happens to have stopped. The plate inside it does appear and disappear with the reading position,
+        // and measured without the reservation the row grows from 22 to 28 as it rises — retaking from the
+        // transcript the height a person is reading through, every time the bottom edge is crossed. Reserving on
+        // capacity pays for that once, when content first overflows, and never again while the session is read.
+        ComposerBand.MinHeight = scrollable && !double.IsNaN(ScrollToBottomButton.Height)
+            ? ScrollToBottomButton.Height
+            : 0;
     }
 
     private void UpdateMessageColumnWidth()
@@ -3587,6 +3600,86 @@ public partial class ChatPanel : UserControl
                 .OfType<ToggleButton>().Any(head => head.Classes.Contains("activity-group-head")));
         }
     }
+
+    /// <summary>Whether the band above the composer is showing its tally at all. A plate that is present in the
+    /// tree but never made visible would satisfy a scan of the transcript and tell nobody anything on screen.</summary>
+    internal bool ChangesPillVisibleForCheck => ChangesPillHost.IsVisible;
+
+    /// <summary>The whole line on the plate: the file count and the two numbers, joined as they read.</summary>
+    internal string ChangesPillTextForCheck
+        => ChangesPillHost.Child is Button { Content: Border chip }
+            ? string.Join(" ", chip.GetLogicalDescendants().OfType<TextBlock>().Select(text => text.Text))
+            : "";
+
+    /// <summary>Presses the plate through its own click event. Like the run's chip, the fact being asserted is that
+    /// a press reaches the pane rather than that a pane could be opened by hand.</summary>
+    internal bool ClickChangesPillForCheck()
+    {
+        if (ChangesPillHost.Child is not Button pill) return false;
+        pill.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        return true;
+    }
+
+    /// <summary>Whether the transcript holds more than one screen at all. A fixture that wants the way back down to
+    /// rise has to be able to say it overflowed the page first: every condition that reads "at the bottom and no
+    /// plate" is also true of a transcript that never needed a plate, and a check built on that passes in silence.</summary>
+    internal bool TranscriptScrollableForCheck
+        => MessageScroller.Extent.Height > MessageScroller.Viewport.Height + StickEpsilon;
+
+    /// <summary>How tall the band's row actually is. Zero is the claim that an empty thing does not take a row;
+    /// the plate's own height is the claim that a reserved row is what stopped the composer from jumping.</summary>
+    internal double ChangesPillRowHeightForCheck => ComposerBand.Bounds.Height;
+
+    /// <summary>The plate's bottom edge in the input frame's own coordinates, or null when it is not showing. The
+    /// same measurement <see cref="DecisionHostPlacementForCheck"/> makes for a question: a number at or above the
+    /// frame's top edge would mean the band had moved into the box it is supposed to sit above.</summary>
+    internal double? ChangesPillBottomForCheck
+        => !ChangesPillHost.IsVisible ? null
+            : ChangesPillHost.TranslatePoint(new Point(0, ChangesPillHost.Bounds.Height), ComposerFrame)?.Y;
+
+    /// <summary>Where the top edge of the input frame sits in the panel's own coordinates. Read before and after a
+    /// scroll, this is the only way to assert that scrolling leaves the composer where it was: a bounds check on
+    /// the band would pass while the frame still moved, because both are laid out by the same grid.</summary>
+    internal double ComposerFrameTopForCheck
+        => ComposerFrame.TranslatePoint(new Point(0, 0), this) is { } top ? top.Y : double.NaN;
+
+    /// <summary>The band's two plates measured as arranged rather than as intended: the tally's bottom edge in the
+    /// input frame's coordinates, the vertical centre of each plate, the horizontal centre of the <i>pair</i>
+    /// against the centre of the column the box is centered in, and the gap between them. Null unless both are up,
+    /// because a claim about their arrangement is not a claim about one of them alone.</summary>
+    internal (double PillBottom, double PillCenterY, double PlateCenterY, double BandCenterX, double FrameCenterX,
+        double Gap)? BandPlatesForCheck
+    {
+        get
+        {
+            if (!ChangesPillHost.IsVisible || !ScrollToBottomButton.IsVisible) return null;
+            // Each edge translated into the frame's own coordinates, the way the decision host is measured: Bounds
+            // are relative to whatever panel laid the control out, and the two plates do not share the frame the
+            // claim is about. The gap is the one measurement that may stay in the row's own coordinates, because
+            // both plates are laid out by the same StackPanel.
+            if (ChangesPillHost.TranslatePoint(new Point(0, ChangesPillHost.Bounds.Height), ComposerFrame)
+                    is not { } pillBottom) return null;
+            if (ChangesPillHost.TranslatePoint(new Point(ChangesPillHost.Bounds.Width / 2, ChangesPillHost.Bounds.Height / 2),
+                    ComposerFrame) is not { } pillCentre) return null;
+            if (ScrollToBottomButton.TranslatePoint(
+                    new Point(ScrollToBottomButton.Bounds.Width / 2, ScrollToBottomButton.Bounds.Height / 2),
+                    ComposerFrame) is not { } plateCentre) return null;
+            if (ComposerBand.TranslatePoint(new Point(ComposerBand.Bounds.Width / 2, 0), ComposerFrame)
+                    is not { } bandCentre) return null;
+            return (pillBottom.Y, pillCentre.Y, plateCentre.Y, bandCentre.X, ComposerFrame.Bounds.Width / 2,
+                ScrollToBottomButton.Bounds.Left - ChangesPillHost.Bounds.Right);
+        }
+    }
+
+    /// <summary>The plate as painted, for the frame that proves it is not a layout that produced nothing.</summary>
+    internal Control? ChangesPillForCheck => ChangesPillHost.IsVisible ? ChangesPillHost : null;
+
+    /// <summary>The plate's own frame, reached through the class the pill is identified by rather than by a name —
+    /// the two colour tokens at stake differ by one hex digit, and a check that found the wrong Border would say
+    /// nothing about which one is drawn.</summary>
+    internal Border? ChangesPillBorderForCheck
+        => ChangesPillHost.GetLogicalDescendants().OfType<Border>()
+            .FirstOrDefault(border => border.Classes.Contains("changes-pill"));
 
     /// <summary>Presses one chip through its own click event and says whether there was a chip to press. A raised
     /// Click is precisely what a ToggleButton ignores, so the fold state asserted next to this call can only be
