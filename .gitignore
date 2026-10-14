@@ -19,6 +19,8 @@ data/
 .DS_Store
 Thumbs.db
 
+.build
+
 # 凭据与签名材料
 .env
 .env.*
