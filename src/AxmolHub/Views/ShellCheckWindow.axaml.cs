@@ -1809,6 +1809,16 @@ public partial class ShellCheckWindow : Window
         chat.SetPinned(aUpper.Id, false);
         sidebar.Reload();
 
+        // ── Copying a session id ──
+        // Two different rows, because a row menu is built inside a loop and the closure over that row's summary is
+        // the whole mechanism: one row would pass even if every menu in the list handed out the same id.
+        var copiedA = sidebar.CopiedConversationIdFromMenuForCheck(aOne.Id);
+        var copiedUpper = sidebar.CopiedConversationIdFromMenuForCheck(aUpper.Id);
+        Check(copiedA == aOne.Id && copiedUpper == aUpper.Id && copiedA != copiedUpper,
+            "每行的操作菜单复制的就是这一行自己的会话 ID，不是别人的（实际「" + copiedA + "」/「" + copiedUpper + "」）");
+        Check(shell.StatusTextForCheck == HubStrings.Get("ConversationIdCopied"),
+            "复制会话 ID 在底部状态条留下一句话，剪贴板写入不是无声的（实际「" + shell.StatusTextForCheck + "」）");
+
         // ── Archive: a single conversation ──
         Check(sidebar.SessionHasArchiveMenu(bOne.Id),
             "会话操作菜单提供归档（实际菜单：" + string.Join(" / ", sidebar.SessionMenuTitlesForCheck(bOne.Id)) + "）");
@@ -1828,9 +1838,13 @@ public partial class ShellCheckWindow : Window
             "展开归档分组能看到被归档的那条对话");
         var archivedMenu = sidebar.SessionMenuTitlesForCheck(bOne.Id);
         Check(archivedMenu.Contains(HubStrings.Get("RestoreConversation"))
+              && archivedMenu.Contains(HubStrings.Get("CopyConversationId"))
               && !archivedMenu.Contains(HubStrings.Get("PinConversation"))
               && !archivedMenu.Contains(HubStrings.Get("ArchiveConversation")),
-            "归档分组里的会话行提供恢复，不再提供置顶或重复归档（实际菜单：" + string.Join(" / ", archivedMenu) + "）");
+            "归档分组里的会话行提供恢复与复制会话 ID，不再提供置顶或重复归档（实际菜单：" + string.Join(" / ", archivedMenu) + "）");
+        var copiedArchived = sidebar.CopiedConversationIdFromMenuForCheck(bOne.Id);
+        Check(copiedArchived == bOne.Id,
+            "被收起来的会话行照样复制的是它自己的 ID，归档不会让这一项失效（实际「" + copiedArchived + "」）");
         Check(sidebar.RestoreConversationFromMenuForCheck(bOne.Id)
               && sidebar.GroupHeaderTagsForCheck().Contains(keyB)
               && !sidebar.GroupHeaderTagsForCheck().Contains(SessionGroupKey.Archived),

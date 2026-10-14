@@ -57,6 +57,13 @@ public partial class ChatSidebar : UserControl
     /// </summary>
     internal Action<string>? StatusReporter { get; init; }
 
+    /// <summary>
+    /// Where a text copy lands, when a check wants it. <see cref="CopyConversationIdAsync"/> writes the real clipboard
+    /// unless this is set, so the suite can drive the menu item's own click handler — which is the only way to catch a
+    /// row menu built in a loop that handed every row the same id — without throwing away what the person last copied.
+    /// </summary>
+    internal Func<string, System.Threading.Tasks.Task>? TestClipboardWriter { get; set; }
+
     public ChatSidebar()
     {
         _chat = null!;
@@ -690,6 +697,12 @@ public partial class ChatSidebar : UserControl
             menu.Items.Add(pinItem);
         }
 
+        // Archived rows carry it too: a session that has been put away is still the one a log line or a deep link
+        // names, and its id is the only way back to it.
+        var copyIdItem = new MenuItem { Header = HubStrings.Get("CopyConversationId") };
+        copyIdItem.Click += (_, _) => _ = CopyConversationIdAsync(summary.Id);
+        menu.Items.Add(copyIdItem);
+
         var deleteItem = new MenuItem
         {
             Header = HubStrings.Get("DeleteConversation"),
@@ -741,6 +754,39 @@ public partial class ChatSidebar : UserControl
         row.Child = layout;
         row.Tag = summary.Id;
         return row;
+    }
+
+    /// <summary>
+    /// Hands this row's own session id to the clipboard. Nothing on screen changes when it works, which is exactly
+    /// why the bottom strip has to say so: "it is in there" and "the clipboard refused" otherwise look identical
+    /// to the person who just clicked.
+    /// </summary>
+    private async System.Threading.Tasks.Task CopyConversationIdAsync(string id)
+    {
+        try
+        {
+            if (TestClipboardWriter is { } writer)
+            {
+                await writer(id);
+            }
+            else if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard)
+            {
+                var item = new DataTransferItem();
+                item.Set(DataFormat.Text, id);
+                var data = new DataTransfer();
+                data.Add(item);
+                await clipboard.SetDataAsync(data);
+            }
+            else return;
+
+            StatusReporter?.Invoke(HubStrings.Get("ConversationIdCopied"));
+        }
+        catch (Exception)
+        {
+            // A clipboard that refuses — locked by another process, a headless session — is not worth an error
+            // dialog. The id is still the session file's own name on disk, which is the same fallback every copy
+            // affordance in this app degrades to.
+        }
     }
 
     /// <summary>
@@ -1065,6 +1111,34 @@ public partial class ChatSidebar : UserControl
         item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         return _chat.Conversations.Any(summary => summary.Id == id)
                && _chat.ArchivedConversations.All(summary => summary.Id != id);
+    }
+
+    /// <summary>Runs a row's own copy-id item and answers with the text that reached the clipboard sink. The write
+    /// is captured, never performed: a check that ran the real write would leave whatever the person had copied
+    /// gone. Driving the item rather than reading a payload is the point — it is the closure that row was built with
+    /// that decides which id goes, and two different rows are what show a wrong one up.</summary>
+    internal string? CopiedConversationIdFromMenuForCheck(string id)
+    {
+        var item = SessionMenuItems(id)
+            .FirstOrDefault(candidate => string.Equals(candidate.Header?.ToString(),
+                HubStrings.Get("CopyConversationId"), StringComparison.Ordinal));
+        if (item is null) return null;
+
+        string? copied = null;
+        TestClipboardWriter = text =>
+        {
+            copied = text;
+            return System.Threading.Tasks.Task.CompletedTask;
+        };
+        try
+        {
+            item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        }
+        finally
+        {
+            TestClipboardWriter = null;
+        }
+        return copied;
     }
 
     internal string[] SessionMenuTitlesForCheck(string id) => SessionMenuItems(id)

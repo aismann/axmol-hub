@@ -923,6 +923,10 @@ public static class HubTexts
         // Session management (the session list in the left column).
         ["RenameConversation"] = ("重命名", "Rename"),
         ["RenameConversationTitle"] = ("重命名对话", "Rename conversation"),
+        // The id is what the session's own file, a log line and an axmolhub://conversation/… link all key on, and it
+        // is otherwise only readable off the disk. The copy says so in words because a clipboard write is invisible.
+        ["CopyConversationId"] = ("复制会话 ID", "Copy session ID"),
+        ["ConversationIdCopied"] = ("会话 ID 已复制到剪贴板。", "The session ID is on the clipboard."),
         ["PinConversation"] = ("置顶", "Pin"),
         ["UnpinConversation"] = ("取消置顶", "Unpin"),
         // Session grouping: workspaces first, conversations with no working directory all go to the trailing "Chats" group, archived ones sink to the very bottom.
