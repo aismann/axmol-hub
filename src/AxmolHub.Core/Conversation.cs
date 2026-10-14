@@ -138,6 +138,13 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// attention badge; the request itself remains pending until an explicit decision.</summary>
     public bool ApprovalSeen { get; init; }
 
+    /// <summary>Which model response asked for this call, named by the id of the first call it asked for; null on
+    /// every turn that is not a tool call. A provider may answer one request with several calls, and the decisions
+    /// over that group belong together — one card, one answer, and the answer runs the whole group. The head of a
+    /// response never moves, so the id is recomputable from the transcript and a session file written by a newer
+    /// Hub still loads here. Nullable for the standing reason.</summary>
+    public string? ApprovalBatchId { get; init; }
+
     /// <summary>Approval state for an assistant plan. Non-null only after a Plan-mode answer is ready for review.
     /// The state is what makes a turn a plan; <see cref="Plan"/> says where its body is.</summary>
     public string? PlanApprovalState { get; init; }
@@ -205,13 +212,14 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// turn for the same reason — it belongs to that one assistant message, and a gateway that wants it back
     /// wants it on the message that earned it.</summary>
     public static ChatTurn FunctionCall(string callId, string name, string arguments, string? text = null,
-        string? reasoning = null) =>
+        string? reasoning = null, string? batchId = null) =>
         new(ChatRoles.Assistant, text ?? "", DateTimeOffset.Now)
         {
             ToolCallId = callId,
             ToolName = name,
             ToolArguments = arguments,
             Reasoning = reasoning,
+            ApprovalBatchId = batchId,
         };
 
     /// <summary>A tool's answer. <paramref name="images"/> is for the one tool whose result <i>is</i> a picture:
@@ -435,10 +443,9 @@ public sealed class Conversation
     /// that puts anything else between them is rejected whole — <c>insufficient tool messages following tool_calls
     /// message</c>.
     ///
-    /// This is not the same as <see cref="Append"/>. A result written by the model's own loop can append, because
-    /// the loop asks for one call at a time and the call it just made is already the tail. A result written when a
-    /// <i>person</i> answers an approval cannot: while the question sat, the loop went on running the other calls
-    /// that shared the model's response, so the parked call is somewhere in the middle and a tail append leaves it
+    /// This is not the same as <see cref="Append"/>. A response can ask for several calls and the loop records all
+    /// of them before any of them runs, so the call a result answers is usually not the tail — of a batch, and
+    /// after a person's answer, of the transcript as a whole. Appending there would leave the earlier call
     /// unanswered at the position that matters. Falling back to <see cref="Append"/> when the call is gone keeps a
     /// result nobody asked for from being dropped.
     /// </summary>
@@ -542,6 +549,23 @@ public sealed class Conversation
             .ToHashSet(StringComparer.Ordinal);
         return Messages.Any(turn => turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 } callId
             && !answered.Contains(callId));
+    }
+
+    /// <summary>The calls of one model response still owed an answer, in the order the model asked for them.
+    /// A response may ask for several calls and the group shares one decision, so answering a card means running
+    /// everything still open in it — including the calls that needed no permission and were held back only because
+    /// a sibling was waiting on the person. Reads the batch id rather than adjacency, which is what lets a call
+    /// whose siblings already ran still be found by the group it belonged to.</summary>
+    public List<ChatTurn> UnansweredCallsOfBatch(string batchId)
+    {
+        var answered = Messages
+            .Where(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 })
+            .Select(turn => turn.ToolCallId!)
+            .ToHashSet(StringComparer.Ordinal);
+        return Messages
+            .Where(turn => turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 } callId
+                           && !answered.Contains(callId) && turn.ApprovalBatchId == batchId)
+            .ToList();
     }
 
     /// <summary>The turn carrying a given tool call, or -1. The call turn is the approval record, so resolving

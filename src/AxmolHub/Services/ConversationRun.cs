@@ -268,20 +268,25 @@ internal sealed class ConversationRun : IDisposable
     /// inactivity deadline stands down rather than mistaking a long build for a dead stream; the tool judges
     /// that stretch by its own silence bound, and answers with output the model can read instead of a network
     /// error. Reached only for a call the gate let run, so the deadline is never stopped while a person decides.
-    /// The user's stop still cancels the tool, because it travels on the same token.</summary>
+    /// The user's stop still cancels the tool, because it travels on the same token.
+    ///
+    /// <para>A count rather than a flag, because one response can hand over several calls and the whole batch is
+    /// decided before any of it runs: every call of the batch opens its bracket at its own gate, so a flag would be
+    /// cleared by whichever sibling came back first and start counting silence while the rest were still working.</para>
+    /// </summary>
     internal void BeginTool()
     {
-        Interlocked.Exchange(ref _toolRunning, 1);
+        Interlocked.Increment(ref _toolRunning);
         _idle.CancelAfter(Timeout.InfiniteTimeSpan);
     }
 
-    /// <summary>The tool came back, or was refused: the deadline counts again from now, and from now what is
-    /// owed is a first frame rather than another chunk — the round that follows a result has to be built, sent
-    /// and read before it can say anything. A refused call never entered the bracket, so ending it for one
-    /// simply re-arms.</summary>
+    /// <summary>A tool came back, or was refused. The deadline starts counting again only when the <i>last</i>
+    /// bracket closes, and what it counts from then is a first frame rather than another chunk — the round that
+    /// follows a result has to be built, sent and read before it can say anything. A refused call never entered
+    /// the bracket, so ending it for one simply re-arms.</summary>
     internal void EndTool()
     {
-        Interlocked.Exchange(ref _toolRunning, 0);
+        if (Interlocked.Decrement(ref _toolRunning) != 0) return;
         BeginRound();
     }
 

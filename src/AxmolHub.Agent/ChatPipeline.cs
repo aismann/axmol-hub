@@ -58,7 +58,12 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
     /// per response and may ask for several tools in it. Every assistant message replayed for that response has
     /// to carry it, or the provider rejects the request for a thinking turn whose thinking went missing.</summary>
     public readonly record struct ToolCallInfo(
-        string Name, string CallId, string ArgumentsJson, string? Reasoning = null);
+        string Name, string CallId, string ArgumentsJson, string? Reasoning = null,
+        // Which response asked for this call, named by the first call of it. A provider may answer one request with
+        // several calls, and the decisions over that group belong together: the id is what lets the caller show one
+        // card for a batch and run what is left of it when the person answers. Stable, and recomputable from the
+        // transcript, because the head of a response never moves.
+        string? BatchId = null);
 
     /// <summary>The answer to "may this call run now".</summary>
     public enum ToolGateOutcome
@@ -70,12 +75,18 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         Deny,
 
         /// <summary>Recorded as waiting for a human. The stream ends here; the call stays unanswered in the
-        /// transcript, which is the record of the decision that is still owed.</summary>
+        /// transcript, which is the record of the decision that is still owed. Parking cancels the request's
+        /// token, so the rest of the response that asked for this call waits on the same answer rather than
+        /// running underneath a cancellation nobody granted it.</summary>
         Pending,
     }
 
-    /// <summary>Asked before every tool call. Awaited, so a gate may consult anything it likes.</summary>
-    public delegate Task<ToolGateOutcome> ToolGate(ToolCallInfo call, CancellationToken cancellationToken);
+    /// <summary>Asked before every tool call. Awaited, so a gate may consult anything it likes.
+    /// <paramref name="batch"/> is every call the same response asked for, this one included, in the order the
+    /// model asked for them: the gate is asked for each of them before any of them runs, which is what lets one
+    /// decision cover the group instead of one question per call.</summary>
+    public delegate Task<ToolGateOutcome> ToolGate(
+        ToolCallInfo call, IReadOnlyList<ToolCallInfo> batch, CancellationToken cancellationToken);
 
     /// <summary>
     /// Streams the assistant reply to <paramref name="history"/>. Semantics mirror the underlying client:
@@ -193,61 +204,85 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                 MaximumIterationsPerRequest = int.MaxValue,
                 MaximumConsecutiveErrorsPerRequest = MaximumConsecutiveToolErrors,
             };
+            // What the pipeline decided about each call of the response now being answered: recorded before any of
+            // them runs, then delivered in the order the model asked for them. Rebuilt whenever a call turns up
+            // that is not in it, which is the first call of the next response.
+            var verdicts = new Dictionary<string, MemberVerdict>(StringComparer.Ordinal);
+            // The same calls in the order the model asked, kept beside the verdicts because the delivery needs the
+            // order: a turn ended mid-batch owes an answer to every call behind the one that ended it.
+            var batch = new List<ToolCallInfo>();
+
             functionClient.FunctionInvoker = async (context, token) =>
             {
                 var call = context.CallContent;
-                var arguments = JsonSerializer.Serialize(call.Arguments, ArgumentJson);
-                var info = new ToolCallInfo(call.Name, call.CallId, arguments,
-                    thinking.Length > 0 ? thinking.ToString() : null);
-                thinkingSpent = true;
-                if (onToolStarted is not null) await onToolStarted(info).ConfigureAwait(false);
-
-                // Before the gate, not after: a spinning call must not cost a person an approval card, and the
-                // refusal it gets instead is itself the record. With the round cap gone this is the one thing
-                // standing between a long task and an unbounded paid loop — see ToolSpinGuard for the exemptions
-                // that keep it off correct work.
-                if (ToolSpinGuard.RefusalFor(call.Name, arguments, context.Messages,
-                        guard?.ElidedCallIds) is { } spinRefusal)
+                if (!verdicts.ContainsKey(call.CallId))
                 {
-                    var signature = call.Name + "\n" + ToolSpinGuard.NormalizeArguments(arguments);
-                    var refusals = spinRefusals.GetValueOrDefault(signature) + 1;
-                    spinRefusals[signature] = refusals;
-                    if (refusals >= 2)
+                    var asked = CallsOfResponse(context.Messages, call);
+                    // One response, one chain of thought: a thinking model reasons once per response and may ask
+                    // for several tools inside it, so every call of the batch is filed with the same block.
+                    var said = thinking.Length > 0 ? thinking.ToString() : null;
+                    thinkingSpent = true;
+                    verdicts.Clear();
+                    batch.Clear();
+                    batch.AddRange(asked
+                        .Select(content => InfoOf(content, said, asked[0].CallId)));
+                    foreach (var member in batch)
                     {
-                        // The model asked again after being told to stop asking. One refusal is information;
-                        // a second is a loop, and the only honest move left is to end the turn rather than pay
-                        // for an identical round. Terminate is the invoking client's own stop — the loop
-                        // finishes this invocation and makes no further request. Measured against the shipped
-                        // assembly: two invocations, two requests, clean end.
-                        context.Terminate = true;
-                        spinRefusal = ToolSpinGuard.TerminationMarker + " the model asked for this same call "
-                                       + "again after the refusal above, so this turn is ending rather than "
-                                       + "paying for another identical round. " + spinRefusal;
+                        // Recorded before it is judged, every call of the batch ahead of any decision: the card the
+                        // person reads has to be built from calls that are already in the transcript, or answering
+                        // it would be deciding something that was never written down.
+                        if (onToolStarted is not null) await onToolStarted(member).ConfigureAwait(false);
+                        verdicts[member.CallId] =
+                            await DecideAsync(member, batch, context, token).ConfigureAwait(false);
                     }
-                    if (onToolCompleted is not null)
-                        await onToolCompleted(info, spinRefusal, true).ConfigureAwait(false);
-                    return spinRefusal;
+
+                    if (verdicts.Values.Any(v => v.Outcome == ToolGateOutcome.Pending))
+                    {
+                        // Nothing sharing the decision runs underneath it. Parking cancels the request's token, so
+                        // a call started after that is work nobody agreed to — the whole batch waits on the card,
+                        // and the answer runs all of it.
+                        parked.Parked = true;
+                        return PendingPlaceholder;
+                    }
                 }
 
-                var outcome = gate is null
-                    ? ToolGateOutcome.Allow
-                    : await gate(info, token).ConfigureAwait(false);
-                if (outcome == ToolGateOutcome.Deny)
+                var verdict = verdicts[call.CallId];
+                if (verdict.Refusal is { } refusal)
                 {
+                    // Terminate is the invoking client's stop for <i>this</i> invocation, so it is set here rather
+                    // than where the refusal was written: the batch is judged ahead of the delivery.
+                    if (verdict.Terminates)
+                    {
+                        context.Terminate = true;
+                        // The calls behind this one were recorded and will never be delivered, because no further
+                        // request is made. Each still gets its own answer: an assistant turn carrying a call with
+                        // nothing after it is a request the provider rejects whole, and the loop would otherwise
+                        // have written a call the transcript never finishes.
+                        await AbandonBehindAsync(verdict.Call).ConfigureAwait(false);
+                    }
                     if (onToolCompleted is not null)
-                        await onToolCompleted(info, ToolApprovalResults.Denied, true).ConfigureAwait(false);
+                        await onToolCompleted(verdict.Call, refusal, true).ConfigureAwait(false);
+                    return refusal;
+                }
+
+                if (verdict.Outcome == ToolGateOutcome.Deny)
+                {
+                    // Delivered as this call's own answer, and the loop goes on: a refusal the model never hears
+                    // about is a refusal it asks for again, and the calls behind this one were not refused.
+                    if (onToolCompleted is not null)
+                        await onToolCompleted(verdict.Call, ToolApprovalResults.Denied, true).ConfigureAwait(false);
                     return ToolApprovalResults.Denied;
                 }
 
-                if (outcome == ToolGateOutcome.Pending)
+                if (verdict.Outcome == ToolGateOutcome.Pending)
                 {
-                    // The placeholder never reaches the model: the gate cancelled the stream, so no further
-                    // request is made and the loop below stops. What is left behind is the transcript, where
-                    // this call is still unanswered — and that is the record of the decision still owed.
+                    // Reached only for a call the batch judge left waiting without the group parking — a state the
+                    // gate writes itself, so the transcript already carries the question.
                     parked.Parked = true;
                     return PendingPlaceholder;
                 }
 
+                var info = verdict.Call;
                 try
                 {
                     var result = await context.Function.InvokeAsync(context.Arguments, token).ConfigureAwait(false);
@@ -272,6 +307,63 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                     throw;
                 }
             };
+
+            // Answers every call of this response sitting behind the one that ended the turn, which will never be
+            // delivered because no further request is made — the spin guard's second refusal of one signature. The
+            // calls were recorded ahead of the decision, so leaving them open would hand the transcript an
+            // assistant turn with no result after it: the shape a provider rejects whole, and the reason a batch
+            // cannot be recorded and then abandoned.
+            async Task AbandonBehindAsync(ToolCallInfo ended)
+            {
+                var behind = false;
+                foreach (var member in batch)
+                {
+                    if (!behind)
+                    {
+                        behind = member.CallId == ended.CallId;
+                        continue;
+                    }
+
+                    if (onToolCompleted is not null)
+                        await onToolCompleted(member, ToolApprovalResults.Abandoned, true)
+                            .ConfigureAwait(false);
+                }
+            }
+
+            // One call of the batch, judged. Records nothing itself — the recording happened ahead of it, and the
+            // answer is returned for the delivery step to act on, because the batch is decided before any of it
+            // runs and only the delivery knows which invocation it belongs to.
+            async Task<MemberVerdict> DecideAsync(ToolCallInfo info, IReadOnlyList<ToolCallInfo> batch,
+                FunctionInvocationContext context, CancellationToken token)
+            {
+                // Before the gate, not after: a spinning call must not cost a person an approval card, and the
+                // refusal it gets instead is itself the record. With the round cap gone this is the one thing
+                // standing between a long task and an unbounded paid loop — see ToolSpinGuard for the exemptions
+                // that keep it off correct work.
+                if (ToolSpinGuard.RefusalFor(info.Name, info.ArgumentsJson, context.Messages,
+                        guard?.ElidedCallIds) is { } spinRefusal)
+                {
+                    var signature = info.Name + "\n" + ToolSpinGuard.NormalizeArguments(info.ArgumentsJson);
+                    var refusals = spinRefusals.GetValueOrDefault(signature) + 1;
+                    spinRefusals[signature] = refusals;
+                    if (refusals < 2) return new MemberVerdict(info, ToolGateOutcome.Allow, spinRefusal, false);
+
+                    // The model asked again after being told to stop asking. One refusal is information;
+                    // a second is a loop, and the only honest move left is to end the turn rather than pay
+                    // for an identical round. Measured against the shipped assembly: two invocations, two
+                    // requests, clean end.
+                    return new MemberVerdict(info, ToolGateOutcome.Allow,
+                        ToolSpinGuard.TerminationMarker + " the model asked for this same call "
+                        + "again after the refusal above, so this turn is ending rather than "
+                        + "paying for another identical round. " + spinRefusal, Terminates: true);
+                }
+
+                var outcome = gate is null
+                    ? ToolGateOutcome.Allow
+                    : await gate(info, batch, token).ConfigureAwait(false);
+                return new MemberVerdict(info, outcome, null, false);
+            }
+
             effectiveClient = functionClient;
         }
 
@@ -405,6 +497,41 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
     private sealed class GateState
     {
         public volatile bool Parked;
+    }
+
+    /// <summary>What the batch judge decided about one call of the response being answered, held until the loop
+    /// reaches that call. <paramref name="Refusal"/> is the spin guard's answer, which is delivered as the result
+    /// without the call ever reaching the gate; <paramref name="Terminates"/> rides with it because ending the
+    /// turn is a property of the invocation, not of the decision.</summary>
+    private readonly record struct MemberVerdict(
+        ToolCallInfo Call, ToolGateOutcome Outcome, string? Refusal, bool Terminates);
+
+    /// <summary>One call of a response, as the callbacks and the gate see it. The arguments are serialized here
+    /// once so the transcript, the card and the tool all read the same text.</summary>
+    private static ToolCallInfo InfoOf(FunctionCallContent content, string? reasoning, string batchId)
+        => new(content.Name, content.CallId,
+            JsonSerializer.Serialize(content.Arguments, ArgumentJson), reasoning, batchId);
+
+    /// <summary>Every call the response carrying <paramref name="call"/> asked for, in the order it asked. Read off
+    /// the message list the loop itself grew — the assistant message holding the calls is in it before the first
+    /// invocation, which is the same seam <see cref="ToolSpinGuard"/> reads. The nearest assistant message that
+    /// carries a call is the response being answered: results are appended after it, and a message carrying a call
+    /// this one is not belongs to an older response, so the batch falls back to a group of one.</summary>
+    private static IReadOnlyList<FunctionCallContent> CallsOfResponse(
+        IList<ChatMessage> messages, FunctionCallContent call)
+    {
+        for (var index = messages.Count - 1; index >= 0; index--)
+        {
+            var message = messages[index];
+            if (message.Role != ChatRole.Assistant) continue;
+            var calls = message.Contents.OfType<FunctionCallContent>().ToList();
+            if (calls.Count == 0) continue;
+            return calls.Any(other => string.Equals(other.CallId, call.CallId, StringComparison.Ordinal))
+                ? calls
+                : [call];
+        }
+
+        return [call];
     }
 
     /// <summary>Handed back to the invoking client when a call parks for approval. Never sent anywhere.</summary>

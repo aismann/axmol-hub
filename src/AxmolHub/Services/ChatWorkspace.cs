@@ -3597,24 +3597,43 @@ public sealed class ChatWorkspace : IDisposable
         RepositoryChanged?.Invoke();
     }
 
+    /// <summary>One call of a response that has to wait for a person, with what its card shows. Gathered in the
+    /// gate's read pass and written in its update pass, so a group is recorded from one decision rather than one
+    /// call at a time.</summary>
+    private readonly record struct ParkedCall(
+        ChatPipeline.ToolCallInfo Call, string? Preview, bool Asks, bool Seen);
+
+    /// <summary>What the gate's table says about one call: the tier it lands in, whether anything already covers
+    /// it, and whether that means a person is asked. Held as a value because the same reading has to answer both
+    /// the audit line and the card, and a verdict computed twice is a verdict that can disagree with itself.</summary>
+    private readonly record struct CallVerdict(
+        ChatPipeline.ToolCallInfo Call, ToolRisk Risk, bool Asks, bool Malformed, bool Granted,
+        bool SessionGrant, bool Parks);
+
     /// <summary>
-    /// Asked before every tool call. A read runs; anything else depends on the mode, and when the mode says ask
-    /// the call is recorded as waiting and the stream ends. The run keeps its slot and the decision can be made
-    /// later — after a restart, even — because the pending call is in the transcript rather than in memory.
+    /// Asked before every tool call, and asked for every call of one model response before any of them runs. A read
+    /// runs; anything else depends on the mode, and when the mode says ask, the calls waiting on that answer are
+    /// recorded together and the stream ends. The run keeps its slot and the decision can be made later — after a
+    /// restart, even — because the pending calls are in the transcript rather than in memory.
     /// Every answer above the read-only tier is written to the audit, because "why did that one not ask" is a
     /// question about a setting, and the log is where a person goes to read a setting back.
     /// </summary>
     private async Task<ChatPipeline.ToolGateOutcome> GateToolCallAsync(
-        ConversationRun run, ChatPipeline.ToolCallInfo call, ChatToolScope scope)
+        ConversationRun run, ChatPipeline.ToolCallInfo call,
+        IReadOnlyList<ChatPipeline.ToolCallInfo> batch, ChatToolScope scope)
     {
-        var decision = await ReadOnUiAsync(() =>
+        // null means nothing here waits; an empty group means it does and somebody already wrote it down.
+        var waiting = await ReadOnUiAsync(() =>
         {
             var conversation = _sessions.Peek(run.ConversationId);
+            if (conversation is null) return null;
             var projects = ProjectPaths(scope);
-            var risk = ChatTools.RiskOf(call.Name, call.ArgumentsJson, scope.Workspace, projects);
             var mode = ApprovalModeFor(run.ConversationId);
-            var sessionGrant = ToolTrust.Contains(conversation?.AutoApprovedTools, call.Name);
-            var appGrant = ToolTrust.Contains(TrustedTools, call.Name);
+            var seen = run.ConversationId == _active?.Id;
+            // One call read the way the gate reads it: the tier, whether a grant covers it, and whether that adds
+            // up to waiting. Pure, so a whole response can be judged in one pass and no second decision can drift
+            // from the first.
+            //
             // A grant buys a pass on everything except the tier that reaches past the sandbox. Left unbounded, one
             // click on 「总是允许」 would end up covering the screen and another session's first model call, and the
             // three-mode ladder would be a decoration: what decides a call would be whichever verb was clicked
@@ -3625,37 +3644,76 @@ public sealed class ChatWorkspace : IDisposable
             // excluded because a grant is <i>answering on the person's behalf</i>, which for this call is not a
             // waived permission but a fabricated result. Nobody ever said "always let me decide what the assistant
             // should do" by clicking a button on one file write.
-            var granted = risk is not (ToolRisk.SystemCommand or ToolRisk.AskUser) && (sessionGrant || appGrant);
-            var parks = !granted && ToolApprovalPolicy.RequiresApproval(mode, risk);
-            var asks = risk == ToolRisk.AskUser;
-            // Nothing to show, so nothing to wait on. Letting it through hands the call to the tool's own body,
-            // which answers with the sentence about what the model got wrong — the alternative is a card that
-            // renders an empty question and a run parked on it forever.
-            var malformedQuestion = asks
-                                    && !AskUserQuestion.TryParse(call.ArgumentsJson, out _, out _, out _);
-            if (malformedQuestion) parks = false;
-            if (risk != ToolRisk.ReadOnly)
+            CallVerdict Judge(ChatPipeline.ToolCallInfo member)
+            {
+                var risk = ChatTools.RiskOf(member.Name, member.ArgumentsJson, scope.Workspace, projects);
+                var asks = risk == ToolRisk.AskUser;
+                var sessionGrant = ToolTrust.Contains(conversation.AutoApprovedTools, member.Name);
+                var granted = risk is not (ToolRisk.SystemCommand or ToolRisk.AskUser)
+                              && (sessionGrant || ToolTrust.Contains(TrustedTools, member.Name));
+                // Nothing to show, so nothing to wait on. Letting it through hands the call to the tool's own body,
+                // which answers with the sentence about what the model got wrong — the alternative is a card that
+                // renders an empty question and a run parked on it forever.
+                var malformed = asks && !AskUserQuestion.TryParse(member.ArgumentsJson, out _, out _, out _);
+                return new CallVerdict(member, risk, asks, malformed, granted, sessionGrant,
+                    !granted && !malformed && ToolApprovalPolicy.RequiresApproval(mode, risk));
+            }
+
+            void AuditVerdict(CallVerdict verdict)
+            {
+                if (verdict.Risk == ToolRisk.ReadOnly) return;
                 // The directory rides along because the tier above the read-only ones is decided by it: a line
                 // that says "allowed-by-mode" without saying which sandbox was judged is the same mystery the
                 // card was meant to answer.
                 Audit(run.ConversationId,
-                    $"Tool gate: {(malformedQuestion ? "refused-malformed-question"
-                        : VerdictFor(parks, granted, sessionGrant))} {call.Name} · {mode} · {risk}"
-                    + $" · {scope.Workspace.WorkspaceRoot ?? "(no workspace)"}");
-            if (!parks) return (Parks: false, Preview: (string?)null, Asks: asks);
+                    $"Tool gate: {(verdict.Malformed ? "refused-malformed-question"
+                        : VerdictFor(verdict.Parks, verdict.Granted, verdict.SessionGrant))} {verdict.Call.Name}"
+                    + $" · {mode} · {verdict.Risk} · {scope.Workspace.WorkspaceRoot ?? "(no workspace)"}");
+            }
 
-            // Computed only for a call that is about to park, and frozen here: a read-only call costs no file
+            // Computed only for a call that is about to park, and frozen there: a read-only call costs no file
             // access, and a write's card has to keep showing the diff the gate saw even after a restart. The scope
             // is the request's own rather than a fresh read of the session, because a `set_workspace` earlier in
             // this same segment has already moved the persisted root while these tools still run in the one this
             // request was built with — deciding the tier from one and the execution from the other is how a
             // workspace command gets promised a directory it will not be run in.
-            return (Parks: true,
-                Preview: (string?)ToolPreviews.PreviewFor(call.Name, call.ArgumentsJson, scope.Workspace, projects),
-                Asks: asks);
+            ParkedCall Of(CallVerdict verdict) => new(verdict.Call,
+                (string?)ToolPreviews.PreviewFor(verdict.Call.Name, verdict.Call.ArgumentsJson,
+                    scope.Workspace, projects), verdict.Asks, seen);
+
+            var thisCall = Judge(call);
+            // Asked again about a call that is already on the card: a sibling of the same response raised the group,
+            // and the loop still consults the gate for every call it recorded. One decision, one audit line, one
+            // park — a second SuspendForApproval would cancel a stream that already ended, and a second attention
+            // would ask the person to notice the same question twice.
+            if (conversation.Messages.Any(turn => turn.ToolCallId == call.CallId
+                                                  && turn.ApprovalState == ChatApprovalStates.Pending))
+                return new List<ParkedCall>();
+            AuditVerdict(thisCall);
+            if (!thisCall.Parks) return null;
+
+            // This response is being parked, so the rest of it is decided in the same breath: the calls the model
+            // asked for together are answered together, and a card for one of them while another waits unstated
+            // would be a question about half of what is about to happen.
+            var group = new List<ParkedCall> { Of(thisCall) };
+            foreach (var sibling in batch)
+            {
+                if (sibling.CallId == call.CallId) continue;
+                // Written down already because a sibling raised it — this call is in that group, and a second line
+                // would read as a second decision over one verdict.
+                if (conversation.Messages.Any(turn => turn.ToolCallId == sibling.CallId
+                                                      && turn.ApprovalState == ChatApprovalStates.Pending)) continue;
+                var verdict = Judge(sibling);
+                if (!verdict.Parks) continue;
+                AuditVerdict(verdict);
+                group.Add(Of(verdict));
+            }
+
+            return group;
         }).ConfigureAwait(false);
 
-        if (!decision.Parks) return ChatPipeline.ToolGateOutcome.Allow;
+        if (waiting is null) return ChatPipeline.ToolGateOutcome.Allow;
+        if (waiting.Count == 0) return ChatPipeline.ToolGateOutcome.Pending;
 
         await ApplyOnUiAsync(() =>
         {
@@ -3663,7 +3721,8 @@ public sealed class ChatWorkspace : IDisposable
             // would disappear, and the model's request would go with it.
             _sessions.TryUpdate(run.ConversationId, opened =>
             {
-                MarkPending(opened, call.CallId, decision.Preview, run.ConversationId == _active?.Id);
+                foreach (var parked in waiting)
+                    MarkPending(opened, parked, call.BatchId);
                 // Parking asks the person for a decision, so the conversation surfaces in the list once. The
                 // tool rounds that follow the answer never move it again (see Conversation.EngagedAt).
                 opened.MarkEngaged();
@@ -3672,8 +3731,11 @@ public sealed class ChatWorkspace : IDisposable
             run.SuspendForApproval();
             Changed?.Invoke();
             RunsChanged?.Invoke(run.ConversationId);
+            // The kind the card will actually be: the calls are gathered in the order the model asked, and the
+            // first of them is the one the host renders. A question and a permission in one response take two
+            // cards in that order, because one click cannot both authorize an action and answer for a person.
             AttentionRequired?.Invoke(run.ConversationId,
-                decision.Asks ? ChatAttentionKind.UserQuestion : ChatAttentionKind.ToolApproval);
+                waiting[0].Asks ? ChatAttentionKind.UserQuestion : ChatAttentionKind.ToolApproval);
         }).ConfigureAwait(false);
         return ChatPipeline.ToolGateOutcome.Pending;
     }
@@ -3687,19 +3749,20 @@ public sealed class ChatWorkspace : IDisposable
             : granted ? sessionGrant ? "allowed-by-session-grant" : "allowed-by-app-grant"
             : "allowed-by-mode";
 
-    /// <summary>Flips a recorded call to waiting and freezes what approving it would do. Nothing is written as its
-    /// result: an unanswered call in the transcript is the record that a decision is owed, and
+    /// <summary>Flips recorded calls to waiting and freezes what approving them would do. Nothing is written as
+    /// their result: an unanswered call in the transcript is the record of a decision still owed, and
     /// <see cref="Conversation.CloseUnansweredToolCalls"/> is what turns it into a result if nobody ever makes
-    /// one.</summary>
-    private static void MarkPending(Conversation conversation, string callId, string? preview, bool seen)
+    /// one. The batch id is what lets one answer run the whole group the model asked for.</summary>
+    private static void MarkPending(Conversation conversation, ParkedCall parked, string? batchId)
     {
-        var index = conversation.IndexOfToolCall(callId);
+        var index = conversation.IndexOfToolCall(parked.Call.CallId);
         if (index < 0) return;
         conversation.Messages[index] = conversation.Messages[index] with
         {
             ApprovalState = ChatApprovalStates.Pending,
-            ApprovalPreview = preview,
-            ApprovalSeen = seen,
+            ApprovalPreview = parked.Preview,
+            ApprovalSeen = parked.Seen,
+            ApprovalBatchId = batchId,
         };
     }
 
@@ -3757,17 +3820,33 @@ public sealed class ChatWorkspace : IDisposable
 
         if (RunForDecision(conversationId, out refusalKey) is not { } run) return false;
 
+        // Which response asked for this call, and so which group this one answer settles. A call recorded before
+        // batches existed carries no id and stands as a group of one, which is exactly what it was asked as.
+        var batchId = conversation.Messages[index].ApprovalBatchId ?? callId;
+
         if (!approved)
         {
+            var refused = new List<string>();
             _sessions.TryUpdate(conversationId, opened =>
             {
-                var at = opened.IndexOfToolCall(callId);
-                opened.Messages[at] = opened.Messages[at] with { ApprovalState = ChatApprovalStates.Denied };
-                // Inserted beside the call rather than appended: the refusal answers that one question, and a
-                // model response asking for two calls leaves the other pair sitting after this one.
-                opened.AppendFunctionResult(ChatTurn.FunctionResult(callId, ToolApprovalResults.Denied, failed: true));
+                foreach (var owed in opened.UnansweredCallsOfBatch(batchId))
+                {
+                    // A question in the same response is not part of this answer: refusing the group stops its
+                    // actions, and the question is still the next thing the person is asked.
+                    if (owed.ToolName == AskUserTool.ToolName) continue;
+                    var at = opened.IndexOfToolCall(owed.ToolCallId!);
+                    if (owed.ApprovalState == ChatApprovalStates.Pending)
+                        opened.Messages[at] = opened.Messages[at] with { ApprovalState = ChatApprovalStates.Denied };
+                    // Inserted beside the call rather than appended: the refusal answers that one question, and a
+                    // model response asking for two calls leaves the other pair sitting after this one.
+                    opened.AppendFunctionResult(ChatTurn.FunctionResult(
+                        owed.ToolCallId!, ToolApprovalResults.Denied, failed: true));
+                    refused.Add(owed.ToolName ?? "tool");
+                }
             });
-            AuditApproval(conversationId, conversation.Messages[index].ToolName ?? "tool", "refused");
+            // One line per call the refusal stopped, including the ones that needed no permission of their own and
+            // were only ever held back by a sibling: refusing the group refused them, and the log says so.
+            foreach (var refusedName in refused) AuditApproval(conversationId, refusedName, "refused");
             Changed?.Invoke();
             // receivedText: no model reply follows a refusal by design, and an empty answer would otherwise be
             // reported as "the model returned nothing" — a provider bug that never happened.
@@ -3782,24 +3861,32 @@ public sealed class ChatWorkspace : IDisposable
         var grantable = IsGrantable(conversationId, toolName, conversation.Messages[index].ToolArguments);
         _sessions.TryUpdate(conversationId, opened =>
         {
-            var at = opened.IndexOfToolCall(callId);
-            var call = opened.Messages[at];
-            opened.Messages[at] = call with { ApprovalState = ChatApprovalStates.Approved };
+            foreach (var owed in opened.UnansweredCallsOfBatch(batchId))
+            {
+                if (owed.ApprovalState != ChatApprovalStates.Pending) continue;
+                // A question is not answered by an approval, same as on the refusal side above.
+                if (owed.ToolName == AskUserTool.ToolName) continue;
+                var at = opened.IndexOfToolCall(owed.ToolCallId!);
+                opened.Messages[at] = opened.Messages[at] with { ApprovalState = ChatApprovalStates.Approved };
+            }
+
             // A card answer is the person engaging with this conversation, so it takes its place by that
             // moment rather than by the model's next tool round.
             opened.MarkEngaged();
             // The session's own list stays, and stays written here rather than derived at read time: it is the
             // record that <i>this</i> conversation is the one where a person said to stop asking, and 16 sessions
-            // already on disk answer from it.
-            if (alwaysAllow && grantable && !ToolTrust.Contains(opened.AutoApprovedTools, call.ToolName ?? ""))
-                opened.AutoApprovedTools.Add(call.ToolName!);
+            // already on disk answer from it. The grant covers the call the card was opened from, never the rest
+            // of its response — 「总是允许」 is about a tool, and one click should not speak for calls nobody
+            // was shown beside it.
+            if (alwaysAllow && grantable && !ToolTrust.Contains(opened.AutoApprovedTools, toolName))
+                opened.AutoApprovedTools.Add(toolName);
         });
         // Outside the session gate: the app-wide half is a different file, with a different owner, and the registry
         // lock must not be held while the settings store is written.
         if (alwaysAllow && grantable) TrustTool(toolName);
         AuditApproval(conversationId, toolName, alwaysAllow ? "always allowed" : "allowed");
         Changed?.Invoke();
-        _ = PumpApprovedCallAsync(run, callId);
+        _ = PumpApprovedBatchAsync(run, batchId);
         return true;
     }
 
@@ -3974,91 +4061,53 @@ public sealed class ChatWorkspace : IDisposable
                is not (ToolRisk.SystemCommand or ToolRisk.AskUser);
     }
 
-    /// <summary>Runs one approved call and then answers with its result in the history.</summary>
-    private async Task PumpApprovedCallAsync(ConversationRun run, string callId)
+    /// <summary>Runs what one answered decision owes: every still-unanswered call of the response the person
+    /// answered. The model asked for those calls together and the card covered them together, so the answer is not
+    /// one call's — and a call that was held back only because a sibling was waiting on the person has to run now
+    /// rather than be asked about again later.</summary>
+    private async Task PumpApprovedBatchAsync(ConversationRun run, string batchId)
     {
-        var call = await ReadOnUiAsync<ApprovedCall?>(() =>
+        var owed = await ReadOnUiAsync(() =>
         {
             var conversation = _sessions.Peek(run.ConversationId);
-            var index = conversation?.IndexOfToolCall(callId) ?? -1;
-            if (conversation is null || index < 0) return null;
-            var turn = conversation.Messages[index];
-            return new ApprovedCall(turn.ToolName ?? "", turn.ToolArguments ?? "{}", NormalizeMode(conversation.Mode));
+            if (conversation is null) return null;
+            var mode = NormalizeMode(conversation.Mode);
+            return conversation.UnansweredCallsOfBatch(batchId)
+                .Select(turn => new ApprovedCall(turn.ToolName ?? "", turn.ToolArguments ?? "{}", mode,
+                    turn.ToolCallId ?? "", turn.ToolName == AskUserTool.ToolName))
+                .ToList();
         }).ConfigureAwait(false);
 
-        if (call is null)
+        if (owed is not { Count: > 0 })
         {
             CompleteRun(run, RunResult.Failed, true, "ChatApprovalGone", true, null);
             return;
         }
 
         run.RearmAfterApproval();
-        var result = ToolApprovalResults.Unavailable;
-        var failed = true;
         var budget = await ReadOnUiAsync(() =>
         {
             var selected = ModelFor(run.ConversationId);
             return ContextBudget.For(selected?.Provider, selected?.ModelName).Tokens;
         }).ConfigureAwait(false);
-        var scope = await ReadOnUiAsync(() => ScopeFor(run.ConversationId)).ConfigureAwait(false);
-        if (ChatTools.Find(call.Value.Name, call.Value.Mode, scope) is { } tool)
+
+        foreach (var call in owed)
         {
-            // The same bracket the loop puts around a call it lets run: an approved build is exactly as long as
-            // an unapproved one, and the deadline restarted above has nothing to measure until this comes back.
-            run.BeginTool();
-            try
-            {
-                var arguments = System.Text.Json.JsonSerializer
-                    .Deserialize<Dictionary<string, object?>>(call.Value.ArgumentsJson) ?? [];
-                // Invoked directly rather than through the model loop: the call was already made, and this is
-                // the same function the loop would have run.
-                var value = await tool.InvokeAsync(new AIFunctionArguments(arguments), run.Token).ConfigureAwait(false);
-                // Capped with the same bound the pipeline uses, so a call reads identically whether or not it
-                // needed permission first.
-                result = ToolResultCap.Apply(ChatPipeline.SerializeToolResult(value), budget);
-                failed = false;
-            }
-            catch (OperationCanceledException)
-            {
-                // Stopped while the approved call was running. The call gets no result turn, and the next
-                // reply closes it — which is the same path a restart mid-call takes.
-                CompleteRun(run, RunResult.Cancelled, run.LiveText.Length > 0, "ChatCancelled", false, null);
-                return;
-            }
-            catch (Exception ex)
-            {
-                result = "Tool failed: " + ex.Message;
-            }
-            finally
-            {
-                run.EndTool();
-            }
+            // A question nobody has answered yet. Its own card is the next thing the person sees, and writing its
+            // result from here would be answering on their behalf — the same reason no grant covers that tier.
+            if (call.Asking) continue;
+            // Read per call, not once for the group: a batch that starts by narrowing the sandbox has to run the
+            // command that follows it in the directory the first call just moved, the way the model's own loop
+            // would have. One scope for the whole group is how the second call lands somewhere nobody decided.
+            var scope = await ReadOnUiAsync(() => ScopeFor(run.ConversationId)).ConfigureAwait(false);
+            await RunApprovedCallAsync(run, call, budget, scope).ConfigureAwait(false);
+            if (run.StopRequested) return;
         }
 
-        var turn = ChatTurn.FunctionResult(callId, result, failed, TakeFrames(run.ConversationId));
-        // "批准" and not "允许": this call was answered by a person, and the daily log is the only record that
-        // keeps the two apart once the card has folded into a line.
-        run.RecordToolOutcome($"{call.Value.Name}（{(failed ? "失败" : "批准")}）");
-        await ApplyOnUiAsync(() =>
-        {
-            _sessions.TryUpdate(run.ConversationId, opened =>
-            {
-                // Beside its call, not at the tail: while this decision was pending the model's loop went on
-                // running the other calls that shared the response, so the parked call is no longer the last turn
-                // and a tail append leaves it unanswered where the provider will read it.
-                opened.AppendFunctionResult(turn);
-                // The same undo record the model loop leaves: an approved write is still the write that has to be
-                // undoable, and this path is the one a strict mode takes most often.
-                RecordUndoCopy(opened, callId, call.Value.Name, result);
-            });
-            ToolActivityChanged?.Invoke(run.ConversationId, call.Value.Name, true);
-            Changed?.Invoke();
-        }).ConfigureAwait(false);
-
-        // A second call from the same response can still be waiting on its own card. Asking the model now would
-        // put that unanswered call in front of it, and the request comes back rejected for a reason that reads
-        // like a gateway fault rather than a question nobody has answered — so the run parks again on the card
-        // that is still owed, exactly as it did on this one.
+        // A second group from the same run can still be waiting on its own card, and a question answered apart
+        // from the group leaves its call open. Asking the model now would put that unanswered call in front of it,
+        // and the request comes back rejected for a reason that reads like a gateway fault rather than a question
+        // nobody has answered — so the run parks again on whatever is still owed, exactly as it did on this one.
         var stillOwed = await ReadOnUiAsync(() =>
             _sessions.Peek(run.ConversationId)?.HasUnansweredToolCall() ?? false).ConfigureAwait(false);
         if (stillOwed)
@@ -4074,7 +4123,65 @@ public sealed class ChatWorkspace : IDisposable
         await PumpSegmentsAsync(run).ConfigureAwait(false);
     }
 
-    private readonly record struct ApprovedCall(string Name, string ArgumentsJson, string Mode);
+    /// <summary>One call of an answered batch, run for real. Its result lands beside the call it answers, not at
+    /// the tail: the rest of the response is already written below it.</summary>
+    private async Task RunApprovedCallAsync(ConversationRun run, ApprovedCall call, int budget, ChatToolScope scope)
+    {
+        var result = ToolApprovalResults.Unavailable;
+        var failed = true;
+        if (ChatTools.Find(call.Name, call.Mode, scope) is { } tool)
+        {
+            // The same bracket the loop puts around a call it lets run: an approved build is exactly as long as
+            // an unapproved one, and the deadline restarted above has nothing to measure until this comes back.
+            run.BeginTool();
+            try
+            {
+                var arguments = System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, object?>>(call.ArgumentsJson) ?? [];
+                // Invoked directly rather than through the model loop: the call was already made, and this is
+                // the same function the loop would have run.
+                var value = await tool.InvokeAsync(new AIFunctionArguments(arguments), run.Token).ConfigureAwait(false);
+                // Capped with the same bound the pipeline uses, so a call reads identically whether or not it
+                // needed permission first.
+                result = ToolResultCap.Apply(ChatPipeline.SerializeToolResult(value), budget);
+                failed = false;
+            }
+            catch (OperationCanceledException)
+            {
+                // Stopped while the approved call was running. The call gets no result turn, and the next
+                // reply closes it — which is the same path a restart mid-call takes.
+                run.EndTool();
+                CompleteRun(run, RunResult.Cancelled, run.LiveText.Length > 0, "ChatCancelled", false, null);
+                return;
+            }
+            catch (Exception ex)
+            {
+                result = "Tool failed: " + ex.Message;
+            }
+
+            run.EndTool();
+        }
+
+        var turn = ChatTurn.FunctionResult(call.CallId, result, failed, TakeFrames(run.ConversationId));
+        // "批准" and not "允许": this call was answered by a person, and the daily log is the only record that
+        // keeps the two apart once the card has folded into a line.
+        run.RecordToolOutcome($"{call.Name}（{(failed ? "失败" : "批准")}）");
+        await ApplyOnUiAsync(() =>
+        {
+            _sessions.TryUpdate(run.ConversationId, opened =>
+            {
+                opened.AppendFunctionResult(turn);
+                // The same undo record the model loop leaves: an approved write is still the write that has to be
+                // undoable, and this path is the one a strict mode takes most often.
+                RecordUndoCopy(opened, call.CallId, call.Name, result);
+            });
+            ToolActivityChanged?.Invoke(run.ConversationId, call.Name, true);
+            Changed?.Invoke();
+        }).ConfigureAwait(false);
+    }
+
+    private readonly record struct ApprovedCall(
+        string Name, string ArgumentsJson, string Mode, string CallId, bool Asking);
 
     /// <summary>What a revert made of the copy, or why it did not try. <see cref="RefusalKey"/> is set instead of
     /// a verdict when the session itself could not be touched — a transcript must not be rewritten while a reply
@@ -4772,6 +4879,11 @@ public sealed class ChatWorkspace : IDisposable
                      ?? ChatClientFactory.Create(request.Provider, request.ModelName, reasoning,
                          onRetryWait: (attempt, delay) => NoteRetryWait(run, attempt, delay));
         var pipeline = new ChatPipeline(client, reasoning);
+        // How many tool brackets each response has opened, counted per batch. A batch that parks never runs, and
+        // the calls its mode let through opened their bracket on the way to that decision: nothing closes them on
+        // the model loop's behalf, and a run still holding one has its inactivity deadline disarmed with no tool
+        // inside it — which is the exact failure the bracket's own comment says it must not become.
+        var brackets = new Dictionary<string, int>(StringComparer.Ordinal);
         return pipeline.SendAsync(
             request.Provider,
             request.History,
@@ -4780,13 +4892,26 @@ public sealed class ChatWorkspace : IDisposable
             request.Tools,
             declaredTools: request.DeclaredTools,
             images: request.Images,
-            gate: async (info, _) =>
+            gate: async (info, batch, _) =>
             {
                 // The bracket opens on the verdict rather than in onToolStarted: that event fires before the gate,
                 // and a call that parks for approval never runs at all — a deadline stopped for a person who is
                 // still deciding would be stopped with nobody left to restart it.
-                var verdict = await GateToolCallAsync(run, info, request.Scope).ConfigureAwait(false);
-                if (verdict == ChatPipeline.ToolGateOutcome.Allow) run.BeginTool();
+                var verdict = await GateToolCallAsync(run, info, batch, request.Scope).ConfigureAwait(false);
+                var group = info.BatchId ?? info.CallId;
+                if (verdict == ChatPipeline.ToolGateOutcome.Allow)
+                {
+                    run.BeginTool();
+                    brackets[group] = brackets.GetValueOrDefault(group) + 1;
+                    return verdict;
+                }
+
+                if (verdict == ChatPipeline.ToolGateOutcome.Pending && brackets.Remove(group, out var held))
+                    // This response is not running, so the calls it let through ahead of the one that asked are
+                    // not running either. Their brackets opened at their own verdict and nothing else will close
+                    // them; releasing them here is what keeps the deadline measuring the wait for the model rather
+                    // than a tool that stopped existing when the card went up.
+                    for (var index = 0; index < held; index++) run.EndTool();
                 return verdict;
             },
             onToolStarted: async info =>
@@ -4802,7 +4927,7 @@ public sealed class ChatWorkspace : IDisposable
                 // whichever call happened to be streamed first.
                 var said = run.LiveText;
                 var call = ChatTurn.FunctionCall(info.CallId, info.Name, info.ArgumentsJson,
-                    said.Length > 0 ? said : null, info.Reasoning);
+                    said.Length > 0 ? said : null, info.Reasoning, info.BatchId);
                 await ApplyOnUiAsync(() =>
                 {
                     run.BeginSegment();
@@ -4825,11 +4950,16 @@ public sealed class ChatWorkspace : IDisposable
                 // The tool is off the run: the deadline counts again from now, and from before the UI hop for the
                 // same reason the start gives it.
                 run.EndTool();
+                if (brackets.TryGetValue(info.BatchId ?? info.CallId, out var held) && held > 0)
+                    brackets[info.BatchId ?? info.CallId] = held - 1;
                 await ApplyOnUiAsync(() =>
                 {
                     _sessions.TryUpdate(run.ConversationId, opened =>
                     {
-                        opened.Append(turn);
+                        // Beside its call rather than at the tail: every call of a response is recorded before any
+                        // of them runs, so the call this answers is usually not the last turn by the time the
+                        // answer lands. Same rule the human-answered path already follows.
+                        opened.AppendFunctionResult(turn);
                         RecordUndoCopy(opened, info.CallId, info.Name, result);
                     });
                     ToolActivityChanged?.Invoke(run.ConversationId, info.Name, true);

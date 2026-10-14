@@ -702,6 +702,10 @@ public static class HubTexts
         // the composer rather than in a row the person has to scroll back to. The title names the tool because
         // "run file_write" is not the question — what it writes is, and that is the body.
         ["ChatApprovalWantsFormat"] = ("{0} 想要执行一个操作", "{0} wants to run an action"),
+        // A model response can ask for several calls at once and the person answers that group as one, so the
+        // subject of the title is the group, not a tool: naming one of them would read as a card about one call
+        // while the buttons below it decide for all of them.
+        ["ChatApprovalBatchWantsFormat"] = ("助手想要执行 {0} 个操作", "The assistant wants to run {0} actions"),
         ["ChatApprovalWaitingLine"] = ("{0} 正在等你批准，决定在输入区", "{0} is waiting for your decision in the composer"),
         ["ChatApprovalMoreWaitingFormat"] = ("还有 {0} 项在等待", "{0} more waiting"),
         ["ChatApprovalExpand"] = ("展开完整内容", "Expand"),

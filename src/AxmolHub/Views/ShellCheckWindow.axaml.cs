@@ -2652,7 +2652,8 @@ public partial class ShellCheckWindow : Window
                   && newResults.Count(text => text.Contains("Spawned session", StringComparison.Ordinal)) == 1
                   && newResults.Any(text => text.Contains("one allowed child", StringComparison.Ordinal)),
                 "开着开关时一次回答只创建一个子会话，第二次派生被每条回答一个的上限挡住（实际 "
-                + children.Count + " 条，结果 " + newResults.Count + " 条）");
+                + children.Count + " 条，结果 " + newResults.Count + " 条：「"
+                + string.Join(" / ", newResults) + "」）");
             if (children.Count == 1)
             {
                 await WaitForRunAsync(chat, children[0]);
@@ -3607,7 +3608,9 @@ public partial class ShellCheckWindow : Window
                   && panel.ActivityRowDetailTextForCheck(0) == openedDetail,
                 "切到别的会话再切回来（整段重建），开过的组与行按人留下的选择恢复，没开过的照旧收起（第一折 "
                 + panel.ActivityGroupExpandedForCheck(0) + "，第二折 " + panel.ActivityGroupExpandedForCheck(1)
-                + "，行 0 " + panel.ActivityRowExpandedForCheck(0) + "）");
+                + "，行 0 " + panel.ActivityRowExpandedForCheck(0) + "，行 1 "
+                + panel.ActivityRowExpandedForCheck(1) + "，行 " + panel.ActivityRowsForCheck.Length
+                + " 条，详情「" + panel.ActivityRowDetailTextForCheck(0) + "」对照「" + openedDetail + "」）");
             // ── the run's aggregate count is the way into the pane ──
             // The chip only exists when a write parked and froze a preview, so this fixture is the ask tier: the
             // number on the group head is the same diff the approval card just asked about, and pressing it has to
@@ -6278,10 +6281,10 @@ public partial class ShellCheckWindow : Window
                 + escapeOnCardAnswered + "）");
 
             // One response, two calls, and the sandbox moving between them. Narrowing it to a folder it already
-            // holds runs free; the command that follows still parks — and the card has to name the directory that
-            // command will really start in. Read off the session rather than off the request, the preview would
-            // promise the nested folder while the shell opened in the outer one, which is exactly the drift the
-            // gate's scope exists to prevent.
+            // holds runs free; the command that follows still parks — and the whole response waits on that one
+            // card. Parking cancels the request's token, so a sibling that had already started would be running
+            // under a cancellation nobody granted: the call the mode lets through is held with the one that asked,
+            // the card names both, and the answer either starts the pair or stops it.
             System.IO.Directory.CreateDirectory(nested);
             movedClient.Batch =
             [
@@ -6294,18 +6297,38 @@ public partial class ShellCheckWindow : Window
             var movedCallId = await WaitForPendingCallAsync(movedSession);
             var movedTurn = movedSession.Messages.LastOrDefault(turn => turn.ToolCallId == movedCallId);
             Check(movedCallId is not null
-                  && movedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 1
+                  && movedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 0
                   && movedSession.Messages.All(turn => turn.ToolName != "set_workspace" || turn.ApprovalState is null)
                   && movedTurn?.ApprovalState == ChatApprovalStates.Pending
+                  && panel.PendingApprovalCardsForCheck == 1
+                  && panel.ApprovalCardTextForCheck.Contains("set_workspace", StringComparison.Ordinal)
                   && movedTurn.ApprovalPreview?.Contains(workspace, StringComparison.Ordinal) == true
                   && movedTurn.ApprovalPreview?.Contains(nested, StringComparison.Ordinal) != true
-                  // The session did move underneath the request: without this half of the pair the cell would be
-                  // reading a fixture where nothing drifts, and the gate could pass it while re-reading the root.
-                  && WorkspacePaths.CanonicalRoot(movedSession.WorkspaceRoot) == WorkspacePaths.CanonicalRoot(nested),
-                "同一段里先收窄沙箱再跑命令：收窄免批、命令仍挂起，卡片点名的是这条命令真正会起在的旧目录（预览「"
-                + (movedTurn?.ApprovalPreview ?? "").Replace('\n', '·') + "」，会话现根 " + movedSession.WorkspaceRoot + "）");
+                  // The read the mode let through opened its tool bracket on the way to this decision and then
+                  // never ran, so the park has to hand it back: a run still holding one has its inactivity
+                  // deadline disarmed around a tool that stopped existing when the card went up.
+                  && chat.RunFor(movedSession.Id) is { IsToolRunning: false }
+                  // The directory has not moved yet, which is the other half of the pair this cell used to read:
+                  // the free call waits with the one that asked, so nothing has run and nothing has shifted.
+                  && WorkspacePaths.CanonicalRoot(movedSession.WorkspaceRoot)
+                     == WorkspacePaths.CanonicalRoot(workspace),
+                "同一段里先收窄沙箱再跑命令：两条一起挂起等一张卡，卡片点名两个调用，而沙箱还在原处（预览「"
+                + (movedTurn?.ApprovalPreview ?? "").Replace('\n', '·') + "」，会话现根 "
+                + movedSession.WorkspaceRoot + "）");
             chat.TryResolveApproval(movedSession.Id, movedCallId ?? "", approved: false, alwaysAllow: false, out _);
             await WaitForIdleAsync(chat);
+            // Refusing the group refused both: the command is answered with the refusal, and the call that needed
+            // no permission of its own is answered too rather than left owed — a transcript with an unanswered
+            // call in it is a request the provider rejects.
+            Check(movedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 2
+                  && movedSession.Messages.All(turn => turn.Role != ChatRoles.Assistant
+                      || turn.ToolCallId is not { Length: > 0 } id
+                      || movedSession.Messages.Any(answer => answer.Role == ChatRoles.Tool
+                          && answer.ToolCallId == id))
+                  && WorkspacePaths.CanonicalRoot(movedSession.WorkspaceRoot)
+                     == WorkspacePaths.CanonicalRoot(workspace),
+                "拒绝那一张卡就停下整批：两条都有了结果，免批那条也没偷偷跑（结果 "
+                + movedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) + " 条）");
 
             // The other half of 「总是允许」: a grant is supposed to outlive the session that made it, because a new
             // task used to start asking from zero. Asserted across two sessions — the one that clicks and a peer
@@ -7998,6 +8021,13 @@ public partial class ShellCheckWindow : Window
     /// <summary>Asks for one tool call per <see cref="CallsRemaining"/> and then answers. The answer honours
     /// cancellation, because parking ends a turn by cancelling the stream — a fixture that ignored the token
     /// would keep answering a turn production stopped, and the check would pass anyway.</summary>
+    /// <summary>A call id unique across the whole suite. A result is filed beside the turn carrying its own id, so
+    /// two answers in one session that reuse <c>call-1</c> would land the second answer on the first call — a
+    /// fixture may not mint ids the way a gateway never does. Take a prefix, get an id.</summary>
+    private static int _callSequence;
+    private static string NextCallId(string prefix)
+        => prefix + "-" + Interlocked.Increment(ref _callSequence);
+
     private sealed class ApprovalChatClient : Microsoft.Extensions.AI.IChatClient
     {
         public const string Answer = "批准之后接着说的话";
@@ -8078,7 +8108,7 @@ public partial class ShellCheckWindow : Window
                 var batch = new List<Microsoft.Extensions.AI.AIContent>();
                 for (var index = 0; index < Batch.Count; index++)
                     batch.Add(new Microsoft.Extensions.AI.FunctionCallContent(
-                        $"call-{Requests}-{index}", Batch[index].Name, Batch[index].Arguments));
+                        NextCallId($"call-{Requests}-{index}"), Batch[index].Name, Batch[index].Arguments));
                 Batch.Clear();
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant, batch);
@@ -8089,7 +8119,7 @@ public partial class ShellCheckWindow : Window
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant,
                     [new Microsoft.Extensions.AI.FunctionCallContent(
-                        "call-" + Requests, ToolName,
+                        NextCallId("call-" + Requests), ToolName,
                         ArgumentsByCall is { } byCall ? byCall(Requests) : Arguments)]);
             }
             else
@@ -8273,7 +8303,7 @@ public partial class ShellCheckWindow : Window
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant,
                     [new Microsoft.Extensions.AI.FunctionCallContent(
-                        $"spawn-{_calls}", "spawn_session", new Dictionary<string, object?>
+                        NextCallId($"spawn-{_calls}"), "spawn_session", new Dictionary<string, object?>
                         {
                             ["task"] = $"把两个断言文件读完，只回 5 行结论，然后发回派生你的那条会话（{phase}）",
                             ["mode"] = "agent",
@@ -8324,7 +8354,7 @@ public partial class ShellCheckWindow : Window
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant,
                     [new Microsoft.Extensions.AI.FunctionCallContent(
-                        "call-ui", "get_projects", new Dictionary<string, object?>())]);
+                        NextCallId("call-ui"), "get_projects", new Dictionary<string, object?>())]);
             }
             else
             {
@@ -10311,7 +10341,7 @@ public partial class ShellCheckWindow : Window
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant,
                     [new Microsoft.Extensions.AI.FunctionCallContent(
-                        "peer-" + index, call.Tool, call.Arguments)]);
+                        NextCallId("peer-" + index), call.Tool, call.Arguments)]);
             }
             else
             {

@@ -5213,7 +5213,7 @@ if (args.Contains("--check-ai-tool-policy"))
                        gateProvider,
                        [ChatTurn.User("write a file")],
                        tools: [gatedFunction],
-                       gate: (info, _) =>
+                       gate: (info, _, _) =>
                        {
                            order.Add("gate:" + info.Name);
                            return Task.FromResult(ChatPipeline.ToolGateOutcome.Deny);
@@ -5256,7 +5256,7 @@ if (args.Contains("--check-ai-tool-policy"))
                            gateProvider,
                            [ChatTurn.User("write a file")],
                            tools: [gatedFunction],
-                           gate: (_, _) =>
+                           gate: (_, _, _) =>
                            {
                                parkCancellation.Cancel();
                                return Task.FromResult(ChatPipeline.ToolGateOutcome.Pending);

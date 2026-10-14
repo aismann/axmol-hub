@@ -119,6 +119,12 @@ public static class ToolApprovalResults
     /// <summary>Never ran because a newer message came in first.</summary>
     public const string Superseded = "This call was not executed: a newer message superseded it.";
 
+    /// <summary>Never ran because the turn ended on a call ahead of it, which is the spin guard stopping the loop
+    /// after a second identical refusal. A response asking for several calls has all of them recorded before any of
+    /// them runs, so a call left without an answer is an assistant turn the provider rejects whole; this is the
+    /// sentence that closes it, and it says <i>why</i> nothing ran, which "superseded" would get wrong.</summary>
+    public const string Abandoned = "This call was not executed: the turn ended before it.";
+
     /// <summary>The tool is gone — renamed or dropped between the request and the approval.</summary>
     public const string Unavailable = "This tool is no longer available, so the approved call was not executed.";
 

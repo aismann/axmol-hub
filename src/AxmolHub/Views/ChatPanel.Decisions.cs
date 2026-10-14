@@ -227,8 +227,15 @@ public partial class ChatPanel
         string? callId = null;
         var planIndex = -1;
         ChatTurn? pendingCall = null;
+        List<ChatTurn>? pendingGroup = null;
         if (conversation is not null)
         {
+            // A call with its result anywhere in the transcript is settled business, whichever slot the result
+            // sits in; the group is about what still has to happen, not about what is out of order.
+            var answered = conversation.Messages
+                .Where(other => other.Role == ChatRoles.Tool && other.ToolCallId is { Length: > 0 })
+                .Select(other => other.ToolCallId!)
+                .ToHashSet(StringComparer.Ordinal);
             for (var index = 0; index < conversation.Messages.Count; index++)
             {
                 var turn = conversation.Messages[index];
@@ -238,6 +245,20 @@ public partial class ChatPanel
                 if (turn.ApprovalState != ChatApprovalStates.Pending || callId is not null) continue;
                 callId = turn.ToolCallId;
                 pendingCall = turn;
+                // One card for the response, not one per call. The group is every call of it still owed an answer,
+                // because that is what the click starts: a call the mode let through is held back only while its
+                // sibling waits, and a card naming one of two would be a promise about half of what is about to
+                // run. A question is not part of it — nobody authorizes somebody else's answer, so it keeps its own
+                // card and its own words. A call recorded before batches existed is a group of one.
+                var batchId = turn.ApprovalBatchId ?? turn.ToolCallId;
+                pendingGroup = turn.ToolName == AskUserTool.ToolName
+                    ? [turn]
+                    : conversation.Messages
+                        .Where(other => other.Role == ChatRoles.Assistant && other.ToolCallId is { Length: > 0 } id
+                                        && !answered.Contains(id)
+                                        && (other.ApprovalBatchId ?? other.ToolCallId) == batchId
+                                        && other.ToolName != AskUserTool.ToolName)
+                        .ToList();
             }
         }
 
@@ -263,7 +284,7 @@ public partial class ChatPanel
                 ? BuildPlanReviewHost(conversation.Id, planIndex)
                 : asks
                     ? BuildQuestionCard(conversation.Id, callId!, pendingCall!)
-                    : BuildToolApprovalCard(conversation.Id, callId!, pendingCall!);
+                    : BuildToolApprovalCard(conversation.Id, callId!, pendingCall!, pendingGroup!);
             _planSelectedOption = ChatPlanStates.Approve;
             _questionSelectedLetter = null;
             MarkPlanSelection();
@@ -312,15 +333,27 @@ public partial class ChatPanel
     /// The question, its frozen evidence, and its answers. The title names the tool because "run file_write"
     /// is not the decision — what it writes is, and that is the body. The risk tier picks the glyph because the
     /// tier is what makes this call ask at all.
+    ///
+    /// <para><paramref name="group"/> is every call still waiting from the one model response that asked for the
+    /// card, which is the unit the person is answering: a provider may ask for several tools in a single reply, and
+    /// one click either runs that group or stops it. A group of one renders exactly the card this used to be.</para>
     /// </summary>
-    private Control BuildToolApprovalCard(string conversationId, string callId, ChatTurn turn)
+    private Control BuildToolApprovalCard(string conversationId, string callId, ChatTurn turn,
+        IReadOnlyList<ChatTurn> group)
     {
         // Not a StackPanel: the host clips at its own MaxHeight and the detail block grows past that on expand, so
         // the middle row has to be the one that gives way. A star row takes whatever the fixed rows leave, which
         // keeps the answer buttons inside the clip at every height — the footer is the part that must be reachable.
         var card = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto,Auto") };
 
-        var risk = _chat.RiskFor(conversationId, turn.ToolName ?? "", turn.ToolArguments);
+        var risks = group
+            .Select(member => _chat.RiskFor(conversationId, member.ToolName ?? "", member.ToolArguments))
+            .ToList();
+        // The header carries the worst tier in the group, because that is what the answer agrees to: a card for two
+        // writes and a screen capture has to read like a screen capture. Each row keeps its own evidence below.
+        var risk = risks.Contains(ToolRisk.SystemCommand) ? ToolRisk.SystemCommand
+            : risks.Contains(ToolRisk.WorkspaceWrite) ? ToolRisk.WorkspaceWrite
+            : _chat.RiskFor(conversationId, turn.ToolName ?? "", turn.ToolArguments);
         var title = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
         var glyph = new Path
         {
@@ -341,8 +374,13 @@ public partial class ChatPanel
         title.Children.Add(new TextBlock
         {
             Classes = { "approval-title" },
-            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ChatApprovalWantsFormat"), turn.ToolName ?? ""),
+            // The tool's name when there is one thing to say, the count when the model asked for several: the
+            // decision is about the group, and the rows beneath it name the parts.
+            Text = group.Count == 1
+                ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("ChatApprovalWantsFormat"), turn.ToolName ?? "")
+                : string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("ChatApprovalBatchWantsFormat"), group.Count),
         });
         Grid.SetColumn(title.Children[1], 1);
         Grid.SetRow(title, 0);
@@ -351,8 +389,22 @@ public partial class ChatPanel
         // The evidence, bounded: a 400-line diff must not push the transcript out of the window, and the input box
         // under the card must not be pushed out either. Past twelve lines the block says so and offers the rest.
         var detail = new StackPanel { Spacing = 4 };
-        AddApprovalDetail(detail, "ChatApprovalArguments", turn.ToolArguments);
-        AddApprovalDetail(detail, "ChatApprovalChangePreview", turn.ApprovalPreview);
+        var longestPreview = 0;
+        foreach (var member in group)
+        {
+            // Named per member only when the card has more than one to tell apart; a single call says its own name
+            // in the title already, and repeating it under the title is the second label the charter forbids.
+            if (group.Count > 1)
+                detail.Children.Add(new TextBlock
+                {
+                    Classes = { "approval-label" },
+                    Text = member.ToolName ?? "",
+                });
+            AddApprovalDetail(detail, "ChatApprovalArguments", member.ToolArguments);
+            AddApprovalDetail(detail, "ChatApprovalChangePreview", member.ApprovalPreview);
+            longestPreview = Math.Max(longestPreview, (member.ApprovalPreview ?? "").Split('\n').Length);
+        }
+
         var scroll = new ScrollViewer
         {
             Name = "ApprovalDetailScroll",
@@ -365,8 +417,9 @@ public partial class ChatPanel
         Grid.SetRow(scroll, 1);
         card.Children.Add(scroll);
 
-        var previewLines = (turn.ApprovalPreview ?? "").Split('\n').Length;
-        if (previewLines > ApprovalExpandThreshold)
+        // One number for the whole card, and the ceiling it measures against is the scroll's own: a group whose
+        // evidence does not fit has to say so once, the same way one write's diff does.
+        if (longestPreview > ApprovalExpandThreshold)
         {
             var expand = new ToggleButton
             {
@@ -392,7 +445,9 @@ public partial class ChatPanel
         var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0) };
         // "Always allow" renamed to its consequence: the grant is app-wide now, and the bare word promised more
         // than it does. It is not offered on the tier that reaches past the sandbox, because a button that changed
-        // nothing is a button that teaches the ladder is decoration — the gate ignores a grant on that tier.
+        // nothing is a button that teaches the ladder is decoration — the gate ignores a grant on that tier. And it
+        // is not offered on a group, because a grant is about one tool while the card is about several: clicking it
+        // here would stop future questions for tools the person has not seen one at a time.
         var secondary = new StackPanel
         {
             Name = "ApprovalSecondaryActions",
@@ -400,7 +455,7 @@ public partial class ChatPanel
             Spacing = 4,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        if (risk != ToolRisk.SystemCommand)
+        if (group.Count == 1 && risk != ToolRisk.SystemCommand)
         {
             var always = new Button
             {
