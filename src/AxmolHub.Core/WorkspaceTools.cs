@@ -39,6 +39,12 @@ namespace AxmolHub.Core;
 /// that on the call's own turn. The same reason <paramref name="RecordFrames"/> exists: a tool body never learns its
 /// call id, and the turn is written by the app. Reported only after the bytes are on disk, which is what makes the
 /// number a fact about a change that happened rather than about an edit that was attempted.</param>
+/// <param name="AskAboutStalledProcess">The question the host puts to the user when a command goes silent while it
+/// is still running, given the live process and the command line the card has to name. Hub does not end a process on
+/// its own initiative — keeping it, leaving it alone, or stopping it and running again is the person's call, and this
+/// is where that call is asked for and answered. Null in a scope with nobody to ask (a self-check, a tool run outside
+/// a window), and a stall on that road still ends the process, because "nobody is watching" cannot also mean
+/// "nothing is stopping it".</param>
 public sealed record WorkspaceToolScope(
     string? WorkspaceRoot,
     WorkspaceGuards Guards,
@@ -54,7 +60,8 @@ public sealed record WorkspaceToolScope(
     WebBridge? Web = null,
     IReadOnlyList<WorkspaceProject>? Projects = null,
     Func<string, IDisposable?>? TakeChangeGate = null,
-    Action<ChangeLineCounts>? RecordChangeLines = null)
+    Action<ChangeLineCounts>? RecordChangeLines = null,
+    Func<StalledProcess, string, Task<StalledProcessFate>>? AskAboutStalledProcess = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
@@ -217,8 +224,10 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                  + "/bin/sh when pwsh is not installed.")]
     public async Task<string> RunCommand(
         [Description("A single command line, for example: cmake --build build --config Debug")] string command,
-        [Description("How many seconds of silence end the command, up to 900. It is not a total time limit: a "
-                     + "build that keeps printing may run far longer than this.")]
+        [Description("How many seconds of silence make Hub stop waiting and ask the user what to do with the "
+                     + "command — up to 900. It is not a total time limit and it does not end the process: a build "
+                     + "that keeps printing may run far longer than this, and a quiet one is left running until the "
+                     + "user says otherwise.")]
         int timeout_seconds = DefaultCommandTimeoutSeconds,
         CancellationToken cancellationToken = default)
     {
@@ -259,7 +268,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var root = Path.GetFullPath(context.WorkspaceRoot!);
         var seconds = Math.Clamp(timeout_seconds, 1, MaxCommandTimeoutSeconds);
         var header = $"shell: {shell.Label} · cwd: {root}";
-        var runner = new ProcessRunner(line => context.Log?.Write(line));
+        // A host that can ask is the only host that gets to leave a process alive: the runner's stall road forks on
+        // this, so a scope with no seam behaves exactly as it always did and no command is ever left running with
+        // nobody able to decide about it.
+        var runner = new ProcessRunner(line => context.Log?.Write(line))
+        {
+            AdoptOnIdle = context.AskAboutStalledProcess is not null,
+        };
 
         ProcessResult result;
         try
@@ -274,6 +289,10 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         {
             // The user stopped the run. Surfacing it as a tool result would answer a cancellation with more text.
             throw;
+        }
+        catch (StalledProcessException alive)
+        {
+            return await DecideStalledAsync(command, header, alive, cancellationToken).ConfigureAwait(false);
         }
         catch (IdleTimeoutException stalled)
         {
@@ -311,16 +330,155 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var output = Shaped(result.Output, result.Error);
         var body = $"{header} · exit: {result.ExitCode}{Environment.NewLine}{output}";
         if (result.ExitCode != 0 && BuildCommandGrades.IsBuild(command))
-            // Only for a build: a failing `ls` does not need a lecture, and a sentence that lectures about everything
-            // gets skimmed for the one case where it is true. A compile that stopped partway leaves some outputs new
-            // and some stale, and the two halves are indistinguishable from the exit code alone — so the next build
-            // is the user's call, not a retry with a different flag.
+            // Only for a build: a failing `ls` does not need a note, and a note attached to everything gets skimmed
+            // for the one case where it is true. Reading the compiler and building again is the work — the sentence
+            // exists for the one way out of a failed build that destroys something a later approval cannot put back,
+            // which is deleting what is already there.
             return body + Environment.NewLine
                    + "The build failed, which can leave the tree half new: outputs from before this run and outputs "
-                   + "from it are now mixed. Do not retry it with changed flags and do not delete anything to fix "
-                   + "it. Read what the compiler said, and ask the user before running another build.";
+                   + "from it are now mixed. Fix what the compiler reported and build again as usual; do not clear "
+                   + "or delete the build directory to get around it — that is the part the user has to approve.";
         return body;
     }
+
+    /// <summary>
+    /// What happens to a command that stopped producing output while it is still running, now that Hub does not end
+    /// it on its own initiative. The question went out through the host; this acts on the answer, and every branch
+    /// here is a decision somebody made — which is the point of the whole road.
+    ///
+    /// <para>The handle stays alive on purpose, so the exit code is still readable when the process finishes: a
+    /// command that ends while the question is open has an answer, not a guess. Dropping it (<c>Release</c>) never
+    /// touches the process — that is what "leave it running" means.</para>
+    /// </summary>
+    private async Task<string> DecideStalledAsync(string command, string header, StalledProcessException error,
+        CancellationToken cancellationToken)
+    {
+        var stalled = new StalledProcess(error);
+        var seconds = (int)stalled.SilentFor.TotalSeconds;
+
+        // A question nobody needs must not be asked. The gap between the stall and this line is where a build that
+        // was merely slow finishes, and a card about a finished command is a card with nothing left to decide.
+        if (stalled.HasExited)
+            return await FinishedQuietlyAsync(stalled, header, asked: false).ConfigureAwait(false);
+
+        var builds = BuildCommandGrades.IsBuild(command);
+        StalledProcessFate fate;
+        try
+        {
+            fate = await context.AskAboutStalledProcess!(stalled, command).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The run itself was stopped. That is the user's word about this process too — "no more of this" — and
+            // leaving it running behind a cancelled run would be the invisible half of exactly what they stopped.
+            stalled.Stop();
+            stalled.Release();
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Nobody could be reached. A live process with no card, no watcher and no owner is the collision this
+            // rule exists to prevent, so the fallback ends it — and says plainly that Hub could not ask, rather than
+            // pretending an answer arrived.
+            var survived = !stalled.Stop();
+            var printed = stalled.Snapshot();
+            stalled.Release();
+            return $"{header}{Environment.NewLine}The command went silent for {seconds}s and Hub could not reach "
+                   + $"the user to ask about it ({ex.Message}), so it stopped the process."
+                   + (survived ? " It was still running after the kill and may still hold files in the workspace." : "")
+                   + Environment.NewLine + Shaped(printed.Output, printed.Error)
+                   + Environment.NewLine + "Do not run it again or clear anything first; tell the user what happened.";
+        }
+
+        switch (fate)
+        {
+            case StalledProcessFate.Exited:
+                // The host saw it finish and withdrew the question. Nothing was decided about a process that had
+                // already gone, and the result says so — a person who reads 「用户选择」 here is being told a lie.
+                return await FinishedQuietlyAsync(stalled, header, asked: true).ConfigureAwait(false);
+
+            case StalledProcessFate.KeepWaiting:
+                // No ceiling. The person said wait, so deciding when waiting has gone on long enough stops being
+                // Hub's call to make; the run's own cancellation is the only thing that ends it early, and that is
+                // another decision they will have made out loud.
+                try
+                {
+                    await stalled.Exited.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    stalled.Stop();
+                    stalled.Release();
+                    throw;
+                }
+
+                var waited = await stalled.Drain(ProcessRunner.DrainGrace).ConfigureAwait(false);
+                var waitText = FinishedResult(stalled, header, waited);
+                return waitText + Environment.NewLine
+                       + $"The command went quiet for {seconds}s and the user chose to keep waiting rather than stop "
+                       + "it. That wait is over; the result above is the whole run.";
+
+            case StalledProcessFate.LeaveItRunning:
+                {
+                    // Let go of the handle, not the process. Hub also stops holding the change gate for it, which is
+                    // what makes this answer dangerous and what makes the sentence below necessary rather than polite:
+                    // the next build — the user's own or the model's — can collide with something Hub just walked away
+                    // from, and nobody should discover that from a compiler error.
+                    var left = stalled.Snapshot();
+                    stalled.Release();
+                    return $"{header}{Environment.NewLine}The user chose not to wait for this command and not to stop "
+                           + "it. It is still running, Hub is no longer watching it and no longer holds the change "
+                           + "gate for it, so it may still be writing to the workspace. What it printed so far:"
+                           + Environment.NewLine + Shaped(left.Output, left.Error)
+                           + (builds
+                               ? Environment.NewLine + "Before running another build or clearing anything, tell the "
+                                 + "user this one may still be going and ask what they want."
+                               : Environment.NewLine + "Do not assume this command failed; it was left running on "
+                                 + "purpose. Ask the user before repeating it.");
+                }
+
+            default:
+                {
+                    // Kill, then run the same command once more. The kill is the runner's own (tree, bounded wait,
+                    // honest survival report); the retry is a fresh shell exactly as if the model had asked again,
+                    // because that is what the user approved. A retry that goes quiet again asks again rather than
+                    // looping here — every extra round costs a human click, which is what keeps it bounded.
+                    var survived = !stalled.Stop();
+                    stalled.Release();
+                    var again = await RunInShellAsync(command, seconds, cancellationToken).ConfigureAwait(false);
+                    return (survived
+                        ? $"{header}{Environment.NewLine}The user asked Hub to stop the silent command and run it "
+                          + "again. It was still running after the kill, so the new run may be going alongside it; "
+                          + "read the output below with that in mind."
+                        : $"{header}{Environment.NewLine}The user asked Hub to stop the silent command and run it "
+                          + "again. The earlier run was ended first.")
+                        + Environment.NewLine + again;
+                }
+        }
+    }
+
+    /// <summary>The command finished without anybody deciding anything — either in the breath between the stall and
+    /// the question, or while the question was open. Both roads take the second: the exit code and the full output
+    /// are what the model was owed, and there is no choice to report.</summary>
+    private async Task<string> FinishedQuietlyAsync(StalledProcess stalled, string header, bool asked)
+    {
+        var final = await stalled.Drain(ProcessRunner.DrainGrace).ConfigureAwait(false);
+        var result = FinishedResult(stalled, header, final);
+        return result + Environment.NewLine
+               + (asked
+                    ? "The command finished on its own while Hub was asking what to do about the silence. Nothing was "
+                      + "stopped, and no choice was made about it."
+                    : "The command went quiet, then finished on its own before Hub had anything to ask about. Nothing "
+                      + "was stopped.");
+    }
+
+    /// <summary>The ordinary result shape — shell, directory, exit code, head-and-tail output — reused for a stalled
+    /// command that turned out to have finished, because the model is owed the same facts as for any other run. An
+    /// exit code that cannot be read is reported as unknown rather than guessed at zero.</summary>
+    private string FinishedResult(StalledProcess stalled, string header,
+        (string Output, string Error) final)
+        => $"{header} · exit: {(stalled.ExitCode.HasValue ? stalled.ExitCode.ToString() : "unknown (Hub could not read it)")}"
+           + $"{Environment.NewLine}{Shaped(final.Output, final.Error)}";
 
     [Description("Set the directory this session's file and command tools are confined to. Nothing outside it can "
                  + "be read, written or run in. Any folder works: it does not have to be a git repository, and it "

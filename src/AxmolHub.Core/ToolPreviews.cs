@@ -89,17 +89,21 @@ public static class ToolPreviews
         var timeout = arguments.TryGetValue("timeout_seconds", out var seconds) && seconds.TryGetInt32(out var value)
             ? value
             : WorkspaceTools.DefaultCommandTimeoutSeconds;
-        var head = $"{shell.Label} · {root} · idle timeout {timeout}s";
+        var head = $"{shell.Label} · {root} · Hub asks after {timeout}s of silence";
         var grade = GitCommandGrades.Grade(Text(arguments, "command"));
-        // The rebuild line is first because the tier is decided in that order, and it answers the same doubt the git
-        // line answers: a person on 自动审批 who watches `cmake --build` park will read the card as a bug in the
-        // mode unless it says what is at stake — the tree, and derived state no later approval can put back.
-        var flag = BuildCommandGrades.IsBuild(Text(arguments, "command"))
-            ? "\nrebuild · compiles into this directory, or removes what a build already wrote"
+        var build = BuildCommandGrades.Grade(Text(arguments, "command"));
+        // One line, named for the half that makes this card exist. A line that both compiles and deletes is spelled
+        // as the deletion because that is the loss with no undo, and a card that listed everything the command does
+        // would be a paragraph nobody reads. The git reading wins over a bare compile for the same reason the tier
+        // does: under 自动审批 it is the reach that makes the command park at all, and the rebuild line alone would
+        // read as an apology.
+        var flag = build == BuildGrade.CacheBreak
+            ? "\ncache break · removes what a build already wrote"
             : grade switch
             {
                 GitGrade.GitWrite => "\ngit write · moves the index, the working tree, or history",
                 GitGrade.GitUnclassifiable => "\ngit subcommand Hub does not recognise · treated as a write",
+                _ when build == BuildGrade.BuildRun => "\nrebuild · compiles into this directory",
                 _ => "",
             };
         return $"{head}{flag}\n{Text(arguments, "command")}";

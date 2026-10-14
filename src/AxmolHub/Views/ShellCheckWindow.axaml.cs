@@ -6110,12 +6110,23 @@ public partial class ShellCheckWindow : Window
         // One response asking for three writes. This is the shape the batch card exists for: three decisions the
         // person is asked to make as one, in one card that has to fit above the composer without covering it.
         var tripleSession = chat.StartConversation();
-        // The one call 完全访问 must still ask about. Kept a session of its own rather than folded into the
-        // full-access fixtures above, because those answer with a read or a `Get-Location` — commands whose tier the
-        // mode is allowed to wave through — and this cell's whole claim is that the mode does <b>not</b> reach a
-        // rebuild. It is refused, never approved: the tool is real, and a self-check that ran `cmake --build` would
-        // be the exact thing the rule exists to stop.
+        // The one call 完全访问 must still ask about: clearing what the user already built. Kept a session of its own
+        // rather than folded into the full-access fixtures above, because those answer with a read or a
+        // `Get-Location` — commands whose tier the mode is allowed to wave through — and this cell's whole claim is
+        // that the mode does <b>not</b> reach a deletion. It is refused, never approved: `rm -rf build` is exactly the
+        // thing the rule exists to ask about, and a self-check that ran it would be answering its own question.
         var buildSession = chat.StartConversation();
+        // …and its mirror, which is the half the user named in person: building is not a question. A build that fails
+        // and gets tried again after an edit is the work, so the same mode has to let a real build through with no
+        // card at all. A nonexistent project is the safe way to prove that — graded as a build by its verb, present
+        // wherever this suite runs, and leaving no half-built tree behind it.
+        var quietBuildSession = chat.StartConversation();
+        // A command that goes quiet while it is still running, driven through the window three times: one answer
+        // clicked, another answer clicked, and nobody answering the third. The first two prove the card's buttons
+        // reach the process; the third is the one that matters most, because it is the only road where the card has
+        // to disappear by itself — a question about a command that finished is a question the user should not have
+        // to close.
+        var stallSession = chat.StartConversation();
         var readClient = new ApprovalChatClient();
         var parkClient = new ApprovalChatClient();
         var denyClient = new ApprovalChatClient();
@@ -6128,6 +6139,30 @@ public partial class ShellCheckWindow : Window
         var movedClient = new ApprovalChatClient();
         var tripleClient = new ApprovalChatClient();
         var buildClient = new ApprovalChatClient { ToolName = "run_command" };
+        var quietBuildClient = new ApprovalChatClient { ToolName = "run_command" };
+            // Three seconds: long enough that the stall is noticed and the click lands while the process is still
+            // alive, short enough that the suite's own ceiling stays in sight — the whole self-check has one, and a
+            // cell that waits on real processes can cut the run short without naming itself as the cause.
+            static string QuietRound(int round)
+            {
+                var seconds = 3;
+                return CommandShells.ForCurrent().IsPowerShell
+                    ? $"Write-Output 'first-{round}'; Start-Sleep -Seconds {seconds}; Write-Output 'second-{round}'"
+                    : $"echo 'first-{round}'; sleep {seconds}; echo 'second-{round}'";
+            }
+
+        // Two calls, two different command lines: the spin guard refuses a third byte-identical call on purpose,
+        // and this cell is about the process, not about the guard.
+        var stallClient = new ApprovalChatClient
+        {
+            ToolName = "run_command",
+            CallsRemaining = 2,
+            ArgumentsByCall = round => new Dictionary<string, object?>
+            {
+                ["command"] = QuietRound(round),
+                ["timeout_seconds"] = 1,
+            },
+        };
         var grantClient = new ApprovalChatClient { ToolName = "run_command" };
         var peerClient = new ApprovalChatClient { ToolName = "run_command" };
         // Chosen so the cell is safe even when the rule it tests is broken: `tmp/` is gitignored and the index is
@@ -6221,6 +6256,8 @@ public partial class ShellCheckWindow : Window
                 var id when id == movedSession.Id => movedClient,
                 var id when id == tripleSession.Id => tripleClient,
                 var id when id == buildSession.Id => buildClient,
+                var id when id == quietBuildSession.Id => quietBuildClient,
+                var id when id == stallSession.Id => stallClient,
                 var id when id == fetchSession.Id => fetchClient,
                 var id when id == searchSession.Id => searchClient,
                 var id when id == searchedSession.Id => searchedClient,
@@ -6268,7 +6305,7 @@ public partial class ShellCheckWindow : Window
             foreach (var session in new[] { readSession, parkSession, denySession, supersededSession, restartSession,
                     badgeSession, batchSession, autoRunSession, askRunSession, movedSession, grantSession, peerSession,
                     gitWriteSession, fetchSession, searchSession, searchedSession, longCardSession, tripleSession,
-                    buildSession })
+                    buildSession, quietBuildSession, stallSession })
                 chat.SetWorkspaceRoot(session.Id, workspace);
 
             // ── what the mode answers are, in priority order ──
@@ -6332,15 +6369,25 @@ public partial class ShellCheckWindow : Window
             Check(ChatTools.RiskOf("run_command", Command("git status"), sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", Command("git -C sub diff HEAD"), sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", Command("git log --oneline -5"), sandbox) == ToolRisk.WorkspaceCommand
-                  && ChatTools.RiskOf("run_command", Command("cmake --build build"), sandbox) == ToolRisk.BuildCommand
-                  // The order, asserted where the two ladders are read: a line that carries a git write <i>and</i> a
-                  // build must land on the tier that asks under 完全访问, not on the one full access answers.
-                  && ChatTools.RiskOf("run_command", Command("pwsh -c \"git commit -m x && cmake --build build\""), sandbox) == ToolRisk.BuildCommand
-                  && ChatTools.RiskOf("run_command", Command("git commit -m x && cmake --build build"), sandbox) == ToolRisk.BuildCommand
+                  // Building is ordinary sandbox work: the debug loop (read the error, change the code, build again)
+                  // is the reason the assistant is here, so nothing about a build outranks a mode.
+                  && ChatTools.RiskOf("run_command", Command("cmake --build build"), sandbox) == ToolRisk.WorkspaceCommand
+                  && ChatTools.RiskOf("run_command", Command("dotnet build src/App.csproj"), sandbox) == ToolRisk.WorkspaceCommand
+                  // …while deleting what a build wrote outranks every mode, and keeps that rank when it rides along
+                  // with a git write: the tier asked about is the loss, not the commit.
+                  && ChatTools.RiskOf("run_command", Command("rm -rf build"), sandbox) == ToolRisk.CacheBreak
+                  && ChatTools.RiskOf("run_command", Command("git clean -fdx"), sandbox) == ToolRisk.CacheBreak
+                  && ChatTools.RiskOf("run_command", Command("dotnet clean"), sandbox) == ToolRisk.CacheBreak
+                  && ChatTools.RiskOf("run_command", Command("git commit -m x && rm -rf build"), sandbox) == ToolRisk.CacheBreak
+                  // The order, asserted where the two ladders are read: a git <i>write</i> beside a <i>build</i> is
+                  // the reach tier (full access answers it), because the build half no longer outranks anything.
+                  && ChatTools.RiskOf("run_command", Command("pwsh -c \"git commit -m x && cmake --build build\""), sandbox) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("git commit -m x && cmake --build build"), sandbox) == ToolRisk.SystemCommand
                   // …while a build the classifier cannot name keeps the sandbox tier — the fail-open the plan named
                   // out loud, recorded here so it is a known shape and not an accident: still inside the sandbox,
                   // still holding the change gate, so the worst it does is skip the question.
                   && ChatTools.RiskOf("run_command", Command("cmd /c build.bat"), sandbox) == ToolRisk.WorkspaceCommand
+                  && ChatTools.RiskOf("run_command", Command("ls build"), sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", null, sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", Command("git commit -m x"), sandbox) == ToolRisk.SystemCommand
                   && ChatTools.RiskOf("run_command", Command("git add -A && git commit -m x"), sandbox) == ToolRisk.SystemCommand
@@ -6350,7 +6397,7 @@ public partial class ShellCheckWindow : Window
                   // when there is no directory to decide with.
                   && ChatTools.RiskOf("run_command", Command("git lfs install"), sandbox) == ToolRisk.SystemCommand
                   && ChatTools.RiskOf("run_command", Command("git status"), WorkspaceToolScope.Empty) == ToolRisk.SystemCommand,
-                "git 写命令按子命令升到最高档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照样升，认不出的子命令按写处理；构建与带构建的混合段升到重建档");
+                "git 写命令按子命令升到最高档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照样升，认不出的子命令按写处理；构建留在沙箱档，删除已构建的东西升到重建档并且盖过 git 写");
 
             // web_fetch on its own line rather than folded into the aggregate above, because of a specific negative
             // control: deleting its arm drops the name into the fallback, and the fallback answers SystemCommand —
@@ -6819,24 +6866,25 @@ public partial class ShellCheckWindow : Window
                 + (afterTriple?.Messages.Count(turn => turn.Role == ChatRoles.Tool) ?? -1) + " 条）");
 
             // The tier that answers above the mode switch, driven end to end: 完全访问 is the mode whose whole promise
-            // is that nothing interrupts, and a rebuild is the one action it does not cover. Asserted through the
-            // gate rather than as a table cell because the failure being guarded is a card that never appears — the
-            // command runs silently, the tree goes half new, and the user finds out from the compiler.
+            // is that nothing interrupts, and clearing what the user already built is the one action it does not
+            // cover. Asserted through the gate rather than as a table cell because the failure being guarded is a
+            // card that never appears — the deletion runs silently, the directory is gone, and the next build is the
+            // repair bill.
             chat.SetApprovalMode(buildSession.Id, ToolApprovalModes.Full);
-            buildClient.Arguments = new Dictionary<string, object?> { ["command"] = "cmake --build build" };
+            buildClient.Arguments = new Dictionary<string, object?> { ["command"] = "rm -rf build" };
             chat.OpenConversation(buildSession.Id);
-            chat.TryEnqueueSend(buildSession.Id, "把引擎编一下", null, out _);
+            chat.TryEnqueueSend(buildSession.Id, "清一下重编", null, out _);
             var buildCallId = await WaitForPendingCallAsync(buildSession);
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             Check(buildCallId is not null && panel.PendingApprovalCardsForCheck == 1
-                  && panel.ApprovalCardTextForCheck.Contains("cmake --build build", StringComparison.Ordinal)
-                  // The grant button is not drawn here: it would be a promise that the next rebuild is silent, and
+                  && panel.ApprovalCardTextForCheck.Contains("rm -rf build", StringComparison.Ordinal)
+                  // The grant button is not drawn here: it would be a promise that the next deletion is silent, and
                   // the gate ignores it, so the button would teach the person that the ladder is decoration.
                   && !panel.ApprovalCardActionsForCheck.Contains("ApprovalAllowAlways")
                   && panel.ComposerInputEnabledForCheck,
-                "完全访问下重新构建照样挂卡、卡上没有「总是允许」（卡 " + panel.PendingApprovalCardsForCheck
+                "完全访问下删除已构建的东西照样挂卡、卡上没有「总是允许」（卡 " + panel.PendingApprovalCardsForCheck
                 + "，按钮 " + panel.ApprovalCardActionsForCheck + "）");
             var buildAnswers = buildClient.Answers;
             chat.TryResolveApproval(buildSession.Id, buildCallId ?? "", approved: false, alwaysAllow: false, out _);
@@ -6848,8 +6896,112 @@ public partial class ShellCheckWindow : Window
                        && (turn.Text ?? "").Contains(ToolApprovalResults.Denied, StringComparison.Ordinal))
                   && afterBuild.Messages.Count(turn => turn.ApprovalState == ChatApprovalStates.Denied) == 1
                   && afterBuild.FirstMispairedToolCallId() is null,
-                "构建被拒之后模型拿到的是「别重试」那句，且这条调用答完了（工具结果 "
+                "删除被拒之后模型拿到的是「别重试」那句，且这条调用答完了（工具结果 "
                 + (afterBuild?.Messages.Count(turn => turn.Role == ChatRoles.Tool) ?? -1) + " 条）");
+
+            // The mirror, and the half the user named in person: **building is not a question**. Read the compiler,
+            // change the code, build again — asking once per round of that is how a debug loop dies, so the same
+            // mode that stops a deletion waves a real build straight through. Asserted by running one: a card here
+            // would be invisible in a table cell, and a silent pass is exactly what the table cannot prove.
+            chat.SetApprovalMode(quietBuildSession.Id, ToolApprovalModes.Full);
+            quietBuildClient.Arguments = new Dictionary<string, object?>
+            {
+                ["command"] = "dotnet build AxmolHub-NoSuch.csproj",
+            };
+            chat.OpenConversation(quietBuildSession.Id);
+            chat.TryEnqueueSend(quietBuildSession.Id, "编一下", null, out _);
+            await WaitForIdleAsync(chat);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var afterQuiet = chat.StoredCopyForCheck(quietBuildSession.Id);
+            Check(panel.PendingApprovalCardsForCheck == 0
+                  && afterQuiet is not null
+                  && afterQuiet.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 1
+                  // The command really ran: its own exit code is in the result the model was given.
+                  && afterQuiet.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                       && (turn.Text ?? "").Contains("exit:", StringComparison.Ordinal))
+                  && afterQuiet.Messages.All(turn => turn.ApprovalState is null)
+                  && afterQuiet.FirstMispairedToolCallId() is null,
+                "完全访问下构建本身不问：一张卡都不挂、命令真跑了、结果带着自己的退出码落回这条调用（卡 "
+                + panel.PendingApprovalCardsForCheck + "，工具结果 "
+                + (afterQuiet?.Messages.Count(turn => turn.Role == ChatRoles.Tool) ?? -1) + " 条）");
+
+            // ── 命令安静下来时的那张卡 ──
+            // The rule this suite exists to keep: a command that stops producing output is not a command Hub ends
+            // on its own. Driven end to end because every word of it is invisible at build time — a card that never
+            // appears, a button that wires to nothing, and a question that outlives its own subject all look the
+            // same from a table cell.
+            chat.SetApprovalMode(stallSession.Id, ToolApprovalModes.Full);
+            chat.OpenConversation(stallSession.Id);
+
+            // Two cells, because the suite has a wall-clock ceiling and these wait on real processes: everything
+            // the *answers* do is asserted headless against the same seam, with the same timing. What only a window
+            // can prove is that the card exists, that its three buttons are the three answers, that it never
+            // covered the composer, and that it goes away when its subject does.
+            chat.TryEnqueueSend(stallSession.Id, "跑一条会安静下来的命令", null, out _);
+            await WaitUntilAsync(() => panel.StallCardVisibleForCheck, 600);
+            var cardUp = panel.StallCardVisibleForCheck;
+            var stallActions = string.Join("+", panel.StallActionsForCheck);
+            var stallCardText = panel.StallCardTextForCheck;
+            var composerLive = panel.ComposerInputEnabledForCheck;
+            var approvalsUnderneath = panel.PendingApprovalCardsForCheck;
+            var pressedStop = panel.PressStallActionForCheck("StallLeaveRunning");
+            // Polled for the fact rather than the clock: the suite's ordinary idle wait is a one-second pump, and
+            // reading the session file at its end reports a call that has not answered yet — which looks exactly
+            // like a card that never answered.
+            Conversation? afterStop = null;
+            await WaitUntilAsync(() =>
+            {
+                afterStop = chat.StoredCopyForCheck(stallSession.Id);
+                return afterStop?.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                    && (turn.Text ?? "").Contains("no longer watching", StringComparison.Ordinal)) == true;
+            }, 1200);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            // Which shell the fixture asked through decides the verb on the card, so the name is checked as
+            // "the command line, one way or the other" rather than by one spelling.
+            var namesTheCommand = stallCardText.Contains("Write-Output", StringComparison.Ordinal)
+                                   || stallCardText.Contains("echo", StringComparison.Ordinal);
+            Check(cardUp && pressedStop
+                  && stallActions == "StallLeaveRunning+StallKillRetry+StallKeepWaiting"
+                  && composerLive && approvalsUnderneath == 0 && namesTheCommand
+                  && afterStop is not null
+                  && afterStop.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                        && (turn.Text ?? "").Contains("no longer watching", StringComparison.Ordinal)
+                        && !(turn.Text ?? "").Contains("second-", StringComparison.Ordinal))
+                  && !panel.StallCardVisibleForCheck,
+                "命令安静下来时举的是这张卡（不是审批卡，一张都不挂）、三个答案都在、输入框照旧能打字；"
+                + "选「取消等待」既不杀也不等：结果说清楚 Hub 不再看着它，卡跟着收掉（按钮 " + stallActions + "）");
+
+            // And the withdrawal: nobody answers, the command finishes on its own, and the card goes with it — the
+            // one road where a late click must act on nothing, because the thing it would have stopped already
+            // exited. A card the user has to close after its subject died is the failure this cell exists for.
+            chat.TryEnqueueSend(stallSession.Id, "再来一次，这次谁也不点", null, out _);
+            await WaitUntilAsync(() => panel.StallCardVisibleForCheck, 600);
+            var cardUpAgain = panel.StallCardVisibleForCheck;
+            await WaitUntilAsync(() => !panel.StallCardVisibleForCheck, 1200);
+            var withdrawn = !panel.StallCardVisibleForCheck;
+            var lateClickDoesNothing = !chat.TryResolveStall(stallSession.Id, StalledProcessFate.KillAndRetry);
+            Conversation? afterWithdrawal = null;
+            await WaitUntilAsync(() =>
+            {
+                afterWithdrawal = chat.StoredCopyForCheck(stallSession.Id);
+                return afterWithdrawal?.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                    && (turn.Text ?? "").Contains("finished on its own", StringComparison.Ordinal)) == true;
+            }, 1200);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(cardUpAgain && withdrawn && lateClickDoesNothing
+                  && afterWithdrawal is not null
+                  && afterWithdrawal.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                        && (turn.Text ?? "").Contains("exit: 0", StringComparison.Ordinal)
+                        && (turn.Text ?? "").Contains("second-", StringComparison.Ordinal)
+                        && !(turn.Text ?? "").Contains("chose to", StringComparison.Ordinal)),
+                "卡举出去之后进程自己跑完：卡自己消失、结果写的是它自己结束的、没人答也就没人替谁做过决定，"
+                + "迟到的点击不再作用到任何东西");
 
             // The other half of 「总是允许」: a grant is supposed to outlive the session that made it, because a new
             // task used to start asking from zero. Asserted across two sessions — the one that clicks and a peer
@@ -7775,7 +7927,8 @@ public partial class ShellCheckWindow : Window
             foreach (var id in new[] { readSession.Id, parkSession.Id, denySession.Id, supersededSession.Id,
                     restartSession.Id, badgeSession.Id, batchSession.Id, autoRunSession.Id, askRunSession.Id,
                     movedSession.Id, grantSession.Id, peerSession.Id, gitWriteSession.Id, screenSession.Id,
-                    fetchSession.Id, longCardSession.Id, tripleSession.Id, buildSession.Id,
+                    fetchSession.Id, longCardSession.Id, tripleSession.Id, buildSession.Id, quietBuildSession.Id,
+                    stallSession.Id,
                     searchSession.Id, searchedSession.Id })
                 chat.DeleteConversation(id);
             await WaitForIdleAsync(chat);

@@ -210,6 +210,14 @@ public partial class ChatPanel : UserControl
         InitializeComponent();
 
         _chat.Changed += Reload;
+        // A command that went quiet raises its own question, and it is raised from inside the tool body — nowhere on
+        // the token stream, so nothing else would ever tell this panel the card exists. The conversation id rides
+        // along: a question in a session that is not on screen must not repaint the one that is.
+        _chat.StallChanged += conversationId =>
+        {
+            if (conversationId != _chat?.ActiveConversation?.Id) return;
+            RefreshDecisionHost();
+        };
         // A repository read lands whenever git finishes, which is nowhere on the token stream. The pane decides
         // whether it still wants the answer; nothing here polls, and nothing here runs a git.
         _chat.RepositoryChanged += OnRepositoryChanged;

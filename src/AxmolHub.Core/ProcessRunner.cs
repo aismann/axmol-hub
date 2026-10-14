@@ -6,10 +6,12 @@ namespace AxmolHub.Core;
 public sealed record ProcessResult(int ExitCode, string Output, string Error);
 
 /// <summary>
-/// A process that went silent for the whole idle timeout. It stays a <see cref="TimeoutException"/>, so every
-/// caller that already treats a stall as a stall keeps doing so. What it adds is the output captured before the
-/// silence: a build that dies halfway has already printed the error that killed it, and discarding that text was
-/// how the assistant was told a command had "produced no output".
+/// A process that went silent for the whole idle timeout <b>and was ended for it</b> — Hub's own roads
+/// (<see cref="ProcessRunner.AdoptOnIdle"/> false) still answer a stall this way, because the person who started
+/// that build is watching a row with a cancel plate. It stays a <see cref="TimeoutException"/>, so every caller
+/// that already treats a stall as a stall keeps doing so. What it adds is the output captured before the silence:
+/// a build that dies halfway has already printed the error that killed it, and discarding that text was how the
+/// assistant was told a command had "produced no output".
 /// </summary>
 public sealed class IdleTimeoutException(string output, string error, bool survivedKill, TimeSpan idleTimeout,
     string executable)
@@ -21,6 +23,177 @@ public sealed class IdleTimeoutException(string output, string error, bool survi
     /// <summary>True when the process was still running after Hub killed it and waited. It may still hold the
     /// write end of the pipes open, so the text above is as far as the capture got, not the whole run.</summary>
     public bool SurvivedKill { get; } = survivedKill;
+}
+
+/// <summary>
+/// A process that went silent and is <b>still running, still Hub's child, and now the caller's to decide about</b>.
+/// This is the shape the assistant's commands get: going quiet is not evidence that a build should be destroyed,
+/// and killing one is a decision with consequences nobody but the user can weigh — a half-killed compile leaves a
+/// tree that no later approval can put back.
+///
+/// <para>The handle is deliberately not disposed on the way out, so the exit code stays readable after the wait:
+/// the whole reason a handoff beats a pid is that a process which finishes while the question is open can still
+/// report what it ended with. Ownership therefore has an end — <see cref="Dispose"/> — and a caller that walks
+/// away without calling it leaks one <see cref="Process"/> component, which is the cheaper failure by far.</para>
+/// </summary>
+public sealed class StalledProcessException : TimeoutException, IDisposable
+{
+    private readonly Process _process;
+    private readonly Func<(string Output, string Error)> _snapshot;
+    private readonly Task<string> _output;
+    private readonly Task<string> _error;
+    private readonly Func<Process, bool> _stop;
+    private Task? _exited;
+
+    internal StalledProcessException(Process process, Task<string> output, Task<string> error,
+        Func<(string Output, string Error)> snapshot, Func<Process, bool> stop, TimeSpan idleTimeout,
+        string executable)
+        : base($"Process produced no output for {idleTimeout}: {executable}")
+    {
+        _process = process;
+        _output = output;
+        _error = error;
+        _snapshot = snapshot;
+        _stop = stop;
+        IdleTimeout = idleTimeout;
+        Executable = executable;
+        Pid = Safe(() => process.Id);
+    }
+
+    /// <summary>How long it had to be silent to get here — the number the question to the user quotes back.</summary>
+    public TimeSpan IdleTimeout { get; }
+
+    public string Executable { get; }
+
+    /// <summary>The process id the answer will be about. Null only if the handle was already gone, which means the
+    /// command finished in the breath between the stall and this exception — the "don't ask" road.</summary>
+    public int? Pid { get; }
+
+    /// <summary>Whether it has stopped by itself. The liveness check the caller must run before asking anything:
+    /// a question about a finished process is a card nobody should have to click.</summary>
+    public bool HasExited => SafeBool(() => _process.HasExited);
+
+    /// <summary>What it ended with, or null while it is still running. Readable only because the handle was never
+    /// disposed on the way out of the runner.</summary>
+    public int? ExitCode => HasExited ? Safe(() => _process.ExitCode) : null;
+
+    /// <summary>Everything printed so far, redaction included — safe to read at any moment, including while waiting.</summary>
+    public (string Output, string Error) Snapshot() => _snapshot();
+
+    /// <summary>Completes when the process exits. One task on purpose: a second <c>WaitForExitAsync</c> on the same
+    /// handle is a second wait on the same kernel object, and the two would race to observe it.</summary>
+    public Task Exited => _exited ??= _process.WaitForExitAsync();
+
+    /// <summary>Both output pipes, end to end. Await this only after the process exited (or after stopping it):
+    /// while it lives, the readers are simply still reading, and an unbounded wait here is the hang the bounded
+    /// <see cref="Drain"/> exists to avoid.</summary>
+    public async Task<(string Output, string Error)> Completion()
+    {
+        var both = await Task.WhenAll(_output, _error).ConfigureAwait(false);
+        return (both[0], both[1]);
+    }
+
+    /// <summary>Waits for the pipes up to <paramref name="bound"/> and hands back whatever arrived, so a survivor
+    /// that never closes its stdout cannot wedge the caller. Losing the wait is not losing the answer: the snapshot
+    /// is what arrived, and the readers keep running on their own.</summary>
+    public async Task<(string Output, string Error)> Drain(TimeSpan bound)
+    {
+        var completion = Completion();
+        var settled = await Task.WhenAny(completion, Task.Delay(bound)).ConfigureAwait(false);
+        return ReferenceEquals(settled, completion) ? await completion.ConfigureAwait(false) : Snapshot();
+    }
+
+    /// <summary>Ends the process and its tree — <b>only</b> ever the user's word: the answer to the question, or the
+    /// stop they pressed. Runs the runner's own kill (and therefore its test seam), and reports whether it died.</summary>
+    public bool Stop() => _stop(_process);
+
+    /// <summary>Lets go of the handle. Does not kill anything: the process keeps running, which is exactly what the
+    /// "leave it alone" answer means.</summary>
+    public void Dispose() => _process.Dispose();
+
+    private static int? Safe(Func<int> read)
+    {
+        try { return read(); }
+        // A process that exited and was already reaped, or a handle disposed by a concurrent answer, has nothing
+        // left to say. Reading it is not an error about the command; it is the absence of one.
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException) { return null; }
+    }
+
+    /// <summary>The same absence, for the one question that decides whether to ask a person at all: a handle that
+    /// cannot answer is a process Hub is done with, so the answer is "exited" rather than a throw.</summary>
+    private static bool SafeBool(Func<bool> read)
+    {
+        try { return read(); }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException) { return true; }
+    }
+}
+
+/// <summary>
+/// A silent-but-still-running command, seen by the surface that has to ask about it.
+///
+/// <para>The exception is how the handoff reaches the tool body; it is not what the user is being asked about, and a
+/// card built on an error type would say "something failed" about a command that may be three minutes into a clean
+/// compile. So this says what is knowable — how long it has been quiet, what it printed, whether it has stopped on
+/// its own — and gives the asker no way to end it. <see cref="Stop"/> and <see cref="Release"/> are deliberately
+/// invisible outside this assembly: the only road to killing the process is an answer that means kill, and the tool
+/// body is the one that acts on it.</para>
+/// </summary>
+public sealed class StalledProcess
+{
+    private readonly StalledProcessException _stalled;
+
+    internal StalledProcess(StalledProcessException stalled) => _stalled = stalled;
+
+    /// <summary>The process id the question is about, or null if it was already gone before anyone could ask.</summary>
+    public int? Pid => _stalled.Pid;
+
+    public string Executable => _stalled.Executable;
+
+    /// <summary>How long it had to be silent before the question became necessary — the number to print on the card.</summary>
+    public TimeSpan SilentFor => _stalled.IdleTimeout;
+
+    /// <summary>Whether it stopped by itself. The asker has to check this twice: once before raising the question,
+    /// and once again when the answer arrives, because a build that finishes while nobody has clicked yet leaves no
+    /// question to answer.</summary>
+    public bool HasExited => _stalled.HasExited;
+
+    public int? ExitCode => _stalled.ExitCode;
+
+    /// <summary>What has been printed so far. Reading it is safe at any moment, including while still waiting.</summary>
+    public (string Output, string Error) Snapshot() => _stalled.Snapshot();
+
+    /// <summary>Completes when the process exits, which is what lets the asker withdraw a question whose subject is
+    /// gone rather than wait for an answer about nothing.</summary>
+    public Task Exited => _stalled.Exited;
+
+    /// <summary>Both pipes end to end; only meaningful once <see cref="HasExited"/> or <see cref="Exited"/> says so.</summary>
+    public Task<(string Output, string Error)> Completion() => _stalled.Completion();
+
+    public Task<(string Output, string Error)> Drain(TimeSpan bound) => _stalled.Drain(bound);
+
+    internal bool Stop() => _stalled.Stop();
+
+    /// <summary>Lets go of the handle without touching the process — the body's way of saying "this is the user's
+    /// now", which is also the only leak this design accepts on purpose.</summary>
+    internal void Release() => _stalled.Dispose();
+}
+
+/// <summary>What the user answered about a command that went silent while still running. The three answers are the
+/// card's buttons; <see cref="Exited"/> is not an answer anybody gave but the fact that there is nothing left to
+/// answer, and it has to be its own value so nothing records "the user chose to let it run" when nobody chose.</summary>
+public enum StalledProcessFate
+{
+    /// <summary>Keep it running and keep waiting for it, with no ceiling — waiting is what the person asked for.</summary>
+    KeepWaiting,
+
+    /// <summary>Stop waiting, leave it running, and let go of it: Hub reports what it printed and stops watching.</summary>
+    LeaveItRunning,
+
+    /// <summary>End the process Hub started, then run the same command again.</summary>
+    KillAndRetry,
+
+    /// <summary>It finished while the question was open. The result is the real one, exit code included.</summary>
+    Exited,
 }
 
 public sealed class ProcessRunner(Action<string> log)
@@ -49,6 +222,13 @@ public sealed class ProcessRunner(Action<string> log)
         if (!process.HasExited) process.Kill(entireProcessTree: true);
         return process.WaitForExit((int)KillGrace.TotalMilliseconds);
     };
+
+    /// <summary>What a stall is allowed to do. False (every Hub-initiated build, install and download) keeps the
+    /// original rule: silence past the timeout ends the process, because the person who started it is watching a row
+    /// with a cancel plate. True is the assistant's road: <b>Hub does not kill a process on its own initiative</b>.
+    /// The stall then comes back as <see cref="StalledProcessException"/> with the process still running and still
+    /// ours, and the human decides — see <c>WorkspaceTools.RunInShellAsync</c>.</summary>
+    public bool AdoptOnIdle { get; init; }
 
     public void Write(string message) => log(message);
     public async Task<ProcessResult> RunAsync(string executable, IEnumerable<string> arguments,
@@ -84,83 +264,109 @@ public sealed class ProcessRunner(Action<string> log)
         var secrets = SecretRedaction.Prepare(sensitiveValues);
         string Redact(string value) => SecretRedaction.RedactPrepared(value, secrets);
         log(Redact($"Command: {executable} {string.Join(" ", start.ArgumentList.Select(a => System.Text.Json.JsonSerializer.Serialize(a)))}; cwd={workingDirectory}"));
-        using var process = new Process { StartInfo = start };
-
-        // Timeout semantics: the **idle duration with no output**, not the wall-clock duration of the whole
-        // command. Every line the process produces on stdout/stderr resets the idle timer; only after
-        // `timeout` (default 10 minutes) of no output at all is it judged a "stall" and the process tree is
-        // ended. Long tasks like compile/download are never killed by mistake as long as they keep printing.
-        // Passing Infinite means no timeout at all (long-running processes).
-        var idleTimeout = timeout ?? DefaultIdleTimeout;
-        cancellation.ThrowIfCancellationRequested();
-        process.Start();
-
-        // Record the timestamp of "the most recent output"; both read pumps update it (Interlocked writes a long for thread safety).
-        var lastOutputTicks = Environment.TickCount64;
-        void MarkOutput() => Interlocked.Exchange(ref lastOutputTicks, Environment.TickCount64);
-
-        // Each pump appends to a buffer the caller may read at any moment. On a stall the run never "finishes",
-        // so the only way to hand back what was already printed is to look at the buffer rather than await it.
-        var outputSink = new StringBuilder();
-        var errorSink = new StringBuilder();
-
-        var output = ReadAsync(process.StandardOutput, false, Redact, MarkOutput, outputSink, firstLineOnly, onLine);
-        var error = ReadAsync(process.StandardError, true, Redact, MarkOutput, errorSink, firstLineOnly, onLine);
-
-        if (idleTimeout == Infinite)
+        var process = new Process { StartInfo = start };
+        // Whether the process leaves this method with a new owner. It is what decides the disposal below, so the
+        // one place that must not be wrong is the one line that says whether the handle is still ours.
+        var adopted = false;
+        try
         {
-            // No timeout at all (long-running processes, e.g. a game): just wait for process exit or user cancellation.
-            await process.WaitForExitAsync(cancellation);
-        }
-        else
-        {
-            // The idle watchdog "terminates" the wait for process exit via cancelling idleCts:
-            // - normal process exit → WaitForExitAsync(idleCts.Token) returns normally, taking the normal
-            //   wrap-up below;
-            // - idle timeout → idleCts.Cancel() → WaitForExitAsync throws OperationCanceledException, but the
-            //   user's cancellation may not be cancelled at that point, which is how "idle timeout" is
-            //   distinguished from "user cancellation".
-            using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-            using var stopCts = new CancellationTokenSource();
-            var watching = WatchIdleAsync(process, idleTimeout, idleCts,
-                () => Interlocked.Read(ref lastOutputTicks), stopCts.Token);
-            try
+            // Timeout semantics: the **idle duration with no output**, not the wall-clock duration of the whole
+            // command. Every line the process produces on stdout/stderr resets the idle timer; only after
+            // `timeout` (default 10 minutes) of no output at all is it judged a "stall" — and then either the tree
+            // is ended, or, where the caller can ask a person instead, it is handed over alive. Long tasks like
+            // compile/download are never killed by mistake as long as they keep printing.
+            // Passing Infinite means no timeout at all (long-running processes).
+            var idleTimeout = timeout ?? DefaultIdleTimeout;
+            cancellation.ThrowIfCancellationRequested();
+            process.Start();
+
+            // Record the timestamp of "the most recent output"; both read pumps update it (Interlocked writes a long for thread safety).
+            var lastOutputTicks = Environment.TickCount64;
+            void MarkOutput() => Interlocked.Exchange(ref lastOutputTicks, Environment.TickCount64);
+
+            // Each pump appends to a buffer the caller may read at any moment. On a stall the run never "finishes",
+            // so the only way to hand back what was already printed is to look at the buffer rather than await it.
+            var outputSink = new StringBuilder();
+            var errorSink = new StringBuilder();
+
+            var output = ReadAsync(process.StandardOutput, false, Redact, MarkOutput, outputSink, firstLineOnly, onLine);
+            var error = ReadAsync(process.StandardError, true, Redact, MarkOutput, errorSink, firstLineOnly, onLine);
+
+            if (idleTimeout == Infinite)
             {
-                await process.WaitForExitAsync(idleCts.Token);
+                // No timeout at all (long-running processes, e.g. a game): just wait for process exit or user cancellation.
+                await process.WaitForExitAsync(cancellation);
             }
-            catch (OperationCanceledException)
+            else
             {
-                // Either way the process has to be ended before anything is reported, and both waits after that
-                // are bounded: a process that survives its kill never exits and never closes the pipes it holds,
-                // so waiting on it — or on the readers that serve it — would hang this call for as long as it
-                // lives. The captured text is the answer; the exit code is not knowable.
-                var survivedKill = !StopProcess(process);
-                var drained = Task.WhenAll(output, error);
-                if (survivedKill) await Task.WhenAny(drained, Task.Delay(DrainGrace)).ConfigureAwait(false);
-                else await drained.ConfigureAwait(false);
-                var (stoppedOutput, stoppedError) = (SnapshotOf(outputSink), SnapshotOf(errorSink));
-                if (cancellation.IsCancellationRequested)
+                // The idle watchdog "terminates" the wait for process exit via cancelling idleCts:
+                // - normal process exit → WaitForExitAsync(idleCts.Token) returns normally, taking the normal
+                //   wrap-up below;
+                // - idle timeout → idleCts.Cancel() → WaitForExitAsync throws OperationCanceledException, but the
+                //   user's cancellation may not be cancelled at that point, which is how "idle timeout" is
+                //   distinguished from "user cancellation".
+                using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+                using var stopCts = new CancellationTokenSource();
+                var watching = WatchIdleAsync(process, idleTimeout, idleCts,
+                    () => Interlocked.Read(ref lastOutputTicks), stopCts.Token);
+                try
                 {
-                    log("Process stopped: cancelled");
-                    throw new OperationCanceledException(cancellation);
+                    await process.WaitForExitAsync(idleCts.Token);
                 }
-                log($"Process stopped: idle timeout ({idleTimeout})"
-                    + (survivedKill ? "; it was still running after the kill" : ""));
-                throw new IdleTimeoutException(stoppedOutput, stoppedError, survivedKill, idleTimeout, executable);
-            }
-            finally
-            {
-                // The watchdog reads `process`, and `using var process` disposes it the moment this method
-                // returns: a poll still in flight would then fault on a disposed object. Stop watching and wait
-                // for the stop, so nothing outlives the process it was watching.
-                stopCts.Cancel();
-                await watching.ConfigureAwait(false);
-            }
-        }
+                catch (OperationCanceledException)
+                {
+                    // A stall is not a stop. Where a person can be asked, the process leaves this method running and
+                    // still owned: not killed, not disposed — the handle is what keeps the exit code readable, and
+                    // an exit code is the difference between "the command finished while you were asking" and a
+                    // guess. The user's own cancellation is deliberately excluded below: that is already a decision.
+                    if (AdoptOnIdle && !cancellation.IsCancellationRequested)
+                    {
+                        adopted = true;
+                        log($"Process stalled ({idleTimeout}); left running for the user to decide about it");
+                        throw new StalledProcessException(process, output, error,
+                            () => (SnapshotOf(outputSink), SnapshotOf(errorSink)), StopProcess, idleTimeout,
+                            executable);
+                    }
 
-        var result = new ProcessResult(process.ExitCode, await output, await error);
-        log($"Exit code: {result.ExitCode}");
-        return result;
+                    // Either way the process has to be ended before anything is reported, and both waits after that
+                    // are bounded: a process that survives its kill never exits and never closes the pipes it holds,
+                    // so waiting on it — or on the readers that serve it — would hang this call for as long as it
+                    // lives. The captured text is the answer; the exit code is not knowable.
+                    var survivedKill = !StopProcess(process);
+                    var drained = Task.WhenAll(output, error);
+                    if (survivedKill) await Task.WhenAny(drained, Task.Delay(DrainGrace)).ConfigureAwait(false);
+                    else await drained.ConfigureAwait(false);
+                    var (stoppedOutput, stoppedError) = (SnapshotOf(outputSink), SnapshotOf(errorSink));
+                    if (cancellation.IsCancellationRequested)
+                    {
+                        log("Process stopped: cancelled");
+                        throw new OperationCanceledException(cancellation);
+                    }
+                    log($"Process stopped: idle timeout ({idleTimeout})"
+                        + (survivedKill ? "; it was still running after the kill" : ""));
+                    throw new IdleTimeoutException(stoppedOutput, stoppedError, survivedKill, idleTimeout,
+                        executable);
+                }
+                finally
+                {
+                    // The watchdog reads `process`, and the disposal below runs the moment this method returns: a
+                    // poll still in flight would then fault on a disposed object. Stop watching and wait for the
+                    // stop, so nothing outlives the process it was watching.
+                    stopCts.Cancel();
+                    await watching.ConfigureAwait(false);
+                }
+            }
+
+            var result = new ProcessResult(process.ExitCode, await output, await error);
+            log($"Exit code: {result.ExitCode}");
+            return result;
+        }
+        finally
+        {
+            // Every road out that left the handle here disposes it; the one road that handed it to a caller does
+            // not, because that caller is still waiting to find out what the process ended with.
+            if (!adopted) process.Dispose();
+        }
     }
 
     private static string SnapshotOf(StringBuilder sink)

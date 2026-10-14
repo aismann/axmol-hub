@@ -559,7 +559,12 @@ public sealed class ChatWorkspace : IDisposable
                 // Out of the write and into this conversation's queue, for the same reason the frames go that way
                 // rather than sitting on the scope: the body cannot name its own call, and the call it belongs to
                 // is stamped where the result lands — which for a parked call is a later scope entirely.
-                lines => RecordChangeLines(conversationId, lines)),
+                lines => RecordChangeLines(conversationId, lines),
+                // A command that stopped producing output is still Hub's child, and ending it is not Hub's call to
+                // make. The question goes up as a card above the composer and the tool body waits for the answer —
+                // which is the one road where the run's deadlines are already standing down, because the bracket a
+                // running tool opens disarms them for exactly as long as this can take.
+                (stalled, command) => AskAboutStalledProcessAsync(conversationId, stalled, command)),
             // Null on a session file written before the setting existed reads as allowed, which is the only
             // honest reading of "nobody ever turned it off". Read here rather than at the call site because the
             // tool list is assembled once per request and a parked question can be answered long after.
@@ -631,6 +636,123 @@ public sealed class ChatWorkspace : IDisposable
                && queue.TryDequeue(out var lines)
             ? lines
             : null;
+    }
+
+    /// <summary>
+    /// A command that stopped producing output while it is still running, waiting for its owner to say what happens
+    /// next. One per conversation: the tool body that asked is parked inside this call and cannot ask again until it
+    /// is answered, and a second question above one input box — one of them about a process the run has already left
+    /// behind — is worse than no question at all.
+    ///
+    /// <para>Deliberately not written to the session file. A parked approval can be answered after a restart because
+    /// the decision it waits on outlives the process; here the subject of the question <b>is</b> a process, and a
+    /// process cannot survive Hub. A durable card would therefore promise an answer that can never be delivered,
+    /// which is the one thing this class of decision must not do. So the question is memory-only, and Hub's shutdown
+    /// ends the wait — the run's cancellation reaching the body, and the body ending the process it was told to
+    /// keep. That is the user's word, not Hub's.</para>
+    /// </summary>
+    private sealed class StallQuestion(string conversationId, StalledProcess process, string command)
+    {
+        public string ConversationId { get; } = conversationId;
+        public StalledProcess Process { get; } = process;
+        public string Command { get; } = command;
+        public TaskCompletionSource<StalledProcessFate> Answer { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _taken;
+
+        /// <summary>Claims the answer, and it is the only way to. A button press and the process exiting race here
+        /// by design, and exactly one of them may win: a click that loses must not turn into a kill for a process
+        /// that is already gone, and a process that finished must not leave a live question above the input box.
+        /// The loser is told so, which is what lets the card withdraw itself instead of sitting there greyed.</summary>
+        public bool TryResolve(StalledProcessFate fate)
+        {
+            if (Interlocked.Exchange(ref _taken, 1) != 0) return false;
+            Answer.TrySetResult(fate);
+            return true;
+        }
+    }
+
+    private readonly ConcurrentDictionary<string, StallQuestion> _stalls = new(StringComparer.Ordinal);
+
+    /// <summary>Raised whenever a conversation gains, loses or changes a stall question, in the shape every other
+    /// decision event uses: the conversation id, and the panel decides whether it is the one being looked at.</summary>
+    internal event Action<string>? StallChanged;
+
+    /// <summary>What the card shows: the command line, how long it has been silent, the process id it is about, and
+    /// what it had printed when it went quiet. Null when nothing is waiting.</summary>
+    internal (string Command, int? Pid, TimeSpan SilentFor, string Output)? PeekStallQuestion(string conversationId)
+        => _stalls.TryGetValue(conversationId, out var question)
+            ? (question.Command, question.Process.Pid, question.Process.SilentFor, question.Process.Snapshot().Output)
+            : null;
+
+    /// <summary>The panel's answer for a stalled command. False when there is nothing to answer — the process
+    /// finished first, or somebody else clicked — which is reported rather than swallowed because a button that
+    /// silently does nothing is how a person ends up pressing it twice about a process they think they stopped.</summary>
+    internal bool TryResolveStall(string conversationId, StalledProcessFate fate)
+    {
+        if (!_stalls.TryGetValue(conversationId, out var question) || !question.TryResolve(fate)) return false;
+        AuditWrite?.Invoke($"Stall answered: {fate} · {question.Command}");
+        return true;
+    }
+
+    private async Task<StalledProcessFate> AskAboutStalledProcessAsync(string conversationId,
+        StalledProcess stalled, string command)
+    {
+        var question = OpenStall(conversationId, stalled, command);
+        try
+        {
+            return await question.Answer.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            // Out of the table whatever the answer was, including the roads that never got one — the run cancelled,
+            // the host exception. A card left pointing at a process nobody is waiting on any more is a lie the user
+            // can act on, and the ✕ they press for it belongs to a different command by then.
+            CloseStall(question);
+        }
+    }
+
+    private StallQuestion OpenStall(string conversationId, StalledProcess stalled, string command)
+    {
+        // Anything still open about an earlier command is answered as gone before this one is asked: two questions
+        // above the composer, one of them stale, is the failure the single-slot table exists to prevent.
+        if (_stalls.TryGetValue(conversationId, out var stale)) stale.TryResolve(StalledProcessFate.Exited);
+        var question = new StallQuestion(conversationId, stalled, command);
+        _stalls[conversationId] = question;
+        LogProvider?.Invoke()?.Write($"Command went silent, asking the user instead of stopping it: {command}");
+        // The process is watched from here. Whoever answers, a command that finishes on its own takes the question
+        // away first — and the answer the body then receives is the process's own, not a choice anybody made.
+        _ = WatchStalledExitAsync(question);
+        RaiseOnUi(() => StallChanged?.Invoke(conversationId));
+        return question;
+    }
+
+    private void CloseStall(StallQuestion question)
+    {
+        // Removed only if it is still the question on the table: a newer command's question must not be taken down
+        // by an older one finishing.
+        if (_stalls.TryGetValue(question.ConversationId, out var current) && ReferenceEquals(current, question))
+            _stalls.TryRemove(question.ConversationId, out _);
+        RaiseOnUi(() => StallChanged?.Invoke(question.ConversationId));
+    }
+
+    private async Task WatchStalledExitAsync(StallQuestion question)
+    {
+        try
+        {
+            await question.Process.Exited.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // A handle this can no longer wait on says nothing about the process. The question stays up for a human
+            // answer rather than inventing one, which is the whole point of asking instead of deciding.
+            LogProvider?.Invoke()?.Write($"Could not watch the stalled command: {ex.Message}");
+            return;
+        }
+
+        if (question.TryResolve(StalledProcessFate.Exited))
+            RaiseOnUi(() => StallChanged?.Invoke(question.ConversationId));
     }
 
     /// <summary>
@@ -3718,9 +3840,9 @@ public sealed class ChatWorkspace : IDisposable
             // have to disagree with nobody: SystemCommand stays askable-under-grant because a grant is about
             // permission and that tier is about reach; AskUser is excluded because a grant is <i>answering on the
             // person's behalf</i>, which for that call is not a waived permission but a fabricated result;
-            // BuildCommand because the grant is permanent and a wrecked build tree is not something a later card can
-            // undo. Nobody ever said "always let me decide what the assistant should do" by clicking a button on one
-            // file write, and nobody ever said "you may rebuild whenever you feel like it" either.
+            // CacheBreak because the grant is permanent and a cleared build directory is not something a later card
+            // can undo. Nobody ever said "always let me decide what the assistant should do" by clicking a button on
+            // one file write, and nobody ever said "you may delete what I built whenever you like" either.
             CallVerdict Judge(ChatPipeline.ToolCallInfo member)
             {
                 var risk = ChatTools.RiskOf(member.Name, member.ArgumentsJson, scope.Workspace, projects);

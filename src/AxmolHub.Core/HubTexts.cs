@@ -724,6 +724,27 @@ public static class HubTexts
         ["ApprovalAllowAlwaysTip"] = ("记进「设置 → 工具权限」的信任清单，随时可以撤销；对越出工作目录的操作无效",
             "Remembered in Settings → Tool permission, where it can be revoked. Has no effect on anything that "
             + "reaches past the workspace."),
+        // ── A command that went quiet while it is still running ──
+        // The question Hub asks instead of killing the process on its own. Three answers because the three real
+        // outcomes are different acts: wait, walk away, or stop it and try again. The tips are where the promises are
+        // kept honest — "stop waiting" gives up the watch <b>and</b> the gate it was holding, and "stop it" reaches
+        // the command tree Hub started, not the background build services that detach from it.
+        ["StallQuestionFormat"] = ("{0} 已经 {1} 没有输出，进程还在跑。要怎么处理？",
+            "{0} has produced no output for {1} and is still running. What should happen to it?"),
+        ["StallPidFormat"] = ("进程 {0}", "process {0}"),
+        ["StallOutputLabel"] = ("它安静之前打印的", "What it printed before going quiet"),
+        ["StallKeepWaiting"] = ("继续等待", "Keep waiting"),
+        ["StallLeaveRunning"] = ("取消等待", "Stop waiting"),
+        ["StallKillRetry"] = ("停掉再跑一遍", "Stop it and run again"),
+        ["StallKeepWaitingTip"] = ("不结束它。Hub 一直等到它自己出结果，不设时限",
+            "Nothing is ended. Hub waits for the result as long as it takes, with no deadline."),
+        ["StallLeaveRunningTip"] = ("不结束它，也不再等。Hub 从此不管这条进程，也不再替它占住改动的位置——它可能仍在写工作目录",
+            "Nothing is ended and Hub stops waiting. The process is no longer watched and no longer holds the "
+            + "change slot — it may still be writing to the workspace."),
+        ["StallKillRetryTip"] = ("结束 Hub 起的那条命令树，然后重跑一次。后台编译服务（MSBuild 节点、VBCSCompiler）"
+            + "可能不在这棵树上，停掉之后仍可能在跑",
+            "Ends the command tree Hub started, then runs it once more. Background build services (MSBuild nodes, "
+            + "VBCSCompiler) can sit outside that tree and may still be going afterwards."),
         ["ChatPlanReviewTitle"] = ("审阅计划", "Review plan"),
         ["ChatPlanReviewOpen"] = ("查看计划", "View plan"),
         ["ChatPlanReviewContinue"] = ("继续", "Continue"),
@@ -897,15 +918,16 @@ public static class HubTexts
         ["ToolApprovalAskHint"] = ("除只读查询外，每个操作都先问一次，包括跑命令",
             "Everything except a read asks first, commands included"),
         ["ToolApprovalAuto"] = ("自动审批", "Auto-approve"),
-        // Both hints name the rebuild, because it is the one thing in the sandbox that no longer runs on its own:
-        // a settings page that promised otherwise would be the second record of this rule, and the rule has to be
-        // readable from every place that states it.
-        ["ToolApprovalAutoHint"] = ("工作目录里的写入和一般命令直接执行；重新构建、抓屏、派生子会话、换工作目录仍要问",
-            "Writes and ordinary commands inside the workspace run on their own; a rebuild, the screen, a child "
-            + "session and a new working directory still ask"),
+        // Both hints name the deletion, not the build: the user ruled that reading an error, changing code and
+        // building again is ordinary work, while throwing away what was already built is the one thing no mode speaks
+        // for. A hint that said otherwise would be the layer that lies about the gate.
+        ["ToolApprovalAutoHint"] = ("工作目录里的写入和命令直接执行，构建也算；删除已构建的东西、抓屏、派生子会话、换工作目录仍要问",
+            "Writes and commands inside the workspace run on their own, builds included; clearing what was built, "
+            + "the screen, a child session and a new working directory still ask"),
         ["ToolApprovalFull"] = ("完全访问", "Full access"),
-        ["ToolApprovalFullHint"] = ("除了重新构建，什么都不再问，包括抓屏和这个版本没登记过的工具",
-            "Nothing asks any more except a rebuild, including the screen and any tool this build does not know"),
+        ["ToolApprovalFullHint"] = ("除了删除已构建的东西，什么都不再问，包括抓屏和这个版本没登记过的工具",
+            "Nothing asks any more except clearing what was built, including the screen and any tool this build "
+            + "does not know"),
         ["ToolPermission"] = ("工具权限", "Tool permission"),
         ["ToolPermissionHint"] = ("助手动手之前的默认严格程度。单个会话可以在聊天里改，不影响这里。", "How strict the assistant is by default before it acts. A single session can override this in the chat without changing it here."),
         // The app-wide trust list: what a card's "always allow" writes, seen where it can be taken back. The hint

@@ -114,18 +114,20 @@ internal static class ChatTools
     /// where every established client leaves them: a model that has to ask permission to see <c>git status</c>
     /// answers from a file it read three turns ago instead, which is a worse guard, not a stricter one.</para>
     ///
-    /// <para><b>A build is asked about before a git verb is</b>, and that order is the rule rather than a detail:
-    /// <c>pwsh -c "git commit -m x &amp;&amp; cmake --build build"</c> under 完全访问 must still produce a card, and if
-    /// the git read decided the tier the line would land on <see cref="ToolRisk.SystemCommand"/> — which full access
-    /// answers silently, with the compile attached to it. The two ladders disagree on purpose as well as on order:
-    /// git grades a bare <c>status</c> as a read and this one does not care, because what is protected here is the
-    /// output directory, not the index.</para>
+    /// <para><b>A cache break is asked about before a git verb is</b>, and that order is the rule rather than a
+    /// detail: <c>git commit -m x &amp;&amp; rm -rf build</c> under 完全访问 must still produce a card, and if the git read
+    /// decided the tier the line would land on <see cref="ToolRisk.SystemCommand"/> — which full access answers
+    /// silently, with the deletion attached to it. A line that only <em>builds</em> is different: it stays on the
+    /// sandbox tier whatever else it does, because the debug loop is ordinary work. The two ladders also disagree on
+    /// purpose about <c>git clean</c>: git grades it as a write (it moves the working tree) and this grades it as a
+    /// cache break (it removes what the tree was built from), and the destructive reading is the one that gets the
+    /// card in every mode.</para>
     /// </summary>
     private static ToolRisk RunCommandRisk(WorkspaceToolScope scope, string? argumentsJson)
     {
         if (WorkspacePaths.VerifyCommandRoot(scope.WorkspaceRoot, scope.Guards) != WorkspacePathVerdict.Allowed)
             return ToolRisk.SystemCommand;
-        if (BuildCommandGrades.CommandOf(argumentsJson)) return ToolRisk.BuildCommand;
+        if (BuildCommandGrades.CommandOf(argumentsJson) == BuildGrade.CacheBreak) return ToolRisk.CacheBreak;
         return GitCommandGrades.Elevates(GitCommandGrades.CommandOf(argumentsJson))
             ? ToolRisk.SystemCommand
             : ToolRisk.WorkspaceCommand;

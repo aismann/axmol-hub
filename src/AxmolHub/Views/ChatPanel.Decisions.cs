@@ -229,6 +229,25 @@ public partial class ChatPanel
     private void RefreshDecisionHost()
     {
         var conversation = _chat?.ActiveConversation;
+        // A command waiting on an answer about its own process outranks the three below, and cannot coexist with
+        // them: the batch is judged before anything runs, so a command in flight means no parked approval or
+        // question from the same response. Read from live state on purpose — see <see cref="BuildStalledProcessCard"/>
+        // for why there is no transcript form of this question to read instead.
+        var stall = conversation is null ? null : _chat?.PeekStallQuestion(conversation.Id);
+        if (stall is not null)
+        {
+            if (_stallShownFor != conversation!.Id)
+            {
+                _stallShownFor = conversation.Id;
+                _decisionCallId = null;
+                _decisionPlanIndex = -1;
+                DecisionHost.Child = BuildStalledProcessCard(conversation.Id, stall.Value);
+            }
+            DecisionHost.IsVisible = true;
+            return;
+        }
+
+        _stallShownFor = null;
         string? callId = null;
         var planIndex = -1;
         ChatTurn? pendingCall = null;
@@ -434,9 +453,9 @@ public partial class ChatPanel
             .ToList();
         // The header carries the worst tier in the group, because that is what the answer agrees to: a card for two
         // writes and a screen capture has to read like a screen capture. Each row keeps its own evidence below.
-        // A build is ranked above the reach tier for the one reason that matters on this card: what the person is
-        // being asked to spend is the tree, and nothing they do after this answer can put it back.
-        var risk = risks.Contains(ToolRisk.BuildCommand) ? ToolRisk.BuildCommand
+        // A cache break is ranked above the reach tier for the one reason that matters on this card: what the person
+        // is being asked to spend is already built, and nothing they do after this answer can put it back.
+        var risk = risks.Contains(ToolRisk.CacheBreak) ? ToolRisk.CacheBreak
             : risks.Contains(ToolRisk.SystemCommand) ? ToolRisk.SystemCommand
             : risks.Contains(ToolRisk.WorkspaceWrite) ? ToolRisk.WorkspaceWrite
             : _chat.RiskFor(conversationId, turn.ToolName ?? "", turn.ToolArguments);
@@ -446,19 +465,19 @@ public partial class ChatPanel
             Classes = { "approval-risk" },
             // The tier picks the glyph, and the two extremes are the ones a person has to tell apart at a glance:
             // full-access geometry for the tiers that cannot be waived — what reaches past the sandbox, and what
-            // burns the build tree — the ask geometry for a write. Everything below that — a command inside the
-            // session's own directory, a note, a peer session's history — takes the auto glyph, which until this
-            // tier existed had nothing to draw.
+            // clears what a build already wrote — the ask geometry for a write. Everything below that — a command
+            // inside the session's own directory, a note, a peer session's history — takes the auto glyph, which
+            // until this tier existed had nothing to draw.
             Data = ThemeGeometry(risk switch
             {
-                ToolRisk.SystemCommand or ToolRisk.BuildCommand => "Hub.Icon.PermissionFull",
+                ToolRisk.SystemCommand or ToolRisk.CacheBreak => "Hub.Icon.PermissionFull",
                 ToolRisk.WorkspaceWrite => "Hub.Icon.PermissionAsk",
                 _ => "Hub.Icon.PermissionAuto",
             }),
         };
         // The class is the plate that says "no button here will make this stop asking", which is the message both
         // top tiers carry; naming it after one of them would be the older, narrower claim.
-        if (risk is ToolRisk.SystemCommand or ToolRisk.BuildCommand) glyph.Classes.Add("system-command");
+        if (risk is ToolRisk.SystemCommand or ToolRisk.CacheBreak) glyph.Classes.Add("system-command");
         title.Children.Add(glyph);
         title.Children.Add(new TextBlock
         {
@@ -537,10 +556,10 @@ public partial class ChatPanel
         // "Always allow" renamed to its consequence: the grant is app-wide now, and the bare word promised more
         // than it does. It is not offered on a tier a grant cannot open — ToolApprovalPolicy.IsGrantable is the same
         // question the gate asks, so a button that changed nothing cannot appear on a card whose call the gate will
-        // keep parking: what reaches past the sandbox, a question, or a rebuild. A button the gate ignores would
-        // teach the ladder is decoration. And it is not offered on a group, because a grant is about one tool while
-        // the card is about several: clicking it here would stop future questions for tools the person has not seen
-        // one at a time.
+        // keep parking: what reaches past the sandbox, a question, or a cleared build directory. A button the gate
+        // ignores would teach the ladder is decoration. And it is not offered on a group, because a grant is about
+        // one tool while the card is about several: clicking it here would stop future questions for tools the
+        // person has not seen one at a time.
         var secondary = new StackPanel
         {
             Name = "ApprovalSecondaryActions",
@@ -1335,6 +1354,159 @@ public partial class ChatPanel
             .FirstOrDefault(candidate => (name is not null && candidate.Name == name)
                                        || (tag is not null && candidate.Tag as string == tag));
         button?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
+
+    // ── A command that went quiet while it is still running ──
+
+    /// <summary>
+    /// The card Hub raises when one of the assistant's commands stops producing output but has not stopped running.
+    /// Nobody pressed anything here, so there is no tool call to approve: what is on the card is a live process, and
+    /// the three answers are three different acts on it — keep waiting, stop waiting and leave it alone, or end it
+    /// and run again.
+    ///
+    /// <para>It takes the host's slot rather than sitting beside the approval card, and it can: a response is judged
+    /// as a batch before anything runs, so while a command is in flight nothing from the same response is parked on
+    /// a decision. Unlike the other three cards this one reads live state instead of the transcript, because there
+    /// is no durable form of the question — a process cannot outlive Hub, and a card that survived a restart would
+    /// be asking about something that is certainly gone.</para>
+    /// </summary>
+    private Control BuildStalledProcessCard(string conversationId,
+        (string Command, int? Pid, TimeSpan SilentFor, string Output) stall)
+    {
+        // The same row shape as the approval card: the detail gives way, the footer stays reachable at every height.
+        var card = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
+
+        var title = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        var glyph = new Path
+        {
+            Classes = { "approval-risk" },
+            // The geometry of the tiers that cannot be waived. Nothing here makes the asking stop: the next silent
+            // command asks again, because the question was about a process, not about a permission.
+            Data = ThemeGeometry("Hub.Icon.PermissionFull"),
+        };
+        glyph.Classes.Add("system-command");
+        title.Children.Add(glyph);
+        title.Children.Add(new TextBlock
+        {
+            Classes = { "approval-title" },
+            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("StallQuestionFormat"), stall.Command, $"{(int)stall.SilentFor.TotalSeconds}s"),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        Grid.SetColumn(title.Children[1], 1);
+        Grid.SetRow(title, 0);
+        card.Children.Add(title);
+
+        var detail = new StackPanel { Spacing = 4 };
+        if (stall.Pid is { } pid)
+            detail.Children.Add(new TextBlock
+            {
+                Classes = { "approval-label" },
+                Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("StallPidFormat"), pid),
+            });
+        AddApprovalDetail(detail, "StallOutputLabel", stall.Output);
+
+        var scroll = new ScrollViewer
+        {
+            Name = "ApprovalDetailScroll",
+            Content = detail,
+            MaxHeight = 120,
+            Margin = new Thickness(0, 8, 0, 0),
+            ClipToBounds = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+        Grid.SetRow(scroll, 1);
+        card.Children.Add(scroll);
+
+        var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0) };
+        var secondary = new StackPanel
+        {
+            Name = "ApprovalSecondaryActions",
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        // On the left, away from the affirmative plate, because what this answer gives up is the watching: Hub stops
+        // waiting, stops holding the change slot, and stops knowing anything about the process. The tip has to say
+        // that, or a person meaning "not now" picks the answer that lets their next build collide with it.
+        secondary.Children.Add(StallButton(conversationId, StalledProcessFate.LeaveItRunning,
+            "StallLeaveRunning", "StallLeaveRunningTip", "approval-secondary"));
+        footer.Children.Add(secondary);
+
+        var primary = new StackPanel
+        {
+            Name = "ApprovalPrimaryActions",
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        // On the refusing plate even though it is the most decisive of the three: the palette reserves red for
+        // nothing up here — the style file says so out loud — and stopping a command then running again is closer to
+        // refusing the wait than to allowing something. Its tooltip is where the honest limit belongs, because the
+        // kill reaches the tree Hub started and not the build services that detach from it.
+        primary.Children.Add(StallButton(conversationId, StalledProcessFate.KillAndRetry,
+            "StallKillRetry", "StallKillRetryTip", "approval-deny"));
+        primary.Children.Add(StallButton(conversationId, StalledProcessFate.KeepWaiting,
+            "StallKeepWaiting", "StallKeepWaitingTip", "approval-allow"));
+        Grid.SetColumn(primary, 1);
+        footer.Children.Add(primary);
+        Grid.SetRow(footer, 2);
+        card.Children.Add(footer);
+        return card;
+    }
+
+    private Button StallButton(string conversationId, StalledProcessFate fate, string labelKey, string tipKey,
+        string plate)
+    {
+        var button = new Button
+        {
+            Classes = { "approval-action", plate },
+            Content = HubStrings.Get(labelKey),
+            Tag = labelKey,
+        };
+        ToolTip.SetTip(button, HubStrings.Get(tipKey));
+        button.Click += (_, _) =>
+        {
+            // False means the question is already gone — the command finished in the moment before the press. Either
+            // way the host is rebuilt, so a card that outlived its own premise cannot stay clickable.
+            _chat.TryResolveStall(conversationId, fate);
+            RefreshDecisionHost();
+        };
+        return button;
+    }
+
+    /// <summary>Which conversation's stall question is on the host, so a repaint does not rebuild a card that is
+    /// already showing the same live process.</summary>
+    private string? _stallShownFor;
+
+    internal bool StallCardVisibleForCheck => _stallShownFor is not null && DecisionHost.IsVisible;
+
+    internal string StallCardTextForCheck => DecisionHost.Child is null
+        ? ""
+        : string.Join(" ", DecisionHost.Child.GetLogicalDescendants().OfType<TextBlock>()
+            .Select(text => text.Text ?? "").Where(text => text.Length > 0));
+
+    /// <summary>The three answers, by tag, in the order they read. Named apart from the approval card's own action
+    /// list on purpose: <see cref="ApprovalCardActionsForCheck"/> keys off a pending call id, and a stall question
+    /// has none — reading the same host through that hook would report an empty card.</summary>
+    internal string[] StallActionsForCheck => DecisionHost.Child is null
+        ? []
+        : DecisionHost.Child.GetLogicalDescendants().OfType<Button>()
+            .Where(button => button.Classes.Contains("approval-action"))
+            .Select(button => button.Tag as string ?? "")
+            .ToArray();
+
+    /// <summary>Presses one of the three answers by its tag, so the suite drives the real control: a card whose
+    /// button wired to nothing would otherwise pass every word of an assertion about the answer.</summary>
+    internal bool PressStallActionForCheck(string tag)
+    {
+        if (DecisionHost.Child is not { } host) return false;
+        var button = host.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(candidate => (candidate.Tag as string) == tag);
+        if (button is null) return false;
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        return true;
     }
 
     /// <summary>Option tags for the plan review, in the order the rows read. Kept as constants so the

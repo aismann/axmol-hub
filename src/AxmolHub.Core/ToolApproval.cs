@@ -18,9 +18,9 @@ public enum ToolRisk
     /// workspace and the URL both came from a request the person made, and a build or a documentation page is the
     /// ordinary shape of it. It is still action, so a card shows in the strict tier.
     ///
-    /// <para>The one command in this tier that no longer lives here is a rebuild: that moved to
-    /// <see cref="BuildCommand"/>, which asks even under 自动审批, so "a command inside the directory I chose" is
-    /// not quite the same promise it was before.</para>
+    /// <para>What left this tier is the destructive half of build work: clearing a build directory, <c>git clean</c>,
+    /// <c>dotnet clean</c> — see <see cref="CacheBreak"/>. Building is still ordinary sandbox work here, because the
+    /// debug loop (read the error, change the code, build again) is the reason the assistant is worth having.</para>
     ///
     /// <para>Said plainly, because the old wording was a lie by half: an outbound fetch's consequences do
     /// <b>not</b> stay in that directory. The tier holds for a different reason — a <c>run_command</c> in the same
@@ -42,20 +42,23 @@ public enum ToolRisk
     /// least able to vouch for itself, and no "always allow" grant opens this tier.</summary>
     SystemCommand,
 
-    /// <summary>Runs a build, or takes away the derived state one depends on — what
-    /// <see cref="BuildCommandGrades"/> recognises in a command line.
+    /// <summary>Removes what a build already wrote — what <see cref="BuildCommandGrades"/> grades
+    /// <see cref="BuildGrade.CacheBreak"/>: <c>rm -rf build</c>, <c>git clean -fdx</c>, <c>dotnet clean</c>,
+    /// <c>cmake -U</c>.
     ///
-    /// <para>This is the tier that <b>does not stop asking</b>, and it is here because of a failure on the user's
-    /// own machine rather than a category: an assistant that decided to rebuild twice while a compile was already
-    /// running left the tree half new, and no later approval can repair that. A cancel cannot rescue it either —
-    /// <see cref="ProcessRunner"/> kills the process tree that is still attached, while MSBuild's node reuse,
-    /// <c>VBCSCompiler</c> and the <c>dotnet</c> build server detach and outlive it.</para>
+    /// <para>This is the tier that <b>does not stop asking</b>, and it is here because of a failure on the user's own
+    /// machine: an assistant clearing a build directory to get around an error, leaving a tree nobody can put back
+    /// together. The distinction from merely <em>running</em> a build (<see cref="BuildGrade.BuildRun"/>) is
+    /// deliberate and was ruled, not inferred —
+    /// reading a compiler error, editing code and building again is the job, and asking at every one of those rounds
+    /// is how a debug loop dies. Throwing away the outputs is not part of that loop; it is a loss with no undo, and
+    /// it is decided whether or not anything failed first.</para>
     ///
     /// <para>So the consequence is not ranked above <see cref="SystemCommand"/> (a screen capture is nobody's
-    /// build) — what is different is <b>who may waive it</b>. A <c>full</c> answer means "do not interrupt me
-    /// about permissions", and it does not mean "you may wreck my build cache"; a corrupt cache is not
-    /// undoable by a card. Which is why this tier asks in every mode and no grant opens it.</para></summary>
-    BuildCommand,
+    /// cache) — what is different is <b>who may waive it</b>. A <c>full</c> answer means "do not interrupt me about
+    /// permissions", and it does not mean "you may delete what I built"; a cleared directory is not something a
+    /// later card can reverse. Which is why this tier asks in every mode and no grant opens it.</para></summary>
+    CacheBreak,
 
     /// <summary>The assistant's own notes, written inside a directory Hub owns. Never asks — a note that costs
     /// a card is a note that never gets written — but every write is audited, and the path guard still runs.</summary>
@@ -113,15 +116,15 @@ public static class ToolApprovalPolicy
     /// question can be <i>avoided</i> — by not declaring the tool at all — and that decision lives in the tool
     /// list, not here.</para>
     ///
-    /// <para><see cref="ToolRisk.BuildCommand"/> answers in the same place for a different reason. It is not a
+    /// <para><see cref="ToolRisk.CacheBreak"/> answers in the same place for a different reason. It is not a
     /// question and not a reach past the sandbox; it is an action whose result cannot be undone by anything that
     /// happens later, so no mode is allowed to speak for it. "Full access" is a sentence about interruptions, and
-    /// a wrecked build cache is not one.</para></summary>
+    /// a cleared build directory is not one.</para></summary>
     public static bool RequiresApproval(string? mode, ToolRisk risk) => risk switch
     {
         ToolRisk.AssistantNote => false,
         ToolRisk.AskUser => true,
-        ToolRisk.BuildCommand => true,
+        ToolRisk.CacheBreak => true,
         _ => ToolApprovalModes.Normalize(mode) switch
         {
             ToolApprovalModes.Full => false,
@@ -137,10 +140,10 @@ public static class ToolApprovalPolicy
     /// <para>Three tiers are not grantable, for three different reasons. <see cref="ToolRisk.SystemCommand"/>: a
     /// grant is about permission and that tier is about reach, so one click on a file write cannot buy the screen.
     /// <see cref="ToolRisk.AskUser"/>: a grant is <i>answering on the person's behalf</i>, which for that call is
-    /// not a waived permission but a fabricated result. <see cref="ToolRisk.BuildCommand"/>: the grant is permanent
-    /// and the damage is not undoable, so every rebuild needs the person awake.</para></summary>
+    /// not a waived permission but a fabricated result. <see cref="ToolRisk.CacheBreak"/>: the grant is permanent
+    /// and the loss is not recoverable, so deleting what the user built needs them awake every single time.</para></summary>
     public static bool IsGrantable(ToolRisk risk)
-        => risk is not (ToolRisk.SystemCommand or ToolRisk.AskUser or ToolRisk.BuildCommand);
+        => risk is not (ToolRisk.SystemCommand or ToolRisk.AskUser or ToolRisk.CacheBreak);
 }
 
 /// <summary>
