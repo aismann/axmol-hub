@@ -4382,6 +4382,32 @@ public partial class ShellCheckWindow : Window
             "Esc 把面板收回右边那一列：抽屉换回面板图标、话也说「显示或隐藏」，撑开那枚又回来了，列宽还是撑开前拖到的 480，计划页也还在（实际 "
             + Fmt(shell.InspectorWidthForCheck) + "）");
 
+        // The drawer's restore face, driven through the button's own Click rather than through the method behind
+        // it: what broke here was the wiring — the lifted pane keeps _inspectorOpen set, so an open-first branch
+        // read "press the restore face" as "shut the column". Esc covered the restore and stayed green while the
+        // click closed everything, so the button itself is what this cell has to press. End state = column open,
+        // not lifted, same as before this block, so the sequence below still starts from a liftable pane.
+        shell.ClickInspectorExpandToggleForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        shell.ClickInspectorToggleForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(!shell.InspectorExpandedForCheck
+              && !shell.InspectorOverlayVisibleForCheck
+              && shell.InspectorVisibleForCheck
+              && shell.InspectorWidthForCheck == 480
+              && shell.InspectorExpandToggleVisibleForCheck
+              && shell.InspectorDrawerGlyphIsForCheck("Hub.Icon.PanelRight")
+              && shell.InspectorToggleTipForCheck == HubTexts.Get("InspectorToggleTip", HubStrings.Language),
+            "点抽屉那枚「还原」把面板收回右边那一列：列宽还是撑开前拖到的 480、撑开按钮又回来了，而不是把整列关掉（实际 "
+            + "撑开 " + shell.InspectorExpandedForCheck
+            + "、覆盖层 " + shell.InspectorOverlayVisibleForCheck
+            + "、列 " + shell.InspectorVisibleForCheck
+            + "、列宽 " + Fmt(shell.InspectorWidthForCheck)
+            + "、撑开按钮 " + shell.InspectorExpandToggleVisibleForCheck
+            + "、提示「" + shell.InspectorToggleTipForCheck + "」）");
+
         // The two ways out that are not the arrow: leaving the page it belongs to, and closing it. Either one
         // leaving a lifted pane behind would cover a page that cannot produce one.
         shell.ClickInspectorExpandToggleForCheck();

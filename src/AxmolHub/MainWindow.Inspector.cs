@@ -104,14 +104,24 @@ public partial class MainWindow
     private static double InspectorClamp(double width) => Math.Clamp(width, InspectorMin, InspectorMax);
 
     /// <summary>
-    /// The top bar's one control: it opens the column if it is shut and hides it if it is open. Both arms are
-    /// methods that already have their own assertions — opening re-enters through <see cref="OpenInspector"/>, so
-    /// the column comes back on the tab the reader last stood on (and if that was 仓库, it asks for its one read,
-    /// because asking again is what pressing the button means), and closing is <see cref="CloseInspector"/>, so the
-    /// persisted flag, the overlay and the grip all come down together rather than one of them being left behind.
+    /// The top bar's one control, in three states rather than two. While the pane is lifted over the shell the
+    /// button is wearing its restore face (see <see cref="SyncInspectorDrawerChrome"/>), so the first branch puts
+    /// the pane back into the column — the state check has to come before the open one, because lifting never
+    /// clears <c>_inspectorOpen</c> and an open-first test reads a lifted pane as "open, therefore shut it",
+    /// which closed the whole column instead of restoring its width. Otherwise it opens the column if it is shut
+    /// and hides it if it is open. Both arms are methods that already have their own assertions — opening
+    /// re-enters through <see cref="OpenInspector"/>, so the column comes back on the tab the reader last stood
+    /// on (and if that was 仓库, it asks for its one read, because asking again is what pressing the button
+    /// means), and closing is <see cref="CloseInspector"/>, so the persisted flag, the overlay and the grip all
+    /// come down together rather than one of them being left behind.
     /// </summary>
     private void ToggleInspectorColumn()
     {
+        if (_inspectorExpanded)
+        {
+            RestoreInspector();
+            return;
+        }
         if (_inspectorOpen)
         {
             CloseInspector();
