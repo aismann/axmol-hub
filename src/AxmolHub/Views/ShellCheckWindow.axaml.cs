@@ -6133,6 +6133,16 @@ public partial class ShellCheckWindow : Window
             Check(!ToolConcurrency.IsSafe("set_workspace", ToolRisk.ReadOnly)
                   && ToolConcurrency.IsSafe("read_file", ToolRisk.ReadOnly),
                 "收窄沙箱虽是免批档，也不与同批的读并发；真正的读才进得了并发类");
+            // The other half of that rule, and the one a later reader will be tempted to widen: the git subset of
+            // <c>run_command</c> reads, is graded as a read, and stays out. The evidence is local — Hub's own git
+            // reads pass <c>--no-optional-locks</c> precisely so a status never takes <c>index.lock</c>, and
+            // concurrent repository asks are coalesced because two clicks must not start two gits. A read that has
+            // to be told not to lock is a read that may lock. Tier and membership are asserted as one line so the
+            // pair cannot be mistaken for an oversight: the first conjunct is what the classifier answers today, the
+            // second is the ruling about what to do with it.
+            Check(ChatTools.RiskOf("run_command", Command("git status"), sandbox) == ToolRisk.WorkspaceCommand
+                  && !ToolConcurrency.IsSafe("run_command", ToolRisk.WorkspaceCommand),
+                "git 只读子命令留在沙箱档，也留在并发类外：裸 status 会去拿 index.lock");
 
             // The tier only matters through the decision table, so each tier is asserted as one mode chain. The
             // workspace-command chain is the one this build's whole complaint was about: the strict tier still

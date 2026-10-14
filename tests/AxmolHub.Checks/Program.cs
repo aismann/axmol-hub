@@ -5320,6 +5320,9 @@ if (args.Contains("--check-ai-tool-policy"))
         ("file_write", ToolRisk.WorkspaceWrite, false),
         ("send_to_session", ToolRisk.WorkspaceWrite, false),
         ("memory_write", ToolRisk.AssistantNote, false),
+        // Out on purpose, not out by omission: a model-typed `git status` is the read this row keeps refusing, and
+        // it stays out because Hub's own git reads have to pass --no-optional-locks to avoid taking index.lock.
+        // The shell suite asserts the tier and the membership as one line, next to the classifier.
         ("run_command", ToolRisk.WorkspaceCommand, false),
         ("web_fetch", ToolRisk.WorkspaceCommand, false),
         ("capture_screen", ToolRisk.SystemCommand, false),

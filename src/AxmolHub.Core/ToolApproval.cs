@@ -116,6 +116,17 @@ public static class ToolApprovalPolicy
 /// moves the session's root, so a sibling resolving its own path next to it would be decided against a directory
 /// that stops being the one it runs in. A command, a write or a screen capture is out for the ordinary reason —
 /// two of them at once touch one build directory, one desktop, one peer session.</para>
+///
+/// <para><b>This set only loses members.</b> Adding a tool here is a claim that it touches no shared state, and the
+/// claim has to hold for whatever the tool grows later, not merely for what it does today — which is the same
+/// contract the benchmark client writes for its own isolated list. The candidate that was weighed and refused is
+/// the git sub-set of <c>run_command</c>: a model-typed <c>git status</c> is a read as far as the permission tier
+/// is concerned, and it stays out because a bare <c>git status</c> refreshes <c>.git/index</c> and takes
+/// <c>index.lock</c>. That is not a theory: <see cref="GitRepository"/> passes <c>--no-optional-locks</c> on every
+/// one of Hub's own reads for exactly that reason, and <c>ChatWorkspace.RefreshRepositoryAsync</c> coalesces
+/// concurrent asks because two clicks must not start two gits. A read that has to be told not to lock is a read that
+/// may lock, so a command string earns its place here by no tier and no subcommand — only by being removed from the
+/// shell entirely, which no tool is.</para>
 /// </summary>
 public static class ToolConcurrency
 {
