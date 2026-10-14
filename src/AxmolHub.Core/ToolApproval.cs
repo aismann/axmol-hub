@@ -147,6 +147,17 @@ public static class ToolApprovalResults
     /// sentence that closes it, and it says <i>why</i> nothing ran, which "superseded" would get wrong.</summary>
     public const string Abandoned = "This call was not executed: the turn ended before it.";
 
+    /// <summary>Never ran because the attempt ended without an answer — a deadline, a stalled stream, a connection
+    /// that went quiet — and the person has now asked for the same round again. Neither neighbour fits:
+    /// <see cref="Superseded"/> claims a newer message arrived, and when continuing there is no newer message, so
+    /// the sentence would be untrue and would tell the model nothing about whether the call is allowed again;
+    /// <see cref="Abandoned"/> describes a loop the spin guard stopped, where re-asking is exactly what must not
+    /// happen. This one is the case where re-asking is the wanted behaviour, so it says so — the model has to know
+    /// the read never happened rather than infer it from a refusal.</summary>
+    public const string NotAnswered =
+        "This call was not executed: the previous attempt ended before it was answered. Ask for it again if it is "
+        + "still needed.";
+
     /// <summary>The tool is gone — renamed or dropped between the request and the approval.</summary>
     public const string Unavailable = "This tool is no longer available, so the approved call was not executed.";
 

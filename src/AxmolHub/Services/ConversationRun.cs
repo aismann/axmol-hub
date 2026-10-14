@@ -150,6 +150,14 @@ internal sealed class ConversationRun : IDisposable
     /// provider, the second is usually a prompt the provider is still chewing on.</summary>
     internal bool AwaitingFirstFrame => Volatile.Read(ref _awaitingFirstFrame) == 1;
 
+    /// <summary>Whether this run's own deadline is what cancelled the work. Read where a cancellation gets its
+    /// blame, because the run's token is a <b>linked</b> source: the client pipeline cancels through the same
+    /// token for reasons of its own, and a window measured in minutes makes that misattribution easy to land in a
+    /// log and impossible to read back. Not true for a window that fired while a call waited for a person —
+    /// <see cref="RearmAfterApproval"/> replaces the fired source, so a resumed request reads its own fresh
+    /// deadline, which is the right answer since the parked cancellation left through a different branch.</summary>
+    internal bool DeadlineFired => _idle.IsCancellationRequested;
+
     /// <summary>Banks the stretch just run and stops the clock. Called when the run parks on an approval and when
     /// it finishes, so the last number a viewer reads is the one the answer actually earned.</summary>
     private void FreezeClock()

@@ -619,6 +619,10 @@ public static class HubTexts
         ["ChatTimedOut"] = ("模型在输出途中停了太久，本轮结束。可以再问一次。", "The model went quiet mid-reply for too long, so this round ended. Ask again."),
         ["ChatNoFirstFrame"] = ("模型这一轮始终没有回应，是没开始，不是中断。可以再问一次。", "This round never got any response from the model — it never started, rather than stopping. Ask again."),
         ["ChatTimedOutAfterRetries"] = ("模型服务一直在限流，等完它的等待后这一轮仍未开始。稍后再试。", "The provider kept rate-limiting, and after sitting out its waits this round still never started. Try again shortly."),
+        // The fourth ending, and the only one that is not about the model being slow: something below Hub cancelled
+        // the request. Said apart because a timeout sentence about a wait Hub never armed would send a person to
+        // check a clock that was innocent.
+        ["ChatStreamInterrupted"] = ("模型请求被客户端流水线中断，不是 Hub 的等待窗口到期。", "The model request was cancelled by the client pipeline, not by a waiting deadline Hub set."),
         // The status line while the pipeline obeys a Retry-After: the wait is the provider's instruction, so it
         // is said as work in progress on the row the tool and the search already use, not as a second label.
         ["ChatRetryWaitFormat"] = ("模型服务在限流，第 {0}/{1} 次尝试，等待 {2} 秒", "Rate-limited by the provider: attempt {0}/{1}, waiting {2}s"),

@@ -119,6 +119,10 @@ public static class ToolSpinGuard
            && !result.StartsWith("Tool failed:", StringComparison.Ordinal)
            && result != Core.ToolApprovalResults.Denied
            && result != Core.ToolApprovalResults.Superseded
+           // A call closed because the attempt ended before it ran changed nothing either. Left out of this list,
+           // a state-changing tool the model legitimately re-asks after a continue would read as "the world moved",
+           // which silently relaxes the guard on exactly the call whose repeat is the loop this protects against.
+           && result != Core.ToolApprovalResults.NotAnswered
            && result != Core.ToolApprovalResults.Unavailable;
 
     private static JsonNode Canonical(JsonNode node)

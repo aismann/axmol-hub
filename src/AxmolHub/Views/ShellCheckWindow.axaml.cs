@@ -1272,6 +1272,152 @@ public partial class ShellCheckWindow : Window
         shell.Chat.OpenConversation(opsConversation.Id);
         panel.Reload();
 
+        // ── a round that died says which kind of dying it was, and offers the one key ──
+        // Four things can end a run quietly: Hub's own silence window, Hub's round window that never saw a frame,
+        // the client pipeline cancelling through the same linked token, and a provider that kept saying "not yet".
+        // They arrive at one catch, and with the windows measured in minutes the pipeline's own cancellation would
+        // be reported as a deadline Hub armed — a lie that also reaches the daily log through the stop reason. So
+        // the run is asked who fired, and the retry that the sentence invites is put on the sentence itself: the
+        // ↻ on the last message row is three pixels from a notice that is not part of the transcript, and a person
+        // reading "ask again" should not have to hunt for where.
+        var quietSession = shell.Chat.StartConversation();
+        shell.Chat.OpenConversation(quietSession.Id);
+        panel.Reload();
+        var quietAudits = new List<string>();
+        RunOutcome? quietOutcome = null;
+        var savedQuietAudit = shell.Chat.AuditWrite;
+        var savedQuietIdle = shell.Chat.IdleTimeout;
+        var savedQuietFirstFrame = shell.Chat.FirstFrameTimeout;
+        shell.Chat.AuditWrite = line => quietAudits.Add(line);
+        // Wide on purpose: if either window could fire inside this cell, the assertion below would be proving the
+        // wrong branch — the cancellation has to arrive with the clocks still running.
+        shell.Chat.IdleTimeout = TimeSpan.FromSeconds(30);
+        shell.Chat.FirstFrameTimeout = TimeSpan.FromSeconds(30);
+        void ReadQuietOutcome(string conversationId, RunOutcome outcome)
+        {
+            if (conversationId == quietSession.Id) quietOutcome = outcome;
+        }
+
+        shell.Chat.RunCompleted += ReadQuietOutcome;
+        try
+        {
+            shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient([],
+                exception: new OperationCanceledException("the pipeline gave up"));
+            await panel.SendForCheckAsync("流水线中断问题");
+            Check(quietOutcome?.Result == RunResult.Failed
+                  && panel.LastNoticeTextForCheck == HubStrings.Get("ChatStreamInterrupted")
+                  && quietAudits.Any(line => line.Contains("no deadline of this run fired", StringComparison.Ordinal)),
+                "客户端自己取消的请求不冒充空闲超时，落库的结局也因此不是超时（实际 "
+                + quietOutcome?.Result + "，提示「" + (panel.LastNoticeTextForCheck ?? "无") + "」）");
+
+            // The retryable ending carries its own key, and pressing it must not say the question twice.
+            var continueSession = shell.Chat.StartConversation();
+            shell.Chat.OpenConversation(continueSession.Id);
+            panel.Reload();
+            var continueAnswers = new ScriptedChatClient(["继续之后的回复"]);
+            var continueAttempts = 0;
+            shell.Chat.IdleTimeout = TimeSpan.FromMilliseconds(150);
+            shell.Chat.FirstFrameTimeout = TimeSpan.FromMilliseconds(150);
+            shell.Chat.ClientOverride = (_, _) => ++continueAttempts == 1
+                ? new StalledChatClient(TimeSpan.FromSeconds(30))
+                : continueAnswers;
+            await panel.SendForCheckAsync("这轮没开始就断了");
+            var askedBefore = continueSession.Messages.Count(turn => turn.Role == ChatRoles.User);
+            // Read before the click: pressing ↻ retires this very line, so an evidence string assembled afterwards
+            // would report the notice as missing on a cell that passed because it was there.
+            var strandedNotice = panel.LastNoticeTextForCheck;
+            var offeredKey = panel.NoticeRetryVisibleForCheck;
+            Check(strandedNotice == HubStrings.Get("ChatNoFirstFrame")
+                  && offeredKey && panel.ClickNoticeActionForCheck(),
+                "从未起流的提示自己带一键继续（实际「" + (strandedNotice ?? "无") + "」，带键 " + offeredKey + "）");
+            await WaitForRunAsync(shell.Chat, continueSession.Id);
+            Check(continueSession.Messages.Count(turn => turn.Role == ChatRoles.User) == askedBefore
+                  && continueSession.Messages[^1].Text == "继续之后的回复" && !panel.NoticeVisibleForCheck,
+                "点继续不重发前一条消息、补上回答，旧的超时提示当场退休（提问 "
+                + continueSession.Messages.Count(turn => turn.Role == ChatRoles.User) + " 条）");
+
+            // Half an answer is the other ending: it is on the record (a reply with no trace of what arrived would
+            // leave the person guessing), and continuing throws that half away rather than asking the model to
+            // pick up a sentence it stopped mid-way.
+            var halfSession = shell.Chat.StartConversation();
+            shell.Chat.OpenConversation(halfSession.Id);
+            panel.Reload();
+            var halfAnswers = new ScriptedChatClient(["重来之后的回复"]);
+            var halfAttempts = 0;
+            shell.Chat.ClientOverride = (_, _) => ++halfAttempts == 1
+                ? new ScriptedChatClient(["断掉的一半"], null, Task.Delay(TimeSpan.FromSeconds(30)))
+                : halfAnswers;
+            await panel.SendForCheckAsync("答到一半断了");
+            // Same rule as the cell above: the click drops this half, so the count that belongs in the report is
+            // the one taken before it.
+            var halfOnRecord = halfSession.Messages.Any(turn => turn.Role == ChatRoles.Assistant
+                                        && turn.Text == "断掉的一半");
+            var halfCount = halfSession.Messages.Count;
+            var halfOfferedKey = panel.NoticeRetryVisibleForCheck;
+            Check(halfOnRecord && halfOfferedKey && panel.ClickNoticeActionForCheck(),
+                "半截回答先落库，提示照样给键（实际 " + halfCount + " 条，带键 " + halfOfferedKey + "）");
+            await WaitForRunAsync(shell.Chat, halfSession.Id);
+            Check(!halfSession.Messages.Any(turn => turn.Text == "断掉的一半")
+                  && halfSession.Messages[^1].Text == "重来之后的回复"
+                  && halfAnswers.LastMessages?.Any(message => message.Text.Contains("断掉的一半",
+                      StringComparison.Ordinal)) != true,
+                "继续丢掉半截回答，也不让它混进第二次请求的历史（实际 " + halfSession.Messages.Count + " 条）");
+            shell.Chat.DeleteConversation(continueSession.Id);
+            shell.Chat.DeleteConversation(halfSession.Id);
+        }
+        finally
+        {
+            shell.Chat.RunCompleted -= ReadQuietOutcome;
+            shell.Chat.AuditWrite = savedQuietAudit;
+            shell.Chat.IdleTimeout = savedQuietIdle;
+            shell.Chat.FirstFrameTimeout = savedQuietFirstFrame;
+        }
+
+        shell.Chat.DeleteConversation(quietSession.Id);
+        shell.Chat.OpenConversation(opsConversation.Id);
+        panel.Reload();
+
+        // ── what a call that never ran is told about itself ──
+        // Two starts leave a call unanswered for two different reasons, and the model reads the difference as an
+        // instruction: pressing ↻ means nothing new arrived and the call is worth making again, while a fresh
+        // question genuinely did supersede it. Getting these backwards either tells the model to retry something
+        // that was replaced, or tells it a message arrived when none did — which is the sentence a continuation
+        // used to borrow from the edit path.
+        var halfCallSession = shell.Chat.StartConversation();
+        shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient(["补上的回复"]);
+        shell.Chat.SeedTurnForCheck(halfCallSession.Id, "半路断掉的提问");
+        shell.Chat.SeedUnansweredCallForCheck(halfCallSession.Id, "half-call", "read_file",
+            "{\"path\":\"note.txt\"}");
+        // Read the shape before the start: closing the call inserts a result turn beside it, so "the transcript ends
+        // on an unanswered call" is a fact about the moment before continuing, not after.
+        var trailingCall = halfCallSession.Messages[^1].Role == ChatRoles.Assistant
+                           && halfCallSession.Messages[^1].ToolCallId == "half-call";
+        var continuedQuietly = shell.Chat.TryEnqueueContinuation(halfCallSession.Id, out var continueRefusal,
+            ToolApprovalResults.NotAnswered);
+        Check(trailingCall
+              && continuedQuietly
+              && halfCallSession.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                  && turn.ToolCallId == "half-call" && turn.Text == ToolApprovalResults.NotAnswered),
+            "续跑把一个未执行的调用说成「上一次尝试没答完」，并请模型必要时重新发起（拒绝 "
+            + (continueRefusal ?? "无") + "）");
+        await WaitForRunAsync(shell.Chat, halfCallSession.Id);
+
+        var replacedSession = shell.Chat.StartConversation();
+        shell.Chat.SeedTurnForCheck(replacedSession.Id, "被新提问顶掉的会话");
+        shell.Chat.SeedUnansweredCallForCheck(replacedSession.Id, "replaced-call", "read_file",
+            "{\"path\":\"note.txt\"}");
+        Check(shell.Chat.TryEnqueueSend(replacedSession.Id, "本人又问一句", null, out var sendRefusal)
+              && replacedSession.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                  && turn.ToolCallId == "replaced-call" && turn.Text == ToolApprovalResults.Superseded)
+              && !replacedSession.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                  && turn.Text == ToolApprovalResults.NotAnswered),
+            "本人真的再说一句时，仍说成「被新消息顶掉」，两种措辞不串（拒绝 " + (sendRefusal ?? "无") + "）");
+        await WaitForRunAsync(shell.Chat, replacedSession.Id);
+        shell.Chat.DeleteConversation(halfCallSession.Id);
+        shell.Chat.DeleteConversation(replacedSession.Id);
+        shell.Chat.OpenConversation(opsConversation.Id);
+        panel.Reload();
+
         // Branching forks the transcript at one message into a new session and switches to it. The source is
         // only mutated in memory here: BranchFrom reads the live object, so nothing has to be re-saved first.
         opsConversation.Append(ChatTurn.Assistant("第一条回复"));

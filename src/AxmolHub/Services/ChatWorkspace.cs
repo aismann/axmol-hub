@@ -2846,18 +2846,27 @@ public sealed class ChatWorkspace : IDisposable
     /// pipeline is handed — which is what makes a model that thinks for two minutes in reasoning deltas a working
     /// session rather than a stalled one. It measures the stream alone: the deadline stands down while a tool owns
     /// the run, where the tool's own silence bound judges that stretch and answers with output the model reads
-    /// instead of a notice, and nothing re-arms it while a call waits for a person.</summary>
-    internal TimeSpan IdleTimeout = TimeSpan.FromSeconds(120);
+    /// instead of a notice, and nothing re-arms it while a call waits for a person.
+    ///
+    /// <para>300 s — raised from the 120 s this shipped with, a number chosen before anything was measured against
+    /// other clients. opencode's documented default between streamed chunks is 300 000 ms; the Xiaomi desktop
+    /// client for this very model allows 480 000. The 120 s was the shortest value on that table, and the event that
+    /// made it look right (long MiMo answers dying at 120.00s with reasoning but no prose) is now handled by the
+    /// frame-level re-arm above rather than by a short clock.</para></summary>
+    internal TimeSpan IdleTimeout = TimeSpan.FromSeconds(300);
 
     /// <summary>How long a round may take to produce its <b>first</b> frame. Kept apart from
     /// <see cref="IdleTimeout"/> because the two measure different things, and reading one as the other is how a
     /// healthy session got killed: after a tool result lands, the silence is the request being built, uploaded,
-    /// queued by the gateway and prefilled — on a transcript of a hundred and eighty thousand tokens that
-    /// legitimately takes longer than a stream ever should. A round that has spoken and then gone quiet is still
-    /// judged by the 120s above, and the handover is one-way: the first frame arms the silence window and nothing
-    /// hands it back. Measured on the provider's own numbers, 2026-10-14: three runs died at 120s holding zero
-    /// frames, at 181,918 and 198,814 input tokens, while a 23-minute turn on 110,787 streamed fine.</summary>
-    internal TimeSpan FirstFrameTimeout = TimeSpan.FromSeconds(300);
+    /// queued by the gateway and prefilled — a transcript of two hundred thousand tokens is not a stream that
+    /// stopped, it is a prompt still being read.
+    ///
+    /// <para>480 s, taken from the supplier rather than guessed: Xiaomi's own desktop client for mimo-v2.6-flash
+    /// sets <c>DEFAULT_CHUNK_TIMEOUT = 480000</c> and states that a cold-path first token can run about five minutes
+    /// silent. Measured here on 2026-10-14: three rounds died holding zero frames, on provider-reported inputs of
+    /// 181,918 and 198,814 tokens, while a 23-minute turn on 110,787 streamed fine. The handover is one-way — the
+    /// first frame arms <see cref="IdleTimeout"/> and nothing hands it back.</para></summary>
+    internal TimeSpan FirstFrameTimeout = TimeSpan.FromSeconds(480);
 
     /// <summary>
     /// Keyed by conversation id, and dispatcher-confined like everything else the panel reads: the pump only
@@ -2960,6 +2969,14 @@ public sealed class ChatWorkspace : IDisposable
     internal bool SeedAssistantReplyForCheck(string conversationId, string text)
         => _sessions.TryUpdate(conversationId, opened =>
             opened.Append(new ChatTurn(ChatRoles.Assistant, text, DateTimeOffset.Now)));
+
+    /// <summary>Appends an assistant turn that asks for a tool and never gets an answer, through the same write
+    /// path. For the self-check only: a call left unanswered is what a timeout in the middle of a loop leaves
+    /// behind, and the two sentences a start writes over it — superseded by a new message, or never answered —
+    /// can only be told apart by a transcript that actually has one.</summary>
+    internal bool SeedUnansweredCallForCheck(string conversationId, string callId, string toolName, string arguments)
+        => _sessions.TryUpdate(conversationId, opened =>
+            opened.Append(ChatTurn.FunctionCall(callId, toolName, arguments)));
 
     /// <summary>An assistant reply carrying the searches its endpoint reported, appended through the same write
     /// path a run uses. For the self-check only, and it goes through the store rather than a scripted stream
@@ -3109,8 +3126,12 @@ public sealed class ChatWorkspace : IDisposable
     };
 
     /// <summary>Streams a reply against a session whose history is already final — edit-and-resend,
-    /// regenerate, or a turn resumed from an approved tool call.</summary>
-    public bool TryEnqueueContinuation(string conversationId, out string? refusalKey)
+    /// regenerate, or a turn resumed from an approved tool call. It appends <b>nothing</b>: the request is rebuilt
+    /// from the transcript, so the question the previous attempt never answered goes back on the wire once, as the
+    /// turn it already was, rather than as a second copy of what the person said. That is also why this cannot
+    /// repeat a message — it is the same message, asked again.</summary>
+    public bool TryEnqueueContinuation(string conversationId, out string? refusalKey,
+        string? unansweredReason = null)
     {
         refusalKey = null;
         if (_compressingConversations.Contains(conversationId))
@@ -3143,7 +3164,7 @@ public sealed class ChatWorkspace : IDisposable
             return false;
         }
 
-        StartRun(conversationId);
+        StartRun(conversationId, unansweredReason);
         return true;
     }
 
@@ -4296,7 +4317,12 @@ public sealed class ChatWorkspace : IDisposable
                 opened.Messages.RemoveAt(opened.Messages.Count - 1);
         });
 
-    private void StartRun(string conversationId)
+    /// <summary>Starts the next attempt on this transcript. <paramref name="unansweredReason"/> is what a call that
+    /// never ran is told about itself: only the caller knows whether something new arrived (an edit, a fresh
+    /// question) or nothing did (the person pressed ↻ on a round that died), and the two sentences ask the model
+    /// for opposite things. Null keeps the default, which is the honest one for every start where a new message
+    /// really did come in first.</summary>
+    private void StartRun(string conversationId, string? unansweredReason = null)
     {
         // Whoever starts a session answering has taken care of the messages a wake was queued for — including a
         // message the user typed themselves, which outranks waiting for someone else's slot.
@@ -4313,7 +4339,7 @@ public sealed class ChatWorkspace : IDisposable
         _sessions.TryUpdate(conversationId,
             opened => opened.CloseUnansweredToolCalls(turn => turn.ToolName == AskUserTool.ToolName
                 ? ToolApprovalResults.QuestionUnanswered
-                : ToolApprovalResults.Superseded));
+                : unansweredReason ?? ToolApprovalResults.Superseded));
 
         if (_runs.TryGetValue(conversationId, out var waiting) && !waiting.IsStreaming)
         {
@@ -4420,7 +4446,7 @@ public sealed class ChatWorkspace : IDisposable
             // in the registry until it arrives.
             return (RunResult.Parked, null, false, null);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
             var stopped = run.StopRequested;
             // The one failure nobody can diagnose from the sentence they are handed: "timed out" covers a dead
@@ -4431,6 +4457,19 @@ public sealed class ChatWorkspace : IDisposable
             // halfway through is not necessarily; a third possibility, invisible until the wait was reported, is
             // that the provider never took the request at all and Hub spent the window obeying its Retry-After.
             var (waits, waited) = run.RetryCost();
+            // A fourth possibility, and the one this branch exists to stop: something below Hub cancelled through
+            // the same linked token — the client pipeline's own read timeout, a transport giving up. Saying "the
+            // 480s first-frame deadline fired" about a wait the app never armed would send the next reader to
+            // check a clock that was innocent, so the run is asked who fired before the sentence is written.
+            if (!stopped && !run.DeadlineFired)
+            {
+                Audit(run.ConversationId,
+                    $"Request cancelled on {request.Value.ModelName}: the client pipeline cancelled it "
+                    + $"({ex.GetType().Name}) with no deadline of this run fired, "
+                    + $"{run.LiveReasoning.Length} chars of reasoning and {run.LiveText.Length} of text buffered");
+                return (RunResult.Failed, "ChatStreamInterrupted", true, null);
+            }
+
             Audit(run.ConversationId, stopped
                 ? $"Cancelled by the user after {run.Elapsed.TotalSeconds:0}s on {request.Value.ModelName}"
                 : $"Idle timeout: the {run.IdleWindow.TotalSeconds:0.###}s "

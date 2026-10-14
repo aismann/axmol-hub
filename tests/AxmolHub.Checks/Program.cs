@@ -3281,6 +3281,16 @@ if (args.Contains("--check-ai-context"))
     denied.Add(SpinCall("c3", "run_command", """{"command":"rm x"}"""));
     if (ToolSpinGuard.RefusalFor("run_command", """{"command":"rm x"}""", denied) is null)
         throw new Exception("A third denied attempt was allowed; a refusal is not a state change.");
+    // The sentence a continuation writes over a call that never ran belongs in the same list. Left out, a
+    // never-executed write reads as "the world moved", so the window resets and the loop this guard exists to stop
+    // becomes legal again — the exemption has to be earned by something that actually ran, not by Hub's own note
+    // that nothing did.
+    var unanswered = SpinHistory(
+        ("c1", "run_command", """{"command":"rm x"}""", ToolApprovalResults.NotAnswered),
+        ("c2", "run_command", """{"command":"rm x"}""", ToolApprovalResults.NotAnswered));
+    unanswered.Add(SpinCall("c3", "run_command", """{"command":"rm x"}"""));
+    if (ToolSpinGuard.RefusalFor("run_command", """{"command":"rm x"}""", unanswered) is null)
+        throw new Exception("A call closed as never-answered reset the window; nothing ran, so nothing moved.");
     // An elided result is Hub asking for the re-call — the placeholder says so in its own words.
     var elidedHistory = SpinHistory(("c1", "read_file", """{"path":"a.cpp"}""", "old content"),
         ("c2", "read_file", """{"path":"a.cpp"}""", $"[elided: 2000 characters of tool output — call the tool again if you need this]"));

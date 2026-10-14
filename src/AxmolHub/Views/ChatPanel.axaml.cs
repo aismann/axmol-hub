@@ -2862,8 +2862,13 @@ public partial class ChatPanel : UserControl
     /// <para>It is keyed by conversation rather than a single slot because a run does not end in step with what is
     /// on screen: the reason a session stopped while the person read another one is still news when they come
     /// back, and holding it in one shared field would either lose it or paint it onto the wrong transcript.</para>
+    ///
+    /// <para><c>Retryable</c> marks the endings where the same round is worth asking for again — a timeout, a
+    /// stalled stream, a refused connection. Those carry the ↻ on the line itself, because the alternative was a
+    /// sentence telling the person to retry and the only way to do it hidden on the last message row, revealed on
+    /// hover, three pixels from a notice that is not part of the transcript.</para>
     /// </summary>
-    private readonly Dictionary<string, (string Text, bool Danger, int OwnTurns)> _notices =
+    private readonly Dictionary<string, (string Text, bool Danger, int OwnTurns, bool Retryable)> _notices =
         new(StringComparer.Ordinal);
 
     private void AppendNotice(string text, bool danger)
@@ -2877,8 +2882,9 @@ public partial class ChatPanel : UserControl
 
     /// <summary>Files what a run or an action had to say for one conversation. The line reaches the screen through
     /// <see cref="RenderNotice"/>, which paints only the conversation being looked at.</summary>
-    private void RememberNotice(string conversationId, string text, bool danger, int ownTurns)
-        => _notices[conversationId] = (text, danger, ownTurns);
+    private void RememberNotice(string conversationId, string text, bool danger, int ownTurns,
+        bool retryable = false)
+        => _notices[conversationId] = (text, danger, ownTurns, retryable);
 
     /// <summary>Paints the stored notice, if it still is news: same conversation, nothing of the person's said
     /// since. Called from the render path, so a rebuild cannot erase it and a new message cannot be answered by
@@ -2907,7 +2913,8 @@ public partial class ChatPanel : UserControl
             return;
         }
 
-        NoticeHost.Children.Add(BuildNoticeRow(notice.Text, notice.Danger));
+        NoticeHost.Children.Add(BuildNoticeRow(notice.Text, notice.Danger,
+            notice.Retryable ? RegenerateAsync : null));
     }
 
     /// <summary>The notice row on screen, whichever check needs it. It lives below the flow rather than at the end
@@ -2915,9 +2922,9 @@ public partial class ChatPanel : UserControl
     private Grid? CurrentNoticeRow
         => NoticeHost.Children.LastOrDefault() is Grid row && row.Classes.Contains("notice") ? row : null;
 
-    private static Grid BuildNoticeRow(string text, bool danger)
+    private static Grid BuildNoticeRow(string text, bool danger, Action? onRetry)
     {
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*" + (onRetry is null ? "" : ",Auto")) };
         row.Classes.Add("notice");
         row.HorizontalAlignment = HorizontalAlignment.Center;
         row.MaxWidth = 820;
@@ -2940,6 +2947,17 @@ public partial class ChatPanel : UserControl
         var label = new TextBlock { Text = text };
         Grid.SetColumn(label, 1);
         row.Children.Add(label);
+
+        // The same button the last message row uses, built by the same helper: the tooltip, the hover reveal and
+        // the glyph's offset inside its own plate are already settled there, and a second copy of an action button
+        // is how the notice ends up looking like somebody else's widget.
+        if (onRetry is not null)
+        {
+            var retry = IconActionButton("RetryMessage", "Hub.Icon.Refresh", onRetry);
+            Grid.SetColumn(retry, 2);
+            row.Children.Add(retry);
+        }
+
         return row;
     }
 
@@ -3137,6 +3155,10 @@ public partial class ChatPanel : UserControl
         return true;
     }
 
+    /// <summary>Asks for the same round again. Nothing new is appended — the workspace rebuilds the request from
+    /// the transcript, so the question that went unanswered goes back out as the turn it already was. The notice
+    /// that explained the failure is retired here rather than by the turn-count rule, because a continuation adds
+    /// no turn of the person's and the old line would otherwise sit above an answer that is now arriving.</summary>
     private void RegenerateAsync()
     {
         if (_chat.ActiveConversation is not { } conversation) return;
@@ -3151,8 +3173,28 @@ public partial class ChatPanel : UserControl
         if (!_chat.Regenerate(conversation.Id)) return;
 
         ForceRebuildMessages();
-        if (!_chat.TryEnqueueContinuation(conversation.Id, out var refusalKey))
+        if (!_chat.TryEnqueueContinuation(conversation.Id, out var refusalKey,
+                ToolApprovalResults.NotAnswered))
+        {
             AppendNotice(HubStrings.Get(refusalKey ?? "ChatFailed"), danger: true);
+            return;
+        }
+
+        ForgetNotice(conversation.Id);
+    }
+
+    /// <summary>Drops the notice a retryable ending filed on one conversation, and repaints if that conversation is
+    /// the one on screen. Only a <b>retryable</b> line goes: an informational notice is the tail of the transcript
+    /// until the person speaks again, and a rebuild — or a ↻ pressed for another reason — must not erase it as
+    /// collateral, which is a rule this suite already holds. The line offering this button is the exception because
+    /// it is the answer to the button: the failure it describes is the thing now being retried. Only the viewed
+    /// session is redrawn — a background session's news never moves the reader's position.</summary>
+    private void ForgetNotice(string conversationId)
+    {
+        if (!_notices.TryGetValue(conversationId, out var notice) || !notice.Retryable) return;
+        _notices.Remove(conversationId);
+        if (conversationId != _chat.ViewedConversationId) return;
+        RenderNotice();
     }
 
     /// <summary>Forks the conversation at this message into a fresh session and switches to it. Refused while
@@ -3409,11 +3451,19 @@ public partial class ChatPanel : UserControl
     /// which is how "the user pressed stop" and "the stream stalled" used to blur together.</summary>
     private void AppendRunNotice(string conversationId, RunOutcome outcome)
     {
+        // Which endings are worth asking for again. Everything here is a round that never got an answer through
+        // no fault of the question: a window ran out, the stream stopped, the connection or the limit got in the
+        // way. A refusal the person made (ChatCancelled, an approval that went away) is not on the list — pressing
+        // ↻ after saying "no" would ask for the same thing the person just declined.
         if (outcome.NoticeKey is { } key)
             RememberNotice(conversationId, HubStrings.Get(key) + (outcome.Detail ?? ""),
-                outcome.NoticeDanger, outcome.UserTurns);
+                outcome.NoticeDanger, outcome.UserTurns,
+                key is "ChatNoFirstFrame" or "ChatTimedOut" or "ChatTimedOutAfterRetries"
+                    or "ChatStreamInterrupted" or "ChatConnectionFailed" or "ChatRateLimited"
+                    or "ChatFailed" or "ChatNoResponse");
         else if (!outcome.ReceivedText)
-            RememberNotice(conversationId, HubStrings.Get("ChatNoResponse"), true, outcome.UserTurns);
+            RememberNotice(conversationId, HubStrings.Get("ChatNoResponse"), true, outcome.UserTurns,
+                retryable: true);
 
         // A session that finished out of sight is filed and left alone: repainting or scrolling it would move
         // the reading position of the conversation the person is actually looking at.
@@ -4348,6 +4398,21 @@ public partial class ChatPanel : UserControl
     /// <summary>Whether the notice strip is on screen at all — the rebuild-survival question, which the text alone
     /// cannot answer because the stored string and the painted row are two different facts.</summary>
     internal bool NoticeVisibleForCheck => CurrentNoticeRow is not null;
+
+    /// <summary>Presses the ↻ on the notice strip exactly as a click would, so the check proves the line carries an
+    /// action and that the action is the panel's own continuation — not a test calling the workspace behind the
+    /// button's back.</summary>
+    internal bool ClickNoticeActionForCheck()
+    {
+        if (CurrentNoticeRow?.Children.OfType<Button>().FirstOrDefault() is not { } button) return false;
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        return true;
+    }
+
+    /// <summary>Whether the painted notice offers a retry at all. Separate from the click because "the button is
+    /// there" is the claim a timeout line has to answer: a retryable ending and a plain sentence look identical
+    /// until something asks which one was drawn.</summary>
+    internal bool NoticeRetryVisibleForCheck => CurrentNoticeRow?.Children.OfType<Button>().Any() == true;
 
     /// <summary>Identity of the painted notice row. A repaint makes a new one, so two different tokens across a
     /// rebuild say the strip was cleared and filled again — which is the only way to tell "it survived" apart
