@@ -51,6 +51,15 @@ public partial class ChatSidebar : UserControl
     private string _runsSignature = "";
 
     /// <summary>
+    /// Thinking glyphs dropped off the tree by a rebuild. Kept only while one of them is still ticking: a detached
+    /// control's <c>IsVisible</c> is still true, so a glyph whose clock was not stood down before its row was torn
+    /// away would tick forever on a control nothing holds on screen — invisible in every screenshot, and the one
+    /// leak this list can produce. Pruned to the ticking ones after every rebuild, so a healthy list is always
+    /// empty here and a broken one grows.
+    /// </summary>
+    private readonly List<ActivityGlyph> _droppedGlyphs = [];
+
+    /// <summary>
     /// Where a refusal lands. Re-pointing a workspace can fail on a fact about the disk — the folder the user
     /// typed is not there — and the bottom strip is where the shell says such a thing without interrupting with
     /// a card. Left unsettable because a sidebar built without a shell still has to work.
@@ -139,14 +148,26 @@ public partial class ChatSidebar : UserControl
         .Where(summary => _chat.IsRunning(summary.Id) || _chat.IsWakeQueued(summary.Id))
         .Select(summary => summary.Id + ":" + (_chat.IsRunning(summary.Id) ? "running" : "queued")));
 
-    /// <summary>How many rows carry a running dot. Counted rather than sampled: a dot on a row nobody asked
-    /// for is the same bug as one that never appears.</summary>
+    /// <summary>How many rows carry the running mark — the thinking glyph, counted rather than sampled: a mark on
+    /// a row nobody asked for is the same bug as one that never appears. The name is the old one so the shell
+    /// assertions read as they always did; only what counts as "running" moved from an ellipse to the glyph.</summary>
     internal int RunningDotCountForCheck => ConversationList.GetLogicalDescendants()
-        .OfType<Ellipse>().Count(dot => dot.Name == "RunningDot");
+        .OfType<ActivityGlyph>().Count(glyph => glyph.IsVisible);
 
     /// <summary>How many rows are waiting for an answer slot rather than answering.</summary>
     internal int QueuedWakeDotCountForCheck => ConversationList.GetLogicalDescendants()
         .OfType<Ellipse>().Count(dot => dot.Name == "QueuedWakeDot");
+
+    /// <summary>Whether one row's thinking glyph has its clock running. The suite asserts the stop as well as the
+    /// start: an animation that outlives its row is invisible in every screenshot and expensive in every profile.</summary>
+    internal bool SidebarGlyphTickingForCheck(string id) => ThinkingGlyphs(id).Any(glyph => glyph.IsTickingForCheck);
+
+    /// <summary>How many glyphs are still ticking after a rebuild stood every one of them down. Must be zero —
+    /// this is the leak half of the same rule, and it reads the glyphs the rebuild dropped, not the tree.</summary>
+    internal int SidebarTickingGlyphCountForCheck => _droppedGlyphs.Count(glyph => glyph.IsTickingForCheck);
+
+    private IEnumerable<ActivityGlyph> ThinkingGlyphs(string id) => Rows(id)
+        .SelectMany(row => row.GetLogicalDescendants().OfType<ActivityGlyph>());
 
     /// <summary>
     /// One group of the list. <c>WorkspaceRoot</c> is the directory the group is made of, and the only thing that
@@ -172,6 +193,17 @@ public partial class ChatSidebar : UserControl
         var activeId = _chat.ActiveConversation?.Id;
         var live = Matching(_chat.Conversations, query);
         var archived = Matching(_chat.ArchivedConversations, query);
+
+        // Stand down every thinking glyph before its row is torn away. A detached control keeps IsVisible == true,
+        // so the glyph's own clock guard would never see the row leave and would tick forever on a control nothing
+        // is looking at. ApplyPhase is the glyph's own public way to end motion (it hides and stops the clock in the
+        // same call), so the sidebar does not reach into the glyph to do this — the animation stays exactly what
+        // the transcript uses. The dropped glyphs are remembered for one check: a rebuild must leave nothing
+        // ticking behind it, and a control that left the tree cannot be found through the tree again.
+        var dropped = ConversationList.GetLogicalDescendants().OfType<ActivityGlyph>().ToList();
+        _droppedGlyphs.AddRange(dropped);
+        foreach (var glyph in dropped) glyph.ApplyPhase(ActivityPhase.ShowingText, 0);
+        _droppedGlyphs.RemoveAll(glyph => !glyph.IsTickingForCheck);
 
         ConversationList.Children.Clear();
 
@@ -634,7 +666,10 @@ public partial class ChatSidebar : UserControl
             Margin = new Thickness(depth * 12, 0, 0, 0),
         };
         row.Classes.Add("session-row");
-        var layout = new Grid { ColumnDefinitions = new ColumnDefinitions("*,10,36") };
+        // The middle column is the status slot, and it is sized to the widest mark it can hold — the thinking
+        // glyph's running dot needs room past the arc's ends — so every mark sits at the same x on every row and
+        // nothing in this grid reflows when a state changes.
+        var layout = new Grid { ColumnDefinitions = new ColumnDefinitions("*,16,36") };
         var label = new DockPanel { LastChildFill = true };
         var titleBlock = new TextBlock
         {
@@ -647,7 +682,6 @@ public partial class ChatSidebar : UserControl
         // in the way. A bookmark rather than a thumbtack — see Hub.Icon.Pin — and a Path rather than a glyph in
         // the text: every reader of a row's title takes the first TextBlock it can find.
         if (summary.Pinned) label.Children.Add(BuildPinBadge());
-        if (summary.PendingApprovals > 0) label.Children.Add(BuildApprovalBadge(summary));
         label.Children.Add(titleBlock);
         var item = new Button
         {
@@ -714,40 +748,13 @@ public partial class ChatSidebar : UserControl
         menuButton.Tag = menu;
 
         layout.Children.Add(item);
-        if (_chat.IsRunning(summary.Id))
-        {
-            // A dot is the whole indicator: a reply is arriving in this session whether or not anyone is
-            // looking at it, and it leaves with the run instead of waiting to be noticed.
-            var running = new Ellipse
-            {
-                Name = "RunningDot",
-                Width = 6,
-                Height = 6,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-            running.Bind(Shape.FillProperty, new DynamicResourceExtension("Hub.Accent"));
-            Grid.SetColumn(running, 1);
-            layout.Children.Add(running);
-        }
-        else if (_chat.IsWakeQueued(summary.Id))
-        {
-            // Hollow rather than filled: another session has already written to this one and nothing is being
-            // said yet. A second filled dot would read as two replies, and the difference is the whole point.
-            var queued = new Ellipse
-            {
-                Name = "QueuedWakeDot",
-                Width = 6,
-                Height = 6,
-                StrokeThickness = 1,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-            queued.Bind(Shape.StrokeProperty, new DynamicResourceExtension("Hub.Accent"));
-            ToolTip.SetTip(queued, HubStrings.Get("ConversationQueuedTip"));
-            Grid.SetColumn(queued, 1);
-            layout.Children.Add(queued);
-        }
+        // The status slot: at most one mark, always a child of this row's Grid and never of the session Button —
+        // a mark nested in the button's content floats against the title and drifts with its length, which is how
+        // the old shield badge lost its place. The order is the whole scheme: a decision owed outranks a reply
+        // arriving, which outranks a session waiting for an answer slot; an idle row carries nothing at all.
+        if (summary.PendingApprovals > 0) layout.Children.Add(BuildApprovalDot(summary));
+        else if (_chat.IsRunning(summary.Id)) layout.Children.Add(BuildThinkingGlyph());
+        else if (_chat.IsWakeQueued(summary.Id)) layout.Children.Add(BuildQueuedDot());
 
         Grid.SetColumn(menuButton, 2);
         layout.Children.Add(menuButton);
@@ -813,32 +820,73 @@ public partial class ChatSidebar : UserControl
     }
 
     /// <summary>
-    /// That a session owes somebody a decision. It stays visible rather than waiting for a hover because a hidden
-    /// actionable request is a blocked stream: the run is parked on this row until a person clicks. The row itself
-    /// is still the only click target, so opening the session is how the question gets answered.
+    /// That a session owes somebody a decision — tool approval, a question the assistant asked, or a plan waiting
+    /// for its verdict, which is the one thing all three share. It stays visible rather than waiting for a hover
+    /// because a hidden actionable request is a blocked stream: the run is parked on this row until a person
+    /// clicks. The row itself is still the only click target, so opening the session is how the question gets
+    /// answered.
     ///
-    /// A glyph alone, never a number: a session parks on its first unanswered call and a newer message supersedes
-    /// it, so what a row can owe is exactly one decision. Counting to two would be a second mark for one fact.
+    /// A plain red dot rather than the shield badge it replaces: the badge lived inside the session button's
+    /// content, so its place on the row drifted with the title's length and it could land anywhere the label
+    /// ended. A dot in the status column is at the same x on every row whatever the title says. Red, not accent,
+    /// because this is the one mark that is asking for something; the dot alone, never a number — a session parks
+    /// on its first unanswered call and a newer message supersedes it, so what a row can owe is exactly one
+    /// decision.
     /// </summary>
-    private static Control BuildApprovalBadge(ConversationSummary summary)
+    private static Control BuildApprovalDot(ConversationSummary summary)
     {
-        var badge = new StackPanel
+        var dot = new Ellipse
         {
-            Name = "ApprovalBadge",
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(6, 0, 0, 0),
+            Name = "ApprovalDot",
+            Width = 6,
+            Height = 6,
+            HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        var glyph = new Path { Width = 11, Height = 11, Stretch = Stretch.Uniform };
-        // A Geometry resource is theme-independent, so no variant is passed — the same lookup shape
-        // MarkdownMessageRenderer uses for its success tick.
-        glyph.Data = GeometryAt("Hub.Icon.PermissionAsk");
-        glyph.Bind(Shape.FillProperty, new DynamicResourceExtension("Hub.Accent"));
-        badge.Children.Add(glyph);
-        ToolTip.SetTip(badge, string.Format(CultureInfo.CurrentCulture,
+        dot.Bind(Shape.FillProperty, new DynamicResourceExtension("Hub.AlertDot"));
+        ToolTip.SetTip(dot, string.Format(CultureInfo.CurrentCulture,
             HubStrings.Get("PendingApprovalsTip"), summary.PendingApprovals));
-        DockPanel.SetDock(badge, Dock.Right);
-        return badge;
+        Grid.SetColumn(dot, 1);
+        return dot;
+    }
+
+    /// <summary>
+    /// That a reply is arriving in this session whether or not anyone is looking at it, and it leaves with the run
+    /// instead of waiting to be noticed. The transcript's own <see cref="ActivityGlyph"/> plays here unchanged —
+    /// the same waiting arc, the same clock — so the sidebar and the conversation say "thinking" in one language;
+    /// what differs is only the canvas it is drawn on. The status column is sized to the glyph rather than the
+    /// glyph squeezed into the column: the running dot needs radius + its own radius of room at each end of the
+    /// arc, and a mark that is clipped at its extremes reads as a broken mark.
+    /// </summary>
+    private Control BuildThinkingGlyph()
+    {
+        var glyph = new ActivityGlyph { Width = 16, Height = 12 };
+        glyph.Bind(ActivityGlyph.TrackBrushProperty, new DynamicResourceExtension("Hub.Border"));
+        glyph.Bind(ActivityGlyph.DotBrushProperty, new DynamicResourceExtension("Hub.Accent"));
+        glyph.ApplyPhase(ActivityPhase.WaitingFirstToken, 1);
+        Grid.SetColumn(glyph, 1);
+        return glyph;
+    }
+
+    /// <summary>
+    /// That another session has already written to this one and nothing is being said yet. Hollow rather than
+    /// filled: a second filled dot would read as two replies, and the difference is the whole point.
+    /// </summary>
+    private static Control BuildQueuedDot()
+    {
+        var queued = new Ellipse
+        {
+            Name = "QueuedWakeDot",
+            Width = 6,
+            Height = 6,
+            StrokeThickness = 1,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        queued.Bind(Shape.StrokeProperty, new DynamicResourceExtension("Hub.Accent"));
+        ToolTip.SetTip(queued, HubStrings.Get("ConversationQueuedTip"));
+        Grid.SetColumn(queued, 1);
+        return queued;
     }
 
     private async System.Threading.Tasks.Task RenameConversationAsync(string id, string currentTitle)
@@ -884,25 +932,49 @@ public partial class ChatSidebar : UserControl
         var content => content?.ToString(),
     };
 
-    private IEnumerable<StackPanel> ApprovalBadges(string id) => Rows(id)
-        .Select(row => (row.Child as Grid)?.Children.OfType<Button>().FirstOrDefault())
-        .OfType<Button>()
-        .SelectMany(button => (button.Content as DockPanel)?.GetLogicalDescendants() ?? [])
-        .OfType<StackPanel>()
-        .Where(panel => panel.Name == "ApprovalBadge");
+    private IEnumerable<Ellipse> ApprovalDots(string id) => Rows(id)
+        .Select(row => row.Child as Grid)
+        .OfType<Grid>()
+        .SelectMany(grid => grid.Children.OfType<Ellipse>())
+        .Where(dot => dot.Name == "ApprovalDot");
 
-    internal bool HasApprovalBadgeForCheck(string id) => ApprovalBadges(id).Any();
+    internal bool HasApprovalBadgeForCheck(string id) => ApprovalDots(id).Any();
 
-    /// <summary>Whether a badge carries its picture. A geometry resource that failed to resolve leaves a row with
-    /// nothing but a tooltip to find, which is the silent half of this feature.</summary>
+    /// <summary>Whether the dot carries its ink. A resource that failed to resolve leaves a row with nothing but a
+    /// tooltip to find, which is the silent half of this feature — and a dot painted in the accent rather than the
+    /// badge red would still look like a mark, so the colour is what is read back, not mere presence.</summary>
     internal bool ApprovalBadgeGlyphIsDrawnForCheck(string id)
-        => ApprovalBadges(id).Any(badge => badge.Children.OfType<Avalonia.Controls.Shapes.Path>()
-            .Any(shape => shape.Data is not null));
+        => ApprovalDots(id).Any(dot => dot.Fill is ISolidColorBrush fill && fill.Color == AlertDotColor);
 
-    /// <summary>The badge's own words, or empty when the row has no badge — a missing element has to read as a
+    private static Color AlertDotColor => Application.Current is { } app
+        && app.TryGetResource("Hub.AlertDot", app.ActualThemeVariant, out var brush) == true
+        && brush is ISolidColorBrush alert
+        ? alert.Color
+        : Colors.Transparent;
+
+    /// <summary>The dot's own words, or empty when the row has no dot — a missing element has to read as a
     /// failed assertion, not as an exception that takes the rest of the suite with it.</summary>
     internal string ApprovalBadgeTipForCheck(string id)
-        => ApprovalBadges(id).Select(badge => ToolTip.GetTip(badge)?.ToString() ?? "").FirstOrDefault() ?? "";
+        => ApprovalDots(id).Select(dot => ToolTip.GetTip(dot)?.ToString() ?? "").FirstOrDefault() ?? "";
+
+    /// <summary>
+    /// That the dot sits in the row's own status column rather than inside the session button's content. This is
+    /// the layering the old shield badge got wrong — a mark nested in the label floats against the title and
+    /// drifts with its length — so it is asserted as structure: the dot is a child of the row Grid at the status
+    /// column, and no Button is its ancestor.
+    /// </summary>
+    internal bool ApprovalDotIsRowLevelForCheck(string id) => ApprovalDots(id).Any(dot =>
+        dot.Parent is Grid grid && grid.Children.Contains(dot) && Grid.GetColumn(dot) == 1
+        && !dot.GetLogicalAncestors().OfType<Button>().Any());
+
+    /// <summary>Where the dot sits across, measured against the list itself. Two rows that differ in title length
+    /// and in pin state must agree to the pixel: the mark is placed by its column, not by how much room the title
+    /// left it. Read as geometry because that claim is invisible to a presence check.</summary>
+    internal double ApprovalDotXForCheck(string id) => ApprovalDots(id)
+        .Select(dot => dot.TranslatePoint(new Point(0, 0), ConversationScrollViewer))
+        .Where(point => point is not null)
+        .Select(point => point!.Value.X)
+        .FirstOrDefault(-1);
 
     private IEnumerable<StackPanel> PinBadges(string id) => Rows(id)
         .Select(row => (row.Child as Grid)?.Children.OfType<Button>().FirstOrDefault())

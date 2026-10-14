@@ -2397,6 +2397,12 @@ public partial class ShellCheckWindow : Window
               && shell.ChatRunsVisibleForCheck
               && shell.ChatRunsTextForCheck == string.Format(HubStrings.Get("RunningSessionsFormat"), 2),
             "侧栏两个运行点同亮，状态条计数与会话数一致（实际 " + sidebar.RunningDotCountForCheck + " 个点）");
+        // The running mark is the transcript's own thinking animation, ticking — and it is not the red dot: the two
+        // answer different questions ("a reply is arriving" vs "you owe somebody a decision") and a row says one of
+        // them, never both.
+        Check(sidebar.SidebarGlyphTickingForCheck(gated.Id) && sidebar.SidebarGlyphTickingForCheck(third.Id)
+              && !sidebar.HasApprovalBadgeForCheck(gated.Id) && !sidebar.HasApprovalBadgeForCheck(third.Id),
+            "思考中的两行亮的是会话里那段思考动效（计时器在走），不是红点——红点只属于等你决定的行");
 
         // The bubble is rebuilt from the run, so a reply that arrived while the session was hidden is on screen
         // the moment it is not — no lost output, no second copy kept by the view.
@@ -2422,6 +2428,10 @@ public partial class ShellCheckWindow : Window
 
         Check(chat.RunningCount == 0 && sidebar.RunningDotCountForCheck == 0 && !shell.ChatRunsVisibleForCheck,
             "会话跑完后运行点熄灭、状态条计数消失（实际 " + sidebar.RunningDotCountForCheck + " 个点）");
+        // The leak half of the same rule: a rebuild stands every dropped glyph's clock down, and a ticking one left
+        // behind is invisible in every screenshot while costing a timer tick every 60ms forever.
+        Check(sidebar.SidebarTickingGlyphCountForCheck == 0,
+            "列表重建后没有一个被丢下的思考动效还在走表（实际 " + sidebar.SidebarTickingGlyphCountForCheck + " 个仍在走）");
 
         // The cap is refused out loud. A click nobody heard back from, parked behind three streams, is worse
         // than a refusal — and the notice has to be real text, not a key that fell through.
@@ -7306,14 +7316,18 @@ public partial class ShellCheckWindow : Window
             Check(chat.Conversations.Any(summary => summary.Id == parkSession.Id && summary.PendingApprovals == 1),
                 "会话索引报告有一个待批准");
             // A decision only helps if the session that owes it is findable, and the session list is where a person
-            // looks first. A hidden actionable request is a blocked stream.
+            // looks first. A hidden actionable request is a blocked stream. The mark is a static red dot in the row's
+            // status column: red because it is asking for something, static because it is not a rhythm — and no
+            // thinking glyph may share the slot with it.
             Check(sidebar.HasApprovalBadgeForCheck(parkSession.Id)
                   && sidebar.ApprovalBadgeGlyphIsDrawnForCheck(parkSession.Id)
                   && sidebar.ApprovalBadgeTipForCheck(parkSession.Id)
                       .Contains(string.Format(CultureInfo.CurrentCulture,
-                          HubStrings.Get("PendingApprovalsTip"), 1), StringComparison.Ordinal),
-                "等待批准的那一行在侧栏标出角标，图形真取到了、话说清了（提示："
-                + sidebar.ApprovalBadgeTipForCheck(parkSession.Id) + "）");
+                          HubStrings.Get("PendingApprovalsTip"), 1), StringComparison.Ordinal)
+                  && sidebar.ApprovalDotIsRowLevelForCheck(parkSession.Id)
+                  && !sidebar.SidebarGlyphTickingForCheck(parkSession.Id),
+                "等待批准的那一行在侧栏状态槽标出静态红点：颜色是徽标红、话说清了、就长在行自己的状态列里"
+                + "而不是嵌在标题按钮里，且思考动效让位（提示：" + sidebar.ApprovalBadgeTipForCheck(parkSession.Id) + "）");
             // A call waiting for permission is the record of a decision owed. Archiving it behind a summary would
             // answer that decision by losing it, so compression stays refused for as long as it waits — including
             // from inside the run that parked it.
@@ -7566,6 +7580,21 @@ public partial class ShellCheckWindow : Window
             Check(sidebar.HasApprovalBadgeForCheck(denySession.Id)
                   && sidebar.HasApprovalBadgeForCheck(badgeSession.Id),
                 "两个会话同时等批准时两条行都标出角标，包括没在看的那一个");
+            // Position is the column's, not the title's: the old shield badge sat inside the label and drifted with
+            // the title's length. Pin one and give it a title that fills the row — its dot must stay at the same x as
+            // its neighbour's, because the status column puts it there.
+            sidebar.TogglePinForCheck(badgeSession.Id);
+            sidebar.RenameConversationForCheck(badgeSession.Id,
+                "置顶之后标题排满整行也推不动这个红点置顶之后标题排满整行也推不动这个红点");
+            sidebar.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(sidebar.ApprovalDotIsRowLevelForCheck(badgeSession.Id)
+                  && Math.Abs(sidebar.ApprovalDotXForCheck(badgeSession.Id)
+                              - sidebar.ApprovalDotXForCheck(denySession.Id)) < 0.5,
+                "置顶加长标题也挪不动红点：它长在行的状态列里，位置与标题长度、置顶与否无关（X "
+                + sidebar.ApprovalDotXForCheck(badgeSession.Id) + " vs "
+                + sidebar.ApprovalDotXForCheck(denySession.Id) + "）");
             chat.TryResolveApproval(badgeSession.Id, otherWaiting ?? "", approved: false,
                 alwaysAllow: false, out _);
             Dispatcher.UIThread.RunJobs();

@@ -61,6 +61,12 @@
       <SolidColorBrush x:Key="Hub.DangerText" Color="#F294A7" />
       <SolidColorBrush x:Key="Hub.DangerBorder" Color="#8A5A64" />
 
+      <!-- Alert red, and it is not a shade of Hub.Danger. Danger is a statement about an act ("this will do
+           something you cannot undo"); this one is a statement about attention ("something here is waiting for
+           you") — the taskbar badge's job, in the taskbar badge's pure saturated red. Used only by the sidebar's
+           approval dot. -->
+      <SolidColorBrush x:Key="Hub.AlertDot" Color="#FF0000" />
+
       <!-- Diff row tints for the inspector's changed-files view. The ink for a removed line is Hub.DangerText,
            which is ink and not a destructive button, so the "red is only for what runs unasked" rule is not in
            play here; these two are the row's floor. They must separate from Hub.SurfaceAlt in both variants —
@@ -158,6 +164,9 @@
       <SolidColorBrush x:Key="Hub.Danger" Color="#C63A55" />
       <SolidColorBrush x:Key="Hub.DangerText" Color="#C63A55" />
       <SolidColorBrush x:Key="Hub.DangerBorder" Color="#E5A6B2" />
+      <!-- The badge red on light, the same pure red as the Dark dictionary's Hub.AlertDot — one signal, one
+           colour, in both variants. See that note for why it is not a shade of Hub.Danger. -->
+      <SolidColorBrush x:Key="Hub.AlertDot" Color="#FF0000" />
 
       <!-- Light counterparts of the diff row tints; see the Dark dictionary's note. Light has nowhere above
            white to go, so both sit clearly below Hub.SurfaceAlt (#EDEEF2) instead of above it. -->
