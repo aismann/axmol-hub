@@ -75,9 +75,9 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         Deny,
 
         /// <summary>Recorded as waiting for a human. The stream ends here; the call stays unanswered in the
-        /// transcript, which is the record of the decision that is still owed. Parking cancels the request's
-        /// token, so the rest of the response that asked for this call waits on the same answer rather than
-        /// running underneath a cancellation nobody granted it.</summary>
+        /// transcript, which is the record of the decision that is still owed. The batch is judged together so the
+        /// question is asked once for the response, but a sibling the mode already allows is not held behind a
+        /// person's click: a read nobody was asked about still runs while the card is up.</summary>
         Pending,
     }
 
@@ -234,21 +234,24 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                     batch.Clear();
                     batch.AddRange(asked
                         .Select(content => InfoOf(content, said, asked[0].CallId)));
+                    // Recorded first, every call of the response, and only then judged. The order is not tidiness:
+                    // a decision that spans the group writes a waiting state onto each call in it, and a call that
+                    // is not in the transcript yet has nowhere for that state to land — the card would then be
+                    // built from the one call that happened to be written, and would not be rebuilt when the rest
+                    // arrived under the same batch.
                     foreach (var member in batch)
-                    {
-                        // Recorded before it is judged, every call of the batch ahead of any decision: the card the
-                        // person reads has to be built from calls that are already in the transcript, or answering
-                        // it would be deciding something that was never written down.
                         if (onToolStarted is not null) await onToolStarted(member).ConfigureAwait(false);
+                    foreach (var member in batch)
                         verdicts[member.CallId] =
                             await DecideAsync(member, batch, context, token).ConfigureAwait(false);
-                    }
 
                     if (verdicts.Values.Any(v => v.Outcome == ToolGateOutcome.Pending))
                     {
-                        // Nothing sharing the decision runs underneath it. Parking cancels the request's token, so
-                        // a call started after that is work nobody agreed to — the whole batch waits on the card,
-                        // and the answer runs all of it.
+                        // The response parks here, at its head, and this call does not run. A sibling the mode
+                        // allows is still delivered when the loop reaches it — holding a read behind a person's
+                        // click buys nothing and delays something — but nothing is started ahead of time, because
+                        // parking cancels the request's token and a call begun under a cancellation nobody granted
+                        // is work the person never saw on the card.
                         parked.Parked = true;
                         return PendingPlaceholder;
                     }

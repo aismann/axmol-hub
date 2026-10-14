@@ -3895,6 +3895,15 @@ public partial class ChatPanel : UserControl
                 .Select(button => button.Tag as string ?? "").ToArray()
             : [];
 
+    /// <summary>How many calls the card on screen lists as member rows. A card about a single call draws none,
+    /// because its title is already that tool's name — so this reads zero for the one-call card and N for a batch,
+    /// which is the only way to notice a batch that collapsed to its first call while still approving all of them.</summary>
+    internal int ApprovalCardRowsForCheck
+        => ApprovalCards.FirstOrDefault() is { } card
+            ? card.GetLogicalDescendants().OfType<TextBlock>()
+                .Count(block => block.Classes.Contains("approval-member"))
+            : 0;
+
     /// <summary>Whether any of the card's buttons is drawn as a destructive act. Refusing a tool call is an
     /// ordinary answer to an ordinary question, and painting it as a detonation is how a permission UI ends up
     /// trained on saying yes.</summary>

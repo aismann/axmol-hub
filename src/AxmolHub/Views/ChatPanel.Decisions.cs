@@ -397,7 +397,9 @@ public partial class ChatPanel
             if (group.Count > 1)
                 detail.Children.Add(new TextBlock
                 {
-                    Classes = { "approval-label" },
+                    // Two classes: the label's own look, and the hook's handle. A card that quietly dropped a
+                    // member row would still answer the batch correctly, so the rows are counted, not read.
+                    Classes = { "approval-label", "approval-member" },
                     Text = member.ToolName ?? "",
                 });
             AddApprovalDetail(detail, "ChatApprovalArguments", member.ToolArguments);

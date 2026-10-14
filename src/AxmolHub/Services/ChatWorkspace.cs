@@ -4884,10 +4884,11 @@ public sealed class ChatWorkspace : IDisposable
                      ?? ChatClientFactory.Create(request.Provider, request.ModelName, reasoning,
                          onRetryWait: (attempt, delay) => NoteRetryWait(run, attempt, delay));
         var pipeline = new ChatPipeline(client, reasoning);
-        // How many tool brackets each response has opened, counted per batch. A batch that parks never runs, and
-        // the calls its mode let through opened their bracket on the way to that decision: nothing closes them on
-        // the model loop's behalf, and a run still holding one has its inactivity deadline disarmed with no tool
-        // inside it — which is the exact failure the bracket's own comment says it must not become.
+        // How many tool brackets each response has opened, counted per batch. A response that parks stops at its
+        // head call, and any call the mode allowed *ahead* of it opened its bracket on the way to that decision and
+        // is never delivered: nothing else will close it, and a run still holding one has its inactivity deadline
+        // disarmed around a tool that stopped existing when the card went up. Calls behind the parked one are
+        // delivered normally and close their own bracket, so only what is skipped is counted out here.
         var brackets = new Dictionary<string, int>(StringComparer.Ordinal);
         return pipeline.SendAsync(
             request.Provider,

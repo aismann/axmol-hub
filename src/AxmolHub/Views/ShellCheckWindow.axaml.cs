@@ -3560,7 +3560,8 @@ public partial class ShellCheckWindow : Window
             Check(!panel.ViewAtBottomForCheck && panel.ScrollToBottomVisible
                   && Math.Abs(panel.FlowOffsetForCheck - 40) < 1,
                 "跑着的工具调用不再把读数位置拽回底部，也没有因为整段清空而被夹到 0（offset 现在是 "
-                + panel.FlowOffsetForCheck + "）");
+                + panel.FlowOffsetForCheck + "，在底部 " + panel.ViewAtBottomForCheck + "，回底板 "
+                + panel.ScrollToBottomVisible + "）");
             // The group re-derives its rows off the transcript as each call lands, so a row the person opened only
             // stays open if that choice was remembered by the call it reports rather than left on a control that
             // is being replaced.
@@ -5718,6 +5719,9 @@ public partial class ShellCheckWindow : Window
         var fetchSession = chat.StartConversation();
         // A write whose preview is long enough to reach the card's own ceiling, for the expanded state below.
         var longCardSession = chat.StartConversation();
+        // One response asking for three writes. This is the shape the batch card exists for: three decisions the
+        // person is asked to make as one, in one card that has to fit above the composer without covering it.
+        var tripleSession = chat.StartConversation();
         var readClient = new ApprovalChatClient();
         var parkClient = new ApprovalChatClient();
         var denyClient = new ApprovalChatClient();
@@ -5728,6 +5732,7 @@ public partial class ShellCheckWindow : Window
         var autoRunClient = new ApprovalChatClient { ToolName = "run_command" };
         var askRunClient = new ApprovalChatClient { ToolName = "run_command" };
         var movedClient = new ApprovalChatClient();
+        var tripleClient = new ApprovalChatClient();
         var grantClient = new ApprovalChatClient { ToolName = "run_command" };
         var peerClient = new ApprovalChatClient { ToolName = "run_command" };
         // Chosen so the cell is safe even when the rule it tests is broken: `tmp/` is gitignored and the index is
@@ -5819,6 +5824,7 @@ public partial class ShellCheckWindow : Window
                 var id when id == autoRunSession.Id => autoRunClient,
                 var id when id == askRunSession.Id => askRunClient,
                 var id when id == movedSession.Id => movedClient,
+                var id when id == tripleSession.Id => tripleClient,
                 var id when id == fetchSession.Id => fetchClient,
                 var id when id == searchSession.Id => searchClient,
                 var id when id == searchedSession.Id => searchedClient,
@@ -5865,7 +5871,7 @@ public partial class ShellCheckWindow : Window
             batchClient.Thinking = [batchThinking];
             foreach (var session in new[] { readSession, parkSession, denySession, supersededSession, restartSession,
                     badgeSession, batchSession, autoRunSession, askRunSession, movedSession, grantSession, peerSession,
-                    gitWriteSession, fetchSession, searchSession, searchedSession, longCardSession })
+                    gitWriteSession, fetchSession, searchSession, searchedSession, longCardSession, tripleSession })
                 chat.SetWorkspaceRoot(session.Id, workspace);
 
             // ── what the mode answers are, in priority order ──
@@ -6336,6 +6342,66 @@ public partial class ShellCheckWindow : Window
                      == WorkspacePaths.CanonicalRoot(workspace),
                 "拒绝那一张卡就停下整批：两条都有了结果，免批那条也没偷偷跑（结果 "
                 + movedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) + " 条）");
+
+            // ── one card, three writes ──
+            // The card is the half of this change that can fail silently. A batch card that listed only the first
+            // call would still approve all three, still answer the model correctly, and leave a person believing
+            // they authorized one file when they authorized three — so the rows are <i>counted</i>, the title is
+            // read for the number it promises, and the answer is measured against the card's own box: three blocks
+            // of arguments and previews is exactly the content that used to push a footer out of reach.
+            static Dictionary<string, object?> Create(string path, string body) => new()
+            {
+                ["path"] = path,
+                ["old_string"] = "",
+                ["new_string"] = body,
+            };
+            chat.SetApprovalMode(tripleSession.Id, ToolApprovalModes.Ask);
+            // The scratch workspace outlives the run, so a create-mode fixture would read "already exists" on the
+            // second pass and the cell would be about a refusal rather than about a batch.
+            foreach (var name in new[] { "triple-a.md", "triple-b.md", "triple-c.md" })
+                System.IO.File.Delete(System.IO.Path.Combine(workspace, name));
+            tripleClient.Batch =
+            [
+                ("file_write", Create("triple-a.md", "甲")),
+                ("file_write", Create("triple-b.md", "乙")),
+                ("file_write", Create("triple-c.md", "丙")),
+            ];
+            tripleClient.CallsRemaining = 0;
+            chat.OpenConversation(tripleSession.Id);
+            chat.TryEnqueueSend(tripleSession.Id, "建三个文件", null, out _);
+            var tripleCallId = await WaitForPendingCallAsync(tripleSession);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var tripleText = panel.ApprovalCardTextForCheck;
+            Check(tripleCallId is not null
+                  && panel.PendingApprovalCardsForCheck == 1
+                  && panel.ApprovalCardRowsForCheck == 3
+                  && tripleText.Contains("triple-a.md", StringComparison.Ordinal)
+                  && tripleText.Contains("triple-c.md", StringComparison.Ordinal)
+                  && tripleText.Contains(string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                      HubStrings.Get("ChatApprovalBatchWantsFormat"), 3), StringComparison.Ordinal)
+                  // The per-tool grant has no honest place on a card about several tools, so it is not drawn — and
+                  // a person who wants it can answer the calls one at a time by asking the model again.
+                  && !panel.ApprovalCardActionsForCheck.Contains("ApprovalAllowAlways")
+                  && panel.ApprovalActionsOverflowForCheck <= 0
+                  && panel.ComposerInputEnabledForCheck,
+                "三条写问一张卡：三行都在、标题数的是三个操作、按钮没越出卡片、输入框照旧能打字（行 "
+                + panel.ApprovalCardRowsForCheck + "，卡 " + panel.PendingApprovalCardsForCheck
+                + "，溢出 " + panel.ApprovalActionsOverflowForCheck + "）");
+            var tripleAnswers = tripleClient.Answers;
+            chat.TryResolveApproval(tripleSession.Id, tripleCallId ?? "", approved: true,
+                alwaysAllow: false, out _);
+            await WaitUntilAsync(() => tripleClient.Answers > tripleAnswers);
+            var afterTriple = chat.StoredCopyForCheck(tripleSession.Id);
+            Check(afterTriple is not null
+                  && afterTriple.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 3
+                  && afterTriple.Messages.Count(turn => turn.ApprovalState == ChatApprovalStates.Approved) == 3
+                  && afterTriple.FirstMispairedToolCallId() is null && EveryToolCallAnswered(afterTriple)
+                  && new[] { "triple-a.md", "triple-b.md", "triple-c.md" }.All(name =>
+                      System.IO.File.Exists(System.IO.Path.Combine(workspace, name))),
+                "一次批准跑完整批：三个文件都写了，每条结果紧贴自己那条调用，转录仍可重放（工具结果 "
+                + (afterTriple?.Messages.Count(turn => turn.Role == ChatRoles.Tool) ?? -1) + " 条）");
 
             // The other half of 「总是允许」: a grant is supposed to outlive the session that made it, because a new
             // task used to start asking from zero. Asserted across two sessions — the one that clicks and a peer
@@ -7261,7 +7327,7 @@ public partial class ShellCheckWindow : Window
             foreach (var id in new[] { readSession.Id, parkSession.Id, denySession.Id, supersededSession.Id,
                     restartSession.Id, badgeSession.Id, batchSession.Id, autoRunSession.Id, askRunSession.Id,
                     movedSession.Id, grantSession.Id, peerSession.Id, gitWriteSession.Id, screenSession.Id,
-                    fetchSession.Id, longCardSession.Id,
+                    fetchSession.Id, longCardSession.Id, tripleSession.Id,
                     searchSession.Id, searchedSession.Id })
                 chat.DeleteConversation(id);
             await WaitForIdleAsync(chat);
