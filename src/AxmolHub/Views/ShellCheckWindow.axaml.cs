@@ -3840,6 +3840,41 @@ public partial class ShellCheckWindow : Window
                 + chipPane.ChangeRowCountForCheck + " 行）");
             Check(chipPane.ChangeRowExpandedForCheck(0) && chipPane.OpenChangeCountForCheck == 1,
                 "重绘之后读者开着的那一行还开着：刷新不该把他翻开的文件折回去");
+            // ── the same number in the tier that never asked ──
+            // This is the premise the recorded tally exists for. A write only freezes a preview when it parks for a
+            // card, so in 自动审批 there is no diff text in the transcript at all — and a count read off previews
+            // therefore reports nothing for exactly the runs that never interrupted anybody. The number has to come
+            // from the write itself, which is the one moment both sides of it are in memory.
+            var silentSession = chat.StartConversation();
+            chat.SetWorkspaceRoot(silentSession.Id, workspace);
+            chat.SetApprovalMode(silentSession.Id, ToolApprovalModes.Auto);
+            chat.OpenConversation(silentSession.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            chat.ClientOverride = (_, _) => new ApprovalChatClient
+            {
+                CallsRemaining = 1,
+                ToolName = "file_write",
+                Arguments = new Dictionary<string, object?>
+                {
+                    ["path"] = "silent-write.txt",
+                    ["old_string"] = "",
+                    ["new_string"] = "一\n二\n三\n",
+                },
+            };
+            panel.SetInputForCheck("自动审批档新建一个文件，不会有任何卡片");
+            _ = panel.SendComposerForCheck();
+            await panel.WaitForRunToFinishForCheck();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var silentTurn = silentSession.Messages.Find(turn => turn.ToolName == "file_write");
+            Check(panel.RunDiffChipCountForCheck == 1
+                  && panel.RunDiffChipTextForCheck(0).Contains("+3", StringComparison.Ordinal)
+                  && silentTurn?.ApprovalPreview is null && silentTurn?.ChangeLines is { Added: 3, Removed: 0 },
+                "自动审批档那次写入没有卡片、也冻不出预览，组头上照样报出 +3 −0（实际「"
+                + panel.RunDiffChipTextForCheck(0) + "」，预览 "
+                + (silentTurn?.ApprovalPreview is null ? "没有" : "有") + "）");
+            chat.DeleteConversation(silentSession.Id);
             chat.DeleteConversation(chipSession.Id);
             panel.Reload();
             Dispatcher.UIThread.RunJobs();

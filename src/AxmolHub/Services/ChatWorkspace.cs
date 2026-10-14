@@ -555,7 +555,11 @@ public sealed class ChatWorkspace : IDisposable
                 // A command that may change state asks for the gate, and refuses itself when the gate is taken
                 // rather than waiting behind a build it cannot see: a wait reads to the model as a hang, and a
                 // build that looks hung is what makes an agent start a second one.
-                ChangeGateProvider),
+                ChangeGateProvider,
+                // Out of the write and into this conversation's queue, for the same reason the frames go that way
+                // rather than sitting on the scope: the body cannot name its own call, and the call it belongs to
+                // is stamped where the result lands — which for a parked call is a later scope entirely.
+                lines => RecordChangeLines(conversationId, lines)),
             // Null on a session file written before the setting existed reads as allowed, which is the only
             // honest reading of "nobody ever turned it off". Read here rather than at the call site because the
             // tool list is assembled once per request and a parked question can be answered long after.
@@ -589,6 +593,44 @@ public sealed class ChatWorkspace : IDisposable
             return frames;
         }
         return [];
+    }
+
+    /// <summary>How much each write this conversation made actually moved, waiting for the call turn that has to
+    /// carry it. Same shape and same reason as <see cref="_frames"/>: a tool body never learns its call id, and a
+    /// parked call is executed under a later scope than the one it was decided in.
+    ///
+    /// <para>Kept because nothing else in the transcript can answer the question. The only diff a session keeps is
+    /// the preview frozen for a card, and a write the mode allowed without asking froze nothing — so a line count
+    /// read off the transcript is silent for exactly the sessions that ran without interrupting anybody.</para>
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<ChangeLineCounts>> _changeLines = new();
+
+    private void RecordChangeLines(string conversationId, ChangeLineCounts lines)
+    {
+        _changeLines.GetOrAdd(conversationId, _ => new ConcurrentQueue<ChangeLineCounts>()).Enqueue(lines);
+    }
+
+    /// <summary>Take this conversation's next unclaimed write tally, or nothing when the call being answered did
+    /// not land a change.
+    ///
+    /// <para>The predicate is the whole correctness of the pairing, so it is the enqueue condition restated rather
+    /// than a guess at it: <see cref="WorkspaceTools.FileWrite"/> reports only after its bytes reached the disk,
+    /// and every other exit — a refused path, a non-text file, an anchor that missed, an ambiguous one, a write
+    /// that failed — returns before that and reports nothing. Draining on those would take a number belonging to a
+    /// later call and stamp it on this one. A call that never ran at all (denied, abandoned behind a stopped turn)
+    /// answers with a sentence that is not <c>Created</c> or <c>Edited</c>, so it drains nothing either.</para>
+    ///
+    /// <para>Order is safe for the reason the frames comment gives: a write is never in the batch's concurrency-safe
+    /// class, so writes run one at a time and their answers are delivered in the order the model asked for them.</para>
+    /// </summary>
+    private ChangeLineCounts? TakeWriteTally(string conversationId, string? toolName, string result)
+    {
+        if (!string.Equals(toolName, ChatChanges.FileWriteTool, StringComparison.Ordinal)) return null;
+        if (ChatChanges.VerdictOf(result) is not (ChangeVerdict.Created or ChangeVerdict.Edited)) return null;
+        return _changeLines.TryGetValue(conversationId, out var queue)
+               && queue.TryDequeue(out var lines)
+            ? lines
+            : null;
     }
 
     /// <summary>
@@ -3805,15 +3847,23 @@ public sealed class ChatWorkspace : IDisposable
     /// carry the marker must not get a revert button: what decides is which tool ran.</summary>
     private const string FileWriteTool = "file_write";
 
-    /// <summary>Records on the <i>call</i> turn which copy would undo it. The call turn is the one the card is
-    /// built from and the one that outlives a restart, so the undo rides on it rather than on the result — and it
-    /// rides next to the approval state, which is what decides whether the row shows a question or a record.</summary>
-    private static void RecordUndoCopy(Conversation conversation, string callId, string toolName, string result)
+    /// <summary>Records on the <i>call</i> turn which copy would undo it and how far the write moved the file. The
+    /// call turn is the one the card is built from and the one that outlives a restart, so both facts ride on it
+    /// rather than on the result — and they ride together, in one replacement, because two writes to one turn would
+    /// mean a tally could land on a call whose copy was not recorded.
+    ///
+    /// <para>Neither fact is a condition of the other, which is what makes the guard below read <c>||</c>: a file
+    /// this session created has no pre-image, so it has no copy name, and it still moved lines.</para>
+    /// </summary>
+    private static void RecordWriteFacts(Conversation conversation, string callId, string toolName, string result,
+        ChangeLineCounts? lines)
     {
-        if (toolName != FileWriteTool || ChatUndoStore.NameFromResult(result) is not { } name) return;
+        if (toolName != FileWriteTool) return;
+        var name = ChatUndoStore.NameFromResult(result);
+        if (name is null && lines is null) return;
         var index = conversation.IndexOfToolCall(callId);
         if (index < 0) return;
-        conversation.Messages[index] = conversation.Messages[index] with { UndoName = name };
+        conversation.Messages[index] = conversation.Messages[index] with { UndoName = name, ChangeLines = lines };
     }
 
     /// <summary>Where an approval decision is recorded. Set by the shell to Hub's activity log: a decision that
@@ -4201,6 +4251,9 @@ public sealed class ChatWorkspace : IDisposable
             run.EndTool();
         }
 
+        // Taken here, ahead of the UI hop, for the same reason the frames are: the queue is the tool's own thread
+        // handing something to this thread, and a drain inside the update would be a drain that can be retried.
+        var lines = TakeWriteTally(run.ConversationId, call.Name, result);
         var turn = ChatTurn.FunctionResult(call.CallId, result, failed, TakeFrames(run.ConversationId));
         // "批准" and not "允许": this call was answered by a person, and the daily log is the only record that
         // keeps the two apart once the card has folded into a line.
@@ -4212,7 +4265,7 @@ public sealed class ChatWorkspace : IDisposable
                 opened.AppendFunctionResult(turn);
                 // The same undo record the model loop leaves: an approved write is still the write that has to be
                 // undoable, and this path is the one a strict mode takes most often.
-                RecordUndoCopy(opened, call.CallId, call.Name, result);
+                RecordWriteFacts(opened, call.CallId, call.Name, result, lines);
             });
             ToolActivityChanged?.Invoke(run.ConversationId, call.Name, true);
             Changed?.Invoke();
@@ -5003,7 +5056,9 @@ public sealed class ChatWorkspace : IDisposable
             onToolCompleted: async (info, result, failed) =>
             {
                 // A captured frame is named by the result it belongs to: the bytes are already on disk, and the
-                // turn is what lets the request boundary hand them to the model as the next user message.
+                // turn is what lets the request boundary hand them to the model as the next user message. The line
+                // count is claimed in the same breath, off the same thread, for the same reason.
+                var lines = TakeWriteTally(run.ConversationId, info.Name, result);
                 var turn = ChatTurn.FunctionResult(info.CallId, result, failed, TakeFrames(run.ConversationId));
                 run.RecordToolOutcome($"{info.Name}（{OutcomeWord(failed, result)}）");
                 // The refusal that ended the loop says so in its own first words — the one place that knows
@@ -5024,7 +5079,7 @@ public sealed class ChatWorkspace : IDisposable
                         // of them runs, so the call this answers is usually not the last turn by the time the
                         // answer lands. Same rule the human-answered path already follows.
                         opened.AppendFunctionResult(turn);
-                        RecordUndoCopy(opened, info.CallId, info.Name, result);
+                        RecordWriteFacts(opened, info.CallId, info.Name, result, lines);
                     });
                     ToolActivityChanged?.Invoke(run.ConversationId, info.Name, true);
                     Changed?.Invoke();

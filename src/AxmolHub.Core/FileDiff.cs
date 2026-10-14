@@ -62,6 +62,31 @@ public static class FileDiff
         return output.ToString().TrimEnd('\n');
     }
 
+    /// <summary>How many lines an edit adds and removes, counted off the edit script rather than off the rendered
+    /// diff. <see cref="Unified"/> is capped by <see cref="DiffLimits.MaxOutputLines"/> because an approval card
+    /// has to fit on screen, and a tally that inherited that cap would report a 200-line rewrite as 60 — which is
+    /// what the counts derived from a frozen preview do today.
+    ///
+    /// <para>The bounds on <i>which</i> script is computed are shared with the renderer on purpose: past
+    /// <see cref="DiffLimits.MaxLinesPerSide"/> or beyond <see cref="DiffLimits.MaxEditScript"/> both sides answer
+    /// "everything changed", so a count and a rendering of the same pair cannot disagree about a file too large to
+    /// diff honestly. Only the output caps differ, and those are a fact about the card, not about the edit.</para></summary>
+    public static (int Added, int Removed) CountChangedLines(string? beforeText, string? afterText)
+    {
+        var original = SplitLines(beforeText ?? "");
+        var updated = SplitLines(afterText ?? "");
+        if (original.SequenceEqual(updated, StringComparer.Ordinal)) return (0, 0);
+        var edits = Diff(original, updated, new DiffLimits());
+        var added = 0;
+        var removed = 0;
+        foreach (var edit in edits)
+        {
+            if (edit.Kind == Kind.Insert) added++;
+            else if (edit.Kind == Kind.Delete) removed++;
+        }
+        return (added, removed);
+    }
+
     /// <summary>Split into lines for comparison: newline style is normalized away so a CRLF file diffed against
     /// an LF edit does not show every line as changed, and no stray \r reaches the card.</summary>
     public static string[] SplitLines(string text)

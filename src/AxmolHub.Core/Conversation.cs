@@ -102,6 +102,20 @@ public sealed record ChatImage(string File, string MediaType, long Bytes);
 public sealed record PlanReference(string? File, string Title, int Chars, int Tokens);
 
 /// <summary>
+/// Exactly how many lines one <c>file_write</c> added and removed, counted at the moment the edit was applied.
+///
+/// <para>Both numbers travel as one record because a write either knows them both or knows neither: a shape that
+/// admits <c>Added = 3, Removed = null</c> would make every reader decide what that means, and there is nothing
+/// honest to decide. It is not an array either — an array carries no names and loads silently at length 1.</para>
+///
+/// <para>Recorded rather than recomputed from what the transcript already holds, because the only diff the
+/// transcript keeps is <see cref="ChatTurn.ApprovalPreview"/>, and that exists only for a call that had to park:
+/// a write allowed by 自动审批 or 完全访问 froze nothing, so a tally read off previews is blank for most sessions.
+/// When one does exist it is also capped — see <see cref="FileDiff.CountChangedLines"/>.</para>
+/// </summary>
+public sealed record ChangeLineCounts(int Added, int Removed);
+
+/// <summary>
 /// One message in a conversation, in <b>Hub's own</b> persisted shape.
 ///
 /// This is deliberately not <c>Microsoft.Extensions.AI.ChatMessage</c>: that type carries a polymorphic
@@ -166,6 +180,12 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// write created a file (there was nothing before it), kept no copy, or has already been reverted — the copy
     /// is spent by one revert, which is what takes the button away.</summary>
     public string? UndoName { get; init; }
+
+    /// <summary>How many lines this write added and removed, counted where the edit was applied. Null on every
+    /// turn that is not a landed write, and null for a session file written before this existed — which still has
+    /// to load, and whose numbers then come from <see cref="ApprovalPreview"/> where one was frozen. Kept beside
+    /// <see cref="UndoName"/> because both are stamped in the same breath, on the same turn, from the same result.</summary>
+    public ChangeLineCounts? ChangeLines { get; init; }
 
     /// <summary>For a user-role turn the assistant did not receive from the keyboard: the id of the Hub session
     /// that wrote it. The id rather than a title because the peer's reply has to be addressed to it, and titles

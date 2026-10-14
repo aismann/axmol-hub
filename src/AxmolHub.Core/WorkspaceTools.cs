@@ -35,6 +35,10 @@ namespace AxmolHub.Core;
 /// answers null when something is already changing (a build, an engine install) or when another assistant command
 /// holds it, and a command that could not be given the gate is refused rather than run anyway: what is protected is
 /// the disk, not the schedule.</param>
+/// <param name="RecordChangeLines">Where a landed write hands over how many lines it moved, so the app can stamp
+/// that on the call's own turn. The same reason <paramref name="RecordFrames"/> exists: a tool body never learns its
+/// call id, and the turn is written by the app. Reported only after the bytes are on disk, which is what makes the
+/// number a fact about a change that happened rather than about an edit that was attempted.</param>
 public sealed record WorkspaceToolScope(
     string? WorkspaceRoot,
     WorkspaceGuards Guards,
@@ -49,7 +53,8 @@ public sealed record WorkspaceToolScope(
     Action<IReadOnlyList<ChatImage>>? RecordFrames = null,
     WebBridge? Web = null,
     IReadOnlyList<WorkspaceProject>? Projects = null,
-    Func<string, IDisposable?>? TakeChangeGate = null)
+    Func<string, IDisposable?>? TakeChangeGate = null,
+    Action<ChangeLineCounts>? RecordChangeLines = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
@@ -195,6 +200,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         {
             return $"Could not write {resolved.Relative}: {ex.Message}";
         }
+
+        // After the bytes are on disk and nowhere earlier: a refused anchor, a sandbox refusal and a failed write
+        // all changed nothing, and a tally reported for one of them would be a number for a change that never
+        // happened. Both sides are still in memory here, which is the only moment this is free — the pre-image
+        // copy is gone by the next turn, and the rendered diff is capped.
+        var moved = FileDiff.CountChangedLines(original, edit.Updated);
+        context.RecordChangeLines?.Invoke(new ChangeLineCounts(moved.Added, moved.Removed));
 
         context.Log?.Write($"Assistant wrote {resolved.Full} ({edit.Verdict}, {edit.Matches} place(s))");
         return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Relative) + ChatUndoStore.NoteFor(undo);

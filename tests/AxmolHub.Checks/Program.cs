@@ -3891,6 +3891,146 @@ if (args.Contains("--check-ai-tools"))
     if (File.ReadAllText(Path.Combine(workspace, "src", "twice.txt")) != "dup\ndup\n")
         throw new Exception("A refused edit changed the file anyway.");
 
+    // ── the line tally a write hands back: only for a change that landed, and never capped ──
+    // The transcript cannot answer "how far did this move the file" by itself. The only diff a session keeps is the
+    // one frozen for a card — which does not exist for a write the mode allowed without asking, and stops at 60
+    // output lines when it does. The write is the one moment both sides of it are in memory.
+    var tallies = new List<ChangeLineCounts>();
+    var tallyTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "tally-1", [], log,
+        _ => Task.FromResult("unused"), RecordChangeLines: tallies.Add));
+    Directory.CreateDirectory(Path.Combine(workspace, "tally"));
+    File.WriteAllText(Path.Combine(workspace, "tally", "a.txt"), "one\ntwo\nthree\n");
+    File.WriteAllText(Path.Combine(workspace, "tally", "twice.txt"), "a\nb\na\n");
+    tallyTools.FileWrite("tally/a.txt", "two", "TWO");
+    tallyTools.FileWrite("tally/new.txt", "", "x\ny\n");
+    tallyTools.FileWrite("tally/twice.txt", "a", "z", true);
+    // Three of the six ways out of the tool moved something and report it. The other three changed nothing and must
+    // report nothing: a number queued for an edit that never landed is a number the next call would be stamped with.
+    tallyTools.FileWrite("tally/a.txt", "no-such-anchor", "x");
+    tallyTools.FileWrite("../outside.txt", "a", "b");
+    tallyTools.FileWrite("tally/a.txt", "TWO", "TWO");
+    if (tallies.Count != 3)
+        throw new Exception($"A write that changed nothing reported a tally — {tallies.Count} reports for three landed edits.");
+    if (tallies[0] is not { Added: 1, Removed: 1 } || tallies[1] is not { Added: 2, Removed: 0 })
+        throw new Exception($"One line replaced counted {tallies[0].Added}+/{tallies[0].Removed}- and a two-line file "
+            + $"created counted {tallies[1].Added}+/{tallies[1].Removed}-; the fixture fixes both.");
+    if (tallies[2] is not { Added: 2, Removed: 2 })
+        throw new Exception($"replace_all over \"a\\nb\\na\\n\" counted {tallies[2].Added}+/{tallies[2].Removed}- "
+            + "instead of both occurrences. The multiplicity is only in the applied edit, so an implementation that "
+            + "diffs old_string against new_string rather than the whole file gets this wrong silently.");
+    Console.WriteLine("PASS: a write reports its line tally exactly when it landed, and replace_all counts every occurrence.");
+
+    // The cap belongs to the card, not to the change. This is the whole reason the number is recorded rather than
+    // read back: an implementation built on the frozen preview fails here and nowhere else.
+    var tallyFew = string.Concat(Enumerable.Range(1, 50).Select(index => $"old-{index}\n"));
+    var tallyMany = string.Concat(Enumerable.Range(1, 200).Select(index => $"new-{index}\n"));
+    var rewrite = FileDiff.CountChangedLines(tallyFew, tallyMany);
+    if (rewrite is not { Added: 200, Removed: 50 })
+        throw new Exception($"A 200-line rewrite of a 50-line file counted {rewrite.Added}+/{rewrite.Removed}- "
+            + "instead of the whole of it.");
+    var rewriteRendered = FileDiff.Unified(tallyFew, tallyMany, "big.txt");
+    var rewriteFromText = ChatChanges.CountChanges(rewriteRendered);
+    if (rewriteFromText.Added + rewriteFromText.Removed >= 250 || !rewriteRendered.Contains("more changed lines"))
+        throw new Exception($"The rendered preview was supposed to be the capped one — it counted "
+            + $"{rewriteFromText.Added}+/{rewriteFromText.Removed}- and "
+            + (rewriteRendered.Contains("more changed lines") ? "said so" : "hid the shortfall"));
+    Console.WriteLine("PASS: the tally counts the whole edit; the rendered preview still stops short and says so.");
+
+    // Where the rendering is not capped the two must agree, or the number beside a file and the diff under it are
+    // two claims about one change.
+    foreach (var (tallyBefore, tallyAfter) in new[]
+             {
+                 ("a\nb\nc\n", "a\nX\nc\n"), ("", "only\n"), ("one\ntwo\n", ""), ("x\n", "x\ny\nz\n"),
+             })
+    {
+        var counted = FileDiff.CountChangedLines(tallyBefore, tallyAfter);
+        var fromText = ChatChanges.CountChanges(FileDiff.Unified(tallyBefore, tallyAfter, "p.txt"));
+        if (counted.Added != fromText.Added || counted.Removed != fromText.Removed)
+            throw new Exception($"The script counted {counted.Added}+/{counted.Removed}- for a change the rendering "
+                + $"counts {fromText.Added}+/{fromText.Removed}- (\"{tallyBefore}\" → \"{tallyAfter}\").");
+    }
+
+    // Why the tally may be taken from the applied edit instead of re-derived from the file: trimming the common
+    // prefix and suffix means the context around an edit cannot move its count. This is the property the rejected
+    // recompute-from-arguments design rested on; it is pinned here so the choice stays argued rather than remembered.
+    var tallyHead = string.Concat(Enumerable.Range(1, 30).Select(index => $"head-{index}\n"));
+    var tallyTail = string.Concat(Enumerable.Range(1, 30).Select(index => $"tail-{index}\n"));
+    var blockAlone = FileDiff.CountChangedLines("alpha\nbeta\ngamma\n", "alpha\nBETA\ngamma\ndelta\n");
+    var blockWrapped = FileDiff.CountChangedLines(
+        tallyHead + "alpha\nbeta\ngamma\n" + tallyTail, tallyHead + "alpha\nBETA\ngamma\ndelta\n" + tallyTail);
+    if (blockAlone is not { Added: 2, Removed: 1 }
+        || blockWrapped.Added != blockAlone.Added || blockWrapped.Removed != blockAlone.Removed)
+        throw new Exception($"The same block counted {blockAlone.Added}+/{blockAlone.Removed}- on its own but "
+            + $"{blockWrapped.Added}+/{blockWrapped.Removed}- inside sixty lines of context.");
+    Console.WriteLine("PASS: the tally matches the rendered diff wherever that diff is not capped, and ignores the "
+        + "context wrapped around the edit.");
+
+    // ── the one ladder every surface reads, and the session file that has to keep loading ──
+    var ladderPreview = FileDiff.Unified(tallyFew, tallyMany, "big.txt");
+    var ladderBoth = new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch)
+    {
+        ToolName = "file_write", ToolCallId = "c-both",
+        ChangeLines = new ChangeLineCounts(200, 50), ApprovalPreview = ladderPreview,
+    };
+    if (ChatChanges.LinesOf(ladderBoth) is not { Added: 200, Removed: 50 })
+        throw new Exception("A turn that knows its own tally was still read off its capped preview.");
+    var ladderPreviewOnly = ChatChanges.LinesOf(ladderBoth with { ChangeLines = null });
+    if (ladderPreviewOnly.Added <= 0)
+        throw new Exception("With no recorded tally the preview is the only thing left, and it counted "
+            + $"{ladderPreviewOnly.Added}+ — a session written before this field existed would lose its numbers entirely.");
+    if (ChatChanges.LinesOf(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch)
+        { ToolName = "read_file", ToolCallId = "r-1" }) is not { Added: 0, Removed: 0 })
+        throw new Exception("A turn that wrote no lines claimed some.");
+
+    var ladderSession = new Conversation { Id = "tally-session", Title = "tally" };
+    var ladderArgs = """{"path":"src/p.cpp","old_string":"a","new_string":"b"}""";
+    ladderSession.Append(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch)
+    {
+        ToolName = "file_write", ToolCallId = "w-1", ToolArguments = ladderArgs,
+        ChangeLines = new ChangeLineCounts(1, 1),
+    });
+    ladderSession.Append(new ChatTurn(ChatRoles.Tool, "Edited src/p.cpp.", DateTimeOffset.UnixEpoch)
+    { ToolCallId = "w-1" });
+    ladderSession.Append(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch)
+    {
+        ToolName = "file_write", ToolCallId = "w-2", ToolArguments = ladderArgs,
+        ChangeLines = new ChangeLineCounts(5, 2),
+    });
+    ladderSession.Append(new ChatTurn(ChatRoles.Tool, "Edited src/p.cpp.", DateTimeOffset.UnixEpoch)
+    { ToolCallId = "w-2" });
+    // Two writes to one path are one row in the pane the tally opens, so the total is the row's: the newest write.
+    var ladderSum = ChatChanges.Summary(ladderSession);
+    if (ladderSum is not (1, 5, 2))
+        throw new Exception($"Two writes to one file summed to {ladderSum.Files} files "
+            + $"{ladderSum.Added}+/{ladderSum.Removed}- — the pane lists one row, so the pill must not total both.");
+    if (ChatChanges.Summary(null) is not (0, 0, 0))
+        throw new Exception("A session with no conversation reported a change.");
+    Console.WriteLine("PASS: the tally prefers the recorded count, falls back to a frozen preview, and sums the "
+        + "newest write per path — which is the row the click opens.");
+
+    var tallyStoreRoot = Path.Combine(toolRoot, "tally-store");
+    Directory.CreateDirectory(Path.Combine(tallyStoreRoot, "ai", "sessions"));
+    var tallyStored = new Conversation { Id = "tally-stored", Title = "t" };
+    tallyStored.Append(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch)
+    { ToolName = "file_write", ToolCallId = "s-1", ToolArguments = ladderArgs, ChangeLines = new ChangeLineCounts(7, 3) });
+    new ConversationStore(tallyStoreRoot).Save(tallyStored);
+    if (new ConversationStore(tallyStoreRoot).Load("tally-stored")?.Messages[0].ChangeLines
+        is not { Added: 7, Removed: 3 })
+        throw new Exception("A recorded tally did not survive the session file, so it would vanish on restart.");
+    // An older session file has no such key at all. It has to load, and it must not be handed a tally it never earned.
+    var tallyLegacyFile = Path.Combine(tallyStoreRoot, "ai", "sessions", "tally-legacy.json");
+    File.WriteAllText(tallyLegacyFile,
+        "{\"Id\":\"tally-legacy\",\"Title\":\"旧会话\",\"Messages\":[{\"Role\":\"assistant\",\"Text\":\"\","
+        + "\"At\":\"2026-01-01T00:00:00+08:00\",\"ToolName\":\"file_write\",\"ToolCallId\":\"l-1\"}]}");
+    var tallyLegacy = new ConversationStore(tallyStoreRoot).Load("tally-legacy");
+    if (tallyLegacy is null || tallyLegacy.Messages.Count != 1 || tallyLegacy.Messages[0].ChangeLines is not null)
+        throw new Exception("A session file written before the tally existed either did not load or was given one.");
+    if (ChatChanges.LinesOf(tallyLegacy!.Messages[0]) is not { Added: 0, Removed: 0 })
+        throw new Exception("An old session with no preview and no tally invented line counts.");
+    Directory.Delete(tallyStoreRoot, recursive: true);
+    Console.WriteLine("PASS: a recorded tally round-trips through the session file, and a session written before it "
+        + "existed loads unchanged and claims nothing.");
+
     // ── the undo: one pre-image goes back over the one write it was made for, and over nothing else ──
     var undoRoot = ChatUndoStore.DirectoryFor(dataRoot, "conversation-1")!;
     var writeArgs = """{"path":"src/main.cpp","old_string":"    return 0;","new_string":"    return 1;"}""";

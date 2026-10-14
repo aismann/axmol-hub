@@ -424,7 +424,7 @@ internal sealed class InspectorPanel : UserControl
     {
         var container = new StackPanel { Spacing = 0, Classes = { "inspector-change" } };
 
-        var (added, removed) = PreviewCounts(change, resolveDiff);
+        var (added, removed) = PreviewCounts(change);
 
         var header = new Button { Classes = { "inspector-change-header" }, Tag = change.RelativePath };
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
@@ -487,12 +487,13 @@ internal sealed class InspectorPanel : UserControl
         return container;
     }
 
-    /// <summary>The +N −M chip counts a frozen preview without opening the file; when there is none the chip is
-    /// left off rather than reading the disk on a list paint. The expanded body is the only place that resolves.</summary>
-    private static (int Added, int Removed) PreviewCounts(
-        ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff)
-        => change.FrozenPreview is { Length: > 0 }
-            ? ChatChanges.CountChanges(change.FrozenPreview)
+    /// <summary>The row's <c>+N −M</c>: what that write moved, carried on the row itself so a list paint neither
+    /// opens a file nor re-reads a diff. The expanded body below is a different thing on purpose — the capped
+    /// rendering the approval card asked somebody to approve — and when the two differ the body says so in its own
+    /// tail. <see cref="ChatChanges.LinesOf"/> holds the reasoning for preferring the recorded count.</summary>
+    private static (int Added, int Removed) PreviewCounts(ChangedFile change)
+        => change.Lines is { } lines
+            ? (lines.Added, lines.Removed)
             : (0, 0);
 
     private Control BuildDiffDetail(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff)

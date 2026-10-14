@@ -40,7 +40,11 @@ public sealed record ChangedFile(
     string? UndoName,
     string? ArgumentsJson,
     string ResultLine,
-    bool Latest);
+    bool Latest,
+    // What that write moved, resolved through LinesOf so a row and the composer's tally cannot answer for the same
+    // turn with different numbers. Appended last and optional because this is a positional record: a fixture that
+    // names the nine fields before it still has to compile.
+    ChangeLineCounts? Lines = null);
 
 public static class ChatChanges
 {
@@ -114,7 +118,8 @@ public static class ChatChanges
                 UndoName: turn.UndoName,
                 ArgumentsJson: turn.ToolArguments,
                 ResultLine: FirstLine(results.TryGetValue(callId, out var shown) ? shown : ""),
-                Latest: false);
+                Latest: false,
+                Lines: LinesOf(turn));
         }
 
         // The newest write per path keeps the flag; every earlier one to the same file loses it.
@@ -187,8 +192,18 @@ public static class ChatChanges
         return null;
     }
 
-    /// <summary>How many lines a unified diff adds and removes. Counted off the text rather than stored, so the
-    /// chip beside a file name and the expanded body can never disagree — they read the same string.</summary>
+    /// <summary>
+    /// How many lines a <b>rendered</b> unified diff adds and removes — the last rung of <see cref="LinesOf"/>,
+    /// and the reason it is last rather than first.
+    ///
+    /// <para>The invariant this used to carry ("the chip beside a file name and the expanded body read the same
+    /// string, so they cannot disagree") was true only of a write that parked: a reconstructed body and a
+    /// preview-derived count were two different claims about the same file, and in 自动审批 the count was zero
+    /// beside a diff listing every line that moved. What holds now is narrower and stated where it can be checked
+    /// — the count is of the write, the body is the capped rendering the card asked somebody to approve, and when
+    /// the two differ the body says so itself with <c>… (+N more changed lines)</c>
+    /// (<see cref="FileDiff.Unified"/>).</para>
+    /// </summary>
     public static (int Added, int Removed) CountChanges(string? unified)
     {
         if (string.IsNullOrEmpty(unified)) return (0, 0);
@@ -205,6 +220,50 @@ public static class ChatChanges
         }
         return (added, removed);
     }
+
+    /// <summary>
+    /// How many lines one write added and removed — the one answer every surface that totals a change reads, so a
+    /// row in the pane, the head of its run and the tally above the composer cannot quote three numbers for it.
+    ///
+    /// <para>Three rungs, and they are ordered by how much they actually know. The count recorded when the edit was
+    /// applied is exact. Failing that, a frozen approval preview counted with <see cref="CountChanges"/> is what a
+    /// session written before the record existed can still offer, and it is the same number that session showed
+    /// then — a downgrade would be the regression. Failing that, nothing is known, and zero is rendered as nothing
+    /// rather than as a confident <c>+0</c>.</para>
+    ///
+    /// <para>Reads no file and runs no process: this is called from a scan of the transcript, which repaints while
+    /// an answer is still streaming.</para>
+    /// </summary>
+    public static ChangeLineCounts LinesOf(ChatTurn turn)
+        => turn.ChangeLines
+            ?? (turn.ApprovalPreview is { Length: > 0 } frozen
+                ? ToCounts(CountChanges(frozen))
+                : new ChangeLineCounts(0, 0));
+
+    /// <summary>What this conversation changed, as one line of arithmetic: how many files, and how far they moved.
+    ///
+    /// <para>The line count is summed over <see cref="Of"/>'s deduplicated rows — the newest write to each path —
+    /// rather than over every call, because the surface this number opens lists exactly those rows with exactly
+    /// those diffs. A total over all calls would be a different quantity wearing the same words, and the one thing
+    /// this figure exists to be is honest about the click that follows it. The head of a run keeps the other basis
+    /// on purpose: it answers what that round did, and both read <see cref="LinesOf"/> per turn, so a session with
+    /// one write shows the same numbers in both places.</para>
+    /// </summary>
+    public static (int Files, int Added, int Removed) Summary(Conversation? conversation)
+    {
+        var files = Of(conversation);
+        var added = 0;
+        var removed = 0;
+        foreach (var file in files)
+        {
+            added += file.Lines?.Added ?? 0;
+            removed += file.Lines?.Removed ?? 0;
+        }
+        return (files.Count, added, removed);
+    }
+
+    private static ChangeLineCounts ToCounts((int Added, int Removed) counts)
+        => new(counts.Added, counts.Removed);
 
     private static string FirstLine(string text)
     {

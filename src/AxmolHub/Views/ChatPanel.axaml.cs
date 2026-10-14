@@ -2261,9 +2261,11 @@ public partial class ChatPanel : UserControl
         return (text, added, removed);
     }
 
-    /// <summary>The aggregate line count of the run's edits, off the frozen previews only — a write that never
-    /// parked froze nothing, and reading the disk to total a header would be the whole list paying for one line.
-    /// When nothing was frozen the header simply carries no chip.</summary>
+    /// <summary>The aggregate line count of the run's edits. It reads <see cref="ChatChanges.LinesOf"/> per call
+    /// rather than the frozen previews alone, because a write the mode allowed without asking froze nothing and yet
+    /// still moved the file — totalling only the previews made this head go silent for exactly the runs that never
+    /// interrupted anybody. Nothing is opened to work it out: reading the disk to total a header would be the whole
+    /// list paying for one line. When no call moved anything, the header simply carries no chip.</summary>
     private static (int Added, int Removed) AggregateDiff(
         List<(int Index, ChatTurn Turn, string? ToolName)> calls)
     {
@@ -2271,12 +2273,9 @@ public partial class ChatPanel : UserControl
         var removed = 0;
         foreach (var call in calls)
         {
-            if (call.Turn.ApprovalPreview is { Length: > 0 } preview)
-            {
-                var (a, r) = ChatChanges.CountChanges(preview);
-                added += a;
-                removed += r;
-            }
+            var lines = ChatChanges.LinesOf(call.Turn);
+            added += lines.Added;
+            removed += lines.Removed;
         }
         return (added, removed);
     }
