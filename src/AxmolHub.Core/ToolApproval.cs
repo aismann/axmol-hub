@@ -107,6 +107,28 @@ public static class ToolApprovalPolicy
 }
 
 /// <summary>
+/// Whether one call may start before the answers to its siblings in the same response have landed. This is not the
+/// permission question — <see cref="ToolApprovalPolicy"/> answers that, and a call can be safe to run concurrently
+/// while still needing a card. What is asked here is whether two of them, or one of them beside a later call of the
+/// same response, can be in flight at once without either seeing the other's work half-done.
+///
+/// <para>The read-only tier is the whole class, with one named exception: <c>set_workspace</c> reads nothing and
+/// moves the session's root, so a sibling resolving its own path next to it would be decided against a directory
+/// that stops being the one it runs in. A command, a write or a screen capture is out for the ordinary reason —
+/// two of them at once touch one build directory, one desktop, one peer session.</para>
+/// </summary>
+public static class ToolConcurrency
+{
+    /// <summary>The read-only tier's one member that is not a read. Named because the tier is what the classifier
+    /// answers with, and the tier alone is not enough to decide this.</summary>
+    public const string SetWorkspaceTool = "set_workspace";
+
+    public static bool IsSafe(string? toolName, ToolRisk risk)
+        => risk == ToolRisk.ReadOnly
+           && !string.Equals(toolName, SetWorkspaceTool, StringComparison.Ordinal);
+}
+
+/// <summary>
 /// What the model is told when a call it asked for did not run. Model-facing and therefore English: this is
 /// transcript text, not UI text, and the UI must never match against it — the card derives what it says from
 /// <see cref="ChatApprovalStates"/> alone.

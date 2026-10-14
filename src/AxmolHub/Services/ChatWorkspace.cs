@@ -567,7 +567,9 @@ public sealed class ChatWorkspace : IDisposable
 
     /// <summary>Hand over whatever this conversation's last capture produced, and leave nothing behind. Every
     /// completed call drains, not just the capture tool: a frame that outlives its turn would ride the next one.
-    /// One call per response is already the pipeline's rule, so a drain cannot land on the wrong result.</summary>
+    /// A response can ask for several calls and the batch starts the safe ones together, so what keeps a drain on
+    /// the right result is not one-call-per-response — it is that capturing the screen is never in that safe class,
+    /// and answers are delivered to the model in the order the calls were asked.</summary>
     private IReadOnlyList<ChatImage> TakeFrames(string conversationId)
     {
         if (_frames.TryGetValue(conversationId, out var queue) && !queue.IsEmpty)
@@ -4091,6 +4093,9 @@ public sealed class ChatWorkspace : IDisposable
             return ContextBudget.For(selected?.Provider, selected?.ModelName).Tokens;
         }).ConfigureAwait(false);
 
+        // One at a time, on purpose. The model's own loop is where a batch of reads saves a person the wait; a
+        // resumed approval is already behind a click they just made, and running these out of order would mean a
+        // narrowed sandbox arriving after the command that was supposed to start inside it.
         foreach (var call in owed)
         {
             // A question nobody has answered yet. Its own card is the next thing the person sees, and writing its
@@ -4914,6 +4919,12 @@ public sealed class ChatWorkspace : IDisposable
                     for (var index = 0; index < held; index++) run.EndTool();
                 return verdict;
             },
+            // Which calls of a response may start before their siblings' answers land. The tier table answers it,
+            // read the same way the gate reads it: a second look at a pure function cannot disagree with the first,
+            // and recomputing it here keeps the pipeline from having to learn what any tool does.
+            concurrencySafe: info => ToolConcurrency.IsSafe(info.Name,
+                ChatTools.RiskOf(info.Name, info.ArgumentsJson, request.Scope.Workspace,
+                    ProjectPaths(request.Scope))),
             onToolStarted: async info =>
             {
                 // Ahead of the UI hop, not after it: the deadline measures the stream, so a message pump that

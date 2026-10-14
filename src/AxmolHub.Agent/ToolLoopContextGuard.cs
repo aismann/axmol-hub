@@ -98,8 +98,9 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
     /// What the list that went out last cost, in Hub's own currency. It exists so a reported token count has
     /// something to be compared <i>against</i>: the drift between this number and the model's answer is the only
     /// way the estimate ever gets better, and pairing a measurement with the size of some other request would
-    /// calibrate the wrong thing. Sequential invocation is what makes "last" mean "this one" — the function
-    /// invoker is configured with <c>AllowConcurrentInvocation = false</c>, so no second list is ever in flight.
+    /// calibrate the wrong thing. What makes "last" mean "this one" is that the loop sends one request at a time —
+    /// <c>AllowConcurrentInvocation = false</c> on the invoking client, and the batch starter runs <i>tools</i>
+    /// side by side without ever putting a second list in flight.
     /// </summary>
     public int LastEstimatedInputTokens { get; private set; }
 

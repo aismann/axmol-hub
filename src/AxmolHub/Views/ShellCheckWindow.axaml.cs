@@ -5974,6 +5974,13 @@ public partial class ShellCheckWindow : Window
                   && ChatTools.RiskOf("set_workspace", Target(workspace), new WorkspaceToolScope(workspace,
                       new WorkspaceGuards(workspace, []), workspace, "tier-map", [], null, null)) == ToolRisk.SystemCommand,
                 "换工作目录按它指向哪里分档：收到自己沙箱内免批、指向已登记工程算工作区写、指向别处或读不出路径或落在受保护根都要问");
+            // The tier asks for nothing, and the concurrency class still has to refuse it: this call reads nothing
+            // yet moves the directory its siblings resolve their paths against. Asserted beside the tier rather
+            // than only in the headless table, because the exception lives in the one place a reader would not
+            // expect it — a read-only call that is not safe to run next to another read-only call.
+            Check(!ToolConcurrency.IsSafe("set_workspace", ToolRisk.ReadOnly)
+                  && ToolConcurrency.IsSafe("read_file", ToolRisk.ReadOnly),
+                "收窄沙箱虽是免批档，也不与同批的读并发；真正的读才进得了并发类");
 
             // The tier only matters through the decision table, so each tier is asserted as one mode chain. The
             // workspace-command chain is the one this build's whole complaint was about: the strict tier still

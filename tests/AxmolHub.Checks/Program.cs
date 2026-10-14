@@ -5284,6 +5284,89 @@ if (args.Contains("--check-ai-tool-policy"))
         throw new Exception("The follow-up request went out with the approval placeholder: " + parkClient.SecondRequest.Count + " messages.");
     Console.WriteLine("PASS: a parked call ends the turn with no result, and its placeholder never reaches the model.");
 
+    // Which calls of one response may be in flight together is decided by the tier, with one named exception — and
+    // the exception is why this is a table instead of a sample. A tool that reads nothing but moves the session's
+    // sandbox sits on the read-only tier, so starting it beside a read would let that read be decided against a
+    // directory that stops being the one it runs in the moment the move lands.
+    var concurrentTable = new (string Name, ToolRisk Risk, bool Expected)[]
+    {
+        ("read_file", ToolRisk.ReadOnly, true),
+        ("search_text", ToolRisk.ReadOnly, true),
+        ("find_files", ToolRisk.ReadOnly, true),
+        ("list_directory", ToolRisk.ReadOnly, true),
+        ("workspace_map", ToolRisk.ReadOnly, true),
+        ("memory_read", ToolRisk.ReadOnly, true),
+        ("get_projects", ToolRisk.ReadOnly, true),
+        ("get_engines", ToolRisk.ReadOnly, true),
+        ("list_sessions", ToolRisk.ReadOnly, true),
+        // The exception, spelled out because the tier says it is safe and the name says it is not.
+        ("set_workspace", ToolRisk.ReadOnly, false),
+        ("file_write", ToolRisk.WorkspaceWrite, false),
+        ("send_to_session", ToolRisk.WorkspaceWrite, false),
+        ("memory_write", ToolRisk.AssistantNote, false),
+        ("run_command", ToolRisk.WorkspaceCommand, false),
+        ("web_fetch", ToolRisk.WorkspaceCommand, false),
+        ("capture_screen", ToolRisk.SystemCommand, false),
+        ("spawn_session", ToolRisk.SystemCommand, false),
+        ("ask_user", ToolRisk.AskUser, false),
+    };
+    foreach (var cell in concurrentTable.Where(cell => ToolConcurrency.IsSafe(cell.Name, cell.Risk) != cell.Expected))
+        throw new Exception($"The concurrency class disagreed with the tier over 「{cell.Name}」 ({cell.Risk}).");
+    // The count is part of the assertion: a table where every row flipped to true would still satisfy the rows
+    // above, and what it would mean is that writes started running beside reads.
+    if (concurrentTable.Count(cell => cell.Expected) != 9)
+        throw new Exception($"The concurrency class holds {concurrentTable.Count(cell => cell.Expected)} tools, "
+                            + "which is not the nine reads it was drawn to cover.");
+    Console.WriteLine("PASS: every read-only tool but the one that moves the sandbox may start beside its "
+        + "siblings, and nothing above that tier does.");
+
+    // The proof that "may start beside" is not only a decision on paper. Two safe calls are put in one response and
+    // each refuses to finish until <b>both</b> are inside: a serial executor deadlocks on that barrier and the cell
+    // fails on its own. The unsafe call reports whether anything was in flight at its own start, because a batch
+    // that ran the write concurrently would still pass a test that only measures the reads — and results are read
+    // back off the follow-up request, so the order the model was shown is asserted rather than assumed.
+    var inside = 0;
+    var bothInside = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var writeSawCompany = false;
+    AIFunction ReadFunction(string name) => AIFunctionFactory.Create(async () =>
+    {
+        if (System.Threading.Interlocked.Increment(ref inside) >= 2) bothInside.TrySetResult();
+        var finished = await Task.WhenAny(bothInside.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        System.Threading.Interlocked.Decrement(ref inside);
+        if (finished != bothInside.Task)
+            throw new Exception("two safe calls of one response were never in flight together");
+        return name + " read";
+    }, new AIFunctionFactoryOptions { Name = name });
+    var gatedReadA = ReadFunction("read_one");
+    var gatedReadB = ReadFunction("read_two");
+    var gatedWrite = AIFunctionFactory.Create((Func<string>)(() =>
+    {
+        writeSawCompany = System.Threading.Volatile.Read(ref inside) > 0;
+        return "written";
+    }), new AIFunctionFactoryOptions { Name = "file_write" });
+
+    var overlapClient = new MultiCallChatClient("read_one", "read_two", "file_write");
+    var overlapAnswer = new StringBuilder();
+    await foreach (var chunk in new ChatPipeline(overlapClient).SendAsync(
+                       gateProvider,
+                       [ChatTurn.User("读两遍再写一个")],
+                       tools: [gatedReadA, gatedReadB, gatedWrite],
+                       concurrencySafe: info => info.Name != "file_write"))
+        overlapAnswer.Append(chunk);
+    if (writeSawCompany)
+        throw new Exception("The call outside the concurrency class started while a sibling was still in flight.");
+    if (overlapAnswer.ToString() != "都读完了。")
+        throw new Exception($"The batch did not end with the model answering once: 「{overlapAnswer}」.");
+    var delivered = overlapClient.SecondRequest.SelectMany(message => message.Contents)
+        .OfType<FunctionResultContent>()
+        .Select(result => result.CallId + "=" + (result.Result as string))
+        .ToList();
+    if (string.Join(" / ", delivered) != "m0=read_one read / m1=read_two read / m2=written")
+        throw new Exception("The answers the model was shown are not the calls in the order it asked: "
+                            + string.Join(" / ", delivered) + ".");
+    Console.WriteLine("PASS: two safe calls of one response really do overlap, the third starts alone, and the "
+        + "answers reach the model in the order the calls were asked.");
+
     // Git is not a tool, so the rule that decides whether `run_command` may touch a repository is a pure function
     // over the command line — and it is asserted as a table rather than sampled. The ladder only goes up: every
     // case that is not a named git write has to keep the tier it had, because a classifier that stops a build loop
@@ -7952,8 +8035,48 @@ sealed class FakeChatClient(IReadOnlyList<string> chunks, bool honorCancellation
 /// <summary>A scripted <see cref="IChatClient"/> that asks for one tool call and then answers: the follow-up
 /// request is what proves the result was handed back. <c>honorCancellation</c> matters because parking works by
 /// cancelling the stream — a client that ignored the token would answer a turn that was supposed to stop.</summary>
-sealed class ToolLoopChatClient(bool honorCancellation = false) : IChatClient
+/// <summary>
+/// One response asking for several calls — the shape a gateway returns however the request asked it not to, and the
+/// shape the batch executor exists for. The calls come back in the order they are named, and the second request is
+/// kept so a check can read what the model was actually shown.
+/// </summary>
+sealed class MultiCallChatClient(params string[] toolNames) : IChatClient
 {
+    private int _calls;
+
+    public IList<ChatMessage> SecondRequest { get; private set; } = [];
+
+    public Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Checks only use the streaming path.");
+
+    public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (++_calls == 1)
+        {
+            var contents = new List<AIContent>(toolNames.Length);
+            for (var index = 0; index < toolNames.Length; index++)
+                contents.Add(new FunctionCallContent("m" + index, toolNames[index],
+                    new Dictionary<string, object?>()));
+            yield return new ChatResponseUpdate(ChatRole.Assistant, contents);
+        }
+        else
+        {
+            SecondRequest = messages.ToList();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "都读完了。");
+        }
+
+        await Task.Yield();
+    }
+
+    public object? GetService(Type serviceType, object? serviceKey = null) => null;
+    public void Dispose() { }
+}
+
+sealed class ToolLoopChatClient(bool honorCancellation = false) : IChatClient{
     public int CallCount { get; private set; }
     public IList<ChatMessage> SecondRequest { get; private set; } = [];
     public ChatOptions? LastOptions { get; private set; }

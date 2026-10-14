@@ -127,6 +127,11 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         // summary rather than running anything.
         IReadOnlyList<AITool>? declaredTools = null,
         ToolGate? gate = null,
+        // Which calls of a response may start before their siblings' answers have landed. The caller answers it,
+        // because the answer is which tool touches what, and this file has no idea what any tool does. Nothing
+        // here runs a call this says nothing about, and a response whose group is waiting on a decision starts
+        // nothing at all.
+        Func<ToolCallInfo, bool>? concurrencySafe = null,
         Func<ToolCallInfo, Task>? onToolStarted = null,
         Func<ToolCallInfo, string, bool, Task>? onToolCompleted = null,
         string? modelName = null,
@@ -211,6 +216,9 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
             // The same calls in the order the model asked, kept beside the verdicts because the delivery needs the
             // order: a turn ended mid-batch owes an answer to every call behind the one that ended it.
             var batch = new List<ToolCallInfo>();
+            // The calls already running ahead of their own delivery, by call id. Cleared with the verdicts, so a
+            // task never outlives the response that started it, and the delivery takes each one out as it lands.
+            var started = new Dictionary<string, Task<object?>>(StringComparer.Ordinal);
 
             functionClient.FunctionInvoker = async (context, token) =>
             {
@@ -243,6 +251,30 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                         // and the answer runs all of it.
                         parked.Parked = true;
                         return PendingPlaceholder;
+                    }
+
+                    // Nothing is waiting on a person, so the batch may start. The calls the caller vouches for go
+                    // off now and their siblings wait for them at their own delivery, which is the whole point of a
+                    // response that asked for several reads at once: one round trip, several answers. A turn that
+                    // stops inside the batch — the spin guard's second refusal of one signature — starts nothing
+                    // ahead of time, because a call whose result nobody will read is work done for nothing.
+                    started.Clear();
+                    if (concurrencySafe is { } safe && batch.Count > 1
+                        && !verdicts.Values.Any(v => v.Terminates))
+                    {
+                        foreach (var content in asked)
+                        {
+                            if (!verdicts.TryGetValue(content.CallId, out var member)
+                                || member.Outcome != ToolGateOutcome.Allow
+                                || content.CallId == call.CallId
+                                || !safe(member.Call)) continue;
+                            // Resolved by name from this request's own declarations. A call the pipeline cannot
+                            // match to a function is left to the invoking client, which is the one that knows what
+                            // to do with a name it was never given.
+                            if (FunctionNamed(tools, content.Name) is not { } function) continue;
+                            started[content.CallId] = function
+                                .InvokeAsync(new AIFunctionArguments(content.Arguments), token).AsTask();
+                        }
                     }
                 }
 
@@ -285,13 +317,17 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                 var info = verdict.Call;
                 try
                 {
-                    var result = await context.Function.InvokeAsync(context.Arguments, token).ConfigureAwait(false);
+                    // Whatever is already running for this call is its answer; a call the batch did not vouch for
+                    // runs now, on the function the invoking client resolved for it.
+                    var raw = started.Remove(info.CallId, out var begun)
+                        ? await begun.ConfigureAwait(false)
+                        : await context.Function.InvokeAsync(context.Arguments, token).ConfigureAwait(false);
                     // Capped once, here, so the transcript records exactly what the model was shown. Two
                     // renderings of one result is how a replayed conversation diverges from the run that
                     // produced it — and an uncapped result can push the whole window out on its own.
                     // Capped against the model's whole window, not against the conversation budget: the schema
                     // cost of a mode must not quietly shrink every result that mode can ask for.
-                    var text = ToolResultCap.Apply(SerializeToolResult(result), window.Tokens);
+                    var text = ToolResultCap.Apply(SerializeToolResult(raw), window.Tokens);
                     if (onToolCompleted is not null)
                         await onToolCompleted(info, text, false).ConfigureAwait(false);
                     return text;
@@ -327,6 +363,12 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                     if (onToolCompleted is not null)
                         await onToolCompleted(member, ToolApprovalResults.Abandoned, true)
                             .ConfigureAwait(false);
+                    // A read the batch had already started is not going to be delivered, and a fault nobody will
+                    // await is a fault the finalizer would raise on this thread's behalf. Observe it here, quietly:
+                    // the answer the model gets is the sentence above, not the exception behind it.
+                    if (started.Remove(member.CallId, out var begun))
+                        _ = begun.ContinueWith(static faulted => _ = faulted.Exception,
+                            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
                 }
             }
 
@@ -511,6 +553,14 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
     private static ToolCallInfo InfoOf(FunctionCallContent content, string? reasoning, string batchId)
         => new(content.Name, content.CallId,
             JsonSerializer.Serialize(content.Arguments, ArgumentJson), reasoning, batchId);
+
+    /// <summary>The declared function carrying this name, or null. The batch starter needs a sibling's function
+    /// before the invoking client has been asked for it, and the request's own tool list is the only place a name
+    /// resolves here — the same list the client itself reads.</summary>
+    private static AIFunction? FunctionNamed(IReadOnlyList<AITool>? tools, string? name)
+        => string.IsNullOrEmpty(name) ? null : tools?
+            .OfType<AIFunction>()
+            .FirstOrDefault(function => string.Equals(function.Name, name, StringComparison.Ordinal));
 
     /// <summary>Every call the response carrying <paramref name="call"/> asked for, in the order it asked. Read off
     /// the message list the loop itself grew — the assistant message holding the calls is in it before the first
