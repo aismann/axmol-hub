@@ -54,6 +54,17 @@ public enum GitGrade
 /// </summary>
 public static class GitCommandGrades
 {
+    /// <summary>
+    /// Verbs whose writes never cost a card: reversible index operations. The admission bar is "undoing it is
+    /// <c>git reset</c>", which <c>add</c> clears and nothing else in the write table does — <c>commit</c> moves
+    /// history, <c>stash</c> hides work, <c>mv</c> touches the tree. Extending the list is a one-word edit and a
+    /// one-cell assertion change, which is the point of keeping it small and named.
+    ///
+    /// <para>It is the <i>policy</i> half of the exemption; the grant half is the user's own list
+    /// (<see cref="CommandTrust"/>). The two are consulted as one set of allowed verbs and never as a union that
+    /// a compound line can straddle: see <see cref="AllWritesAllowed"/>.</para>
+    /// </summary>
+    public static readonly IReadOnlyCollection<string> BuiltInAllowedVerbs = ["add"];
     /// <summary>Verbs that only read. A verb missing from both sets lands on
     /// <see cref="GitGrade.GitUnclassifiable"/>, which asks, so an omission costs a card rather than opening a
     /// hole — which is why the write set is allowed to be short.</summary>
@@ -92,37 +103,179 @@ public static class GitCommandGrades
     /// refuses an empty command before it can run anything (<see cref="WorkspaceTools.RunCommand"/>), and a card
     /// about "the command Hub could not read" would be a card with nothing in it to approve.
     /// </summary>
-    public static GitGrade CommandOf(string? argumentsJson)
+    public static GitGrade CommandOf(string? argumentsJson) => Grade(CommandTextOf(argumentsJson));
+
+    /// <summary>
+    /// The write verbs a command line spells out for itself, lowercased and in order — what a card may offer to stop
+    /// asking about, and what becomes a <see cref="CommandTrust"/> key.
+    ///
+    /// <para>Empty means "nothing in this line can be granted", and it covers three lines on purpose: one with no
+    /// write at all, one whose write this build cannot name (<see cref="GitGrade.GitUnclassifiable"/>), and one whose
+    /// write only exists behind a wrapper (<c>pwsh -c "git push"</c>, <c>sudo git push</c>). A grant names the call as
+    /// the person read it on the card, so a verb the line never spells is a verb no grant can cover — reporting it
+    /// would only grow a button the gate would ignore.</para>
+    /// </summary>
+    public static IReadOnlyCollection<string> WriteVerbsOf(string? argumentsJson)
     {
-        if (string.IsNullOrWhiteSpace(argumentsJson)) return GitGrade.NotGit;
+        var verbs = new List<string>();
+        foreach (var call in CallsOf(argumentsJson))
+        {
+            if (call.Grade == GitGrade.GitUnclassifiable) return [];
+            if (call.Grade == GitGrade.GitWrite && call.Verb is null) return [];
+            if (call.IsDirectWrite && !verbs.Contains(call.Verb!)) verbs.Add(call.Verb!);
+        }
+        return verbs;
+    }
+
+    /// <summary>
+    /// Whether every git write in the line is a direct <c>git &lt;verb&gt;</c> call whose verb is in
+    /// <paramref name="allowedVerbs"/>. A write reached only through a shell payload or a pass-through keeps its
+    /// tier: the grant names a spelled call, and a segment that does not spell it is not that call. A line this
+    /// build cannot read at all is never allowed, and a line with no git write in it is allowed vacuously — which is
+    /// what leaves every non-git command at the tier it already had.
+    /// </summary>
+    public static bool AllWritesAllowed(string? argumentsJson, IReadOnlyCollection<string> allowedVerbs)
+    {
+        foreach (var call in CallsOf(argumentsJson))
+        {
+            if (call.Grade == GitGrade.GitUnclassifiable) return false;
+            if (call.Grade != GitGrade.GitWrite) continue;
+            if (call.Verb is null || !allowedVerbs.Contains(call.Verb)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The whole exemption, as one rule: the built-in table <b>or</b> the person's granted verbs must cover every
+    /// write in the line — never the union of the two. A line whose writes straddle the tables (<c>git add &amp;&amp;
+    /// git push</c> with only <c>push</c> granted) is a line neither table speaks for as a whole, so it keeps asking;
+    /// that cell exists because taking the union is the easy mistake here, and it would let one grant quietly widen
+    /// the other table's reach.
+    /// </summary>
+    public static bool CoveredByOneTable(string? argumentsJson, IReadOnlyCollection<string> grantedVerbs)
+        => AllWritesAllowed(argumentsJson, BuiltInAllowedVerbs) || AllWritesAllowed(argumentsJson, grantedVerbs);
+
+    private static string? CommandTextOf(string? argumentsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argumentsJson)) return null;
         try
         {
             using var document = JsonDocument.Parse(argumentsJson);
             return document.RootElement.TryGetProperty("command", out var value)
                    && value.ValueKind == JsonValueKind.String
-                ? Grade(value.GetString())
-                : GitGrade.NotGit;
+                ? value.GetString()
+                : null;
         }
         catch (JsonException)
         {
-            return GitGrade.NotGit;
+            return null;
         }
+    }
+
+    private static List<GitCall> CallsOf(string? argumentsJson)
+    {
+        var calls = new List<GitCall>();
+        Collect(CommandTextOf(argumentsJson), 0, direct: true, calls);
+        return calls;
     }
 
     /// <summary>Grade a whole command line: the worst segment wins, since <c>git add -A && git commit -m x</c>
     /// is a write whatever its first half looks like.</summary>
     public static GitGrade Grade(string? command) => Grade(command, 0);
 
+    /// <summary>One git call a line performs, with the verb it spelled when it spelled one directly. <c>Verb</c> is
+    /// empty for a read and for a write the classifier had to reach through a wrapper — there is no
+    /// <c>git &lt;verb&gt;</c> in the line to name either.</summary>
+    private readonly record struct GitCall(GitGrade Grade, string? Verb)
+    {
+        public bool IsDirectWrite => Grade == GitGrade.GitWrite && Verb is not null;
+    }
+
     private static GitGrade Grade(string? command, int depth)
     {
+        // One walk, two readers: the tier is the worst call this finds, and the exemption asks the same calls
+        // whether they are all covered. A second traversal here would be a second matcher to keep in step, which is
+        // exactly how 「认不出的子命令按写处理」 stopped being true last time.
         var worst = GitGrade.NotGit;
-        foreach (var segment in ShellCommandLine.SegmentsOf(command))
+        var calls = new List<GitCall>();
+        Collect(command, depth, direct: true, calls);
+        foreach (var call in calls)
         {
-            var grade = GradeSegment(segment, depth);
-            if (Rank(grade) > Rank(worst)) worst = grade;
-            if (worst == GitGrade.GitWrite) break;
+            if (Rank(call.Grade) > Rank(worst)) worst = call.Grade;
         }
         return worst;
+    }
+
+    private static void Collect(string? command, int depth, bool direct, List<GitCall> calls)
+    {
+        foreach (var segment in ShellCommandLine.SegmentsOf(command)) CollectSegment(segment, depth, direct, calls);
+    }
+
+    private static void CollectSegment(List<Token> segment, int depth, bool direct, List<GitCall> calls)
+    {
+        var index = ShellCommandLine.HeadIndex(segment);
+        if (index >= segment.Count) return;
+
+        var name = ShellCommandLine.ExecutableName(segment[index].Text);
+        if (name.Length == 0) return;
+        if (string.Equals(name, "git", StringComparison.Ordinal))
+        {
+            // The verb is reported only where the line spells it at this segment's head. Anything reached by
+            // piercing keeps the grade and loses the verb: `pwsh -c "git push"` is a write, and no part of the line
+            // is the call `git push` a person can grant.
+            var call = DirectCall(segment, index + 1);
+            calls.Add(direct ? call : call with { Verb = null });
+            return;
+        }
+        if (depth < 2)
+        {
+            if (ShellCommandLine.IsShell(name))
+            {
+                var payload = ShellCommandLine.CommandPayload(segment, index + 1);
+                if (payload is not null) Collect(payload, depth + 1, direct: false, calls);
+                return;
+            }
+            if (ShellCommandLine.IsPassThrough(name)) CollectTail(segment, index + 1, depth, calls);
+        }
+    }
+
+    /// <summary>
+    /// Collect what a pass-through program was given, by finding the first token that is itself a program this
+    /// classifier knows: <c>timeout 60 git clone x</c> and <c>env -i LC_ALL=C git push</c> both hide their verb
+    /// behind the wrapper's own arguments, and reading position 0 as the head would call <c>60</c> a program.
+    /// Anything the scan does not recognise keeps today's tier, which is the direction that never stops a build.
+    ///
+    /// <para>Whatever it finds is reported with no verb: the write is graded, so its tier is right, but no part of the
+    /// line spells <c>git &lt;verb&gt;</c> for a grant to name — that is what keeps <c>sudo git push</c> asking even
+    /// after <c>git push</c> was granted.</para>
+    /// </summary>
+    private static void CollectTail(List<Token> segment, int from, int depth, List<GitCall> calls)
+    {
+        for (var i = from; i < segment.Count; i++)
+        {
+            var token = segment[i];
+            if (ShellCommandLine.IsEnvironmentAssignment(token)) continue;
+            if (token.Text.StartsWith('-') && !token.Quoted) continue;
+            var name = ShellCommandLine.ExecutableName(token.Text);
+            if (name.Length == 0) continue;
+            if (string.Equals(name, "git", StringComparison.Ordinal))
+            {
+                calls.Add(new GitCall(GradeGitCall(segment, i + 1), null));
+                return;
+            }
+            if (depth >= 2) continue;
+            if (ShellCommandLine.IsShell(name))
+            {
+                var payload = ShellCommandLine.CommandPayload(segment, i + 1);
+                if (payload is not null) Collect(payload, depth + 1, direct: false, calls);
+                return;
+            }
+            if (ShellCommandLine.IsPassThrough(name))
+            {
+                CollectTail(segment, i + 1, depth + 1, calls);
+                return;
+            }
+        }
     }
 
     private static int Rank(GitGrade grade) => grade switch
@@ -133,67 +286,24 @@ public static class GitCommandGrades
         _ => 0,
     };
 
-    /// <summary>Grade one segment by its head word, after any environment prefix. <paramref name="depth"/>
-    /// bounds the recursion through a shell payload or a pass-through program, so a self-nesting argument
-    /// cannot walk itself out of the answer.</summary>
-    private static GitGrade GradeSegment(List<Token> segment, int depth)
-    {
-        var index = ShellCommandLine.HeadIndex(segment);
-        if (index >= segment.Count) return GitGrade.NotGit;
-
-        var name = ShellCommandLine.ExecutableName(segment[index].Text);
-        if (name.Length == 0) return GitGrade.NotGit;
-        if (string.Equals(name, "git", StringComparison.Ordinal)) return GradeGitCall(segment, index + 1);
-        if (depth < 2)
-        {
-            if (ShellCommandLine.IsShell(name))
-            {
-                var payload = ShellCommandLine.CommandPayload(segment, index + 1);
-                return payload is null ? GitGrade.NotGit : Grade(payload, depth + 1);
-            }
-            if (ShellCommandLine.IsPassThrough(name)) return GradeTail(segment, index + 1, depth);
-        }
-        return GitGrade.NotGit;
-    }
-
-    /// <summary>
-    /// Grade what a pass-through program was given, by finding the first token that is itself a program this
-    /// classifier knows: <c>timeout 60 git clone x</c> and <c>env -i LC_ALL=C git push</c> both hide their verb
-    /// behind the wrapper's own arguments, and reading position 0 as the head would call <c>60</c> a program.
-    /// Anything the scan does not recognise keeps today's tier, which is the direction that never stops a build.
-    /// </summary>
-    private static GitGrade GradeTail(List<Token> segment, int from, int depth)
-    {
-        for (var i = from; i < segment.Count; i++)
-        {
-            var token = segment[i];
-            if (ShellCommandLine.IsEnvironmentAssignment(token)) continue;
-            if (token.Text.StartsWith('-') && !token.Quoted) continue;
-            var name = ShellCommandLine.ExecutableName(token.Text);
-            if (name.Length == 0) continue;
-            if (string.Equals(name, "git", StringComparison.Ordinal)) return GradeGitCall(segment, i + 1);
-            if (depth >= 2) continue;
-            if (ShellCommandLine.IsShell(name))
-            {
-                var payload = ShellCommandLine.CommandPayload(segment, i + 1);
-                return payload is null ? GitGrade.NotGit : Grade(payload, depth + 1);
-            }
-            if (ShellCommandLine.IsPassThrough(name)) return GradeTail(segment, i + 1, depth + 1);
-        }
-        return GitGrade.NotGit;
-    }
-
-    /// <summary>Read the verb after <c>git</c>, skipping its own options.</summary>
-    private static GitGrade GradeGitCall(List<Token> segment, int from)
+    /// <summary>Read the verb after <c>git</c>, skipping its own options — and report which verb was spelled, since
+    /// that verb is the key a grant is written against.</summary>
+    private static GitCall DirectCall(List<Token> segment, int from)
     {
         // A bare `git` prints usage and changes nothing.
-        if (from >= segment.Count) return GitGrade.NotGit;
+        if (from >= segment.Count) return new GitCall(GitGrade.NotGit, null);
         for (var i = from; i < segment.Count; i++)
         {
             var token = segment[i];
             if (token.Text.Length == 0) continue;
-            if (token.Text[0] != '-') return GradeGitVerb(token.Text, segment, i + 1);
-            if (token.Text is "--version" or "--help" or "--help-all" or "-h" or "-V") return GitGrade.NotGit;
+            if (token.Text[0] != '-')
+            {
+                var verb = token.Text.ToLowerInvariant();
+                var grade = GradeGitVerb(token.Text, segment, i + 1);
+                // A read spells nothing a grant could name — only a write verb is a key.
+                return new GitCall(grade, grade == GitGrade.GitWrite ? verb : null);
+            }
+            if (token.Text is "--version" or "--help" or "--help-all" or "-h" or "-V") return new GitCall(GitGrade.NotGit, null);
             if (GlobalFlagsWithValues.Contains(token.Text))
             {
                 i++; // its value is not the verb either.
@@ -201,8 +311,10 @@ public static class GitCommandGrades
             }
         }
         // Options and no verb: something was asked of git and this build cannot say what.
-        return GitGrade.GitUnclassifiable;
+        return new GitCall(GitGrade.GitUnclassifiable, null);
     }
+
+    private static GitGrade GradeGitCall(List<Token> segment, int from) => DirectCall(segment, from).Grade;
 
     private static GitGrade GradeGitVerb(string verb, List<Token> segment, int rest)
     {

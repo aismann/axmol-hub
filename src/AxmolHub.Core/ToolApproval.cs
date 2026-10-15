@@ -286,6 +286,96 @@ public static class ToolTrust
 }
 
 /// <summary>
+/// The app-wide list of git write verbs a person has said to stop asking about — the narrow key the card's verb
+/// button hands out ("以后都不问 git push"). Its shape rules sit beside <see cref="ToolTrust"/>'s for the same
+/// reason: three places read and write this list (the settings file on the way in, that card button, the settings
+/// page's revoke) and they must not be able to disagree about what a stored entry means.
+///
+/// <para><b>This is not a command-text blacklist.</b> An entry is the two-word spelling a card showed
+/// (<c>git push</c>), and the only writer is <see cref="GitCommandGrades.WriteVerbsOf"/> — the same tokenizer that
+/// grades the command produces the verb, so no entry can name a verb the classifier did not itself find. An entry
+/// that does not have that shape is kept rather than dropped (a newer Hub may have written something this build
+/// cannot read) and simply matches nothing, which is the direction a stale entry has to fail in. Matching is
+/// Ordinal, because the verbs are produced lowercased by the classifier and never typed by a person.</para>
+/// </summary>
+public static class CommandTrust
+{
+    /// <summary>How many verbs the app keeps. A hand-sized set, bounded so a runaway writer cannot grow the
+    /// settings file without a limit.</summary>
+    public const int Limit = 32;
+
+    /// <summary>The prefix every key carries: the grant names the program as well as the verb, so the settings page
+    /// reads as the command a person saw on the card rather than as a bare word.</summary>
+    public const string Program = "git";
+
+    /// <summary>The key for one verb, in the one spelling the list stores and matches. Null or blank (an
+    /// unclassifiable subcommand reports no verb at all) yields an empty string, which matches nothing.</summary>
+    public static string KeyFor(string? verb)
+    {
+        var trimmed = (verb ?? "").Trim().ToLowerInvariant();
+        return trimmed.Length == 0 ? "" : Program + " " + trimmed;
+    }
+
+    /// <summary>The verb an entry names, or an empty string when the entry is not one of ours. This is what turns
+    /// the stored list back into the verb set <see cref="GitCommandGrades.AllWritesAllowed"/> is asked about.</summary>
+    public static string VerbOf(string? key)
+    {
+        var trimmed = (key ?? "").Trim();
+        var space = trimmed.IndexOf(' ');
+        if (space <= 0) return "";
+        if (!string.Equals(trimmed[..space], Program, StringComparison.OrdinalIgnoreCase)) return "";
+        var verb = trimmed[(space + 1)..].Trim().ToLowerInvariant();
+        return verb.Length == 0 || verb.Contains(' ') ? "" : verb;
+    }
+
+    public static List<string> Normalize(IEnumerable<string>? keys)
+    {
+        var trusted = new List<string>();
+        foreach (var key in keys ?? [])
+        {
+            var trimmed = (key ?? "").Trim();
+            if (trimmed.Length == 0) continue;
+            if (trusted.Any(existing => string.Equals(existing, trimmed, StringComparison.OrdinalIgnoreCase))) continue;
+            trusted.Add(trimmed);
+            if (trusted.Count >= Limit) break;
+        }
+        return trusted;
+    }
+
+    public static bool Contains(IEnumerable<string>? keys, string key)
+        => keys?.Any(entry => string.Equals(entry, key, StringComparison.Ordinal)) == true;
+
+    /// <summary>Records a grant, or says it was already there. Returns whether the list changed, because the caller
+    /// only writes the settings file when something actually moved.</summary>
+    public static bool Add(List<string> keys, string key)
+    {
+        var trimmed = (key ?? "").Trim();
+        if (trimmed.Length == 0 || Contains(keys, trimmed) || keys.Count >= Limit) return false;
+        keys.Add(trimmed);
+        return true;
+    }
+
+    public static bool Remove(List<string> keys, string key)
+    {
+        var found = keys.FirstOrDefault(entry => string.Equals(entry, key, StringComparison.Ordinal));
+        return found is not null && keys.Remove(found);
+    }
+
+    /// <summary>The verbs the stored list actually names — the granted half of what <see cref="GitCommandGrades"/>
+    /// is asked to cover. Entries this build cannot read contribute nothing.</summary>
+    public static HashSet<string> VerbsOf(IEnumerable<string>? keys)
+    {
+        var verbs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var key in keys ?? [])
+        {
+            var verb = VerbOf(key);
+            if (verb.Length > 0) verbs.Add(verb);
+        }
+        return verbs;
+    }
+}
+
+/// <summary>
 /// What became of a tool call that needed permission. The pending call turn <b>is</b> the approval record —
 /// there is no side table to fall out of step with — which is why the state has to survive a restart.
 /// </summary>

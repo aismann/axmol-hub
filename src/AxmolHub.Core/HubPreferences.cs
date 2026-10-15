@@ -50,6 +50,20 @@ public sealed class HubPreferences
     /// </summary>
     public List<string> TrustedTools { get; set; } = [];
 
+    /// <summary>
+    /// Git write verbs the user told Hub to stop asking about, for <b>every</b> session: what the card's verb
+    /// button ("以后都不问 git push") writes. Kept beside <see cref="TrustedTools"/> because both are answers to the
+    /// same question, and <b>app-level only on purpose</b> — the tool list has a per-session copy because a grant
+    /// there is a batch decision, while a verb grant is one git verb and a second, narrower list would only be a
+    /// second place for the two to disagree.
+    ///
+    /// <para>The entries are the two-word spelling the card showed (<c>git push</c>), matched Ordinal by
+    /// <see cref="CommandTrust"/>. This is not a command-text blacklist: the key comes from the same tokenizer that
+    /// grades the command, so an entry can only ever name a verb the classifier itself found — see
+    /// <see cref="GitCommandGrades.WriteVerbsOf"/>.</para>
+    /// </summary>
+    public List<string> TrustedCommands { get; set; } = [];
+
     /// <summary>Expanded width of the left navigation/session sidebar in px, range 240–420; adjusted by the sidebar's drag handle.</summary>
     public double SidebarWidth { get; set; } = 300;
 
@@ -133,6 +147,9 @@ public sealed class PreferencesStore(string path)
         // what a stored grant means. Unknown names are kept rather than dropped — they match no call, and a
         // reader that deleted what it did not recognise would silently eat a grant a newer Hub wrote.
         preferences.TrustedTools = ToolTrust.Normalize(preferences.TrustedTools);
+        // And the command-verb list with the same care and the same reason: the shape rules live in CommandTrust so
+        // the store, the card's verb button and the settings page cannot disagree about what a stored verb means.
+        preferences.TrustedCommands = CommandTrust.Normalize(preferences.TrustedCommands);
         // The routing ceiling is a cost guard: a value this build cannot read falls back to the shipped ceiling
         // rather than to "no ceiling", which is the one way a hand-edited settings file could spend past the
         // strongest tier anyone agreed to.
