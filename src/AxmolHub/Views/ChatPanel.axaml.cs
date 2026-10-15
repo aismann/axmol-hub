@@ -3807,6 +3807,14 @@ public partial class ChatPanel : UserControl
     internal bool TranscriptScrollableForCheck
         => MessageScroller.Extent.Height > MessageScroller.Viewport.Height + StickEpsilon;
 
+    /// <summary>How far the transcript can be read past one screen — the whole travel of its reading position.
+    /// Exposed next to <see cref="TranscriptScrollableForCheck"/> because "it can scroll" is not enough for a
+    /// fixture that means to leave the position mid-way: a scroll asked for in pixels is clamped to this number, so
+    /// anything asking for more than the range lands at the bottom instead, and the plate that is supposed to rise
+    /// never does.</summary>
+    internal double TranscriptScrollRangeForCheck
+        => Math.Max(0, MessageScroller.Extent.Height - MessageScroller.Viewport.Height);
+
     /// <summary>How tall the band's row actually is. Zero is the claim that an empty thing does not take a row;
     /// the plate's own height is the claim that a reserved row is what stopped the composer from jumping.</summary>
     internal double ChangesPillRowHeightForCheck => ComposerBand.Bounds.Height;

@@ -970,20 +970,39 @@ public partial class ShellCheckWindow : Window
         Dispatcher.UIThread.RunJobs();
         var maximizedClient = shell.Bounds.Size;
         var rememberedUnderMaximize = shell.NormalClientSizeForCheck;
+        // Whether the request was granted is the platform's answer, not this file's, and on a host that never
+        // actually maximizes there is no maximized appearance to read: this check window is never shown, so no
+        // window manager on X11 acts on the request (the comment further down says the same about the pixel half).
+        // So the rule is asserted against the state the window really reports — granted means the corners go to
+        // zero and the plate offers "restore", refused means the shell must not *pretend*, with the normal corners
+        // and a plate that still says "maximize". The corner rule itself is covered on every host by the work-area
+        // fill below, which is the same chrome path and needs no window manager at all.
+        var maximizedGranted = shell.WindowState == WindowState.Maximized;
         if (OperatingSystem.IsLinux())
         {
             var maximizedCorners = shell.WindowSurfaceCornerRadiusForCheck;
-            Check(Math.Abs(maximizedCorners.TopLeft) <= 0.5
-                  && Math.Abs(maximizedCorners.TopRight) <= 0.5
-                  && Math.Abs(maximizedCorners.BottomRight) <= 0.5
-                  && Math.Abs(maximizedCorners.BottomLeft) <= 0.5,
-                "Linux 主窗口最大化后四角归零（实际 "
+            Check(maximizedGranted
+                  ? Math.Abs(maximizedCorners.TopLeft) <= 0.5
+                    && Math.Abs(maximizedCorners.TopRight) <= 0.5
+                    && Math.Abs(maximizedCorners.BottomRight) <= 0.5
+                    && Math.Abs(maximizedCorners.BottomLeft) <= 0.5
+                  : Math.Abs(maximizedCorners.TopLeft - 12) <= 0.5
+                    && Math.Abs(maximizedCorners.TopRight - 12) <= 0.5
+                    && Math.Abs(maximizedCorners.BottomRight) <= 0.5
+                    && Math.Abs(maximizedCorners.BottomLeft) <= 0.5,
+                "Linux 主窗口的四角跟着平台真正给的状态走：最大化生效时归零，没被接受时留着普通的上角圆角（"
+                + (maximizedGranted ? "最大化已生效" : "窗口管理器没有接受这次最大化") + "，实际 "
                 + Fmt(maximizedCorners.TopLeft) + "," + Fmt(maximizedCorners.TopRight) + ","
                 + Fmt(maximizedCorners.BottomRight) + "," + Fmt(maximizedCorners.BottomLeft) + "）");
         }
-        Check(shell.MaximizeTipForCheck == HubTexts.Get("RestoreWindow", HubStrings.Language)
-              && shell.MaximizeGlyphIsRestoreForCheck,
-            "已最大化时那枚按钮改说「还原」并换成还原图形（实际提示「" + shell.MaximizeTipForCheck + "」）");
+        // The plate says what the *next* click does, so which word is right is the same platform answer: the state
+        // the window is in decides, and a shell that showed "restore" on a window that was never maximized would
+        // be lying about the next click just as much as the other way round.
+        Check(shell.MaximizeTipForCheck
+                  == HubTexts.Get(maximizedGranted ? "RestoreWindow" : "MaximizeWindow", HubStrings.Language)
+              && shell.MaximizeGlyphIsRestoreForCheck == maximizedGranted,
+            "那枚按钮说的是下一次点击会做的事（" + (maximizedGranted ? "还原" : "最大化") + "，实际提示「"
+            + shell.MaximizeTipForCheck + "」）");
         shell.SetWindowStateForCheck(WindowState.Normal);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -1110,17 +1129,29 @@ public partial class ShellCheckWindow : Window
         Check(dragArea is not null, "标题栏的拖动层还在（找不到就没法验证双击）");
         if (dragArea is not null)
         {
+            var togglesBefore = shell.MaximizeToggleRequestsForCheck;
             PressTitleBar(dragArea, shell, 2);
             Dispatcher.UIThread.RunJobs();
-            Check(FillsOrMaximizes(shell) && !shell.TitleBarDragArmedForCheck
-                  && (shell.WindowState == WindowState.Maximized || shell.MaximizeTipForCheck == HubTexts.Get("RestoreWindow", HubStrings.Language)),
-                  "双击标题区域把窗口铺满（WSLg 上由壳自己铺，别处交给窗口管理器），并且没有顺手武装一次拖动"
-                  + "（实际 " + shell.WindowState + " / 自铺 " + shell.FillsWorkAreaForCheck + " / 武装 "
-                  + shell.TitleBarDragArmedForCheck + "）");
+            // The filled window is asserted where a platform can deliver it — the request itself is invisible on a
+            // host that refuses it, and this window is never shown, so on X11 no window manager acts on the
+            // maximize and there is no maximized state to read. What holds on every host is the decision the bar
+            // owns: the *second* press reaches the toggle exactly once. That is the half that breaks silently (a
+            // swallowed second press leaves a double-click doing nothing), so it is asserted unconditionally, and
+            // the refusal is not allowed quirks of its own either — the press must not arm a drag.
+            var doubleClickToggles = shell.MaximizeToggleRequestsForCheck - togglesBefore;
+            Check(doubleClickToggles == 1 && !shell.TitleBarDragArmedForCheck
+                  && (!FillsOrMaximizes(shell)
+                      || shell.WindowState == WindowState.Maximized
+                      || shell.MaximizeTipForCheck == HubTexts.Get("RestoreWindow", HubStrings.Language)),
+                  "双击标题区域走到最大化那一次开关（宿主接得下时就铺满：WSLg 上由壳自己铺，别处交给窗口管理器），"
+                  + "并且没有顺手武装一次拖动（实际开关 " + doubleClickToggles + " 次 / " + shell.WindowState
+                  + " / 自铺 " + shell.FillsWorkAreaForCheck + " / 武装 " + shell.TitleBarDragArmedForCheck + "）");
             PressTitleBar(dragArea, shell, 2);
             Dispatcher.UIThread.RunJobs();
-            Check(!FillsOrMaximizes(shell),
-                  "再双击一次还原回来（实际 " + shell.WindowState + " / 自铺 " + shell.FillsWorkAreaForCheck + "）");
+            Check(shell.MaximizeToggleRequestsForCheck - togglesBefore == 2 && !FillsOrMaximizes(shell),
+                  "再双击一次还原回来，也是走同一次开关（实际开关 "
+                  + (shell.MaximizeToggleRequestsForCheck - togglesBefore) + " 次 / " + shell.WindowState
+                  + " / 自铺 " + shell.FillsWorkAreaForCheck + "）");
 
             // The first click arms the drag and its release disarms it: the state a double-click has to survive
             // between its two clicks, since the second press is what toggles.
@@ -2008,6 +2039,15 @@ public partial class ShellCheckWindow : Window
         var keyA = SessionGroupKey.Workspace(workspaceA)!;
         var keyB = SessionGroupKey.Workspace(workspaceB)!;
         var keyMoved = SessionGroupKey.Workspace(movedAway)!;
+        // Two spellings of one directory are one group, and *which* spellings those are is the filesystem's
+        // answer rather than this file's: WorkspacePaths.CanonicalRoot folds case on Windows only — where the
+        // filesystem already does — and keeps the bytes everywhere else. So the spellings below are judged by
+        // Hub's own rule instead of by a platform switch: where the uppercase spelling names the same directory
+        // it must join the group, and where it names a second one it must be a group of its own with neither
+        // group swallowing the other's rows.
+        var upperA = workspaceA.ToUpperInvariant();
+        var keyUpper = SessionGroupKey.Workspace(upperA)!;
+        var foldsCase = keyUpper == keyA;
         var createdWorkspaceVerdict = sidebar.NewWorkspaceForCheck(workspaceA);
         var createdWorkspace = chat.ActiveConversation;
         Check(createdWorkspaceVerdict is null && createdWorkspace is not null
@@ -2069,17 +2109,24 @@ public partial class ShellCheckWindow : Window
         var plainOne = Seeded(null, "闲聊甲");
         var bOne = Seeded(workspaceB, "B 项目一");
         var movedOne = Seeded(movedAway, "搬走的目录");
-        var aUpper = Seeded(workspaceA.ToUpperInvariant(), "A 项目大写");
-        var aOne = Seeded(workspaceA, "A 项目一");
+        var aUpper = Seeded(upperA, "A 项目大写");
+        // Bound with the host's trailing separator on purpose: that spelling is the same directory on every
+        // platform, because CanonicalRoot trims it — so the pair below exercises the separator fold as well as
+        // the case fold, and the case fold is the half only a case-insensitive host performs.
+        var aOne = Seeded(workspaceA + System.IO.Path.DirectorySeparatorChar, "A 项目一");
         sidebar.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
 
         var tags = sidebar.GroupHeaderTagsForCheck();
         var nested = tags.Skip(1).TakeWhile(tag => tag.StartsWith("ws:", StringComparison.Ordinal)).ToArray();
-        Check(tags.Length == 5 && tags[0] == SessionGroupKey.Workspaces
-              && nested.Length == 3 && nested.Contains(keyA) && nested.Contains(keyB) && nested.Contains(keyMoved)
-              && tags[4] == SessionGroupKey.Recent,
+        var expectedGroups = foldsCase
+            ? new[] { keyA, keyB, keyMoved }
+            : new[] { keyA, keyB, keyMoved, keyUpper };
+        Check(tags.Length == expectedGroups.Length + 2 && tags[0] == SessionGroupKey.Workspaces
+              && tags[^1] == SessionGroupKey.Recent
+              && nested.Length == expectedGroups.Length
+              && expectedGroups.All(nested.Contains),
             "所有工作区分组都挂在「工作区」根节点下，没有目录的对话作为同级的「对话」排在后面（实际顺序："
             + string.Join(" / ", tags) + "）");
         // Label and key are two different things: the group's title is now 「对话」, but it is still registered
@@ -2096,11 +2143,17 @@ public partial class ShellCheckWindow : Window
         Check(sidebar.GroupMenuTitlesForCheck(SessionGroupKey.Workspaces).Length == 0
               && sidebar.GroupRowIdsForCheck(SessionGroupKey.Workspaces).Length == 0,
             "「工作区」只是段标题：它没有可编辑的路径，也不直接收会话行");
-        Check(sidebar.GroupOfForCheck(aUpper.Id) == keyA
-              && sidebar.GroupOfForCheck(aOne.Id) == keyA
+        var upperRows = sidebar.GroupRowIdsForCheck(foldsCase ? keyA : keyUpper);
+        Check(sidebar.GroupOfForCheck(aOne.Id) == keyA
+              && sidebar.GroupOfForCheck(aUpper.Id) == (foldsCase ? keyA : keyUpper)
+              && upperRows.Contains(aUpper.Id)
+              && upperRows.Length == (foldsCase ? 2 : 1)
+              && sidebar.GroupRowIdsForCheck(keyA).Contains(aOne.Id)
               && tags.Count(tag => tag == keyA) == 1,
-            "同一目录的大小写不同、结尾分隔符不同也归为同一组（该组 "
-            + sidebar.GroupRowIdsForCheck(keyA).Length + " 行，实际分组数 " + tags.Length + "）");
+            "同一目录的大小写不同、结尾分隔符不同也归为同一组，判据是宿主自己的路径规则（宿主"
+            + (foldsCase ? "折叠大小写，两种拼法合成一组" : "区分大小写，两种拼法各自成组")
+            + "；该组 " + sidebar.GroupRowIdsForCheck(keyA).Length + " 行，大写拼法那一组 "
+            + upperRows.Length + " 行，实际分组数 " + tags.Length + "）");
         Check(sidebar.GroupOfForCheck(movedOne.Id) == keyMoved
               && sidebar.GroupMenuTitlesForCheck(keyMoved).Contains(HubStrings.Get("EditWorkspacePath")),
             "目录已不存在的分组照样显示，并提供编辑路径（实际菜单："
@@ -2124,8 +2177,8 @@ public partial class ShellCheckWindow : Window
             "根节点的折叠状态同样写进设置文件");
         Check(sidebar.ToggleGroupForCheck(SessionGroupKey.Workspaces)
               && sidebar.SessionRowCountForCheck == allRows
-              && sidebar.GroupHeaderTagsForCheck().Length == 5,
-            "再点一次根节点，工作区分组和它们的会话都回来");
+              && sidebar.GroupHeaderTagsForCheck().SequenceEqual(tags),
+            "再点一次根节点，工作区分组和它们的会话都回来（折起前那 " + tags.Length + " 段回到原位）");
 
         // ── Collapse ──
         var rowsBefore = sidebar.SessionRowCountForCheck;
@@ -2174,10 +2227,20 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         var pinnedTags = sidebar.GroupHeaderTagsForCheck();
+        // Which group the pinned row belongs to is that same filesystem question: keyA where the uppercase
+        // spelling is the same directory, the uppercase group where the host says it is a second one. What the
+        // rule pins is that the pinned row's *own* group comes to the first slot under the root and the pinned
+        // row is first inside it — not that a group named after the pin appears.
+        var pinnedGroup = foldsCase ? keyA : keyUpper;
+        var pinnedRows = sidebar.GroupRowIdsForCheck(pinnedGroup);
         Check(!pinnedTags.Contains("pin")
               && pinnedTags[0] == SessionGroupKey.Workspaces
-              && pinnedTags[1] == keyA
-              && sidebar.GroupRowIdsForCheck(keyA).SequenceEqual([aUpper.Id, aOne.Id]),
+              && pinnedTags[1] == pinnedGroup
+              && pinnedRows.Length == (foldsCase ? 2 : 1)
+              && pinnedRows[0] == aUpper.Id
+              && (foldsCase
+                  ? pinnedRows[1] == aOne.Id
+                  : sidebar.GroupRowIdsForCheck(keyA).SequenceEqual([aOne.Id])),
             "置顶会话不再抽成独立分组，而是把所属工作区带到根节点下的第一位并排在组内最前（实际分组："
             + string.Join(" / ", pinnedTags) + "）");
         Check(sidebar.HasPinBadgeForCheck(aUpper.Id) && !sidebar.HasPinBadgeForCheck(aOne.Id),
@@ -2227,11 +2290,16 @@ public partial class ShellCheckWindow : Window
             "恢复归档对话把它带回原来的工作区分组，归档分组随之消失");
 
         // ── Archive: a whole workspace ──
-        Check(sidebar.ArchiveWorkspaceForCheck(workspaceA, archived: true) == 2
+        // "The whole workspace" is the group, and how many conversations that group holds is the filesystem's
+        // answer again — two where the uppercase spelling is the same directory, one where it is a second one.
+        // What must hold either way is that archiving takes every row the group has, leaves the group standing
+        // with its placeholder, and drops the live count by exactly that many.
+        var rowsUnderA = sidebar.GroupRowIdsForCheck(keyA).Length;
+        Check(sidebar.ArchiveWorkspaceForCheck(workspaceA, archived: true) == rowsUnderA
               && sidebar.GroupHeaderTagsForCheck().Contains(keyA)
               && sidebar.GroupPlaceholderForCheck(keyA) == HubStrings.Get("NoWorkspaceSessions")
-              && sidebar.ConversationCount == liveBefore - 2,
-            "归档工作区连带归档它的两个对话，分组不收掉，改显一行「暂无会话」（实际剩余 "
+              && sidebar.ConversationCount == liveBefore - rowsUnderA,
+            "归档工作区连带归档它这一组里的每一条对话（" + rowsUnderA + " 条），分组不收掉，改显一行「暂无会话」（实际剩余 "
             + sidebar.ConversationCount + " 项）");
         Check(sidebar.GroupMenuTitlesForCheck(SessionGroupKey.Archived)
                   .Contains(HubStrings.Get("RestoreAllArchived")),
@@ -2278,8 +2346,12 @@ public partial class ShellCheckWindow : Window
 
         var groupAFirst = sidebar.NewSessionFromGroupForCheck(keyA);
         var liveAfterFirst = sidebar.ConversationCount;
+        // The directory is compared as the product compares directories (CanonicalRoot), not as a string: a group
+        // is one directory under every spelling its rows use, so "bound to this directory" has to mean that
+        // directory rather than the exact spelling the fixture happened to type.
         Check(groupAFirst is { Length: > 0 } && chat.ActiveConversation?.Id == groupAFirst
-              && chat.WorkspaceRootFor(groupAFirst) == System.IO.Path.GetFullPath(workspaceA)
+              && WorkspacePaths.CanonicalRoot(chat.WorkspaceRootFor(groupAFirst))
+                  == WorkspacePaths.CanonicalRoot(workspaceA)
               && sidebar.GroupNewTipForCheck(keyA) == HubStrings.Get("GroupNewSessionTip"),
             "工作区分组最右侧的 ＋ 当场建一条属于这个目录的会话（实际目录 " + RootOf(groupAFirst)
             + "，提示 " + sidebar.GroupNewTipForCheck(keyA) + "）");
@@ -3514,8 +3586,8 @@ public partial class ShellCheckWindow : Window
     /// Font size: one message must not switch fonts just because it scrolled out of the recent window.
     ///
     /// Only the last forty turns are rendered as Markdown, and the plain path used to fall back to the theme's
-    /// default 14 while the Markdown layer says 13 — so a message visibly changed font as it scrolled away. The
-    /// pair is read off the two controls that actually paint the words, and pinned to 13 so the pair cannot both
+    /// default 14 while the Markdown layer says 12 — so a message visibly changed font as it scrolled away. The
+    /// pair is read off the two controls that actually paint the words, and pinned to 12 so the pair cannot both
     /// be wrong in the same direction.
     /// </summary>
     private async Task CheckTypographyAsync(MainWindow shell, ChatPanel panel)
@@ -3540,8 +3612,8 @@ public partial class ShellCheckWindow : Window
                 "纯文本与 markdown 正文同一个字号，消息滚过渲染边界不换个字（"
                 + plain.ToString(CultureInfo.InvariantCulture) + " vs "
                 + markdown.ToString(CultureInfo.InvariantCulture) + "）");
-            Check(Math.Abs(markdown - 13) < 0.001,
-                "markdown 正文仍是主题里那档 13，而不是被拉回控件默认的 14（实际 "
+            Check(Math.Abs(markdown - 12) < 0.001,
+                "markdown 正文仍是主题里那档 12，而不是被拉回控件默认的 14（实际 "
                 + markdown.ToString(CultureInfo.InvariantCulture) + "）");
 
             // The ink, for the same boundary the size pair above guards: only the last forty turns are Markdown,
@@ -4293,7 +4365,14 @@ public partial class ShellCheckWindow : Window
             // make every claim below about the plate vacuous — it would pass on a transcript that never needed one.
             // Notice rows will not do it either: they live below the flow, outside the scroller, so they never grow
             // its extent. Bubbles are the only thing that does.
-            for (var pad = 0; pad < 14 && !panel.TranscriptScrollableForCheck; pad++)
+            //
+            // It is the *range* that has to be big enough, not merely non-zero. A reading position is set in pixels
+            // and the scroller clamps it to the range, so on a host whose paragraphs happen to be shorter the whole
+            // travel was 37.5 px: the scroll below asked for more than that, landed back at the bottom, and the
+            // plate that is the subject of this cell never rose — reported as a layout fault when it was the
+            // fixture that had nothing to scroll through. So the pad loop runs until the travel clears the scroll
+            // below several times over, and the scroll itself asks for the middle of that travel.
+            for (var pad = 0; pad < 40 && panel.TranscriptScrollRangeForCheck < 160; pad++)
             {
                 bandSession.Messages.Add(new ChatTurn(ChatRoles.Assistant,
                     "第 " + (pad + 1) + " 条回答。这一段只为把转录推过一屏而存在：回底板的板子中不中，要看的是"
@@ -4335,13 +4414,14 @@ public partial class ShellCheckWindow : Window
                 "夹具：这六个文件摊开之后转录确实超出一屏，停在最底时横排里只有胶囊（组 "
                 + panel.ActivityGroupCountForCheck + "，行 " + panel.ActivityRowsForCheck.Length
                 + "，可滚 " + panel.TranscriptScrollableForCheck + "）");
-            panel.ScrollTranscriptForCheck(40);
+            panel.ScrollTranscriptForCheck(panel.TranscriptScrollRangeForCheck / 2);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             var plates = panel.BandPlatesForCheck;
             Check(!panel.ViewAtBottomForCheck && panel.ScrollToBottomVisible && plates is not null,
                 "往上读到中间，回底板升起来了，两个板子同时在这条横排里（offset "
-                + panel.FlowOffsetForCheck + "，" + (plates is null ? "只有一个板子" : "两个都在") + "）");
+                + Fmt(panel.FlowOffsetForCheck) + " / 可滚 " + Fmt(panel.TranscriptScrollRangeForCheck) + "，"
+                + (plates is null ? "只有一个板子" : "两个都在") + "）");
             Check(Math.Abs(panel.ComposerFrameTopForCheck - frameAtBottom) <= 0.5
                   && Math.Abs(panel.ChangesPillRowHeightForCheck - bandAtBottom) <= 0.5,
                 "回底板升起来没有把输入框推走，也没有把横排撑高：滚动位置变了，输入框上沿还在 "
@@ -6121,7 +6201,17 @@ public partial class ShellCheckWindow : Window
             Dispatcher.UIThread.RunJobs();
             // The card takes the keyboard when nothing is being written, which is the case where the letters on it
             // are worth more than a caret. The arrival after this one has a draft in the box and must not.
-            Check(panel.PendingPlanApprovalCardsForCheck == 1 && panel.DecisionHostFocusedForCheck,
+            //
+            // Split in two, and the focus half waits for the request to land. The panel asks for the focus on the
+            // rebuild that builds the card, but the window this check drives is never shown, so the focus manager
+            // is entitled to hand the element its focus a beat later than the rebuild that asked — which is what
+            // made a single read flaky on X11 (a handful of runs in a hundred, never a real regression). A bounded
+            // wait keeps the claim and drops the race; the card count is read first so a card that never arrived
+            // cannot be reported as a focus that never landed.
+            Check(panel.PendingPlanApprovalCardsForCheck == 1,
+                "空着输入框时计划卡到达（实际 " + panel.PendingPlanApprovalCardsForCheck + " 张待批准计划卡）");
+            await WaitUntilAsync(() => panel.DecisionHostFocusedForCheck);
+            Check(panel.DecisionHostFocusedForCheck,
                 "空着输入框时计划卡到达就拿到键盘，A / B 不必先点一下卡片才有效");
             panel.ClickPlanChoiceForCheck("ChatPlanRevise");
             panel.SetPlanFeedbackForCheck("换个思路再来一版");
@@ -9187,17 +9277,27 @@ public partial class ShellCheckWindow : Window
             // The cap has to clear the charter the product ships for itself. Hub's own AGENTS.md is what its
             // assistant reads while developing Hub, and when the cap was four KiB that file (6213 characters) went
             // in cut mid-way: the comment-language rule and the pointer to the project's own work log never reached
-            // the model. Measured against the real file rather than a synthetic length, so the day somebody grows
-            // the charter past the cap this cell reddens instead of the rule quietly disappearing.
+            // the model. Read against the real file rather than a synthetic length.
+            //
+            // What is asserted is the *shape* of that reading, not this file's size. A charter short enough to fit
+            // arrives whole; one past the cap arrives as the head-and-tail cut CutBySection prescribes, with the
+            // marker saying text was dropped and both ends still in the text. Pinning "this file fits the cap"
+            // instead would turn the growth of a document somebody is entitled to grow into a failing run — and
+            // the cap itself is not left unguarded: the synthetic charter above is the one that proves the cut
+            // happens, keeps its tail, and says so.
             if (ScratchDirectory.RepositoryRoot() is { } ownRoot
                 && File.Exists(Path.Combine(ownRoot, MemoryStore.ProjectCharterFile)))
             {
-                var ownText = File.ReadAllText(Path.Combine(ownRoot, MemoryStore.ProjectCharterFile));
-                Check(ownText.Length <= MemoryStore.MaxCharterCharacters
-                      && !MemoryStore.ReadProjectCharterSection(ownRoot)
-                          .Contains("…(truncated)", StringComparison.Ordinal),
-                    "本仓库自己的 AGENTS.md 整份进得来系统提示（" + ownText.Length + " 字符，上限 "
-                    + MemoryStore.MaxCharterCharacters + "）");
+                var ownText = File.ReadAllText(Path.Combine(ownRoot, MemoryStore.ProjectCharterFile)).Trim();
+                var ownSection = MemoryStore.ReadProjectCharterSection(ownRoot);
+                var ownWhole = ownSection.Contains(ownText, StringComparison.Ordinal);
+                var ownCut = ownSection.Contains("…(truncated)", StringComparison.Ordinal);
+                Check(ownWhole != ownCut
+                      && (ownWhole || (ownSection.Contains(ownText[..256], StringComparison.Ordinal)
+                                       && ownSection.Contains(ownText[^256..], StringComparison.Ordinal))),
+                    "本仓库自己的 AGENTS.md 要么整份进得来、要么按上限切在段落边界上并留下标记，首尾两段都还在（"
+                    + ownText.Length + " 字符，上限 " + MemoryStore.MaxCharterCharacters + "，注入 "
+                    + ownSection.Length + " 字符）");
             }
             else _lines.Add("SKIP  仓库根上没有 AGENTS.md，跳过「产品自己的章程整份进得来」（仅开发环境可跑）");
 
@@ -11296,8 +11396,10 @@ public partial class ShellCheckWindow : Window
             "模型行底色 = 设置卡片底色 Hub.Surface（曾经静态取色失败被染成 provider 卡片色）");
         Check(fetched is not null && fetched.ModelDividerCount == 0,
             "模型行卡片之间没有重复分割线（实际 " + (fetched?.ModelDividerCount ?? -1) + " 条）");
+        var cardLayout = settings.ProviderCardLayoutForCheck;
         Check(settings.HasOnlyProviderCards,
-            "provider 卡片之间不再插入分割线");
+            "provider 卡片之间不再插入分割线（卡片 " + cardLayout.Cards + " / provider " + cardLayout.Providers
+            + "，非卡片的说明行 " + cardLayout.Notices + "）");
         Check(settings.ProviderGroups.Count == shell.Chat.Providers.Count,
             "provider 卡片计数正确（实际读到 " + settings.ProviderGroups.Count + " 组 / "
                 + shell.Chat.Providers.Count + " 个 provider）");
@@ -12824,12 +12926,19 @@ public partial class ShellCheckWindow : Window
             "默认引擎显示的是 fixture 里那个引擎（实际 " + defaultEngine + "）");
 
         // Editor validation is extracted as a pure function, so this most-easily-missed branch can be automated.
-        Check(SettingsPage.MatchesEditorExecutable(true, @"C:\Tools\VS\devenv.exe")
-              && SettingsPage.MatchesEditorExecutable(true, @"C:\Tools\VS\DEVENV.EXE")
-              && SettingsPage.MatchesEditorExecutable(false, @"C:\Tools\Code.exe")
-              && !SettingsPage.MatchesEditorExecutable(true, @"C:\Tools\Code.exe")
-              && !SettingsPage.MatchesEditorExecutable(false, @"C:\Tools\devenv.exe"),
-            "编辑器校验按文件名判定、不区分大小写，且两种编辑器不可互换");
+        // The probe paths are composed with the host's own separator on purpose: what is under test is "judged by
+        // file name, case-insensitively, and the two editors are not interchangeable", and a literal Windows path
+        // would instead test Path.GetFileName on a host where a backslash is an ordinary character in a name — so
+        // the branch would read as broken on every platform whose separator is not "\".
+        var vsEditor = Path.Combine("Tools", "VS", "devenv.exe");
+        var codeEditor = Path.Combine("Tools", "Code.exe");
+        Check(SettingsPage.MatchesEditorExecutable(true, vsEditor)
+              && SettingsPage.MatchesEditorExecutable(true, vsEditor.ToUpperInvariant())
+              && SettingsPage.MatchesEditorExecutable(false, codeEditor)
+              && !SettingsPage.MatchesEditorExecutable(true, codeEditor)
+              && !SettingsPage.MatchesEditorExecutable(false, Path.Combine("Tools", "devenv.exe")),
+            "编辑器校验按文件名判定、不区分大小写，且两种编辑器不可互换（探针 "
+            + vsEditor + " / " + codeEditor + "）");
 
         // The download-speed tooltip rests on two pure functions that fail **silently** if wrong: a wrong
         // total still yields a plausible-looking rate, and an off-by-1024 still reads like a speed.

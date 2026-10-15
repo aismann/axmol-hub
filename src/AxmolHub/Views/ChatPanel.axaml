@@ -1096,12 +1096,12 @@
       <Setter Property="MinHeight" Value="0" />
       <Setter Property="CornerRadius" Value="8" />
     </Style>
-    <!-- A turn's own words, whether or not they are Markdown. The rendered-Markdown layer is 13 (declared in
+    <!-- A turn's own words, whether or not they are Markdown. The rendered-Markdown layer is 12 (declared in
          HubMarkdownStyles, which is the winning style set for that subtree), and only the last 40 turns go
-         through it — so a plain 14 here would make the same message change size as it scrolled away. The ink
+         through it — so anything but 12 here would make the same message change size as it scrolled away. The ink
          follows the same argument: Hub.TextBody, or a message would also brighten at that boundary. -->
     <Style Selector="TextBlock.turn-text">
-      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
       <Setter Property="TextWrapping" Value="Wrap" />
       <Setter Property="LineHeight" Value="20" />

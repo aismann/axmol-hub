@@ -1958,6 +1958,15 @@ public partial class MainWindow : Window
     /// origin from the screen, size from the window manager's own maximize.</summary>
     internal PixelRect FillRectForCheck => _fillRect ?? default;
 
+    /// <summary>
+    /// How many times the maximize toggle has been asked for. Read because the request is the half of the
+    /// protocol a check can hold on a host that will not honour it: this check window is never shown, so on X11
+    /// no window manager acts on the request and there is no maximized state to read back — while "the second
+    /// click of the double-click reached the toggle" is true on every host and is the part that would break
+    /// silently.
+    /// </summary>
+    internal int MaximizeToggleRequestsForCheck { get; private set; }
+
     /// <summary>Runs the plate's own flip, so a check can drive the fill and the un-fill through the same door a
     /// click goes through.</summary>
     internal void ToggleMaximizedForCheck() => ToggleMaximized();
@@ -2345,6 +2354,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void ToggleMaximized()
     {
+        MaximizeToggleRequestsForCheck++;
         if (WslWorkAreaFill.AppliesHere)
         {
             ToggleWorkAreaFill();

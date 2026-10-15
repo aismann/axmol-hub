@@ -3063,10 +3063,35 @@ public partial class SettingsPage : UserControl
     /// <summary>Number of provider groups rendered — the count the page actually shows, not the model's.</summary>
     internal int ProviderGroupCount => GroupCards.Count();
 
+    /// <summary>
+    /// Whether the list is one outlined card per provider with nothing inserted between them.
+    ///
+    /// <para>It is deliberately <b>not</b> "the list holds nothing but cards". Two other children belong in this
+    /// list on their own terms and each appears only in the state that produces it — the add-endpoint draft while
+    /// that form is open, and the secret-backend disclosure line, which exists exactly where the backend is not
+    /// the platform's own store (see <see cref="BuildSecretBackendLine"/>) — so a predicate that counted them as
+    /// separators would be asserting against the host rather than against the layout. Each is still counted, not
+    /// waved through: a third non-card row, or one of these two in a state that should not have it, fails.</para>
+    /// </summary>
     internal bool HasOnlyProviderCards
-        => _chat is not null
-           && ProviderGroupList.Children.Count == _chat.Providers.Count
-           && GroupCards.All(card => _chat.Providers.Any(provider => provider.Id == card.Tag as string));
+    {
+        get
+        {
+            if (_chat is null) return false;
+            var layout = ProviderCardLayoutForCheck;
+            return layout.Cards == _chat.Providers.Count
+                   && GroupCards.All(card => _chat.Providers.Any(provider => provider.Id == card.Tag as string))
+                   && layout.Notices == (_addingProvider ? 1 : 0) + (SecretBackendLineShown ? 1 : 0)
+                      + (_chat.Providers.Count == 0 && !_addingProvider ? 1 : 0);
+        }
+    }
+
+    /// <summary>The three counts the card-boundary assertion reads: outlined cards, the providers behind them,
+    /// and the children that are the page's own notices rather than a card. Read together so a failure can name
+    /// which of the three moved instead of only reporting that the list was not what it should be.</summary>
+    internal (int Cards, int Providers, int Notices) ProviderCardLayoutForCheck
+        => (GroupCards.Count(), _chat?.Providers.Count ?? 0,
+            ProviderGroupList.Children.Count - GroupCards.Count());
 
     /// <summary>The provider cards currently rendered.</summary>
     private IEnumerable<Border> GroupCards

@@ -326,7 +326,7 @@ internal static class MarkdownMessageRenderer
         return heading is not null && body is not null
                && MatchesToken(heading.Foreground, "Hub.TextPrimary")
                && MatchesToken(body.Foreground, "Hub.TextBody")
-               && body.FontSize == 13 && heading.FontSize > body.FontSize
+               && body.FontSize == 12 && heading.FontSize > body.FontSize
                && inline is not null && MatchesToken(inline.Foreground, "Hub.TextBody")
                && MatchesToken(inline.Background, "Hub.SurfaceRaised")
                && codeBlock is not null && MatchesToken(codeBlock.Background, "Hub.SurfaceSunken")
