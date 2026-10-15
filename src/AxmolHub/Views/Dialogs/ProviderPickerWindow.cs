@@ -117,7 +117,16 @@ public sealed class ProviderPickerWindow : Window
         // code-built DataTemplate lets each row own its own layout (see Row.Render) without a XAML file — the
         // same trade EngineMirrorDialog makes with its ToString-only choices, one step further because here the
         // description and endpoint genuinely need to be on screen.
-        _list.ItemTemplate = new FuncDataTemplate<Row>((row, _) => row.Render(), supportsRecycling: false);
+        //
+        // The item handed to this template can be null, and when the list scrolls it is: the panels recycle a
+        // container that left the viewport by clearing its Content, and the presenter runs the template anyway.
+        // An unguarded row.Render() therefore threw NullReferenceException straight out of a layout pass the
+        // first time this list was scrolled — nothing above it catches, so the process died with the dialog on
+        // screen. Rendering nothing for the null item is the whole contract: the row that scrolled away is not
+        // drawn again.
+        _list.ItemTemplate = new FuncDataTemplate<Row>(
+            (row, _) => row is null ? new Panel() : row.Render(),
+            supportsRecycling: false);
 
         _search.TextChanged += (_, _) => Filter();
         // Double-clicking a row is the fast path; Enter is the careful one. Both end in Commit.
@@ -286,6 +295,24 @@ public sealed class ProviderPickerWindow : Window
 
     /// <summary>How many rows the list currently holds, custom row included.</summary>
     internal int RowCountForCheck => _list.ItemCount;
+
+    /// <summary>
+    /// Runs the row template once with a null item — the exact call a container recycling pass makes (see the
+    /// note on <c>ItemTemplate</c>), and the one that used to kill the process: a layout-pass exception has no
+    /// dialog left to catch it. Swallowed here rather than thrown so the failure lands as one FAIL in the report
+    /// instead of aborting every assertion after it.
+    /// </summary>
+    internal bool RowTemplateSurvivesNullItemForCheck()
+    {
+        try
+        {
+            return _list.ItemTemplate?.Build(null) is Control;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     /// <summary>The ids of the preset rows currently shown, in order (the custom row contributes nothing).</summary>
     internal string[] VisiblePresetIdsForCheck

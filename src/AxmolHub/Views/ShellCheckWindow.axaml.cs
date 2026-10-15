@@ -10096,6 +10096,12 @@ public partial class ShellCheckWindow : Window
             "选择器列出全部预设 + 一个「自定义接口」行（实际 " + picker.RowCountForCheck + " 行）");
         Check(picker.CustomRowVisibleForCheck, "空查询时「自定义接口」行可见");
         Check(!picker.EmptyNoticeVisibleForCheck, "空查询时不显示「无匹配」提示");
+        // Scrolling this list recycles containers, and clearing one runs the row template with a null item. The
+        // template used to dereference that item, so the first scroll threw out of a layout pass and took the
+        // process with it. A frame of the freshly opened dialog cannot see this — nothing is ever recycled before
+        // the first scroll — so the template is driven here instead.
+        Check(picker.RowTemplateSurvivesNullItemForCheck(),
+            "行模板扛得住空项：列表回收滚出视野的容器时就是这么调它的，曾经一滚就崩");
 
         picker.SearchForCheck("deep");
         Dispatcher.UIThread.RunJobs();
