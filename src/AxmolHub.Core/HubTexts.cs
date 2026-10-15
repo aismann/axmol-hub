@@ -486,8 +486,8 @@ public static class HubTexts
         ["NoAvailableChatModels"] = ("请先在设置中鉴权并添加可用模型。", "Authenticate a provider and add an available model in Settings first."),
         ["Send"] = ("发送", "Send"),
         ["Stop"] = ("停止", "Stop"),
-        ["ChatSteer"] = ("引导回复", "Steer response"),
-        ["ChatSteering"] = ("正在切换方向…", "Steering response…"),
+        ["ChatSteer"] = ("引导", "Steer"),
+        ["ChatSteering"] = ("正在引导…", "Steering"),
         // The keyboard used to be the only thing this hint named, and a screenshot arriving from Explorer or
         // Ctrl+V is the interaction people reach for most. It is one string, so the composer says it once.
         ["InputPlaceholder"] = ("输入消息，Enter 发送，Shift+Enter 换行；截图可以粘贴或拖进来",
@@ -553,8 +553,8 @@ public static class HubTexts
         ["ChatAddImage"] = ("添加图片…", "Add image…"),
         ["ChatPickImageTitle"] = ("选择要发给助手的图片", "Choose an image to send to the assistant"),
         ["ChatImageEmpty"] = ("没有可附上的图片内容。", "There are no image bytes to attach."),
-        ["ChatImageUnrecognized"] = ("这不是 PNG / JPEG / GIF / WebP 图片，Hub 不知道它是什么格式，也就发不出去。",
-            "That is not a PNG, JPEG, GIF or WebP image, so Hub has no media type to send."),
+        ["ChatImageUnrecognized"] = ("这不是 PNG / JPEG / GIF / WebP 位图，Hub 没有可发送的媒体类型。矢量或源码文件（例如 SVG）请走文本通道：把它所在的文件夹作为上下文添加，或让助手直接读它的源码。",
+            "That is not a PNG, JPEG, GIF or WebP bitmap, so Hub has no media type to send. A vector or source file such as SVG belongs in the text channel: add its folder as context, or let the assistant read it as source."),
         ["ChatImageTooLarge"] = ("这张图片太大，Hub 单张最多发送 {0} MiB。", "That image is too large; Hub sends at most {0} MiB per picture."),
         ["ChatImageTooMany"] = ("一条消息最多带 {0} 张图片，其余的请在下一条发送。",
             "A message carries at most {0} images. Send the rest in the next one."),
