@@ -57,6 +57,13 @@ internal static class HubMetrics
     /// center inside it.</summary>
     public const double ColumnMaxWidth = 820;
 
+    /// <summary>Hub's <c>ScrollBar</c>, which is 10px wide (<c>Theme/HubControls.axaml</c> owns the number) and
+    /// is painted <i>over</i> whatever fills its scroller rather than taking a column of its own. A surface whose
+    /// text has to stay readable therefore stops one bar-width short of its scroller's edge: the reading column,
+    /// the composer under it and the cards above that (see <c>ChatPanel.axaml</c>'s gutter), the way
+    /// <c>ChatSidebar</c>'s list and the inspector's plan host already clear theirs.</summary>
+    public const double ScrollBarThickness = 10;
+
     public const double RadiusFrame = 14;
     public const double RadiusCard = 12;
     public const double RadiusPill = 15;

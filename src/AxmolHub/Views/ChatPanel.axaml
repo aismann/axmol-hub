@@ -1158,7 +1158,13 @@
       <ScrollViewer x:Name="MessageScroller"
                     HorizontalScrollBarVisibility="Disabled"
                     VerticalScrollBarVisibility="Auto">
-        <StackPanel>
+        <!-- The reading column's gutter. Hub's ScrollBar is opaque, always visible once the transcript overflows,
+             and drawn *over* the content it belongs to (Theme/HubControls.axaml), so a column measured against
+             the scroller's whole width keeps its last bar-width — the user pill's tail, an activity row's trailing
+             chip, the end of a code line — behind the track. The inset is on both sides rather than the right
+             alone so the column between them keeps the centre the composer shares with it, and
+             UpdateMessageColumnWidth makes the same subtraction from HubMetrics.ScrollBarThickness. -->
+        <StackPanel Margin="10,0,10,0">
           <!-- Fork provenance: one quiet line above the transcript, doubling as the jump back to the source. -->
           <Button x:Name="ForkNotice" Classes="fork-notice" IsVisible="False"
                   MaxWidth="820" HorizontalAlignment="Center" Margin="0,12,0,0" />
@@ -1206,7 +1212,11 @@
          the chat has started.
          Both strips are siblings of the frame, never children of it: the input box stays live and its draft stays
          visible while a question is waiting, which is the whole reason they moved. -->
-    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+    <!-- The composer, and every question that may stand above it, sit in the reading column with the same gutter
+         as the transcript: the column's right edge is where the transcript's is meant to be, so the inset goes on
+         the whole stack rather than on one card in it (see the transcript scroller's note for why the gutter
+         exists at all). -->
+    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto" Margin="10,0,10,0">
       <!-- The band holds two controls that are shown together more often than not — a run that is writing while
            the person is reading back is the ordinary state of a long task — so they share one centered row rather
            than each taking one. The row's height is reserved by whether the transcript <i>can</i> scroll, not by

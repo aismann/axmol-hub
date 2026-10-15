@@ -3690,10 +3690,17 @@ public partial class ChatPanel : UserControl
 
     private void UpdateMessageColumnWidth()
     {
+        // Hub's ScrollBar is opaque, always visible once the transcript overflows, and painted over the content
+        // it belongs to rather than given a column of its own (Theme/HubControls.axaml; InspectorPanel and
+        // MarkdownMessageRenderer clear it the same way on their own surfaces). A column measured against the raw
+        // viewport therefore keeps its last bar-width — the user pill's tail, an activity row's trailing chip —
+        // behind the track. Measure the strip the reader can see instead; the inset is the same on both sides, so
+        // the column stays concentric with the composer (ChatPanel.axaml carries the matching gutter).
         var viewportWidth = MessageScroller.Viewport.Width;
         if (viewportWidth <= 0) return;
 
-        var width = Math.Min(MessageColumn.MaxWidth, viewportWidth);
+        var width = Math.Min(MessageColumn.MaxWidth,
+            Math.Max(0, viewportWidth - (2 * HubMetrics.ScrollBarThickness)));
         if (double.IsNaN(MessageColumn.Width) || Math.Abs(MessageColumn.Width - width) > 0.1)
             MessageColumn.Width = width;
     }
@@ -4713,6 +4720,48 @@ public partial class ChatPanel : UserControl
         => MessageRows.ElementAtOrDefault(visibleIndex)?
             .GetLogicalDescendants().OfType<Border>()
             .FirstOrDefault(border => border.Classes.Contains("user-pill"))?.Bounds.Right ?? -1;
+
+    /// <summary>The transcript's own vertical bar, measured in the scroller's space: the strip Hub's ScrollBar
+    /// paints <i>over</i> the content it belongs to (opaque, always visible, 10px — Theme/HubControls.axaml, and
+    /// InspectorPanel / MarkdownMessageRenderer / ChatSidebar each clear it in their own way). Zero when no bar
+    /// is on screen, because a transcript that fits under its viewport loses nothing to one.</summary>
+    internal double TranscriptScrollBarWidthForCheck
+        => MessageScroller.GetVisualDescendants().OfType<ScrollBar>()
+            .Where(bar => bar.Orientation == Orientation.Vertical && bar.IsVisible)
+            .Select(bar => bar.Bounds.Width)
+            .FirstOrDefault();
+
+    internal double MessageScrollerViewportWidthForCheck => MessageScroller.Viewport.Width;
+
+    /// <summary>Where the reading column's own right edge lands in the scroller's space — the ink the bar
+    /// covers. A row's <c>Bounds</c> are read in its parent's space, so a claim about the strip the bar paints
+    /// has to translate rather than compare two coordinate systems.</summary>
+    internal double MessageFlowRightInScrollerForCheck
+        => MessageFlow.TranslatePoint(new Point(MessageFlow.Bounds.Width, 0), MessageScroller)?.X ?? -1;
+
+    /// <summary>The user pill's right edge in the scroller's space. The pill is the row that hugs the column's
+    /// right edge (asserted beside the message-column checks), so it is the ink a bar drawn over that edge would
+    /// eat — and being a filled Border, its box's right edge is where the plate really stops.</summary>
+    internal double UserPillRightInScrollerForCheck(int visibleIndex)
+    {
+        var pill = MessageRows.ElementAtOrDefault(visibleIndex)?
+            .GetLogicalDescendants().OfType<Border>()
+            .FirstOrDefault(border => border.Classes.Contains("user-pill"));
+        return pill is null
+            ? -1
+            : pill.TranslatePoint(new Point(pill.Bounds.Width, 0), MessageScroller)?.X ?? -1;
+    }
+
+    /// <summary>Where the reading column's right edge and the composer frame's right edge land in the panel's own
+    /// space. The two are one column — the composer is centred to the transcript's — so the same gutter has to sit
+    /// under both; a check that measured only the transcript would stay green while the composer drifted one
+    /// bar-width wider than the text above it.</summary>
+    internal double MessageColumnRightForCheck
+        => MessageColumn.TranslatePoint(new Point(MessageColumn.Bounds.Width, 0), this)?.X ?? -1;
+
+    internal double ComposerFrameRightForCheck
+        => ComposerFrame.TranslatePoint(new Point(ComposerFrame.Bounds.Width, 0), this)?.X ?? -1;
+
     internal double LiveRowWidthForCheck => _live?.Row.Bounds.Width ?? -1;
     internal double LiveActivityLeftForCheck
         => _live?.Row.GetLogicalDescendants().OfType<StackPanel>()

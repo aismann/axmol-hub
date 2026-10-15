@@ -4271,6 +4271,32 @@ public partial class ShellCheckWindow : Window
                 shell.UpdateLayout();
                 Dispatcher.UIThread.RunJobs();
             }
+            // ── the reading column stops where the reader's eye does, not where the scroller does ──
+            // The transcript's own bar is opaque, 10px, and painted over the content it belongs to, so a column
+            // laid out to the scroller's whole width keeps its right edge behind the track — the user pill's tail
+            // (the row asserted above to hug the column's right edge) and a tool row's trailing chip are what the
+            // reader loses. This fixture is the one that can see it: the inspector is open, which is what presses
+            // the column down to a width the viewport clamps, and the padded transcript is what puts a bar on
+            // screen at all. Both halves are asserted, because either one missing makes the claim vacuous.
+            var transcriptBarWidth = panel.TranscriptScrollBarWidthForCheck;
+            var transcriptViewport = panel.MessageScrollerViewportWidthForCheck;
+            var columnRight = panel.MessageFlowRightInScrollerForCheck;
+            var pillRight = panel.UserPillRightInScrollerForCheck(0);
+            Check(transcriptBarWidth > 0
+                  && panel.MessageFlowWidthForCheck < HubMetrics.ColumnMaxWidth
+                  && columnRight > 0 && columnRight <= transcriptViewport - transcriptBarWidth + 0.5
+                  && pillRight > 0 && pillRight <= transcriptViewport - transcriptBarWidth + 0.5,
+                "转录的滚动条压的是留白而不是消息列：列右沿与用户气泡右沿都停在滚动条左侧（视口 "
+                + Fmt(transcriptViewport) + "，条宽 " + Fmt(transcriptBarWidth)
+                + "，列宽 " + Fmt(panel.MessageFlowWidthForCheck)
+                + "，列右沿 " + Fmt(columnRight) + "，气泡右沿 " + Fmt(pillRight) + "）");
+            // The composer is the same column, so the same gutter has to sit under both: drop it from one side and
+            // the box ends one bar-width right of the text it sits under.
+            Check(panel.ComposerFrameRightForCheck > 0
+                  && Math.Abs(panel.ComposerFrameRightForCheck - panel.MessageColumnRightForCheck) <= 1,
+                "作曲栏与转录共用同一条留白：输入框右沿与消息列右沿是同一条线（输入框 "
+                + Fmt(panel.ComposerFrameRightForCheck) + "，消息列 "
+                + Fmt(panel.MessageColumnRightForCheck) + "）");
             var frameAtBottom = panel.ComposerFrameTopForCheck;
             var bandAtBottom = panel.ChangesPillRowHeightForCheck;
             Check(panel.TranscriptScrollableForCheck && panel.ViewAtBottomForCheck
