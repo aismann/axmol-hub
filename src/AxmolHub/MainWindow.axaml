@@ -1034,5 +1034,29 @@
   </Grid>
   </Grid>
   </Border>
+  <!-- Eight invisible grips along the window's edges. They exist because Linux asks for no platform decorations
+       (see MainWindow.ConfigureLinuxWindowSurface), so the window manager has no frame to grab: the window's visible
+       edge is the *surface's* edge, one shadow margin in, and a press there would otherwise land on the shell and do
+       nothing. Each grip hands its press to Window.BeginResizeDrag, so the window manager still owns the resize —
+       its size limits, its work-area rules, Escape cancelling it — and each is the margin's own width (set from
+       WindowShadowMargin in code), so it can only ever cover the room the shadow has and never a pixel the shell
+       draws. Hidden where the platform has a frame of its own (Windows) and while the window is maximized. -->
+  <Grid x:Name="WindowResizeGrips" IsVisible="False">
+    <Border x:Name="ResizeNorth" VerticalAlignment="Top" Background="Transparent" Cursor="SizeNorthSouth" />
+    <Border x:Name="ResizeSouth" VerticalAlignment="Bottom" Background="Transparent" Cursor="SizeNorthSouth" />
+    <Border x:Name="ResizeWest" HorizontalAlignment="Left" Background="Transparent" Cursor="SizeWestEast" />
+    <Border x:Name="ResizeEast" HorizontalAlignment="Right" Background="Transparent" Cursor="SizeWestEast" />
+    <!-- The corners come last so that in the square where they overlap an edge, the diagonal cursor is the one that
+         answers — and they are twice the margin wide, which is what makes a diagonal drag startable at the corner
+         itself rather than a few pixels off it. -->
+    <Border x:Name="ResizeNorthWest" HorizontalAlignment="Left" VerticalAlignment="Top"
+            Background="Transparent" Cursor="TopLeftCorner" />
+    <Border x:Name="ResizeNorthEast" HorizontalAlignment="Right" VerticalAlignment="Top"
+            Background="Transparent" Cursor="TopRightCorner" />
+    <Border x:Name="ResizeSouthWest" HorizontalAlignment="Left" VerticalAlignment="Bottom"
+            Background="Transparent" Cursor="BottomLeftCorner" />
+    <Border x:Name="ResizeSouthEast" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+            Background="Transparent" Cursor="BottomRightCorner" />
+  </Grid>
   </Panel>
 </Window>

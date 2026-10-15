@@ -1863,6 +1863,16 @@ public partial class MainWindow : Window
     /// drawn *outside* the surface it belongs to, so no rendered frame of the surface can show whether the room for
     /// it is still there — while losing the room loses the shadow silently.</summary>
     internal Thickness WindowSurfaceMarginForCheck => WindowSurface.Margin;
+    /// <summary>Whether the eight edge grips are sized to the shadow margin — which is what keeps a grip from ever
+    /// covering a pixel the shell draws — and whether they are up at all. Read because "this window cannot be
+    /// resized by dragging its edge" is a defect that neither a rendered frame nor any other assertion can see.</summary>
+    internal bool WindowResizeGripsSizedForCheck
+        => WindowResizeGrips.Children.Count == 8
+           && Math.Abs(ResizeWest.Width - WindowShadowMargin) <= 0.5
+           && Math.Abs(ResizeNorth.Height - WindowShadowMargin) <= 0.5
+           && Math.Abs(ResizeNorthWest.Width - (WindowShadowMargin * 2)) <= 0.5;
+
+    internal bool WindowResizeGripsVisibleForCheck => WindowResizeGrips.IsVisible;
     internal double TitleBarHeightForCheck => TitleBar.Bounds.Height;
     internal double TitleBarHintForCheck => ExtendClientAreaTitleBarHeightHint;
     /// <summary>The platform's own caption-strip height. On Windows the three plates are centred in it, so a bar
@@ -2597,6 +2607,9 @@ public partial class MainWindow : Window
             // window's rounding instead of boxing it in — so the two are always written together.
             WindowShadowLayer.CornerRadius = radius;
             WindowShadowLayer.Margin = margin;
+            // The grips live in that margin, so they follow it: a maximized window has no room for them and nothing
+            // to drag, and leaving them up would put eight invisible strips over the shell's own edges.
+            WindowResizeGrips.IsVisible = !maximized;
         }
 
         if ((maximized ? _restoreGlyph : _maximizeGlyph) is { } glyph) MaximizeGlyph.Data = glyph;
@@ -2631,6 +2644,30 @@ public partial class MainWindow : Window
         WindowDecorations = WindowDecorations.None;
         WindowShadowLayer.BoxShadow = WindowShadow;
 
+        // The resize edges are the app's here for the same reason: with no frame of the platform's there is nothing
+        // to grab, and dragging an edge would do nothing at all. Each grip is sized to the shadow margin — the
+        // corners to twice it, so a diagonal drag starts at the corner itself instead of a few pixels off it — and
+        // hands its press to the window manager's own resize, which is what leaves MinWidth/MinHeight, the
+        // work-area rules and Escape-to-cancel the platform's business rather than this app's.
+        foreach (var grip in new[] { ResizeNorth, ResizeSouth }) grip.Height = WindowShadowMargin;
+        foreach (var grip in new[] { ResizeWest, ResizeEast }) grip.Width = WindowShadowMargin;
+        foreach (var grip in new[] { ResizeNorthWest, ResizeNorthEast, ResizeSouthWest, ResizeSouthEast })
+        {
+            grip.Width = WindowShadowMargin * 2;
+            grip.Height = WindowShadowMargin * 2;
+        }
+        foreach (var (grip, edge) in new (Border Grip, WindowEdge Edge)[]
+                 {
+                     (ResizeNorth, WindowEdge.North), (ResizeSouth, WindowEdge.South),
+                     (ResizeWest, WindowEdge.West), (ResizeEast, WindowEdge.East),
+                     (ResizeNorthWest, WindowEdge.NorthWest), (ResizeNorthEast, WindowEdge.NorthEast),
+                     (ResizeSouthWest, WindowEdge.SouthWest), (ResizeSouthEast, WindowEdge.SouthEast),
+                 })
+        {
+            grip.PointerPressed += (_, e) => BeginResizeFrom(edge, e);
+        }
+        WindowResizeGrips.IsVisible = true;
+
         Opened += (_, _) => WriteLog(
             "Window surface: hint=[" + string.Join(",", TransparencyLevelHint) + "]"
             + " granted=" + ActualTransparencyLevel
@@ -2652,6 +2689,16 @@ public partial class MainWindow : Window
     /// nothing right at the window's own edge — any more and the outer part would be cut off there, any less and the
     /// room kept for it goes unused.</summary>
     private static readonly BoxShadows WindowShadow = BoxShadows.Parse("0 2 6 2 #66000000");
+
+    /// <summary>Hands a press on one of the edge grips to the platform's own resize. The window manager does the
+    /// resizing rather than this app: it owns the size limits, the work-area rules and the gesture (Escape cancels
+    /// one), and a drag loop written here would be re-implementing all three from the outside.</summary>
+    private void BeginResizeFrom(WindowEdge edge, PointerPressedEventArgs e)
+    {
+        if (!e.Properties.IsLeftButtonPressed) return;
+        e.Handled = true;
+        BeginResizeDrag(edge, e);
+    }
 
     /// <summary>Brings the window back onto its own geometry for the routes that ask for a usable window: a
     /// deeplink, a notification activation. Writing <c>Normal</c> is how the window manager's maximized state is

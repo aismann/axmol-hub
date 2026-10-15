@@ -906,6 +906,12 @@ public partial class ShellCheckWindow : Window
             Check(TopCornersAreCut(collapsedShot, out var cutAlpha, out var insideAlpha),
                 "Linux 主窗口上角真没被标题栏涂满、圆角内又是实的（角 alpha " + cutAlpha
                 + "，圆角内 alpha " + insideAlpha + "）");
+            // The window manager has no frame to grab while Linux asks for no decorations, so dragging an edge
+            // resizes the window only because these eight strips are there. An invisible hit target has no pixels in
+            // any rendered frame, so this — the count, their size and whether they are up — is the only place it is
+            // visible at all.
+            Check(shell.WindowResizeGripsSizedForCheck && shell.WindowResizeGripsVisibleForCheck,
+                "Linux 主窗口八条缩放抓取带按阴影边距铺在窗口外缘并已启用（平台没有框可抓，拖边改大小就靠它们）");
         }
         var barRect = shell.TitleBarBoundsForCheck;
         var contentRect = shell.ClientBoundsForCheck;
@@ -996,8 +1002,9 @@ public partial class ShellCheckWindow : Window
                   && Math.Abs(filledCorners.TopRight) <= 0.5
                   && Math.Abs(filledCorners.BottomRight) <= 0.5
                   && Math.Abs(filledCorners.BottomLeft) <= 0.5
-                  && Math.Abs(filledMargin.Left) <= 0.5 && Math.Abs(filledMargin.Top) <= 0.5,
-                "Linux 主窗口填满工作区时四角归零、阴影边距也一起收掉（实际 "
+                  && Math.Abs(filledMargin.Left) <= 0.5 && Math.Abs(filledMargin.Top) <= 0.5
+                  && !shell.WindowResizeGripsVisibleForCheck,
+                "Linux 主窗口填满工作区时四角归零、阴影边距与缩放抓取带一起收掉（实际 "
                 + Fmt(filledCorners.TopLeft) + "," + Fmt(filledCorners.TopRight) + ","
                 + Fmt(filledCorners.BottomRight) + "," + Fmt(filledCorners.BottomLeft) + "，边距 "
                 + Fmt(filledMargin.Left) + "）");
