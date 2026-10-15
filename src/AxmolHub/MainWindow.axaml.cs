@@ -1870,6 +1870,14 @@ public partial class MainWindow : Window
     internal bool LinuxTransparencyForCheck
         => TransparencyLevelHint.Contains(WindowTransparencyLevel.Transparent) && Background == Brushes.Transparent;
     internal CornerRadius WindowSurfaceCornerRadiusForCheck => WindowSurface.CornerRadius;
+    /// <summary>The window surface itself, for the checks whose coordinates are the shell's: rendering the surface
+    /// gives that coordinate space directly, with the window's shadow margin outside the frame (the margin is not
+    /// part of the surface) and the rounded corners, which are the surface's own geometry, still in view.</summary>
+    internal Border WindowSurfaceForCheck => WindowSurface;
+    /// <summary>The room the window surface keeps for the shadow the app draws itself. Exposed because a shadow is
+    /// drawn *outside* the surface it belongs to, so no rendered frame of the surface can show whether the room for
+    /// it is still there — while losing the room loses the shadow silently.</summary>
+    internal Thickness WindowSurfaceMarginForCheck => WindowSurface.Margin;
     internal double TitleBarHeightForCheck => TitleBar.Bounds.Height;
     internal double TitleBarHintForCheck => ExtendClientAreaTitleBarHeightHint;
     /// <summary>The platform's own caption-strip height. On Windows the three plates are centred in it, so a bar
@@ -2345,9 +2353,10 @@ public partial class MainWindow : Window
 
     /// <summary>Parks the window's content on the work area, in the window manager's normal state — the state in
     /// which paint and input agree here (see <see cref="WslWorkAreaFill"/>). The rect is written against the
-    /// content, while <see cref="Window.Position"/> is the origin of the shadow band Avalonia's X11 backend wraps
-    /// the client in (measured: 9 px on every side, and none at all while the window manager holds the window
-    /// maximized), so the rect's own origin is moved back by that inset before it is written.</summary>
+    /// content, while <see cref="Window.Position"/> is the origin of whatever the platform wraps the client in: 9 px
+    /// on every side while Avalonia's X11 backend was drawing the window's frame for us (and none at all while the
+    /// window manager held the window maximized), nothing since Linux asks for none of that. The inset is therefore
+    /// measured here rather than assumed, and the rect's own origin is moved back by it before it is written.</summary>
     private void ApplyWorkAreaFill(PixelRect rect)
     {
         var scaling = RenderScaling <= 0 ? 1 : RenderScaling;
@@ -2590,9 +2599,19 @@ public partial class MainWindow : Window
         var maximized = WindowState == WindowState.Maximized || _fillsWorkArea;
         if (OperatingSystem.IsLinux())
         {
-            WindowSurface.CornerRadius = maximized
+            var radius = maximized
                 ? new CornerRadius(0)
                 : new CornerRadius(WindowCornerRadius, WindowCornerRadius, 0, 0);
+            // Written with the radius because the two are one look: round means "a window floating on the desktop",
+            // square means "this is the screen". A maximized window floats above nothing, so it keeps neither the
+            // rounding nor the room its shadow needed — and that shadow would be drawn off the screen anyway.
+            var margin = maximized ? new Thickness(0) : new Thickness(WindowShadowMargin);
+            WindowSurface.CornerRadius = radius;
+            WindowSurface.Margin = margin;
+            // The shadow's own layer is the same rectangle as the surface — that is what makes the shadow follow the
+            // window's rounding instead of boxing it in — so the two are always written together.
+            WindowShadowLayer.CornerRadius = radius;
+            WindowShadowLayer.Margin = margin;
         }
 
         if ((maximized ? _restoreGlyph : _maximizeGlyph) is { } glyph) MaximizeGlyph.Data = glyph;
@@ -2601,13 +2620,53 @@ public partial class MainWindow : Window
 
     private const double WindowCornerRadius = 12;
 
+    /// <summary>The Linux window surface: a transparent window, with the rounded top corners drawn by
+    /// <see cref="WindowSurface"/> (see <see cref="SyncWindowStateChrome"/>). Both halves of that are
+    /// requests: <c>TransparencyLevelHint</c> is what this app asks for, and the platform may answer
+    /// <c>None</c> anyway — a window manager that does not composite, or a 24-bit visual, leaves those
+    /// corner pixels opaque and the rounding can never be seen. No assertion can reach that answer,
+    /// because it exists only once a window is really on screen, so the grant is written to the log
+    /// instead.</summary>
     private void ConfigureLinuxWindowSurface()
     {
         if (!OperatingSystem.IsLinux()) return;
 
         TransparencyLevelHint = [WindowTransparencyLevel.Transparent];
         Background = Brushes.Transparent;
+
+        // BorderOnly is the right request on Windows, where the frame it keeps is DWM's: a shadow and a hairline
+        // that both follow the rounded window. On Linux the same request is answered by the X11 backend painting the
+        // frame *itself* — a square 1px frame plus a square gradient shadow, neither of which any theme can shape
+        // (measured: zeroing the frame's thickness through the decoration theme shortens the band by exactly that
+        // thickness, while the shadow's outline stays a rectangle, and Avalonia 12.1.3 marks the whole app-drawn
+        // path AVALONIA_X11_CSD "for evaluation purposes only"). The frame is what hid the window surface's rounded
+        // corners; the square shadow is what then left a rectangular ghost at them. So Linux asks for none of it and
+        // draws the one part a rounded window needs — its shadow — itself, in the margin it keeps for that
+        // (see WindowShadowMargin and SyncWindowStateChrome).
+        WindowDecorations = WindowDecorations.None;
+        WindowShadowLayer.BoxShadow = WindowShadow;
+
+        Opened += (_, _) => WriteLog(
+            "Window surface: hint=[" + string.Join(",", TransparencyLevelHint) + "]"
+            + " granted=" + ActualTransparencyLevel
+            + " handle=" + (TryGetPlatformHandle()?.ToString() ?? "none")
+            + " client=" + ClientSize);
     }
+
+    /// <summary>The room the window keeps around its surface for the shadow the app draws itself, and that shadow.
+    /// Two reasons it is not the platform's: on X11 that one is a rectangle, which leaves a square ghost at the
+    /// rounded corners (the whole reason the corner rounding was invisible), and Windows has DWM's, which does
+    /// follow the window. The margin belongs to the window rather than to the surface, so the shell's content is
+    /// inset by it — and the window manager's resize edge sits this far outside the visible window, the same
+    /// trade every client-side-decorated toolkit makes.</summary>
+    private const double WindowShadowMargin = 8;
+
+    /// <summary>Soft, slightly low, and a touch spread, the way a floating window reads: a BoxShadow is drawn around
+    /// the border's own geometry, so it follows <see cref="WindowSurface"/>' CornerRadius instead of boxing it in.
+    /// Blur + spread add up to <see cref="WindowShadowMargin"/> exactly, which is what makes the shadow fade to
+    /// nothing right at the window's own edge — any more and the outer part would be cut off there, any less and the
+    /// room kept for it goes unused.</summary>
+    private static readonly BoxShadows WindowShadow = BoxShadows.Parse("0 2 6 2 #66000000");
 
     /// <summary>Brings the window back onto its own geometry for the routes that ask for a usable window: a
     /// deeplink, a notification activation. Writing <c>Normal</c> is how the window manager's maximized state is

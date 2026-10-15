@@ -851,8 +851,11 @@ public partial class ShellCheckWindow : Window
         Check(!shell.SidebarExpandedForCheck && Math.Abs(shell.SidebarWidthForCheck) < 0.5
               && !shell.ResizeGripVisibleForCheck,
             "点击 ☰ 后侧栏宽度收为 0 且拖拽手柄隐藏");
+        // Rendered from the window surface rather than from the window: its own render *is* the shell's coordinate
+        // space, which is what every rect in this check is measured in — the window's shadow margin lies outside it
+        // (and the rounded corners, being the surface's own geometry, stay in view).
         var collapsedShot = System.IO.Path.Combine(ScratchDirectory.Resolve("assistant-render"), "collapsed.png");
-        SmokeCapture.Capture(shell, collapsedShot);
+        SmokeCapture.Capture(shell.WindowSurfaceForCheck, collapsedShot);
         Check(LeftStripIsClear(collapsedShot, 14, shell.TitleBarHeightForCheck),
             "侧栏收起后左缘（标题栏以下）没有图标溢出穿帮");
         shell.ToggleSidebarForCheck();
@@ -867,31 +870,55 @@ public partial class ShellCheckWindow : Window
         // BorderOnly: at the Full default, Avalonia draws a title bar of its own over the client area and wrote
         // the window title across this bar's left end. That overlay only exists in a *shown* window, so this
         // pins the property and a real-window screenshot (tmp/capture_printwindow.ps1) proves the pixels.
+        // Which decorations to ask for differs by host, and on Linux the answer is *none*: X11 hands the window's
+        // frame to the backend, which paints a square 1px frame plus a square gradient shadow there, and no theme
+        // can shape either (see MainWindow.ConfigureLinuxWindowSurface). The app draws the one thing a rounded
+        // window needs — its shadow — itself, in a margin it keeps for that purpose. Windows keeps the frame DWM
+        // draws, which already follows the window and needs no margin from us.
+        var wantedDecorations = OperatingSystem.IsLinux() ? WindowDecorations.None : WindowDecorations.BorderOnly;
         Check(shell.ClientAreaExtendedForCheck
-              && shell.WindowDecorationsForCheck == WindowDecorations.BorderOnly
+              && shell.WindowDecorationsForCheck == wantedDecorations
               && Math.Abs(shell.TitleBarHeightForCheck - shell.TitleBarHintForCheck) <= 0.5,
-            "客户区扩展进装饰、装饰取 BorderOnly（不再叠一层平台标题栏），标题栏高度与传给平台的高度一致（实际 "
+            "客户区扩展进装饰、装饰按平台取该取的（Linux 一概不要、别处交给 DWM，都不叠平台标题栏），"
+            + "标题栏高度与传给平台的高度一致（实际 "
             + shell.ClientAreaExtendedForCheck + "、" + shell.WindowDecorationsForCheck + "、"
             + Fmt(shell.TitleBarHeightForCheck) + " / " + Fmt(shell.TitleBarHintForCheck) + "）");
         if (OperatingSystem.IsLinux())
         {
             var normalCorners = shell.WindowSurfaceCornerRadiusForCheck;
+            var normalMargin = shell.WindowSurfaceMarginForCheck;
             Check(shell.LinuxTransparencyForCheck
                   && Math.Abs(normalCorners.TopLeft - 12) <= 0.5
                   && Math.Abs(normalCorners.TopRight - 12) <= 0.5
                   && Math.Abs(normalCorners.BottomRight) <= 0.5
-                  && Math.Abs(normalCorners.BottomLeft) <= 0.5,
-                "Linux 主窗口使用透明底层与 12px 上角圆角（实际透明 "
+                  && Math.Abs(normalCorners.BottomLeft) <= 0.5
+                  && Math.Abs(normalMargin.Left - 8) <= 0.5
+                  && Math.Abs(normalMargin.Top - 8) <= 0.5,
+                "Linux 主窗口使用透明底层、12px 上角圆角，并留出画阴影的 8px 边距（实际透明 "
                 + shell.LinuxTransparencyForCheck + "，圆角 "
                 + Fmt(normalCorners.TopLeft) + "," + Fmt(normalCorners.TopRight) + ","
-                + Fmt(normalCorners.BottomRight) + "," + Fmt(normalCorners.BottomLeft) + "）");
+                + Fmt(normalCorners.BottomRight) + "," + Fmt(normalCorners.BottomLeft) + "，边距 "
+                + Fmt(normalMargin.Left) + "）");
+            // The radius above is a request; this is the paint. A radius on the window surface is invisible the
+            // moment a descendant paints over the corner — and the bar's opaque strip is exactly the descendant
+            // that reaches it — which is a difference that lives in pixels and not in the object graph. It reads
+            // the frame rendered a few checks up, because a collapsed sidebar does not touch the bar's corners.
+            Check(TopCornersAreCut(collapsedShot, out var cutAlpha, out var insideAlpha),
+                "Linux 主窗口上角真没被标题栏涂满、圆角内又是实的（角 alpha " + cutAlpha
+                + "，圆角内 alpha " + insideAlpha + "）");
         }
         var barRect = shell.TitleBarBoundsForCheck;
-        var clientRect = shell.ClientBoundsForCheck;
-        Check(Math.Abs(barRect.Y) <= 0.5 && Math.Abs(barRect.Height - 32) <= 0.5
-              && Math.Abs(barRect.X) <= 0.5 && Math.Abs(barRect.Right - clientRect.Right) <= 0.5,
-            "标题栏占据客户区最顶端、贴住窗口两缘且高 32（实际 " + Fmt(barRect.Width) + "×" + Fmt(barRect.Height)
-            + " @ " + Fmt(barRect.X) + "," + Fmt(barRect.Y) + "）");
+        var contentRect = shell.ClientBoundsForCheck;
+        // Measured against the shell's own column rather than against a literal zero: on Linux the window keeps a
+        // margin for the shadow the app draws itself, so the shell starts that far in from the window — and the
+        // invariant that matters is that the bar is the shell's topmost row, flush with both of its edges. On
+        // Windows the margin is 0, and this is then the same statement about the client area.
+        Check(Math.Abs(barRect.Y - contentRect.Y) <= 0.5 && Math.Abs(barRect.Height - 32) <= 0.5
+              && Math.Abs(barRect.X - contentRect.X) <= 0.5
+              && Math.Abs(barRect.Right - contentRect.Right) <= 0.5,
+            "标题栏占据壳的最顶端、贴住壳两缘且高 32（实际 " + Fmt(barRect.Width) + "×" + Fmt(barRect.Height)
+            + " @ " + Fmt(barRect.X) + "," + Fmt(barRect.Y) + "，壳 " + Fmt(contentRect.X) + ","
+            + Fmt(contentRect.Y) + " " + Fmt(contentRect.Width) + "×" + Fmt(contentRect.Height) + "）");
         Check(shell.SidebarToggleIsLeftmostForCheck,
             "☰ 抽屉按钮是标题栏里最靠左的可交互控件");
         // The bar carries no product name: the sidebar title block and the window's own Title property are where
@@ -906,10 +933,10 @@ public partial class ShellCheckWindow : Window
         // hold is that it is not short of it, and that it stays a caption strip (one plate per control).
         var plates = shell.WindowControlsBoundsForCheck;
         Check(shell.MinimizeButtonHeightForCheck >= 28 && shell.MinimizeButtonHeightForCheck <= 48
-              && Math.Abs(plates.Y) <= 0.5 && plates.Right >= clientRect.Right - 0.5,
-            "自绘的三枚窗口按钮留在标题栏顶端、并且一直铺到窗口右外缘（不再在客户区右缘前留一条边，高度 "
+              && Math.Abs(plates.Y - contentRect.Y) <= 0.5 && plates.Right >= contentRect.Right - 0.5,
+            "自绘的三枚窗口按钮留在标题栏顶端、并且一直铺到壳右外缘（不再在壳右缘前留一条边，高度 "
             + Fmt(shell.MinimizeButtonHeightForCheck) + "，区 " + Fmt(plates.Width) + "×" + Fmt(plates.Height)
-            + "，右缘超出客户区 " + Fmt(plates.Right - clientRect.Right) + "）");
+            + "，右缘超出壳 " + Fmt(plates.Right - contentRect.Right) + "）");
         // The maximise plate says what the *next* click does, and the close plate is always "close" — icon-only
         // controls, so the tooltip is the only place their name appears.
         Check(shell.MaximizeTipForCheck == HubTexts.Get("MaximizeWindow", HubStrings.Language)
@@ -964,13 +991,24 @@ public partial class ShellCheckWindow : Window
 
             shell.SetWorkAreaFillForCheck(true);
             var filledCorners = shell.WindowSurfaceCornerRadiusForCheck;
+            var filledMargin = shell.WindowSurfaceMarginForCheck;
             Check(Math.Abs(filledCorners.TopLeft) <= 0.5
                   && Math.Abs(filledCorners.TopRight) <= 0.5
                   && Math.Abs(filledCorners.BottomRight) <= 0.5
-                  && Math.Abs(filledCorners.BottomLeft) <= 0.5,
-                "Linux 主窗口填满工作区时四角归零（实际 "
+                  && Math.Abs(filledCorners.BottomLeft) <= 0.5
+                  && Math.Abs(filledMargin.Left) <= 0.5 && Math.Abs(filledMargin.Top) <= 0.5,
+                "Linux 主窗口填满工作区时四角归零、阴影边距也一起收掉（实际 "
                 + Fmt(filledCorners.TopLeft) + "," + Fmt(filledCorners.TopRight) + ","
-                + Fmt(filledCorners.BottomRight) + "," + Fmt(filledCorners.BottomLeft) + "）");
+                + Fmt(filledCorners.BottomRight) + "," + Fmt(filledCorners.BottomLeft) + "，边距 "
+                + Fmt(filledMargin.Left) + "）");
+            // The pixel half of the same pair as the normal state above, on the state where a zero radius really
+            // happens in this check (an unshown window never takes the maximized state, which is why the radius
+            // assertions around it are the ones that fail on Linux).
+            var filledShot = System.IO.Path.Combine(
+                ScratchDirectory.Resolve("assistant-render"), "filled-corners.png");
+            SmokeCapture.Capture(shell.WindowSurfaceForCheck, filledShot);
+            Check(AllCornersArePainted(filledShot, out var filledAlpha),
+                "Linux 主窗口铺满工作区后四角是真的画满的（最空的一角 alpha " + filledAlpha + "）");
             shell.SetWorkAreaFillForCheck(false);
         }
         Check(shell.MaximizeTipForCheck == HubTexts.Get("MaximizeWindow", HubStrings.Language)
@@ -4506,7 +4544,7 @@ public partial class ShellCheckWindow : Window
         var openPlates = shell.WindowControlsBoundsForCheck;
         var (expandGap, expandBeforeDrawer) = shell.InspectorExpandMeetsDrawerForCheck;
         var openShot = System.IO.Path.Combine(renderDir, "caption-column.png");
-        SmokeCapture.Capture(shell, openShot);
+        SmokeCapture.Capture(shell.WindowSurfaceForCheck, openShot);
         Check(expandBeforeDrawer && expandGap is >= 0 and <= 24
               && Math.Abs(shell.InspectorExpandToggleBoundsForCheck.Width - openDrawer.Width) <= 1.5,
             "撑开那枚停在抽屉左边一小段距离，两块底板一样大（间距 " + Fmt(expandGap) + "，箭头 "
@@ -4530,7 +4568,7 @@ public partial class ShellCheckWindow : Window
         // their rectangles stayed exactly where it was, so this photographs the bar and compares the pixels the
         // drawer and the plates are drawn in.
         var shutShot = System.IO.Path.Combine(renderDir, "caption-shut.png");
-        SmokeCapture.Capture(shell, shutShot);
+        SmokeCapture.Capture(shell.WindowSurfaceForCheck, shutShot);
         var drawerStrip = new Rect(openDrawer.X, 0, clientSize.Width - openDrawer.X, barHeight);
         Check(SameRect(shell.InspectorToggleBoundsForCheck, openDrawer)
               && SameRect(shell.WindowControlsBoundsForCheck, openPlates)
@@ -4594,7 +4632,7 @@ public partial class ShellCheckWindow : Window
             + Fmt(expandedPane?.PlanHostMaxWidthForCheck ?? 0) + "，头上按钮 "
             + (expandedPane?.HeaderButtonCountForCheck ?? -1) + " 枚）");
         var liftedShot = System.IO.Path.Combine(renderDir, "caption-lifted.png");
-        SmokeCapture.Capture(shell, liftedShot);
+        SmokeCapture.Capture(shell.WindowSurfaceForCheck, liftedShot);
         var plateStrip = new Rect(openPlates.X, 0, clientSize.Width - openPlates.X, barHeight);
         Check(!shell.InspectorExpandToggleVisibleForCheck
               && shell.InspectorToggleVisibleForCheck
@@ -9728,6 +9766,41 @@ public partial class ShellCheckWindow : Window
             }
         }
         return true;
+    }
+
+    /// <summary>Whether a rendered shell frame leaves the window's two top corners unpainted — the pixel half of
+    /// <c>WindowSurfaceCornerRadiusForCheck</c>, which can only say the radius was *asked for*. A radius that is
+    /// set and then painted over by the title bar's own opaque strip looks identical in the object graph and
+    /// square on screen; this reads the frame instead. Meaningful on Linux only, where the app draws the whole
+    /// window — a platform with decorations of its own rounds the window itself.</summary>
+    private static bool TopCornersAreCut(string png, out int cornerAlpha, out int insideAlpha)
+    {
+        var pixels = SmokeCapture.ReadBgra(png, out var width, out var height, out var stride);
+        cornerAlpha = insideAlpha = -1;
+        if (width < 24 || height < 32) return false;
+
+        int Alpha(int x, int y) => pixels[(y * stride) + (x * 4) + 3];
+        // Two pixels in from each top edge the 12px cut is still about five pixels away, so those samples must be
+        // empty; two pixels above the 32px bar's bottom edge the radius cannot reach at all, so those must be full.
+        cornerAlpha = Math.Min(Alpha(2, 2), Alpha(width - 3, 2));
+        insideAlpha = Math.Min(Alpha(2, 30), Alpha(width - 3, 30));
+        return cornerAlpha == 0 && insideAlpha == 255;
+    }
+
+    /// <summary>The other state of the same surface: with the radius at 0 every corner of the frame has to be
+    /// opaque. Pixels rather than properties for the same reason as <see cref="TopCornersAreCut"/> — "radius 0"
+    /// and "radius 0 and actually painted" are one object graph and two screens.</summary>
+    private static bool AllCornersArePainted(string png, out int minAlpha)
+    {
+        var pixels = SmokeCapture.ReadBgra(png, out var width, out var height, out var stride);
+        minAlpha = -1;
+        if (width < 24 || height < 24) return false;
+
+        int Alpha(int x, int y) => pixels[(y * stride) + (x * 4) + 3];
+        minAlpha = Math.Min(
+            Math.Min(Alpha(2, 2), Alpha(width - 3, 2)),
+            Math.Min(Alpha(2, height - 3), Alpha(width - 3, height - 3)));
+        return minAlpha == 255;
     }
 
     /// <summary>Two-decimal, culture-free number for check messages: a regression has to be diagnosable from

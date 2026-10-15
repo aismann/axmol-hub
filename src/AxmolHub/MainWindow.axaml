@@ -542,6 +542,14 @@
        inspector and settings are held to the second row, so "everything but the title bar" is a fact about the
        grid rather than about its paint order — and for settings that row plus a 28-pixel bottom margin is also
        what keeps the window draggable and the status strip pressable while it is open. -->
+  <!-- The window's own shadow, on the host where the app draws it (Linux: see
+       MainWindow.ConfigureLinuxWindowSurface). It is a layer of its own *behind* the surface rather than a BoxShadow
+       on the surface, because the surface clips its children to its rounded corners and that clip takes the shadow
+       with it. The two are the same rectangle: this layer is given the surface's radius and margin, so the shadow
+       follows the window's rounding instead of boxing it in. On Windows it stays an inert empty layer, because DWM
+       draws the frame there. -->
+  <Panel>
+  <Border x:Name="WindowShadowLayer" IsHitTestVisible="False" />
   <Border x:Name="WindowSurface" Background="{DynamicResource Hub.Background}"
           CornerRadius="0" ClipToBounds="True">
   <Grid x:Name="ClientRoot" RowDefinitions="32,*">
@@ -1021,4 +1029,5 @@
   </Grid>
   </Grid>
   </Border>
+  </Panel>
 </Window>
