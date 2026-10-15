@@ -11193,6 +11193,12 @@ public partial class ShellCheckWindow : Window
         Check(settings.ModelDraftCountForCheck == 1,
             "模型行铅笔打开上下文草稿，且只在被编辑的分组里出现一份（实际 "
                 + settings.ModelDraftCountForCheck + " 份）");
+        // The two drafts used to share one provider id, so this press also swapped the group's header for the
+        // provider edit form: two forms on screen at once, each with a default Save, and one Cancel closing both
+        // of them. A model draft is a row inside the model list — the header stays the collapsed one.
+        Check(settings.ProviderDraftCountForCheck == 0,
+            "模型行铅笔只开模型草稿，不把 provider 的编辑表单也翻出来（实际 "
+                + settings.ProviderDraftCountForCheck + " 份）");
         settings.CloseDraftForCheck();
         Check(settings.ModelDraftCountForCheck == 0,
             "关闭草稿后行从树里消失：取消/保存留下的是收起的分组，不是停在屏上的表单");

@@ -69,8 +69,17 @@ public partial class SettingsPage : UserControl
     // must not rebuild the groups — that would tear apart the very TextBox being typed in (the historical
     // inline-edit bug). The rebuild is deferred and applied when the draft closes.
 
-    /// <summary>The id of the provider currently open for editing, or <c>null</c> when none.</summary>
+    /// <summary>The id of the provider whose *provider* edit draft is open (the pencil beside its name),
+    /// or <c>null</c> when none.</summary>
     private string? _editingProviderId;
+
+    /// <summary>The id of the provider whose *model* draft (add row or context-window edit) is open, or
+    /// <c>null</c> when none. Deliberately a second id rather than a reuse of
+    /// <see cref="_editingProviderId"/>: a model draft is placed inside that provider's model list, and
+    /// the group's header must stay the collapsed one — sharing the id replaced the header with the
+    /// "Edit provider" form, so pressing a model's pencil showed two forms at once, both with a default
+    /// Save button, both closed by one Cancel.</summary>
+    private string? _modelDraftProviderId;
 
     /// <summary>Whether an "add custom endpoint" draft is open at the top of the provider list.</summary>
     private bool _addingProvider;
@@ -82,7 +91,7 @@ public partial class SettingsPage : UserControl
     private string? _editingModelName;
 
     /// <summary>True while any draft is open, which suspends the group rebuild (see the note above).</summary>
-    private bool DraftOpen => _editingProviderId is not null || _addingProvider || _addingModel || _editingModelName is not null;
+    private bool DraftOpen => _editingProviderId is not null || _addingProvider || _modelDraftProviderId is not null;
 
     /// <summary>Set when a rebuild was skipped while a draft was open; applied when the draft closes.</summary>
     private bool _pendingReload;
@@ -101,6 +110,12 @@ public partial class SettingsPage : UserControl
     internal int ModelDraftCountForCheck
         => this.GetLogicalDescendants().OfType<Control>()
             .Count(control => SectionTags.ModelDraft.Equals(control.Tag));
+
+    /// <summary>How many provider-draft forms are in the tree. Any count other than zero while only a
+    /// <b>model</b> draft is open means the two drafts share a flag again and one press opened both.</summary>
+    internal int ProviderDraftCountForCheck
+        => this.GetLogicalDescendants().OfType<Control>()
+            .Count(control => SectionTags.ProviderDraft.Equals(control.Tag));
 
     /// <summary>Closes whatever draft is open through the same path cancel and save use.</summary>
     internal void CloseDraftForCheck() => CloseDraft();
@@ -1747,12 +1762,16 @@ public partial class SettingsPage : UserControl
     private bool IsLinked(ModelProvider provider)
         => _chat?.CredentialFor(provider.Id)?.HasSecret == true;
 
-    /// <summary>Opens the edit draft for a provider, replacing its collapsed header.</summary>
+    /// <summary>Opens the edit draft for a provider, replacing its collapsed header. Any model draft goes
+    /// away with it: one draft at a time is what makes the page-wide flags readable, and Cancel/Save close
+    /// both regardless of which form was pressed.</summary>
     private void OpenEditDraft(ModelProvider provider)
     {
         _editingProviderId = provider.Id;
         _addingProvider = false;
+        _modelDraftProviderId = null;
         _addingModel = false;
+        _editingModelName = null;
         RebuildProviderGroups();
     }
 
@@ -1769,6 +1788,7 @@ public partial class SettingsPage : UserControl
         var wasOpen = DraftOpen;
         _editingProviderId = null;
         _addingProvider = false;
+        _modelDraftProviderId = null;
         _addingModel = false;
         _editingModelName = null;
         if (wasOpen || _pendingReload)
@@ -1825,7 +1845,10 @@ public partial class SettingsPage : UserControl
         // has nothing to do with what broke.
         var section = new StackPanel { Spacing = 6, Tag = SectionTags.Models };
 
-        var expanded = provider.Models.Count <= 10;
+        // A long list starts collapsed, but a draft opened in it forces it back open: a form folded into a
+        // hidden container is a form nobody can fill or cancel, and while it is "open" the deferred rebuild
+        // never runs either.
+        var expanded = provider.Models.Count <= 10 || _modelDraftProviderId == provider.Id;
         var listContent = new StackPanel { Spacing = 6, IsVisible = expanded, Tag = SectionTags.ModelList };
         var toggleContent = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var disclosure = new Avalonia.Controls.Shapes.Path
@@ -1943,9 +1966,10 @@ public partial class SettingsPage : UserControl
         section.Children.Add(heading);
 
         // The add/edit-model draft is always the first row of ITS provider's list — the flags are page-wide,
-        // so without the id gate every group would render a copy of the same draft (the pencil's own group
-        // only). The provider being edited is exactly what _editingProviderId tracks.
-        var modelDraftOpen = _editingProviderId == provider.Id
+        // so without the id gate every group would render a copy of the same draft. _modelDraftProviderId is
+        // the id that answers "whose model draft is this"; it is not _editingProviderId, which is the id of
+        // the provider whose own edit form is open.
+        var modelDraftOpen = _modelDraftProviderId == provider.Id
             && (_addingModel || _editingModelName is not null);
         if (provider.Models.Count == 0 && !modelDraftOpen)
         {
@@ -2072,10 +2096,11 @@ public partial class SettingsPage : UserControl
         CloseDraft();
     }
 
-    /// <summary>Opens the context-window draft for a model (the pencil on a model row).</summary>
+    /// <summary>Opens the context-window draft for a model (the pencil on a model row). It writes the
+    /// <b>model</b>-draft id only — the group's header stays collapsed.</summary>
     private void OpenModelEditDraft(ModelProvider provider, ProviderModel model)
     {
-        _editingProviderId = provider.Id;
+        _modelDraftProviderId = provider.Id;
         _editingModelName = model.Name;
         _addingModel = false;
         RebuildProviderGroups();
@@ -2489,7 +2514,7 @@ public partial class SettingsPage : UserControl
 
         // The draft row replaces the old PromptWindow modal: it stays where the list is, and it is always the
         // first row so the input never scrolls out from under the person who just clicked "add".
-        _editingProviderId = provider.Id;
+        _modelDraftProviderId = provider.Id;
         _addingModel = true;
         RebuildProviderGroups();
         await Task.CompletedTask;
@@ -2717,6 +2742,7 @@ public partial class SettingsPage : UserControl
     {
         _addingProvider = true;
         _editingProviderId = null;
+        _modelDraftProviderId = null;
         _addingModel = false;
         RebuildProviderGroups();
         await Task.CompletedTask;
