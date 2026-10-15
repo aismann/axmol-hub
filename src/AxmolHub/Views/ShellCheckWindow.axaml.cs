@@ -1542,6 +1542,51 @@ public partial class ShellCheckWindow : Window
         shell.Chat.OpenConversation(opsConversation.Id);
         panel.Reload();
 
+        // ── a stop notice retires when the next round begins, not only when the person speaks again ──
+        // 「已停止。」 answers one round that ended. The rule that aged it out counted the person's own messages, and
+        // a continuation appends none of those — approving a call, answering a question and pressing ↻ all start a
+        // fresh round the old line kept answering, which is what left it sitting under a transcript that was
+        // visibly thinking again. The registry is what knows which round a session is in, so the notice is filed
+        // against that rather than against a message count.
+        var stopNoticeSession = shell.Chat.StartConversation();
+        shell.Chat.OpenConversation(stopNoticeSession.Id);
+        panel.Reload();
+        var stopPark = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopArrived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopAttempts = 0;
+        shell.Chat.ClientOverride = (_, _) => ++stopAttempts == 1
+            ? new ScriptedChatClient(["停在半路的一段"], null, stopPark.Task, stopArrived)
+            : new ScriptedChatClient(["续跑之后的回复"]);
+        try
+        {
+            panel.SetInputForCheck("先停一次，再让它接着跑");
+            _ = panel.SendComposerForCheck();
+            await WaitForSignalAsync(stopArrived.Task);
+            shell.Chat.RequestStop(stopNoticeSession.Id);
+            await WaitForRunAsync(shell.Chat, stopNoticeSession.Id);
+            var stopNotice = panel.LastNoticeTextForCheck;
+            Check(stopNotice == HubStrings.Get("ChatCancelled") && panel.NoticeVisibleForCheck,
+                "夹具：手动停止在转录下面留下一行「已停止。」（实际「" + (stopNotice ?? "无") + "」）");
+            var askedBeforeStop = stopNoticeSession.Messages.Count(turn => turn.Role == ChatRoles.User);
+            var resumedAfterStop = shell.Chat.TryEnqueueContinuation(stopNoticeSession.Id, out var stopRefusal,
+                ToolApprovalResults.NotAnswered);
+            Dispatcher.UIThread.RunJobs();
+            Check(resumedAfterStop && !panel.NoticeVisibleForCheck
+                  && stopNoticeSession.Messages.Count(turn => turn.Role == ChatRoles.User) == askedBeforeStop,
+                "新一轮一开，上一轮的停止提示当场退休，哪怕本人没有再说一句（续跑 " + resumedAfterStop
+                + "，拒绝 " + (stopRefusal ?? "无") + "，提问仍是 " + askedBeforeStop + " 条）");
+        }
+        finally
+        {
+            // Released whatever an assertion did: a gate left closed holds the whole check to its watchdog.
+            stopPark.TrySetResult(true);
+            await WaitForRunAsync(shell.Chat, stopNoticeSession.Id);
+            shell.Chat.ClientOverride = null;
+            shell.Chat.DeleteConversation(stopNoticeSession.Id);
+            shell.Chat.OpenConversation(opsConversation.Id);
+            panel.Reload();
+        }
+
         // Branching forks the transcript at one message into a new session and switches to it. The source is
         // only mutated in memory here: BranchFrom reads the live object, so nothing has to be re-saved first.
         opsConversation.Append(ChatTurn.Assistant("第一条回复"));

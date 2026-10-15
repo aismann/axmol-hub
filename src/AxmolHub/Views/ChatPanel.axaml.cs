@@ -2907,21 +2907,28 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>
-    /// The last thing the app had to say about each conversation, and how many of the person's own messages had
-    /// been sent when it was said. A notice is the tail of the transcript until the person speaks again — which is
-    /// the rule that keeps it surviving a rebuild of that transcript without outliving the news it carried.
+    /// The last thing the app had to say about each conversation, the run it was said about, and how many of the
+    /// person's own messages had been sent when it was said. A notice is the tail of the transcript until either of
+    /// those two facts stops holding — which is what keeps it surviving a rebuild of that transcript without
+    /// outliving the news it carried.
     ///
     /// <para>It is keyed by conversation rather than a single slot because a run does not end in step with what is
     /// on screen: the reason a session stopped while the person read another one is still news when they come
     /// back, and holding it in one shared field would either lose it or paint it onto the wrong transcript.</para>
+    ///
+    /// <para>The run is the half the message count cannot stand in for. A continuation — an approved call, an
+    /// answered question, a ↻ — starts a fresh run and appends no message of the person's, so a stop pressed on the
+    /// round before it would otherwise go on answering a round that is already arriving. That is a rule about what
+    /// a run said; a folder verdict or an attachment refusal is news about the conversation rather than about the
+    /// round that ended, and keeps the older lifetime.</para>
     ///
     /// <para><c>Retryable</c> marks the endings where the same round is worth asking for again — a timeout, a
     /// stalled stream, a refused connection. Those carry the ↻ on the line itself, because the alternative was a
     /// sentence telling the person to retry and the only way to do it hidden on the last message row, revealed on
     /// hover, three pixels from a notice that is not part of the transcript.</para>
     /// </summary>
-    private readonly Dictionary<string, (string Text, bool Danger, int OwnTurns, bool Retryable)> _notices =
-        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string Text, bool Danger, int OwnTurns, bool Retryable, bool FromRun,
+        ConversationRun? Run)> _notices = new(StringComparer.Ordinal);
 
     private void AppendNotice(string text, bool danger)
     {
@@ -2935,13 +2942,14 @@ public partial class ChatPanel : UserControl
     /// <summary>Files what a run or an action had to say for one conversation. The line reaches the screen through
     /// <see cref="RenderNotice"/>, which paints only the conversation being looked at.</summary>
     private void RememberNotice(string conversationId, string text, bool danger, int ownTurns,
-        bool retryable = false)
-        => _notices[conversationId] = (text, danger, ownTurns, retryable);
+        bool retryable = false, bool fromRun = false, ConversationRun? run = null)
+        => _notices[conversationId] = (text, danger, ownTurns, retryable, fromRun, run);
 
     /// <summary>Paints the stored notice, if it still is news: same conversation, nothing of the person's said
-    /// since. Called from the render path, so a rebuild cannot erase it and a new message cannot be answered by
-    /// an old warning. With no conversation at all — the model list just emptied, say — there is nothing that can
-    /// age it out, so the line stands until the next one replaces it.</summary>
+    /// since, and — for the news a run brought — no newer run begun. Called from the render path, so a rebuild
+    /// cannot erase it and a new message cannot be answered by an old warning. With no conversation at all — the
+    /// model list just emptied, say — there is nothing that can age it out, so the line stands until the next one
+    /// replaces it.</summary>
     private void RenderNotice()
     {
         NoticeHost.Children.Clear();
@@ -2957,6 +2965,18 @@ public partial class ChatPanel : UserControl
                      .ToList())
             _notices.Remove(stale);
         if (!_notices.TryGetValue(conversationId, out var notice)) return;
+
+        // The registry is the authority on which round this conversation is in. A finished run leaves it before
+        // the notice is filed, so a stored null and a live instance both mean "a newer round has begun" — and a
+        // continuation that begins one without adding a message of the person's is exactly the case the count
+        // below cannot see. Only a run's own news is measured this way; what an action said about the conversation
+        // outlives the round it was said in.
+        if (notice.FromRun && _chat.RunFor(conversationId) is { } current
+            && !ReferenceEquals(current, notice.Run))
+        {
+            _notices.Remove(conversationId);
+            return;
+        }
 
         var ownTurns = viewed?.Messages.Count(turn => turn.Role == ChatRoles.User) ?? 0;
         if (ownTurns != notice.OwnTurns)
@@ -3237,10 +3257,12 @@ public partial class ChatPanel : UserControl
 
     /// <summary>Drops the notice a retryable ending filed on one conversation, and repaints if that conversation is
     /// the one on screen. Only a <b>retryable</b> line goes: an informational notice is the tail of the transcript
-    /// until the person speaks again, and a rebuild — or a ↻ pressed for another reason — must not erase it as
-    /// collateral, which is a rule this suite already holds. The line offering this button is the exception because
-    /// it is the answer to the button: the failure it describes is the thing now being retried. Only the viewed
-    /// session is redrawn — a background session's news never moves the reader's position.</summary>
+    /// until the person speaks again, or a newer run begins where the news came from a run, and a rebuild — or a ↻ pressed for another reason — must
+    /// not erase it as collateral, which is a rule this suite already holds. The line offering this button is the
+    /// exception because it is the answer to the button: the failure it describes is the thing now being retried.
+    /// A run notice that is not retryable needs no call here — <see cref="RenderNotice"/> ages it out the moment the
+    /// conversation has a different run. Only the viewed session is redrawn — a background session's news never
+    /// moves the reader's position.</summary>
     private void ForgetNotice(string conversationId)
     {
         if (!_notices.TryGetValue(conversationId, out var notice) || !notice.Retryable) return;
@@ -3512,10 +3534,13 @@ public partial class ChatPanel : UserControl
                 outcome.NoticeDanger, outcome.UserTurns,
                 key is "ChatNoFirstFrame" or "ChatTimedOut" or "ChatTimedOutAfterRetries"
                     or "ChatStreamInterrupted" or "ChatConnectionFailed" or "ChatRateLimited"
-                    or "ChatFailed" or "ChatNoResponse");
+                    or "ChatFailed" or "ChatNoResponse",
+                // The run that just ended has already left the registry, so this reads null: the line belongs to a
+                // round that is over, and the next one to appear retires it however that round began.
+                run: _chat.RunFor(conversationId), fromRun: true);
         else if (!outcome.ReceivedText)
             RememberNotice(conversationId, HubStrings.Get("ChatNoResponse"), true, outcome.UserTurns,
-                retryable: true);
+                retryable: true, fromRun: true, run: _chat.RunFor(conversationId));
 
         // A session that finished out of sight is filed and left alone: repainting or scrolling it would move
         // the reading position of the conversation the person is actually looking at.
