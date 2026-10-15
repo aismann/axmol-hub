@@ -1890,6 +1890,7 @@ public partial class ShellCheckWindow : Window
         await CheckPictureFeedbackAsync(shell, panel);
         await CheckComposerKeysAsync(shell, panel);
         await CheckTypographyAsync(shell, panel);
+        await CheckEmphasisAsync(shell, panel);
         await CheckScrollAsync(shell, panel);
         await CheckActivityOrchestrationAsync(shell, panel);
         await CheckInspectorAndSteerAsync(shell, panel);
@@ -3694,6 +3695,47 @@ public partial class ShellCheckWindow : Window
                 + liveSize.ToString(CultureInfo.InvariantCulture) + "/" + livePitch.ToString(CultureInfo.InvariantCulture)
                 + "，落盘 " + markdown.ToString(CultureInfo.InvariantCulture) + "/"
                 + markdownPitch.ToString(CultureInfo.InvariantCulture) + "）");
+        }
+        finally
+        {
+            chat.ClientOverride = savedOverride;
+            if (chat.Conversations.Any(summary => summary.Id == session.Id)) chat.DeleteConversation(session.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+        }
+    }
+
+    /// <summary>
+    /// Emphasis the engine has to actually parse, rather than draw the markers for.
+    ///
+    /// The face Hub renders Markdown with is not Markdig: <see cref="MarkdownMessageRenderer.Render"/> swaps in
+    /// Markdown.Avalonia's own scanner, whose decoration pass walks the text a character at a time and has to step
+    /// over the closing delimiter it just consumed. A Chinese answer leans on that step far harder than an English
+    /// one, because a model bolds a clause rather than a word and bolds it straight after a comma or a full-width
+    /// colon — so every shape below is one the transcript has actually shown, not a grammar exercise.
+    /// </summary>
+    private async Task CheckEmphasisAsync(MainWindow shell, ChatPanel panel)
+    {
+        var chat = shell.Chat;
+        var savedOverride = chat.ClientOverride;
+        var session = chat.StartConversation();
+        chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
+        chat.ClientOverride = (_, _) => new ScriptedChatClient(
+            ["**段首粗体**。\n\n那段话**不单独成轮**，而是搭在调用那一轮上。\n\n"
+             + "探针证实 `MarkdownScrollViewer` **内含 `ScrollViewViewer`**（文档已构建）。\n\n"
+             + "- 列表项里的**粗体**，后面还有字。\n\n1. 有序项里的**粗体**收尾。"]);
+        panel.Reload();
+        Dispatcher.UIThread.RunJobs();
+        try
+        {
+            panel.SetInputForCheck("把粗体的几种写法各来一遍");
+            await panel.SendComposerForCheck();
+            await panel.WaitForRunToFinishForCheck();
+            await WaitUntilAsync(() => panel.MarkdownBodyFontSizeForCheck > 0);
+            var leaked = panel.MarkdownLeakedEmphasisForCheck();
+            Check(leaked.Count == 0,
+                "粗体真的解析了，分隔符没有当字面文字画出来（漏出 " + leaked.Count + " 处："
+                + string.Join(" ∣ ", leaked) + "）");
         }
         finally
         {

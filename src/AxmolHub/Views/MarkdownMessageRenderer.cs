@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Input;
 using Avalonia;
@@ -28,6 +29,11 @@ internal static class MarkdownMessageRenderer
         .UseAutoLinks()
         .Build();
     private static readonly Regex BareUrlPattern = new(@"https?://[^\s<>""'`]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    // One line, no nested delimiter: the pair this pass may rewrite is a bold a chip split, not a heading that
+    // happens to start one, and `***both***` is the engine's to get right rather than this regex's.
+    private static readonly Regex BoldRunPattern = new(@"\*\*(?=\S)([^*\r\n]+?[^\s*])\*\*", RegexOptions.Compiled);
+    private static readonly Regex ChipSplitPattern = new("(\u0001\\d+\u0002)", RegexOptions.Compiled);
+    private static readonly Regex ChipTokenPattern = new("\u0001(\\d+)\u0002", RegexOptions.Compiled);
     private static readonly Lazy<(SyntaxHighlight Plugin, SyntaxHighlightProvider Provider)> Syntax = new(CreateSyntax);
 
     internal static MarkdownScrollViewer Render(string markdown)
@@ -56,7 +62,7 @@ internal static class MarkdownMessageRenderer
         var engine = new MarkdownEngine();
         engine.HyperlinkCommand = new OpenLinkCommand(viewer);
         viewer.Engine = engine;
-        viewer.Markdown = LinkifyBareUrls(markdown);
+        viewer.Markdown = RejoinBoldAcrossCode(LinkifyBareUrls(markdown));
         ApplyCodeFont(viewer);
         return viewer;
     }
@@ -243,6 +249,15 @@ internal static class MarkdownMessageRenderer
         internal int Version { get; set; }
     }
 
+    /// <summary>Every run in the document that still carries a raw asterisk. The engine's own decoration
+    /// scanner advances past a closing <c>**</c> one character short, and the leftover is handed back to the
+    /// text — so the proof that a bold parsed is that no delimiter survived to be drawn.</summary>
+    internal static IReadOnlyList<string> LeakedEmphasisRuns(MarkdownScrollViewer viewer)
+        => viewer.GetLogicalDescendants().OfType<CRun>()
+            .Where(run => run.Text is { Length: > 0 } text && text.Contains('*', StringComparison.Ordinal))
+            .Select(run => run.Text)
+            .ToArray();
+
     internal static bool HasLinkHandler(MarkdownScrollViewer viewer, string url)
         => viewer.Engine is MarkdownEngine { HyperlinkCommand: not null }
            && viewer.Markdown is { } markdown
@@ -398,6 +413,120 @@ internal static class MarkdownMessageRenderer
         }
 
         return url;
+    }
+
+    /// <summary>
+    /// Re-wraps the plain text that a code span cut in half inside a bold run.
+    ///
+    /// <para>The engine consumes inline code before it looks for emphasis, so <c>**term `X` term**</c> reaches
+    /// the decoration scanner as two unrelated fragments, each carrying one delimiter and no partner — and both
+    /// are then drawn verbatim. It is the shape a model reaches for constantly, because a clause worth bolding
+    /// usually names an identifier worth fencing, and it is the one case the transcript showed as raw asterisks.
+    /// CJK-adjacent bold, bold inside a list item and bold at a paragraph head all parse fine on their own; this
+    /// is the only split that fails, which is why the pass below is scoped to exactly it.</para>
+    ///
+    /// <para>Splitting the run at each chip keeps every word bold that was bold. The chip is left unbolded: it
+    /// already carries its own face on its own surface, and bold monospace reads as the same chip with a heavier
+    /// edge rather than as emphasis.</para>
+    /// </summary>
+    private static string RejoinBoldAcrossCode(string markdown)
+    {
+        // The chips stand in for their own text behind a pair of control characters, so a delimiter written
+        // inside code is never read as one. A source that already carries those characters is left exactly as
+        // it arrived rather than half-restored from offsets that no longer line up.
+        if (!markdown.Contains("**", StringComparison.Ordinal)
+            || markdown.Contains('\u0001') || markdown.Contains('\u0002')) return markdown;
+
+        var chips = new List<string>();
+        var masked = MaskCodeSpans(markdown, chips);
+        // A fence left open swallows the rest of the document, so everything after it is code and none of it may
+        // be re-marked. A single stray backtick is not that case — it closes nothing and hides nothing, and the
+        // text after it stays the ordinary prose the engine was always going to see.
+        if (masked is null || chips.Count == 0) return markdown;
+
+        var rewritten = BoldRunPattern.Replace(masked, match =>
+        {
+            var body = match.Groups[1].Value;
+            // Only a run the chip actually cut in half is broken. Every ordinary bold stays the engine's to
+            // parse, so this pass cannot make a case worse that it was never failing on.
+            if (!body.Contains('\u0001')) return match.Value;
+
+            var builder = new StringBuilder();
+            foreach (var piece in ChipSplitPattern.Split(body))
+            {
+                if (piece.Length == 0) continue;
+                if (ChipTokenPattern.IsMatch(piece))
+                {
+                    builder.Append(piece);
+                    continue;
+                }
+
+                // The markers hug the words, not the gaps around them: `** 词 **` is not a bold the scanner
+                // will take, so the whitespace that separated the fragments stays outside the emphasis.
+                var core = piece.Trim();
+                if (core.Length == 0)
+                {
+                    builder.Append(piece);
+                    continue;
+                }
+
+                builder.Append(piece[..(piece.Length - piece.TrimStart().Length)])
+                    .Append("**").Append(core).Append("**")
+                    .Append(piece[piece.TrimEnd().Length..]);
+            }
+
+            return builder.ToString();
+        });
+
+        return ChipTokenPattern.Replace(rewritten, match =>
+            chips[int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)]);
+    }
+
+    /// <summary>Swaps every code span for a numbered token. A run of N backticks is opened only by the next run
+    /// of exactly N, so a fence of three takes its whole block out of the text below — bold written inside a
+    /// code block is content, and nothing here may touch it. Returns null when a multi-backtick run never
+    /// closes, which means the rest of the document is code and the whole pass has to stand down.</summary>
+    private static string? MaskCodeSpans(string text, List<string> chips)
+    {
+        var builder = new StringBuilder(text.Length);
+        var index = 0;
+        while (index < text.Length)
+        {
+            if (text[index] == '`')
+            {
+                var run = 0;
+                while (index + run < text.Length && text[index + run] == '`') run++;
+                var close = FindBacktickRun(text, index + run, run);
+                if (close >= 0)
+                {
+                    chips.Add(text[index..(close + run)]);
+                    builder.Append('\u0001').Append(chips.Count - 1).Append('\u0002');
+                    index = close + run;
+                    continue;
+                }
+
+                if (run > 1) return null;
+            }
+
+            builder.Append(text[index]);
+            index++;
+        }
+
+        return builder.ToString();
+    }
+
+    private static int FindBacktickRun(string text, int from, int count)
+    {
+        for (var index = from; index < text.Length; index++)
+        {
+            if (text[index] != '`') continue;
+            var run = 0;
+            while (index + run < text.Length && text[index + run] == '`') run++;
+            if (run == count) return index;
+            index += run - 1;
+        }
+
+        return -1;
     }
 
     private sealed class OpenLinkCommand(MarkdownScrollViewer viewer) : ICommand

@@ -4144,6 +4144,13 @@ public partial class ChatPanel : UserControl
             .SelectMany(viewer => viewer.GetVisualDescendants().OfType<Grid>())
             .FirstOrDefault(grid => grid.Classes.Contains("List"))?.Margin.Left ?? -1;
 
+    /// <summary>The raw asterisks still drawn across every rendered answer on screen, as the reader sees them.
+    /// Empty is the pass condition; anything in it names the case the engine failed to parse.</summary>
+    internal IReadOnlyList<string> MarkdownLeakedEmphasisForCheck()
+        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+            .SelectMany(MarkdownMessageRenderer.LeakedEmphasisRuns)
+            .ToArray();
+
     /// <summary>Whether any Markdown viewer on screen was handed this text. Read as the negative it is: a leaked
     /// tool call has to reach the reader as plain text, and the one proof of that is that no viewer ever took
     /// it — because a viewer is exactly where its pipes turn into a table.</summary>
