@@ -625,6 +625,87 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
 
+        // ── Prose that rode in on a call ──
+        // The model writes its answer and then asks: one assistant message, one stored turn carrying the text and
+        // the call alike (ChatTurn.FunctionCall files the prose on the call's own turn). A call that owed a
+        // decision paints that turn's own row, and that row was the one place in the transcript the Markdown pass
+        // never reached — so a plan written this way reached the reader as raw source: headings, bold and a table
+        // made of pipes.
+        const string ridingHeading = "# 一个关键抉择";
+        const string ridingFence = "int riding_main() {}";
+        var ridingReply = ridingHeading + "\n\n先看代码，再定方案：`src/AxmolHub`。\n\n"
+                          + "```cpp\n" + ridingFence + "\n```\n\n"
+                          + "| 状态 | 点击 |\n| --- | --- |\n| 已就绪 | 继续 |";
+        var ridingBefore = shell.Chat.ActiveConversation?.Id;
+        var ridingSession = shell.Chat.StartConversation();
+        var ridingClient = new ApprovalChatClient
+        {
+            Said = ridingReply,
+            ToolName = AskUserTool.ToolName,
+            Arguments = new Dictionary<string, object?>
+            {
+                ["question"] = "先做哪一半？",
+                ["options"] = new object?[]
+                {
+                    new Dictionary<string, object?> { ["label"] = "先修渲染 (Recommended)" },
+                    new Dictionary<string, object?> { ["label"] = "先修性能" },
+                },
+            },
+        };
+        shell.Chat.ClientOverride = (_, id) => id == ridingSession.Id
+            ? ridingClient
+            : new ScriptedChatClient(["不该被使用"]);
+        panel.Reload();
+        await panel.SendForCheckAsync("带正文的提问");
+        // The fold is closed by default — the charter hides secondary things — so its rows are painted but not
+        // measured until the head is opened. Open it the way a reader would before reading anything off bounds.
+        panel.SetActivityGroupExpandedForCheck(0, true);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        // While the call is still parked the row is already painted — its signpost is the card on screen — so the
+        // prose can be read back in the state a reader sees it in.
+        Check(panel.QuestionChoicesForCheck.SequenceEqual(["A", "B", "free"])
+              && panel.QuestionTitleForCheck.Contains("先做哪一半", StringComparison.Ordinal)
+              && !panel.PlainTurnHoldsForCheck(ridingHeading)
+              && panel.HasVisibleMarkdownCodeBlock(ridingFence),
+            "随调用一起到达的正文过 Markdown 层：标题不按原文显示、代码块交给 Markdown 控件（原文块 "
+            + panel.PlainTurnHoldsForCheck(ridingHeading) + "，代码块 "
+            + panel.HasVisibleMarkdownCodeBlock(ridingFence) + "）");
+        panel.ClickQuestionChoiceForCheck("A");
+        panel.ClickQuestionContinueForCheck();
+        await panel.WaitForRunToFinishForCheck();
+        panel.SetActivityGroupExpandedForCheck(0, true);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(panel.ApprovalRecordsForCheck.Any(record => record.Contains("ask_user", StringComparison.Ordinal)),
+            "决定之后 call record 行仍在（实际 " + string.Join(" / ", panel.ApprovalRecordsForCheck) + "）");
+        Check(!panel.PlainTurnHoldsForCheck(ridingHeading)
+              && panel.HasVisibleMarkdownCodeBlock(ridingFence),
+            "决定之后重建分组，正文仍是 Markdown 而不是退回原文（原文块 "
+            + panel.PlainTurnHoldsForCheck(ridingHeading) + "，代码块 "
+            + panel.HasVisibleMarkdownCodeBlock(ridingFence) + "）");
+        // The fold hides its rows without un-painting them: the body is the same document either way. What hides
+        // it is the body's own visibility — a control that has been arranged keeps the last bounds it was handed,
+        // so the state is read off the fold rather than off a stale rectangle.
+        panel.SetActivityGroupExpandedForCheck(0, false);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var ridingFoldedAway = !panel.ActivityGroupExpandedForCheck(0);
+        panel.SetActivityGroupExpandedForCheck(0, true);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(ridingFoldedAway && panel.ActivityGroupExpandedForCheck(0)
+              && panel.HasVisibleMarkdownCodeBlock(ridingFence),
+            "收起折叠时正文随之隐藏、展开后仍以 Markdown 回到屏上（收起隐藏=" + ridingFoldedAway
+            + "，展开可见=" + panel.ActivityGroupExpandedForCheck(0) + "）");
+        shell.Chat.ClientOverride = null;
+        shell.Chat.DeleteConversation(ridingSession.Id);
+        if (ridingBefore is { } backFromRiding) shell.Chat.OpenConversation(backFromRiding);
+        shell.OpenAssistant();
+        panel.Reload();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
         const string sampleMarkdown =
             "# Heading\n\nA **bold** word and `inline code`.\n\n"
             + "- First item\n- Second item\n\n"
@@ -8768,6 +8849,11 @@ public partial class ShellCheckWindow : Window
         public int CallsRemaining { get; set; } = 1;
         public int Requests { get; private set; }
 
+        /// <summary>What the response says before it asks, emitted as text ahead of the call — the shape a model
+        /// writes an answer in: the prose and the call arrive as one assistant message and Hub files both on one
+        /// turn. Said once, on the response that carries the call.</summary>
+        public string? Said { get; set; }
+
         /// <summary>The call the fixture asks for. A real write by default: the gate is what is under test, and a
         /// read-only call would sail through it without proving anything.</summary>
         public string ToolName { get; set; } = "file_write";
@@ -8831,6 +8917,14 @@ public partial class ShellCheckWindow : Window
                         Microsoft.Extensions.AI.ChatRole.Assistant,
                         [new Microsoft.Extensions.AI.TextReasoningContent(said)]);
                 Thinking.Clear();
+            }
+            if (Said is { Length: > 0 } prose)
+            {
+                // Ahead of the call rather than after it: the prose is what the model wrote before asking, and
+                // the workspace files it on the call's own turn from the live buffer.
+                Said = null;
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant, prose);
             }
             if (Batch.Count > 0)
             {

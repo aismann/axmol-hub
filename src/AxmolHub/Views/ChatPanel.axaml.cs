@@ -1944,12 +1944,12 @@ public partial class ChatPanel : UserControl
                     // would draw every result as a call nobody had asked for.
                     open.Turns = visible.GetRange(open.FirstVisible, i - open.FirstVisible);
                     open.EndVisible = i;
-                    DeriveActivityGroup(open, conversation.Id, lastIndex);
+                    DeriveActivityGroup(open, conversation.Id, lastIndex, visible.Count);
                 }
                 else
                 {
                     _openGroup = CreateActivityGroup(conversation.Id, start, turns);
-                    DeriveActivityGroup(_openGroup, conversation.Id, lastIndex);
+                    DeriveActivityGroup(_openGroup, conversation.Id, lastIndex, visible.Count);
                 }
 
                 _renderedCount = i;
@@ -2079,7 +2079,8 @@ public partial class ChatPanel : UserControl
     /// <summary>Whether a turn is machine work rather than something said: a tool result, a call, or a
     /// thinking-only answer. These are the turns a run folds into one group; prose and user turns break it.
     /// A thinking turn that also carries prose is prose — the answer is what was asked for, and folding it
-    /// away would hide the reply.
+    /// away would hide the reply. A call's own prose — what the model said before it asked — stays with the call
+    /// it rode in on, and is painted through the Markdown layer under the same window the transcript uses.
     ///
     /// <para>A plan is prose whatever its text says, so it is excepted by name. Its body lives in its own document
     /// and its turn's text is legitimately empty, which is the shape this test would otherwise read as
@@ -2178,7 +2179,8 @@ public partial class ChatPanel : UserControl
     /// the order the conversation holds. Only this group's own children move, so an opened head and the reading
     /// position are left alone — which is the whole point of extending rather than rebuilding.
     /// </summary>
-    private void DeriveActivityGroup(ActivityGroupView view, string conversationId, int lastIndex)
+    private void DeriveActivityGroup(ActivityGroupView view, string conversationId, int lastIndex,
+        int visibleCount)
     {
         var turns = view.Turns;
         // Pair each call with the result that answered it, so one row can say what was done and how it went.
@@ -2194,11 +2196,13 @@ public partial class ChatPanel : UserControl
         {
             // A call that owed a decision, or a write that left a copy, keeps its own surface (signpost / record
             // with undo) — those are functional and asserted, so route them through the ordinary turn renderer.
+            // The prose this call rode in on belongs to that surface too, so it is painted through the Markdown
+            // layer under the same window the transcript's own rows use rather than left as raw source text.
             if (turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 } callId)
             {
                 if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 })
                     AppendRenderedTurn(conversationId, index, turn, toolName, isLast: index == lastIndex,
-                        markdown: false, target: inner);
+                        markdown: index >= visibleCount - EagerMarkdownLimit, target: inner);
                 // A plain read/command call renders no row of its own: its action row is drawn from the result
                 // below, so emitting an empty row here would only add a gap.
                 continue;
@@ -3908,6 +3912,14 @@ public partial class ChatPanel : UserControl
     internal bool HasMarkdownHolding(string text)
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
             .Any(viewer => viewer.Markdown?.Contains(text, StringComparison.Ordinal) == true);
+
+    /// <summary>Whether a plain <c>turn-text</c> block still carries this text. Read as the negative it is: a body
+    /// the Markdown pass took shows its source through a viewer's Tag, never as raw source text, so a
+    /// <c>turn-text</c> block holding it is the proof that body never went through the pass.</summary>
+    internal bool PlainTurnHoldsForCheck(string text)
+        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+            .Any(block => block.Classes.Contains("turn-text")
+                          && (block.Text?.Contains(text, StringComparison.Ordinal) ?? false));
 
     internal bool HasRenderedMarkdownLink(string url)
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
