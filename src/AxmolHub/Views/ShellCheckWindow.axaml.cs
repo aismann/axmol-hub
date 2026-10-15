@@ -873,6 +873,19 @@ public partial class ShellCheckWindow : Window
             "客户区扩展进装饰、装饰取 BorderOnly（不再叠一层平台标题栏），标题栏高度与传给平台的高度一致（实际 "
             + shell.ClientAreaExtendedForCheck + "、" + shell.WindowDecorationsForCheck + "、"
             + Fmt(shell.TitleBarHeightForCheck) + " / " + Fmt(shell.TitleBarHintForCheck) + "）");
+        if (OperatingSystem.IsLinux())
+        {
+            var normalCorners = shell.WindowSurfaceCornerRadiusForCheck;
+            Check(shell.LinuxTransparencyForCheck
+                  && Math.Abs(normalCorners.TopLeft - 12) <= 0.5
+                  && Math.Abs(normalCorners.TopRight - 12) <= 0.5
+                  && Math.Abs(normalCorners.BottomRight) <= 0.5
+                  && Math.Abs(normalCorners.BottomLeft) <= 0.5,
+                "Linux 主窗口使用透明底层与 12px 上角圆角（实际透明 "
+                + shell.LinuxTransparencyForCheck + "，圆角 "
+                + Fmt(normalCorners.TopLeft) + "," + Fmt(normalCorners.TopRight) + ","
+                + Fmt(normalCorners.BottomRight) + "," + Fmt(normalCorners.BottomLeft) + "）");
+        }
         var barRect = shell.TitleBarBoundsForCheck;
         var clientRect = shell.ClientBoundsForCheck;
         Check(Math.Abs(barRect.Y) <= 0.5 && Math.Abs(barRect.Height - 32) <= 0.5
@@ -908,12 +921,42 @@ public partial class ShellCheckWindow : Window
         Dispatcher.UIThread.RunJobs();
         var maximizedClient = shell.Bounds.Size;
         var rememberedUnderMaximize = shell.NormalClientSizeForCheck;
+        if (OperatingSystem.IsLinux())
+        {
+            var maximizedCorners = shell.WindowSurfaceCornerRadiusForCheck;
+            Check(Math.Abs(maximizedCorners.TopLeft) <= 0.5
+                  && Math.Abs(maximizedCorners.TopRight) <= 0.5
+                  && Math.Abs(maximizedCorners.BottomRight) <= 0.5
+                  && Math.Abs(maximizedCorners.BottomLeft) <= 0.5,
+                "Linux 主窗口最大化后四角归零（实际 "
+                + Fmt(maximizedCorners.TopLeft) + "," + Fmt(maximizedCorners.TopRight) + ","
+                + Fmt(maximizedCorners.BottomRight) + "," + Fmt(maximizedCorners.BottomLeft) + "）");
+        }
         Check(shell.MaximizeTipForCheck == HubTexts.Get("RestoreWindow", HubStrings.Language)
               && shell.MaximizeGlyphIsRestoreForCheck,
             "已最大化时那枚按钮改说「还原」并换成还原图形（实际提示「" + shell.MaximizeTipForCheck + "」）");
         shell.SetWindowStateForCheck(WindowState.Normal);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
+        if (OperatingSystem.IsLinux())
+        {
+            var restoredCorners = shell.WindowSurfaceCornerRadiusForCheck;
+            Check(Math.Abs(restoredCorners.TopLeft - 12) <= 0.5
+                  && Math.Abs(restoredCorners.TopRight - 12) <= 0.5,
+                "Linux 主窗口还原后上角恢复 12px 圆角（实际 "
+                + Fmt(restoredCorners.TopLeft) + "," + Fmt(restoredCorners.TopRight) + "）");
+
+            shell.SetWorkAreaFillForCheck(true);
+            var filledCorners = shell.WindowSurfaceCornerRadiusForCheck;
+            Check(Math.Abs(filledCorners.TopLeft) <= 0.5
+                  && Math.Abs(filledCorners.TopRight) <= 0.5
+                  && Math.Abs(filledCorners.BottomRight) <= 0.5
+                  && Math.Abs(filledCorners.BottomLeft) <= 0.5,
+                "Linux 主窗口填满工作区时四角归零（实际 "
+                + Fmt(filledCorners.TopLeft) + "," + Fmt(filledCorners.TopRight) + ","
+                + Fmt(filledCorners.BottomRight) + "," + Fmt(filledCorners.BottomLeft) + "）");
+            shell.SetWorkAreaFillForCheck(false);
+        }
         Check(shell.MaximizeTipForCheck == HubTexts.Get("MaximizeWindow", HubStrings.Language)
               && !shell.MaximizeGlyphIsRestoreForCheck,
             "还原后那枚按钮改回「最大化」并换回方框图形");

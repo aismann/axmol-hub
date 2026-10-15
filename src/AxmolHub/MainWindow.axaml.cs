@@ -170,6 +170,7 @@ public partial class MainWindow : Window
         WireChatRuns();
 
         InitializeComponent();
+        ConfigureLinuxWindowSurface();
         InitializeSidebar();
         InitializeTitleBar();
         InitializeInspector();
@@ -1674,6 +1675,9 @@ public partial class MainWindow : Window
     /// be seen in a shown window (the self-check never shows this one), so this pin exists to keep the property
     /// that selects the behaviour from drifting back to the default.</summary>
     internal WindowDecorations WindowDecorationsForCheck => WindowDecorations;
+    internal bool LinuxTransparencyForCheck
+        => TransparencyLevelHint.Contains(WindowTransparencyLevel.Transparent) && Background == Brushes.Transparent;
+    internal CornerRadius WindowSurfaceCornerRadiusForCheck => WindowSurface.CornerRadius;
     internal double TitleBarHeightForCheck => TitleBar.Bounds.Height;
     internal double TitleBarHintForCheck => ExtendClientAreaTitleBarHeightHint;
     /// <summary>The platform's own caption-strip height. On Windows the three plates are centred in it, so a bar
@@ -1686,6 +1690,11 @@ public partial class MainWindow : Window
     internal string MaximizeTipForCheck => ToolTip.GetTip(MaximizeButton) as string ?? "";
     internal string CloseTipForCheck => ToolTip.GetTip(CloseButton) as string ?? "";
     internal bool MaximizeGlyphIsRestoreForCheck => ReferenceEquals(MaximizeGlyph.Data, _restoreGlyph);
+    internal void SetWorkAreaFillForCheck(bool fillsWorkArea)
+    {
+        _fillsWorkArea = fillsWorkArea;
+        SyncWindowStateChrome();
+    }
 
     /// <summary>Whether the maximize plate is painted as pressed. The class is written by the Win32 hook rather
     /// than by a pseudo-class, so reading it back is the only way to tell "the press was seen" from "the press was
@@ -2374,8 +2383,25 @@ public partial class MainWindow : Window
         // Either way the caption says "restore next": the window manager's maximized state, or the shell's own fill
         // of the work area on a host that must not ask for the first (see WslWorkAreaFill).
         var maximized = WindowState == WindowState.Maximized || _fillsWorkArea;
+        if (OperatingSystem.IsLinux())
+        {
+            WindowSurface.CornerRadius = maximized
+                ? new CornerRadius(0)
+                : new CornerRadius(WindowCornerRadius, WindowCornerRadius, 0, 0);
+        }
+
         if ((maximized ? _restoreGlyph : _maximizeGlyph) is { } glyph) MaximizeGlyph.Data = glyph;
         ToolTip.SetTip(MaximizeButton, HubStrings.Get(maximized ? "RestoreWindow" : "MaximizeWindow"));
+    }
+
+    private const double WindowCornerRadius = 12;
+
+    private void ConfigureLinuxWindowSurface()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        TransparencyLevelHint = [WindowTransparencyLevel.Transparent];
+        Background = Brushes.Transparent;
     }
 
     /// <summary>Brings the window back onto its own geometry for the routes that ask for a usable window: a

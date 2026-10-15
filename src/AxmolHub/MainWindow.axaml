@@ -493,6 +493,8 @@
        inspector and settings are held to the second row, so "everything but the title bar" is a fact about the
        grid rather than about its paint order — and for settings that row plus a 28-pixel bottom margin is also
        what keeps the window draggable and the status strip pressable while it is open. -->
+  <Border x:Name="WindowSurface" Background="{DynamicResource Hub.Background}"
+          CornerRadius="0" ClipToBounds="True">
   <Grid x:Name="ClientRoot" RowDefinitions="32,*">
   <!-- The shell spans both rows: its own first row *is* the title bar strip, and the row split up here exists so
        that the expanded inspector can be given everything below that strip. The 32 is the same number the bar's
@@ -925,4 +927,5 @@
     </Border>
   </Grid>
   </Grid>
+  </Border>
 </Window>
