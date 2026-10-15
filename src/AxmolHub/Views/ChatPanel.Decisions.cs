@@ -1235,18 +1235,28 @@ public partial class ChatPanel
         }
 
         var stillStreaming = _chat.RunFor(draft.ConversationId) is { IsStreaming: true };
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        // Three columns rather than a row of stacked panels, because the draft is the run that gives way and only a
+        // finite measure constraint makes it give way. A horizontal StackPanel measures its children with infinity,
+        // so the trimming the style sets never fired: a long draft reported its whole sentence as its width and drew
+        // straight over the commit button's own label, which is transparent and therefore showed the two at once.
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
 
-        var left = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        left.Children.Add(new TextBlock { Classes = { "steer-confirm-text" }, Text = draft.Text });
+        var text = new TextBlock { Classes = { "steer-confirm-text" }, Text = draft.Text };
+        // One line cannot hold a long steer and the strip is a review, not a reading pane, so the tip carries the
+        // whole sentence — the same bargain the plan card's title makes.
+        ToolTip.SetTip(text, draft.Text);
+        row.Children.Add(text);
         if (draft.Pictures is { Count: > 0 } pictures)
-            left.Children.Add(new TextBlock
+        {
+            var suffix = new TextBlock
             {
                 Classes = { "steer-confirm-suffix" },
                 Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
                     HubStrings.Get("ChatSteerPicturesSuffix"), pictures.Count),
-            });
-        row.Children.Add(left);
+            };
+            Grid.SetColumn(suffix, 1);
+            row.Children.Add(suffix);
+        }
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
         var commit = new Button
@@ -1270,7 +1280,7 @@ public partial class ChatPanel
         actions.Children.Add(commit);
         actions.Children.Add(IconActionButton("ChatSteerEdit", "Hub.Icon.Edit", EditSteerDraft));
         actions.Children.Add(IconActionButton("ChatSteerDiscard", "Hub.Icon.Trash", DiscardSteer));
-        Grid.SetColumn(actions, 1);
+        Grid.SetColumn(actions, 2);
         row.Children.Add(actions);
 
         SteerConfirmHost.Child = row;
@@ -1365,6 +1375,56 @@ public partial class ChatPanel
             .FirstOrDefault(button => button.Name == "SteerCommitButton")
             ?.GetLogicalDescendants().OfType<TextBlock>()
             .LastOrDefault()?.Text ?? "";
+
+    /// <summary>The whole sentence the strip carries in its tip. The line trims, so the tip is the only place a
+    /// steer longer than the strip can be read before the second tap says it — and the only thing that makes
+    /// trimming an acceptable answer instead of lost words.</summary>
+    internal string SteerConfirmTextTipForCheck
+        => SteerConfirmHost.GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(block => block.Classes.Contains("steer-confirm-text")) is { } text
+            ? ToolTip.GetTip(text) as string ?? ""
+            : "";
+
+    /// <summary>Where the draft's ink ends, where the actions begin, and what the same sentence would measure with
+    /// nothing in its way — all four in the strip's own coordinates. A long draft is the case that separates the
+    /// layouts: the strip is one line by design, so what has to hold is that the ink stops at the commit button
+    /// rather than running under its transparent label, and that the sentence genuinely wanted more room than it
+    /// got. A short draft satisfies the first half by fitting, which is why the second is read with it.</summary>
+    internal (double TextWidth, double NaturalWidth, double TextRight, double ActionsLeft)? SteerConfirmClipForCheck
+    {
+        get
+        {
+            if (_steerDraft is null) return null;
+            var text = SteerConfirmHost.GetLogicalDescendants().OfType<TextBlock>()
+                .FirstOrDefault(block => block.Classes.Contains("steer-confirm-text"));
+            var commit = SteerConfirmHost.GetLogicalDescendants().OfType<Button>()
+                .FirstOrDefault(button => button.Name == "SteerCommitButton");
+            if (text is null || commit is null) return null;
+            // The ink, not the box: stretched across its star column the block's Bounds end where the button begins
+            // whatever it drew, so a box reading would call a pained layout tidy. Unarranged (no layout pass yet)
+            // both translations come back null and the check is told so rather than handed a NaN.
+            var textRight = text.TranslatePoint(new Point(text.DesiredSize.Width, 0), SteerConfirmHost)?.X;
+            var actionsLeft = commit.TranslatePoint(new Point(0, 0), SteerConfirmHost)?.X;
+            if (textRight is not { } right || actionsLeft is not { } left) return null;
+            return (text.DesiredSize.Width, UnconstrainedWidth(text), right, left);
+        }
+    }
+
+    /// <summary>What the sentence measures with nothing in its way, taken on a throwaway block at the live one's own
+    /// face so the reading costs the strip nothing. Handed infinity the live block is what the bug looked like, so
+    /// this has to be a second block: the comparison is the only evidence that the line had to give up anything.</summary>
+    private static double UnconstrainedWidth(TextBlock text)
+    {
+        var probe = new TextBlock
+        {
+            Text = text.Text,
+            FontFamily = text.FontFamily,
+            FontSize = text.FontSize,
+            FontWeight = text.FontWeight,
+        };
+        probe.Measure(Size.Infinity);
+        return probe.DesiredSize.Width;
+    }
 
     internal void ClickSteerCommitForCheck() => ClickSteerButtonForCheck("SteerCommitButton", null);
     internal void ClickSteerEditForCheck() => ClickSteerButtonForCheck(null, "ChatSteerEdit");

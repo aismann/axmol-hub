@@ -5090,6 +5090,31 @@ public partial class ShellCheckWindow : Window
             Check(!panel.SteerConfirmVisibleForCheck && panel.InputTextForCheck.Length == 0,
                 "「丢弃」是唯一会毁掉草稿的动作，只有图标、没有键盘路径");
 
+            // The line gives way rather than running on. The commit button has no plate of its own, so a draft that
+            // overflowed its column read as two sentences printed on top of each other — which a short draft
+            // satisfies the first assertion of without asking anything. Hence a draft longer than the strip, and the
+            // second half: the line really did have to give something up.
+            var longDraft = new string('1', 200);
+            panel.SetInputForCheck(longDraft);
+            await panel.SendComposerForCheck();
+            Dispatcher.UIThread.RunJobs();
+            shell.UpdateLayout();
+            var clip = panel.SteerConfirmClipForCheck;
+            var textWidth = clip?.TextWidth ?? double.NaN;
+            var naturalWidth = clip?.NaturalWidth ?? double.NaN;
+            var textRight = clip?.TextRight ?? double.NaN;
+            var actionsLeft = clip?.ActionsLeft ?? double.NaN;
+            Check(clip is { } strip && strip.TextRight <= strip.ActionsLeft + 1
+                  && strip.TextWidth < strip.NaturalWidth - 20,
+                "长草稿在确认条上占一行、到发送键前就收住，不进到那个透明底板的字底下，而且确实是被裁过的（草稿 "
+                + longDraft.Length + " 字符，行里量到 " + Fmt(textWidth) + "，不设限是 " + Fmt(naturalWidth)
+                + "，行右端 " + Fmt(textRight) + "，动作列左端 " + Fmt(actionsLeft) + "）");
+            Check(panel.SteerConfirmTextTipForCheck == longDraft,
+                "裁掉的部分没有丢：整句挂在确认条的提示里（提示 " + panel.SteerConfirmTextTipForCheck.Length
+                + " 字符，草稿 " + longDraft.Length + " 字符）");
+            // The fixture puts the strip back the way it found it, so no later scene inherits an armed draft.
+            panel.ClickSteerDiscardForCheck();
+
             hold.SetResult(true);
             await panel.WaitForRunToFinishForCheck();
         }
