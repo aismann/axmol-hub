@@ -824,16 +824,6 @@ public partial class SettingsPage : UserControl
         _ => "ThemeSystem",
     };
 
-    /// <summary>What each theme value actually decides, for the one-line hint the bottom menu's row carries.
-    /// Same reason as <see cref="ThemeTextKey"/>: a fourth theme must not be able to arrive without a
-    /// sentence.</summary>
-    internal static string ThemeHintKey(string theme) => HubTheme.Normalize(theme) switch
-    {
-        HubTheme.Light => "ThemeLightHint",
-        HubTheme.Dark => "ThemeDarkHint",
-        _ => "ThemeSystemHint",
-    };
-
     /// <summary>The glyph for a theme value. Also total over the three, for the same reason.</summary>
     internal static string ThemeIconKey(string theme) => HubTheme.Normalize(theme) switch
     {

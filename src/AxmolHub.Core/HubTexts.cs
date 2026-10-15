@@ -239,12 +239,6 @@ public static class HubTexts
         ["ThemeSystem"] = ("跟随系统", "Follow system"),
         ["ThemeLight"] = ("浅色", "Light"),
         ["ThemeDark"] = ("深色", "Dark"),
-        // One line per theme value and one for the settings row, for the bottom menu's rows: a row says what it
-        // decides, not just what it is called.
-        ["ThemeSystemHint"] = ("系统浅就用浅，系统深就用深", "Light when the system is, dark when it is not"),
-        ["ThemeLightHint"] = ("一直用浅色，不看系统", "Always light, whatever the system says"),
-        ["ThemeDarkHint"] = ("一直用深色，不看系统", "Always dark, whatever the system says"),
-        ["SettingsRowHint"] = ("语言、外观、模型与存储", "Language, appearance, models and storage"),
         ["Storage"] = ("存储与项目", "Storage and projects"),
         ["DataDirectory"] = ("Hub 数据目录", "Hub data directory"),
         ["DataHint"] = ("引擎、工具链、缓存与日志存放于此。切换目录不会移动现有文件。", "Engines, tools, cache and logs. Changing directories does not move existing files."),

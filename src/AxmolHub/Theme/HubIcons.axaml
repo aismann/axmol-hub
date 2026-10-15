@@ -177,12 +177,21 @@
        same 24 grid as the permission tiers so the composer chips share a baseline. -->
   <StreamGeometry x:Key="Hub.Icon.Folder">M3.6 7.6A2 2 0 0 1 5.6 5.6H9.4L11.4 8H18.4A2 2 0 0 1 20.4 10V16.4A2 2 0 0 1 18.4 18.4H5.6A2 2 0 0 1 3.6 16.4Z</StreamGeometry>
 
-  <!-- ───────── The bottom menu's theme and language rows ─────────
+  <!-- ───────── The bottom menu's appearance glyphs ─────────
+       Contrast for the 外观 row, globe for the 语言 row, sun for the 主题 row. The theme values' own trio
+       (sun / moon / monitor) stays the shell's theme vocabulary — a theme value still has a glyph of its own,
+       see SettingsPage.ThemeIconKey — although the popup no longer draws one per value: the answers under 主题
+       are names and a tick.
        Every glyph here is built so its bounding box is a 16x16 square centred on the 24 grid, because
        Stretch="Uniform" parks any leftover axis as slack on one side (the failure Hub.Icon.Send's comment
        documents, and what FitsItsSquareSlot measures). The trick is that an arc whose endpoints are
        diametrically opposite has its centre forced — chord = 2r leaves exactly one solution — so the box is
        provable from the path rather than judged from a screenshot. -->
+
+  <!-- Contrast, for 外观: the outer circle plus the diameter that splits it, which is what makes the two halves
+       two sides of one question. The circle's two halves each span a diameter, so its centre is forced; the
+       line joins the circle's own top and bottom points and never leaves the box. -->
+  <StreamGeometry x:Key="Hub.Icon.Contrast">M4 12A8 8 0 0 1 20 12A8 8 0 0 1 4 12ZM12 4V20</StreamGeometry>
 
   <!-- A sun: a disc with eight rays that stop short of it. The disc and the four axis rays fix the box; the
        diagonal rays stay inside it. -->

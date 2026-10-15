@@ -12436,51 +12436,82 @@ public partial class ShellCheckWindow : Window
         Dispatcher.UIThread.RunJobs();
         var bottomMenu = shell.BottomMenuForCheck;
         Check(bottomMenu is { IsOpen: true }, "点底部入口真的弹出菜单（事件接线有效）");
-        Check(bottomMenu!.Items.Count == 6 && bottomMenu.Items.OfType<MenuItem>().All(item => item.Items.Count == 0),
-            "弹出菜单是六条平铺的行，主题不再藏在二级子菜单里（实际 " + bottomMenu.Items.Count + " 项，"
-            + bottomMenu.Items.OfType<MenuItem>().Count(item => item.Items.Count > 0) + " 项带子菜单）");
 
-        var rows = bottomMenu.Items.OfType<MenuItem>().ToArray();
-        string RowTitle(int index) => NamedDescendant<TextBlock>(rows[index], "MenuRowTitle")?.Text ?? "<null>";
-        string RowHint(int index) => NamedDescendant<TextBlock>(rows[index], "MenuRowHint")?.Text ?? "";
-        bool RowTicked(int index) => NamedDescendant<Avalonia.Controls.Shapes.Path>(rows[index], "MenuRowTick")?.IsVisible == true;
+        // Two levels, and the shape itself is the assertion: 设置 plus 外观, with 语言 and 主题 under 外观 and each
+        // of those carrying its own answers. A row that grew children, or a question that turned back into a
+        // leaf, is what would quietly put a theme value on the first level again.
+        var rows = bottomMenu!.Items.OfType<MenuItem>().ToArray();
+        var appearance = rows.Length > 1 ? rows[1] : null;
+        var subRows = appearance?.Items.OfType<MenuItem>().ToArray() ?? [];
+        var languageRow = subRows.FirstOrDefault(item => item.Tag as string == MainWindow.MenuRowTag.Language);
+        var themeRow = subRows.FirstOrDefault(item => item.Tag as string == MainWindow.MenuRowTag.Theme);
+        var languageRows = languageRow?.Items.OfType<MenuItem>().ToArray() ?? [];
+        var themeRows = themeRow?.Items.OfType<MenuItem>().ToArray() ?? [];
+        Check(rows.Length == 2 && rows[0].Items.Count == 0
+              && appearance is { Items.Count: 2 } && !appearance.IsChecked
+              && languageRow is { Items.Count: 2 } && !languageRow.IsChecked
+              && themeRow is { Items.Count: 3 } && !themeRow.IsChecked
+              && languageRows.Length == SettingsPage.LanguageChoices.Length
+              && themeRows.Length == HubTheme.All.Length
+              && languageRows.Concat(themeRows).All(row => row.Items.Count == 0),
+            "弹出菜单是两层：设置 + 外观，外观下是 语言 / 主题 两行，各自再带自己的答案（实际顶层 " + rows.Length
+            + " 行，外观下 " + subRows.Length + " 行，主题 " + themeRows.Length + " 项、语言 "
+            + languageRows.Length + " 项）");
 
-        // The glyphs the new rows carry are measured, not eyeballed: a non-square box sits off-centre in the
+        // A row's drawn shape is read off the header control the window built, not off the item's own visual
+        // tree: a row inside a submenu nobody has opened has no template realized, so a walk that starts at the
+        // item finds nothing and an unopened row would read as a broken one. The hint half of the tuple is the
+        // sentinel for the sentence that used to sit under every row — it is empty on all of them, and this is
+        // what says so if one comes back.
+        string RowTitle(MenuItem item) => MainWindow.MenuRowShapeForCheck(item).Title;
+        bool RowTicked(MenuItem item) => MainWindow.MenuRowShapeForCheck(item).Ticked;
+        IEnumerable<MenuItem> RowsUnder(MenuItem item) => item.Items.OfType<MenuItem>().SelectMany(RowsUnder).Prepend(item);
+        var everyRow = rows.SelectMany(RowsUnder).ToArray();
+        Check(everyRow.All(row => MainWindow.MenuRowShapeForCheck(row).Title.Length > 0
+                                  && MainWindow.MenuRowShapeForCheck(row).Hint.Length == 0),
+            "每一行都只有一行字：名字说完它是什么，底下不再挂解释句（" + everyRow.Length + " 行）");
+
+        // The glyphs the rows carry are measured, not eyeballed: a non-square box sits off-centre in the
         // square slot the row gives it.
-        Check(FitsItsSquareSlot("Hub.Icon.Sun") && FitsItsSquareSlot("Hub.Icon.Moon")
-              && FitsItsSquareSlot("Hub.Icon.Monitor") && FitsItsSquareSlot("Hub.Icon.Globe"),
-            "主题与语言四枚新字形都是正方形且居中于 24 格，Uniform 拉伸不会把余量甩到一边");
+        Check(FitsItsSquareSlot("Hub.Icon.Contrast") && FitsItsSquareSlot("Hub.Icon.Globe")
+              && FitsItsSquareSlot("Hub.Icon.Sun") && FitsItsSquareSlot("Hub.Icon.Moon")
+              && FitsItsSquareSlot("Hub.Icon.Monitor"),
+            "外观 / 语言 / 主题三行用到的新字形（加主题词表自己的三枚）都是正方形且居中于 24 格，Uniform 拉伸不会把余量甩到一边");
 
-        Check(RowTitle(0) == HubTexts.Get("Settings", HubStrings.Language)
-              && RowHint(0) == HubTexts.Get("SettingsRowHint", HubStrings.Language)
-              && !RowTicked(0) && rows[0].Items.Count == 0,
-            "第一行是「设置」，带一句它管什么，自己不勾选任何东西（实际「" + RowTitle(0) + "」）");
+        Check(RowTitle(rows[0]) == HubTexts.Get("Settings", HubStrings.Language)
+              && !RowTicked(rows[0]) && rows[0].Items.Count == 0,
+            "第一行是「设置」，整行只有名字，自己不勾选任何东西（实际「" + RowTitle(rows[0]) + "」）");
+        Check(appearance is not null
+              && RowTitle(appearance) == HubTexts.Get("Appearance", HubStrings.Language)
+              && !RowTicked(appearance),
+            "第二行是「外观」，它只负责展开，自己不勾选任何东西（实际「"
+            + (appearance is null ? "<null>" : RowTitle(appearance)) + "」）");
+        Check(languageRow is not null && RowTitle(languageRow) == HubTexts.Get("Language", HubStrings.Language)
+              && !RowTicked(languageRow)
+              && themeRow is not null && RowTitle(themeRow) == HubTexts.Get("Theme", HubStrings.Language)
+              && !RowTicked(themeRow),
+            "外观下是「界面语言」与「主题」两行，各行带自己的子菜单，自己不勾选（实际「"
+            + (languageRow is null ? "<null>" : RowTitle(languageRow)) + " / "
+            + (themeRow is null ? "<null>" : RowTitle(themeRow)) + "」）");
 
-        var themeRows = rows.Skip(1).Take(3).ToArray();
         var expectedThemeLabels = HubTheme.All
-            .Select(theme => HubTexts.Get(SettingsPage.ThemeTextKey(theme), HubStrings.Language)).ToArray();
-        Check(themeRows.Select((item, index) => NamedDescendant<TextBlock>(item, "MenuRowTitle")?.Text)
-                  .SequenceEqual(expectedThemeLabels, StringComparer.Ordinal),
-            "三行主题按 HubTheme.All 的顺序平铺在一级，文案来自 HubTexts（期望 "
-            + string.Join("/", expectedThemeLabels) + "，实际 "
-            + string.Join("/", themeRows.Select(item => NamedDescendant<TextBlock>(item, "MenuRowTitle")?.Text)) + "）");
-        Check(themeRows.Select((item, index) => NamedDescendant<TextBlock>(item, "MenuRowHint")?.Text)
-                  .SequenceEqual(HubTheme.All.Select(theme => HubTexts.Get(SettingsPage.ThemeHintKey(theme), HubStrings.Language)),
-                      StringComparer.Ordinal),
-            "每行主题都说出它实际决定什么，而不是只报名字");
+            .Select(value => HubTexts.Get(SettingsPage.ThemeTextKey(value), HubStrings.Language)).ToArray();
+        Check(themeRows.Select(RowTitle).SequenceEqual(expectedThemeLabels, StringComparer.Ordinal),
+            "主题子菜单三行按 HubTheme.All 的顺序排，文案来自 HubTexts（期望 "
+            + string.Join("/", expectedThemeLabels) + "，实际 " + string.Join("/", themeRows.Select(RowTitle)) + "）");
         Check(themeRows.Count(item => item.IsChecked) == 1
               && themeRows.Single(item => item.IsChecked).Tag as string == ThemeService.Current
-              && themeRows.Select((_, index) => RowTicked(index + 1)).SequenceEqual(themeRows.Select(item => item.IsChecked)),
-            "恰好一行主题被勾选且就是当前主题，画出来的勾号与 IsChecked 说的是同一件事（当前 "
+              && themeRows.Select(RowTicked).SequenceEqual(themeRows.Select(item => item.IsChecked)),
+            "主题子菜单里恰好一行被勾选且就是当前主题，画出来的勾号与 IsChecked 说的是同一件事（当前 "
             + ThemeService.Current + "）");
 
-        var languageRows = rows.Skip(4).Take(2).ToArray();
-        Check(languageRows.Select(item => NamedDescendant<TextBlock>(item, "MenuRowTitle")?.Text)
+        Check(languageRows.Select(RowTitle)
                   .SequenceEqual(SettingsPage.LanguageChoices.Select(choice => choice.Display), StringComparer.Ordinal),
-            "两行语言用各自语言的写法标出，不随界面语言翻译（否则读不懂当前界面的人正好看不见它）");
+            "语言子菜单两行用各自语言的写法标出，不随界面语言翻译（否则读不懂当前界面的人正好看不见它）");
         Check(languageRows.Count(item => item.IsChecked) == 1
-              && languageRows.Single(item => item.IsChecked).Tag as string == HubStrings.Language,
-            "恰好一行语言被勾选且就是当前语言（当前 " + HubStrings.Language + "）");
+              && languageRows.Single(item => item.IsChecked).Tag as string == HubStrings.Language
+              && languageRows.Select(RowTicked).SequenceEqual(languageRows.Select(item => item.IsChecked)),
+            "语言子菜单里恰好一行被勾选且就是当前语言（当前 " + HubStrings.Language + "）");
         Check(SettingsPage.LanguageChoices.Select(choice => choice.Tag).SequenceEqual(
                   shell.SettingsPageForCheck?.DeclaredLanguages ?? []),
             "底部菜单的语言行与设置页下拉声明的是同一批语言（两处各存一份就是漂移的开始）");
@@ -12494,14 +12525,19 @@ public partial class ShellCheckWindow : Window
         Check(ThemeService.Current == menuTarget,
             "点未勾选的主题行真的切过去（当前 " + ThemeService.Current + "）");
         // The menu is rebuilt on every open, so the tick the reader sees next is read from the state rather
-        // than from a group anyone has to re-sync — which is the machinery this shape deleted.
+        // than from a group anyone has to re-sync — which is the machinery this shape deleted. Reopening is
+        // also where a leaf click gets pressed on: `menu.Hide()` now has a submenu popup to take down with it,
+        // and a flyout left standing would make every toggle below close the menu instead of opening it.
         shell.ClickBottomMenuForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        var reopened = shell.BottomMenuForCheck!.Items.OfType<MenuItem>().Skip(1).Take(3).ToArray();
+        Check(shell.BottomMenuForCheck is { IsOpen: true },
+            "点主题叶子之后整块面板收干净：再点一次是重开菜单，不是把它关掉");
+        var reopened = BottomMenuSubmenuRows(shell, MainWindow.MenuRowTag.Theme);
+        var movedThemeRow = reopened.FirstOrDefault(item => item.Tag as string == menuTarget);
         Check(reopened.Count(item => item.IsChecked) == 1
-              && reopened.Single(item => item.IsChecked).Tag as string == menuTarget
-              && NamedDescendant<Avalonia.Controls.Shapes.Path>(reopened[menuTarget == HubTheme.Light ? 1 : 2], "MenuRowTick")?.IsVisible == true,
+              && movedThemeRow is { IsChecked: true }
+              && RowTicked(movedThemeRow),
             "重开菜单，勾落在新主题那一行上，画出来的勾也是那一行（当前 " + menuTarget + "）");
         reopened.Single(item => item.Tag as string == HubTheme.Dark)
             .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
@@ -12513,7 +12549,7 @@ public partial class ShellCheckWindow : Window
         shell.ClickBottomMenuForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+        BottomMenuSubmenuRows(shell, MainWindow.MenuRowTag.Language)
             .Single(item => item.Tag as string == HubTexts.EnglishLanguage)
             .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         shell.UpdateLayout();
@@ -12524,10 +12560,10 @@ public partial class ShellCheckWindow : Window
         shell.ClickBottomMenuForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(NamedDescendant<Avalonia.Controls.Shapes.Path>(shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
-                  .Single(item => item.Tag as string == HubTexts.EnglishLanguage), "MenuRowTick")?.IsVisible == true,
+        Check(RowTicked(BottomMenuSubmenuRows(shell, MainWindow.MenuRowTag.Language)
+                  .Single(item => item.Tag as string == HubTexts.EnglishLanguage)),
             "重开菜单，勾落在英文那一行了：语言行的勾和主题行一样跟着当前状态重建");
-        shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+        BottomMenuSubmenuRows(shell, MainWindow.MenuRowTag.Language)
             .Single(item => item.Tag as string == HubTexts.ChineseLanguage)
             .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         shell.UpdateLayout();
@@ -13128,7 +13164,7 @@ public partial class ShellCheckWindow : Window
         shell.ClickBottomMenuForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+        BottomMenuSubmenuRows(shell, MainWindow.MenuRowTag.Language)
             .Single(item => item.Tag as string == HubTexts.EnglishLanguage)
             .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         shell.UpdateLayout();
@@ -13142,7 +13178,7 @@ public partial class ShellCheckWindow : Window
         shell.ClickBottomMenuForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+        BottomMenuSubmenuRows(shell, MainWindow.MenuRowTag.Language)
             .Single(item => item.Tag as string == HubTexts.ChineseLanguage)
             .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         shell.UpdateLayout();
@@ -14214,6 +14250,16 @@ public partial class ShellCheckWindow : Window
     // ---------------------------------------------------------------------
     /// <summary>Preferences path inside a scratch root — the settings file one self-check shell owns.</summary>
     private static string PreferencesPathFor(string dataRoot) => System.IO.Path.Combine(dataRoot, "hub-settings.json");
+
+    /// <summary>
+    /// The rows under one of the bottom menu's questions, read off whatever flyout is attached right now —
+    /// <c>--verify-shell</c> reopens that menu several times, and each round has to find the same rows by what
+    /// they answer rather than by where they sit. Empty when the menu is closed or the tag is unknown.
+    /// </summary>
+    private static MenuItem[] BottomMenuSubmenuRows(MainWindow shell, string tag)
+        => shell.BottomMenuForCheck?.Items.OfType<MenuItem>()
+            .SelectMany(row => row.Items.OfType<MenuItem>())
+            .FirstOrDefault(row => row.Tag as string == tag)?.Items.OfType<MenuItem>().ToArray() ?? [];
 
     /// <summary>
     /// A glyph's bounding box must be square and centred on the 24 grid, because <c>Stretch="Uniform"</c> parks

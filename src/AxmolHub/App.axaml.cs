@@ -337,10 +337,9 @@ public partial class App : Application
         {
             // --shot-bottom-menu <png>: the sidebar's bottom entry is a popup menu, and a popup is
             // its own top-level — --smoke-pages (which photographs the shell window) can never see
-            // it, so it gets the same dedicated switch as the picker/auth dialogs above. It used to
-            // carry a second mode keyed on "sub" in the file name, which opened the Appearance
-            // submenu and photographed that flyout instead; the theme values moved up to first-level
-            // rows, so there is no second popup left to reach and the branch went with it.
+            // it, so it gets the same dedicated switch as the picker/auth dialogs above. A file name
+            // containing "sub" opens the 外观 submenu and photographs that flyout instead, because a
+            // submenu is yet another popup and never appears inside its parent's frame.
             window.Opened += (_, _) => Dispatcher.UIThread.Post(() =>
             {
                 try
@@ -352,7 +351,20 @@ public partial class App : Application
 
                     // The flyout presents in its own PopupRoot, so the capture must target that
                     // top-level, not the shell window: walk up from a menu item to it.
-                    var anchor = window.BottomMenuForCheck?.Items.OfType<MenuItem>().FirstOrDefault();
+                    var menu = window.BottomMenuForCheck;
+                    var anchor = menu?.Items.OfType<MenuItem>().FirstOrDefault();
+                    if (menuShot.Contains("sub", StringComparison.OrdinalIgnoreCase)
+                        && menu?.Items.OfType<MenuItem>()
+                            .FirstOrDefault(item => item.Tag as string == MainWindow.MenuRowTag.Appearance)
+                            is { } appearance)
+                    {
+                        // The submenu is a popup of its own, so the anchor has to move into it: capturing
+                        // the parent's PopupRoot after this would photograph the two rows behind it.
+                        appearance.IsSubMenuOpen = true;
+                        Dispatcher.UIThread.RunJobs();
+                        anchor = appearance.Items.OfType<MenuItem>().FirstOrDefault();
+                    }
+
                     var popupRoot = anchor?.GetSelfAndVisualAncestors().OfType<TopLevel>().FirstOrDefault();
                     if (popupRoot is null)
                     {

@@ -1546,14 +1546,15 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The bottom entry's popup: settings, the three theme values and the two interface languages, each as a row
-    /// of its own. Built fresh on every open, so the labels follow the UI language and exactly one row per
-    /// choice is ticked without any sync machinery.
+    /// The bottom entry's popup: "Settings", and the "外观" row — the shell's own two switches. 外观 opens the two
+    /// questions it answers, "界面语言" and "主题", and each of those opens its own answers. Every row is one
+    /// line: a name, and a tick when it is the answer in force. Built fresh on every open, so the labels follow
+    /// the UI language and exactly one tick per question is drawn without any sync machinery.
     ///
-    /// The theme values are rows rather than a submenu because that is what they are: the three answers to one
-    /// question, and the question is asked often enough that a second hover to reach the common one was the
-    /// cost this menu used to charge. (Avalonia 12 has no <c>MenuFlyoutItem</c> family: the flyout hosts
-    /// <see cref="MenuItem"/>s directly, which is also why a row can carry a composed header.)
+    /// Two levels rather than six flat rows: this popup is a switchboard, and which language and which theme are
+    /// in force is not what a reader opens it for — it is what they come back to change, so the answers sit one
+    /// step in and the questions stay visible. (Avalonia 12 has no <c>MenuFlyoutItem</c> family: the flyout hosts
+    /// <see cref="MenuItem"/>s directly, and a MenuItem with children <em>is</em> the submenu.)
     ///
     /// Ticks are drawn inside the row rather than by a toggle column — the column parks its marker left of the
     /// row's own icon and the two read as one glyph doing a job twice. Same reasoning, and the same shape, as
@@ -1566,8 +1567,7 @@ public partial class MainWindow : Window
 
         var settings = new MenuItem
         {
-            Header = BuildMenuRow("Hub.Icon.Settings", HubStrings.Get("Settings"),
-                HubStrings.Get("SettingsRowHint"), current: false),
+            Header = BuildMenuRow("Hub.Icon.Settings", HubStrings.Get("Settings"), current: false),
         };
         settings.Click += (_, _) =>
         {
@@ -1576,20 +1576,55 @@ public partial class MainWindow : Window
         };
         menu.Items.Add(settings);
 
-        foreach (var theme in HubTheme.All)
+        var appearance = new MenuItem
         {
-            var current = theme == ThemeService.Current;
+            Header = BuildMenuRow("Hub.Icon.Contrast", HubStrings.Get("Appearance"), current: false),
+            Tag = MenuRowTag.Appearance,
+        };
+
+        var language = new MenuItem
+        {
+            Header = BuildMenuRow("Hub.Icon.Globe", HubStrings.Get("Language"), current: false),
+            Tag = MenuRowTag.Language,
+        };
+        foreach (var (tag, display) in SettingsPage.LanguageChoices)
+        {
+            var current = tag == HubStrings.Language;
             var item = new MenuItem
             {
-                Header = BuildMenuRow(SettingsPage.ThemeIconKey(theme),
-                    HubStrings.Get(SettingsPage.ThemeTextKey(theme)),
-                    HubStrings.Get(SettingsPage.ThemeHintKey(theme)), current),
+                // No glyph: the name is written in its own script, which is the whole sentence, and the tick
+                // says which one is in force.
+                Header = BuildMenuRow(null, display, current),
                 IsChecked = current,
-                Tag = theme,
+                Tag = tag,
             };
             item.Click += (_, _) =>
             {
-                var error = UseTheme(theme);
+                // Hide first: UseLanguage repaints the trigger block this popup is anchored to, and a flyout
+                // whose anchor was rewritten underneath it is a flyout that has to be dismissed by hand.
+                menu.Hide();
+                UseLanguage(tag);
+            };
+            language.Items.Add(item);
+        }
+
+        var theme = new MenuItem
+        {
+            Header = BuildMenuRow("Hub.Icon.Sun", HubStrings.Get("Theme"), current: false),
+            Tag = MenuRowTag.Theme,
+        };
+        foreach (var value in HubTheme.All)
+        {
+            var current = value == ThemeService.Current;
+            var item = new MenuItem
+            {
+                Header = BuildMenuRow(null, HubStrings.Get(SettingsPage.ThemeTextKey(value)), current),
+                IsChecked = current,
+                Tag = value,
+            };
+            item.Click += (_, _) =>
+            {
+                var error = UseTheme(value);
                 if (error is null)
                 {
                     menu.Hide();
@@ -1601,80 +1636,67 @@ public partial class MainWindow : Window
                 // on the theme that is actually current, because this whole menu is rebuilt on the next open.
                 SetStatus(error);
             };
-            menu.Items.Add(item);
+            theme.Items.Add(item);
         }
 
-        foreach (var (tag, display) in SettingsPage.LanguageChoices)
-        {
-            var current = tag == HubStrings.Language;
-            var item = new MenuItem
-            {
-                // No hint line: the name is written in its own script, which is the whole sentence, and the
-                // tick says which one is in force.
-                Header = BuildMenuRow("Hub.Icon.Globe", display, null, current),
-                IsChecked = current,
-                Tag = tag,
-            };
-            item.Click += (_, _) =>
-            {
-                // Hide first: UseLanguage repaints the trigger block this popup is anchored to, and a flyout
-                // whose anchor was rewritten underneath it is a flyout that has to be dismissed by hand.
-                menu.Hide();
-                UseLanguage(tag);
-            };
-            menu.Items.Add(item);
-        }
-
+        appearance.Items.Add(language);
+        appearance.Items.Add(theme);
+        menu.Items.Add(appearance);
         return menu;
     }
 
-    /// <summary>One row of the bottom menu: icon, name, what it decides, and a tick when this is the answer in
-    /// force. The width is fixed across rows so the ticks land in a column rather than wherever each hint
-    /// happens to end.</summary>
-    private static Control BuildMenuRow(string iconKey, string title, string? hint, bool current)
+    /// <summary>The <c>Tag</c>s the bottom menu's own rows carry, so the self-check finds a question by what it
+    /// is rather than by where it happens to sit. Kept distinct from the leaf tags — a theme value and a
+    /// language tag are data, and a parent row answering to one of them would be found twice.</summary>
+    internal static class MenuRowTag
     {
-        var icon = new Avalonia.Controls.Shapes.Path
-        {
-            Width = 15,
-            Height = 15,
-            Stretch = Stretch.Uniform,
-            Fill = Brushes.Transparent,
-            StrokeThickness = 1.7,
-            StrokeLineCap = PenLineCap.Round,
-            StrokeJoin = PenLineJoin.Round,
-            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-        };
-        icon.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension(iconKey));
-        icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        internal const string Appearance = "menu:appearance";
+        internal const string Language = "menu:language";
+        internal const string Theme = "menu:theme";
+    }
 
-        var text = new StackPanel
+    /// <summary>One row of the bottom menu: a glyph, a name, and a tick when this is the answer in force. A row
+    /// inside a submenu carries no glyph — the parent names the question, the rows under it are its answers — and
+    /// its title keeps the whole glyph slot as inset, so a child never starts left of its parent. The width is
+    /// fixed across rows so the ticks land in a column rather than wherever each name happens to end.</summary>
+    private static Control BuildMenuRow(string? iconKey, string title, bool current)
+    {
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), MinWidth = 200 };
+
+        var hasGlyph = iconKey is { Length: > 0 };
+        if (hasGlyph)
         {
-            Spacing = 2,
-            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 0, 0),
-        };
+            var icon = new Avalonia.Controls.Shapes.Path
+            {
+                Width = 15,
+                Height = 15,
+                Stretch = Stretch.Uniform,
+                Fill = Brushes.Transparent,
+                StrokeThickness = 1.7,
+                StrokeLineCap = PenLineCap.Round,
+                StrokeJoin = PenLineJoin.Round,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            };
+            icon.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension(iconKey!));
+            icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+            Grid.SetColumn(icon, 0);
+            header.Children.Add(icon);
+        }
+
         // Named rather than positional: a row's parts are read back by the self-check, and "the first TextBlock
-        // in the panel" is a description of where a label sits, not of what it is — the same reason the
-        // provider groups carry role tags.
-        text.Children.Add(new TextBlock
+        // in the grid" is a description of where a label sits, not of what it is — the same reason the provider
+        // groups carry role tags.
+        var text = new TextBlock
         {
             Name = "MenuRowTitle",
             Text = title,
             FontSize = 13,
             FontWeight = FontWeight.SemiBold,
-        });
-        if (hint is { Length: > 0 })
-        {
-            var hintBlock = new TextBlock
-            {
-                Name = "MenuRowHint",
-                Text = hint,
-                FontSize = 12,
-                TextWrapping = TextWrapping.Wrap,
-            };
-            hintBlock.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextTertiary"));
-            text.Children.Add(hintBlock);
-        }
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            Margin = new Thickness(hasGlyph ? 12 : 27, 0, 0, 0),
+        };
+        Grid.SetColumn(text, 1);
+        header.Children.Add(text);
 
         var tick = new Avalonia.Controls.Shapes.Path
         {
@@ -1692,15 +1714,33 @@ public partial class MainWindow : Window
         };
         tick.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Tick"));
         tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), MinWidth = 300 };
-        Grid.SetColumn(icon, 0);
-        Grid.SetColumn(text, 1);
         Grid.SetColumn(tick, 2);
-        header.Children.Add(icon);
-        header.Children.Add(text);
         header.Children.Add(tick);
         return header;
+    }
+
+    /// <summary>
+    /// What a row draws, for the self-check: the name it shows, the hint line under it — always empty, and the
+    /// lookup is kept as a sentinel so a sentence cannot come back under a row without the suite saying so — and
+    /// whether the tick is painted.
+    ///
+    /// **Read off the header control this window built, not off the item's own visual tree**: a row inside a
+    /// submenu nobody has opened has no template realized, so a visual-tree walk that starts at the item finds
+    /// nothing, and an unopened row would read as a broken one.
+    /// </summary>
+    internal static (string Title, string Hint, bool Ticked) MenuRowShapeForCheck(MenuItem item)
+    {
+        if (item.Header is not Control header)
+        {
+            return ("<null>", "", false);
+        }
+
+        return (Named<TextBlock>("MenuRowTitle")?.Text ?? "<null>",
+            Named<TextBlock>("MenuRowHint")?.Text ?? "",
+            Named<Avalonia.Controls.Shapes.Path>("MenuRowTick")?.IsVisible == true);
+
+        T? Named<T>(string name) where T : Control
+            => header.GetVisualDescendants().OfType<T>().FirstOrDefault(control => control.Name == name);
     }
 
     /// <summary>Recomputes all **imperatively** written copy after a language change (DynamicResource
