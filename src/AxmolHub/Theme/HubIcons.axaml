@@ -178,10 +178,9 @@
   <StreamGeometry x:Key="Hub.Icon.Folder">M3.6 7.6A2 2 0 0 1 5.6 5.6H9.4L11.4 8H18.4A2 2 0 0 1 20.4 10V16.4A2 2 0 0 1 18.4 18.4H5.6A2 2 0 0 1 3.6 16.4Z</StreamGeometry>
 
   <!-- ───────── The bottom menu's appearance glyphs ─────────
-       Contrast for the 外观 row, globe for the 语言 row, sun for the 主题 row. The theme values' own trio
-       (sun / moon / monitor) stays the shell's theme vocabulary — a theme value still has a glyph of its own,
-       see SettingsPage.ThemeIconKey — although the popup no longer draws one per value: the answers under 主题
-       are names and a tick.
+       Contrast for the 外观 row, globe for the 语言 row, sun for the 主题 row. Nothing here is drawn per theme
+       value any more: the answers under 主题 are names and a tick, so the crescent and the screen that used to
+       sit beside 浅色 and 跟随系统 went with the per-value rows that carried them.
        Every glyph here is built so its bounding box is a 16x16 square centred on the 24 grid, because
        Stretch="Uniform" parks any leftover axis as slack on one side (the failure Hub.Icon.Send's comment
        documents, and what FitsItsSquareSlot measures). The trick is that an arc whose endpoints are
@@ -193,21 +192,11 @@
        line joins the circle's own top and bottom points and never leaves the box. -->
   <StreamGeometry x:Key="Hub.Icon.Contrast">M4 12A8 8 0 0 1 20 12A8 8 0 0 1 4 12ZM12 4V20</StreamGeometry>
 
-  <!-- A sun: a disc with eight rays that stop short of it. The disc and the four axis rays fix the box; the
-       diagonal rays stay inside it. -->
+  <!-- A sun, the 主题 row's glyph: a disc with eight rays that stop short of it. The disc and the four axis rays
+       fix the box; the diagonal rays stay inside it. -->
   <StreamGeometry x:Key="Hub.Icon.Sun">M8.8 12A3.2 3.2 0 0 1 15.2 12A3.2 3.2 0 0 1 8.8 12ZM12 4V6.8M12 17.2V20M4 12H6.8M17.2 12H20M6.3 6.3L8.3 8.3M15.7 15.7L17.7 17.7M17.7 6.3L15.7 8.3M6.3 17.7L8.3 15.7</StreamGeometry>
 
-  <!-- A crescent: the outer edge is 270 degrees of the r=8 circle, so it reaches the circle's own top, left
-       and bottom and carries the box with it; the cut arc runs between two of those same points and bulges
-       inward, never leaving the box. Opening to the upper right, which is the way this glyph is drawn
-       everywhere it is used small. -->
-  <StreamGeometry x:Key="Hub.Icon.Moon">M20 12A8 8 0 1 1 12 4A8 8 0 0 0 20 12Z</StreamGeometry>
-
-  <!-- A screen on a stand: "whatever the system is showing". No arc at all — the panel's box and the base's
-       two ends are what set the square. -->
-  <StreamGeometry x:Key="Hub.Icon.Monitor">M4 4H20V14.5H4ZM12 14.5V20M8 20H16</StreamGeometry>
-
-  <!-- A globe for the language rows: outline circle, one meridian, one equator. The circle's two halves and
+  <!-- A globe, the 语言 row's glyph: outline circle, one meridian, one equator. The circle's two halves and
        the meridian each span a diameter, so both centres are forced; the equator joins the circle's own left
        and right points. -->
   <StreamGeometry x:Key="Hub.Icon.Globe">M4 12A8 8 0 0 1 20 12A8 8 0 0 1 4 12ZM12 4A3.2 8 0 0 0 12 20M4 12H20</StreamGeometry>

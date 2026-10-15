@@ -12472,11 +12472,11 @@ public partial class ShellCheckWindow : Window
             "每一行都只有一行字：名字说完它是什么，底下不再挂解释句（" + everyRow.Length + " 行）");
 
         // The glyphs the rows carry are measured, not eyeballed: a non-square box sits off-centre in the
-        // square slot the row gives it.
+        // square slot the row gives it. A key that stops resolving fails here too, which is what keeps a glyph
+        // from being deleted while a row still draws it.
         Check(FitsItsSquareSlot("Hub.Icon.Contrast") && FitsItsSquareSlot("Hub.Icon.Globe")
-              && FitsItsSquareSlot("Hub.Icon.Sun") && FitsItsSquareSlot("Hub.Icon.Moon")
-              && FitsItsSquareSlot("Hub.Icon.Monitor"),
-            "外观 / 语言 / 主题三行用到的新字形（加主题词表自己的三枚）都是正方形且居中于 24 格，Uniform 拉伸不会把余量甩到一边");
+              && FitsItsSquareSlot("Hub.Icon.Sun"),
+            "外观 / 主题 / 语言三行各自的字形都是正方形且居中于 24 格，Uniform 拉伸不会把余量甩到一边");
 
         Check(RowTitle(rows[0]) == HubTexts.Get("Settings", HubStrings.Language)
               && !RowTicked(rows[0]) && rows[0].Items.Count == 0,

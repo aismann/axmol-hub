@@ -824,14 +824,6 @@ public partial class SettingsPage : UserControl
         _ => "ThemeSystem",
     };
 
-    /// <summary>The glyph for a theme value. Also total over the three, for the same reason.</summary>
-    internal static string ThemeIconKey(string theme) => HubTheme.Normalize(theme) switch
-    {
-        HubTheme.Light => "Hub.Icon.Sun",
-        HubTheme.Dark => "Hub.Icon.Moon",
-        _ => "Hub.Icon.Monitor",
-    };
-
     /// <summary>
     /// The languages the interface speaks and the name each one is called by its own speakers. The picker in
     /// XAML declares the same pairs and an assertion compares the two — the bottom menu cannot read the
