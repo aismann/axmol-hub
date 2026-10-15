@@ -121,6 +121,20 @@ public sealed class HubPreferences
     /// off in Settings takes effect on the next call instead of the next conversation.</para>
     /// </summary>
     public bool AllowOutboundWebFetch { get; set; } = true;
+
+    /// <summary>
+    /// Whether a model's own thinking is put on screen. <b>On by default</b>, and deliberately in the same
+    /// direction as <see cref="AllowOutboundWebFetch"/>: a reasoning model's chain of thought ships as part of
+    /// the answer, every client people measure against shows it, and a switch that arrived off would mean most
+    /// people never learn they have thinking at all. It is a switch rather than nothing because the text is long,
+    /// it is not what anybody asked to read, and on a metered gateway it is a screenful of tokens standing
+    /// between a person and the result they wanted.
+    ///
+    /// <para>Display only, read per turn as the transcript paints. The thinking is still stored, still priced
+    /// against the context budget and still replayed to the gateway whatever this says — a tool session that
+    /// withholds it is rejected outright. Turning the switch off hides the words, not the cost.</para>
+    /// </summary>
+    public bool ShowThinking { get; set; } = true;
 }
 
 public sealed class PreferencesStore(string path)

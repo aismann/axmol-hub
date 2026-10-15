@@ -404,6 +404,20 @@ public static class HubTexts
             + "declares serverTools in ai/providers.json, the same switch decides whether its endpoint is offered "
             + "a search of its own; that kind of search runs inside the service, and no approval card can stop one "
             + "mid-reply."),
+        // The one switch on the appearance pane that is not about appearance. It sits there rather than under
+        // permission because it decides what a person reads, never what the assistant may do — and its hint has
+        // to say that turning it off buys no tokens back, since the obvious guess about a hidden chain of
+        // thought is that hiding it also stops the model from thinking.
+        ["ChatDisplay"] = ("对话显示", "Chat display"),
+        ["ShowThinking"] = ("显示模型的思考过程", "Show the model's thinking"),
+        ["ShowThinkingHint"] = (
+            "默认开启。思考的那一段在回答上方实时出现，正文一开始就自动收起，之后点开才再看得到。"
+            + "关掉它只是不上屏：思考仍然会生成、仍然按 token 计费，也仍然要原样回发给服务商——"
+            + "带工具调用的请求少了这一段会被直接拒绝。",
+            "On by default. The thinking appears above the answer as it arrives, then folds away once the "
+            + "answer starts — open it to read it again. Switching this off only stops the drawing: the thinking "
+            + "is still generated, still billed by the token, and still sent back to the provider verbatim, and "
+            + "a request that carries tool calls is rejected without it."),
         ["UpdateReady"] = ("发现新版本 {0}。", "Version {0} is available."),
         // The settings card's phase line: the line above names the version and stays true through every phase,
         // and this one says where the transfer is and which control the user still owes a press. It is a

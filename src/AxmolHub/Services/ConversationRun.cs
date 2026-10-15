@@ -190,9 +190,11 @@ internal sealed class ConversationRun : IDisposable
         get { lock (_gate) return _text.ToString(); }
     }
 
-    /// <summary>What the model thought on the way to <see cref="LiveText"/>, for the same segment. Buffered
-    /// rather than shown: it is not the answer anybody asked for, and it is the part a thinking gateway insists
-    /// on reading back out of the transcript on the next request that carries tools.</summary>
+    /// <summary>What the model thought on the way to <see cref="LiveText"/>, for the same segment. It is drawn
+    /// while it is the only thing arriving and folds once the answer starts, and
+    /// <see cref="ChatWorkspace.ShowThinking"/> decides even that much. What it never stops being is buffered: a
+    /// thinking gateway insists on reading this back out of the transcript on the next request that carries tools,
+    /// and withholds the answer entirely without it — so the switch hides the words, never the record.</summary>
     public string LiveReasoning
     {
         get { lock (_gate) return _reasoning.ToString(); }

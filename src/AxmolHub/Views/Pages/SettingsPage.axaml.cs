@@ -183,6 +183,7 @@ public partial class SettingsPage : UserControl
         AutoDownloadCheck.IsCheckedChanged += (_, _) => OnAutoDownloadChanged();
         SpawnCheck.IsCheckedChanged += (_, _) => OnSpawnChanged();
         WebFetchCheck.IsCheckedChanged += (_, _) => OnWebFetchChanged();
+        ShowThinkingCheck.IsCheckedChanged += (_, _) => OnShowThinkingChanged();
         WireProviders();
         InitializeCategories();
 
@@ -364,6 +365,7 @@ public partial class SettingsPage : UserControl
             AutoDownloadCheck.IsEnabled = UpdateService.Instance.IsInstalled;
             SpawnCheck.IsChecked = _preferences.AllowSpawnedSessions;
             WebFetchCheck.IsChecked = _preferences.AllowOutboundWebFetch;
+            ShowThinkingCheck.IsChecked = _preferences.ShowThinking;
             // Re-render the update card from the last known check: this re-localizes the status line
             // on a language switch (it is written imperatively) and reflects a check the shell already
             // ran at startup (the update dot and this card share UpdateService.Last).
@@ -1089,6 +1091,29 @@ public partial class SettingsPage : UserControl
     /// <summary>The same argument as the spawn hook: a self-check that turns fetching off has to read the
     /// preference the tool consults, not the checkbox that forgot it.</summary>
     internal bool AllowOutboundWebFetchForCheck => _preferences.AllowOutboundWebFetch;
+
+    /// <summary>The one switch on this pane that changes pixels already on screen, so it cannot stop at the file.
+    /// The assistant page is cached and its renderer only lays down turns past the last one it painted — a flip
+    /// that only wrote the setting would sit there looking broken until the person started a new conversation.
+    /// The notice is what makes the turns already in the transcript redraw.</summary>
+    private void OnShowThinkingChanged()
+    {
+        if (!_ready) return;
+        var value = ShowThinkingCheck.IsChecked == true;
+        if (value == _preferences.ShowThinking) return;
+        _preferences.ShowThinking = value;
+        _preferencesStore.Save(_preferences);
+        _chat.NotifyAppSettingsChanged();
+    }
+
+    /// <summary>Read off the preference the transcript consults, not off the checkbox that may have forgotten
+    /// it — the same seam the two switches above hand to the self-checks.</summary>
+    internal bool ShowThinkingForCheck => _preferences.ShowThinking;
+
+    /// <summary>Flips the switch the way a person does rather than by writing the preference. A self-check needs
+    /// the property-changed path exercised end to end, because the wiring between this checkbox and the file is
+    /// exactly the link that can be missing while both ends still look correct on their own.</summary>
+    internal void ToggleShowThinkingForCheck() => ShowThinkingCheck.IsChecked = ShowThinkingCheck.IsChecked != true;
 
     private void OnAutoDownloadChanged()
     {

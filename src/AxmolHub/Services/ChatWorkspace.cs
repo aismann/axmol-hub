@@ -3645,6 +3645,12 @@ public sealed class ChatWorkspace : IDisposable
     public string DefaultApprovalMode
         => ToolApprovalModes.Normalize(PreferencesProvider?.Invoke()?.ToolApprovalMode);
 
+    /// <summary>Whether the transcript puts a model's thinking on screen. No preferences wired means no shell —
+    /// a bare harness — and that reads as the shipped default rather than as off, so a check that never set the
+    /// subject still sees what a person gets out of the box.</summary>
+    public bool ShowThinking
+        => PreferencesProvider?.Invoke() is not { } preferences || preferences.ShowThinking;
+
     /// <summary>Tells the shell that an app-wide setting the assistant reads has moved. The assistant page is
     /// cached and navigation does not reload it, so without this a surface showing the effective permission
     /// mode keeps reporting the previous default until something else happens to repaint it.</summary>
@@ -5283,7 +5289,16 @@ public sealed class ChatWorkspace : IDisposable
                 run.RequestCompaction();
             },
             modelName: request.ModelName,
-            onReasoning: thought => run.AppendReasoning(thought),
+            // The thinking has to ask for a paint as well. It arrives before any prose, and the bubble only
+            // refreshed on text — so a reasoning model could spend a minute thinking and the reader would see
+            // nothing at all, then have the words land in the same frame the block folds away underneath.
+            // <see cref="SchedulePaint"/> folds to one repaint per dispatcher frame whatever the delta rate is,
+            // and it already drops the request for a session nobody is looking at.
+            onReasoning: thought =>
+            {
+                run.AppendReasoning(thought);
+                SchedulePaint(run);
+            },
             // The measurement lands while the reply is still streaming, which is the point: the ring the person
             // is watching has to be reading the model's numbers before they decide whether to keep typing.
             onUsage: report => NoteContextUsage(run.ConversationId, request.ModelName, report),

@@ -1106,6 +1106,17 @@
       <Setter Property="TextWrapping" Value="Wrap" />
       <Setter Property="LineHeight" Value="20" />
     </Style>
+    <!-- What the model thought before it answered. Deliberately not Markdown: a chain of thought is a draft, not
+         a document the model was asking to have formatted, and rendering it as one would spend a viewer and a
+         code editor per turn on text that arrives with no structure to honour. It reads at the body's own pitch
+         so the two do not fight over line height when they sit one above the other, and one rung quieter so the
+         answer stays the thing being looked at. -->
+    <Style Selector="TextBlock.turn-reasoning">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="LineHeight" Value="20" />
+    </Style>
     <!-- The empty state's suggestion chips: the greeting's promise stated as things the assistant can actually
          do. Quiet by default — secondary text on a hairline pill — so the centred column still reads as a greeting
          first and a starting point second, and wraps inside a bounded row instead of widening the column. -->

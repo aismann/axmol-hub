@@ -96,6 +96,12 @@ public partial class ChatPanel : UserControl
         public required ConversationRun Run { get; init; }
         public required Control Row { get; init; }
         public required TextBlock Preview { get; init; }
+
+        /// <summary>The thinking, and the box that folds it. Both are painted while reasoning is the only thing
+        /// arriving and hidden the moment the answer starts — see <see cref="ShowedText"/>, which is the one
+        /// signal the two of them and the status line all turn on.</summary>
+        public required TextBlock Thought { get; init; }
+        public required Control ThoughtHost { get; init; }
         public required TextBlock Status { get; init; }
         public required TextBlock Elapsed { get; init; }
         public required ActivityGlyph Glyph { get; init; }
@@ -126,6 +132,11 @@ public partial class ChatPanel : UserControl
     /// undo copy — rewrite what a turn that is already on screen looks like without changing how many turns there
     /// are, which is precisely what counting cannot see.</summary>
     private string _renderedApprovalStamp = "";
+
+    /// <summary>The last answer to "is the thinking drawn", held beside the stamp above because it invalidates the
+    /// flow for the same reason. Seeded to the shipped default so opening a session never tears down a transcript
+    /// that has not been painted yet.</summary>
+    private bool _renderedShowThinking = true;
 
     /// <summary>Which turn was sitting in the last painted slot. Counting can see a tail append and can see the
     /// history shrink, but it cannot see a turn <i>inserted</i> before the end — and a tool result is filed beside
@@ -1984,6 +1995,12 @@ public partial class ChatPanel : UserControl
         var approvalChanged = approvalStamp != _renderedApprovalStamp;
         _renderedApprovalStamp = approvalStamp;
 
+        // Whether the thinking is drawn is a fact about how a turn looks, not about how many turns there are, so
+        // an append cannot carry it: every turn already on screen would keep wearing the old answer. The same
+        // shape as the approval stamp just above, and for the same reason.
+        var showThinkingChanged = _renderedShowThinking != _chat.ShowThinking;
+        _renderedShowThinking = _chat.ShowThinking;
+
         if (visible.Count == 0)
         {
             MessageFlow.Children.Clear();
@@ -1999,13 +2016,13 @@ public partial class ChatPanel : UserControl
         }
 
         // A teardown is for the cases an append cannot express: another session's turns, a history that shrank
-        // under an edit or a regenerate, a decision that rewrote what an already-painted turn looks like, and a
-        // turn that has moved into a slot it did not occupy when the flow was laid down. A growing activity run
-        // is none of those: its new turns extend the group that is already the last row, which is what keeps a
-        // head the person had opened from being swapped out for a fresh collapsed one.
+        // under an edit or a regenerate, a decision that rewrote what an already-painted turn looks like, a display
+        // switch that did the same, and a turn that has moved into a slot it did not occupy when the flow was laid
+        // down. A growing activity run is none of those: its new turns extend the group that is already the last
+        // row, which is what keeps a head the person had opened from being swapped out for a fresh collapsed one.
         var aDifferentSession = _renderedConversationId != conversation!.Id;
         var historyShrank = visible.Count < _renderedCount;
-        if (aDifferentSession || historyShrank || approvalChanged
+        if (aDifferentSession || historyShrank || approvalChanged || showThinkingChanged
             || (_renderedCount > 0 && SlotKey(visible[_renderedCount - 1].Turn) != _renderedTailKey))
         {
             MessageFlow.Children.Clear();
@@ -2123,8 +2140,12 @@ public partial class ChatPanel : UserControl
         // request is assembled, and this row's copy action resolves it the same way — a decision about painting,
         // not about what was said.
         var isPlanTurn = turn.PlanApprovalState is { Length: > 0 };
+        // A turn that only thought has no prose to paint, and an empty block is not an empty line: it carries the
+        // body's own line height, so it used to leave a gap under the 「已思考 Ns」 head with nothing in it. The
+        // thinking itself is what belongs there, and it is added below once the answer has been rendered.
         if (turn.Role == ChatRoles.Tool) body.Children.Add(ToolResultLine(toolName, turn));
-        else if (!isPlanTurn) body.Children.Add(new TextBlock { Classes = { "turn-text" }, Text = turn.Text });
+        else if (!isPlanTurn && turn.Text.Length > 0)
+            body.Children.Add(new TextBlock { Classes = { "turn-text" }, Text = turn.Text });
 
         // What the person attached is shown from the file Hub kept, not from anything this view remembers: the
         // transcript is the only copy of "this message had a picture in it", and a row rebuilt after a restart
@@ -2166,6 +2187,14 @@ public partial class ChatPanel : UserControl
         // assistant's own words carry Markdown worth rendering — and a plan's words do not render here at all.
         if (!fromUser && markdown && !isPlanTurn && turn.Role != ChatRoles.Tool && turn.Text.Length > 0)
             MarkdownMessageRenderer.RenderInto(body, turn.Text);
+
+        // The thinking sits above the answer, which is the order it happened in and the order every client of
+        // this shape puts it — but it has to be <i>inserted</i>, not added, because the pass just above clears
+        // the panel it renders into. Laid down before that call it would not sit under the answer, it would be
+        // gone with everything else the panel held.
+        if (!fromUser && !isPlanTurn && turn.Role != ChatRoles.Tool
+            && BuildReasoningBlock(conversationId, turn) is { } reasoning)
+            body.Children.Insert(0, reasoning);
 
         // Added after the Markdown pass rather than before it, because <see cref="MarkdownMessageRenderer.RenderInto"/>
         // clears the panel it renders into: a line laid down first is not underneath the answer, it is gone. This is
@@ -2445,6 +2474,62 @@ public partial class ChatPanel : UserControl
         return chip;
     }
 
+    /// <summary>
+    /// What the model thought before this turn, behind one quiet line.
+    ///
+    /// <para>The thinking has been on the record all along — stored, priced against the context budget, and
+    /// replayed to the gateway on every later request that carries tools — and it had exactly one reader: the
+    /// fold decision in <see cref="IsActivityTurn"/>. This is the surface for the other question, what the model
+    /// actually reasoned, and it is what the two unreferenced strings in the copy table were written for.</para>
+    ///
+    /// <para>It folds by default and remembers the fold per turn, because a chain of thought is long and the
+    /// answer is what was asked for: left open on every turn it would push the reply off the screen the reader
+    /// came for. The bound is not decoration either — nothing in the pipeline caps reasoning, and an activity
+    /// group re-derives all of its rows on every arriving turn, so an unbounded block here would be re-measured
+    /// once per tool call for the length of a run.</para>
+    /// </summary>
+    private Control? BuildReasoningBlock(string conversationId, ChatTurn turn)
+    {
+        if (!_chat.ShowThinking || turn.Reasoning is not { Length: > 0 } thought) return null;
+
+        var toggle = new ToggleButton
+        {
+            Classes = { "activity-row-toggle" },
+            Content = new TextBlock
+            {
+                Classes = { "activity-detail-label" },
+                Text = HubStrings.Get("ActivityRowExpandThought"),
+            },
+        };
+        var detail = new Border
+        {
+            Classes = { "activity-detail" },
+            IsVisible = false,
+            Child = BoundedDetailScroll(
+                new TextBlock { Classes = { "turn-reasoning" }, Text = thought }, 200),
+        };
+        // The turn's slot plus a word no other row can claim: the group rebuilds its rows from the transcript
+        // while a run is going, and a block somebody opened must not collapse under the next tool call.
+        var foldKey = SlotKey(turn) + ":thought";
+
+        // IsChecked, not Click — the same reason the row shell and the group head are wired this way: a raised
+        // Click does not flip a ToggleButton, so wiring it would leave the fold both half-broken and unreadable
+        // to a check.
+        toggle.IsCheckedChanged += (_, _) =>
+        {
+            var expanded = toggle.IsChecked == true;
+            detail.IsVisible = expanded;
+            RememberFold(_expandedRows, conversationId, foldKey, expanded);
+        };
+        toggle.IsChecked = IsFoldOpen(_expandedRows, conversationId, foldKey);
+        detail.IsVisible = toggle.IsChecked == true;
+
+        var shell = new StackPanel { Spacing = 2 };
+        shell.Children.Add(toggle);
+        shell.Children.Add(detail);
+        return shell;
+    }
+
     /// <summary>One folded tool exchange wrapped in its own expander. The collapsed line names the action; clicking
     /// it reveals the whole exchange — the arguments the call was made with and the payload that came back — in a
     /// detail panel that grows downward in place. That panel is the operation's only readable surface: a hover is
@@ -2510,9 +2595,14 @@ public partial class ChatPanel : UserControl
     /// stderr or a peer session's transcript must not stretch the transcript, and clipping it silently would strand
     /// the part that matters — so the box holds still and its content scrolls inside it. Horizontal scrolling stays
     /// off, because the column is where the wrap happens.</summary>
-    private static ScrollViewer BoundedDetailScroll(string text, double maxHeight) => new()
+    private static ScrollViewer BoundedDetailScroll(string text, double maxHeight)
+        => BoundedDetailScroll(new TextBlock { Classes = { "activity-detail-body" }, Text = text }, maxHeight);
+
+    /// <summary>The same window for content that is not a tool payload — a model's thinking, which wants the
+    /// body's own face rather than the monospace the exchange is drawn in.</summary>
+    private static ScrollViewer BoundedDetailScroll(Control content, double maxHeight) => new()
     {
-        Content = new TextBlock { Classes = { "activity-detail-body" }, Text = text },
+        Content = content,
         MaxHeight = maxHeight,
         ClipToBounds = true,
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -3485,10 +3575,20 @@ public partial class ChatPanel : UserControl
         }
 
         CloseLive();
+        // The thinking first, so it reads above the answer the way it arrived. It starts hidden because most
+        // replies have none, and an empty detail box would be chrome describing nothing.
+        var thought = new TextBlock { Classes = { "turn-reasoning" } };
+        var thoughtHost = new Border
+        {
+            Classes = { "activity-detail" },
+            IsVisible = false,
+            Child = BoundedDetailScroll(thought, 200),
+        };
         // The same class the persisted turn wears: an answer must not change size, ink or line pitch in the
         // moment it is written to the transcript. Inline setters here would drift from the style by surprise.
         var preview = new TextBlock { Classes = { "turn-text" } };
         var body = new StackPanel { Spacing = 8 };
+        body.Children.Add(thoughtHost);
         body.Children.Add(preview);
         var activity = new StackPanel
         {
@@ -3525,6 +3625,8 @@ public partial class ChatPanel : UserControl
             Run = run,
             Row = BuildMessageRow(false, body, null, ChatRoles.Assistant, "", isLast: true),
             Preview = preview,
+            Thought = thought,
+            ThoughtHost = thoughtHost,
             Status = status,
             Elapsed = elapsed,
             Glyph = glyph,
@@ -3569,6 +3671,7 @@ public partial class ChatPanel : UserControl
         // Read off the run the bubble is attached to, not looked up by session id: the bubble and its run are the
         // same pairing from attach to detach, so a refresh can never land on a reply that started afterwards.
         var text = bubble.Run.LiveText;
+        var thought = bubble.Run.LiveReasoning;
 
         // Painting the arriving text re-measures the whole message column, and the sticky scroll that follows it
         // flips the column width, re-wrapping every completed bubble — both re-arrange the focused composer and
@@ -3577,7 +3680,8 @@ public partial class ChatPanel : UserControl
         // accrues server-side, so nothing is lost — focus loss flushes the held-back paint.
         if (DeferringLiveRepaint)
         {
-            if ((bubble.Preview.Text ?? "") != text) _liveRepaintPending = true;
+            if ((bubble.Preview.Text ?? "") != text || (bubble.Thought.Text ?? "") != thought)
+                _liveRepaintPending = true;
             RefreshGlyphPhase(bubble);
             return;
         }
@@ -3590,6 +3694,13 @@ public partial class ChatPanel : UserControl
             bubble.ShowedText = true;
             bubble.Status.Text = HubStrings.Get("ChatGenerating");
         }
+
+        // The thinking is on screen while it is the only thing arriving and folds the moment the answer starts —
+        // the same boundary the status line and the glyph already turn on, so the three cannot disagree about
+        // which phase the run is in. This decides what is *drawn*, not what is kept: the reasoning is still
+        // buffered, stored, priced and replayed, and the Settings switch is read here as well as per turn.
+        bubble.Thought.Text = thought;
+        bubble.ThoughtHost.IsVisible = _chat.ShowThinking && thought.Length > 0 && !bubble.ShowedText;
 
         RefreshGlyphPhase(bubble);
         ScrollToEndIfSticky();
@@ -5437,6 +5548,20 @@ public partial class ChatPanel : UserControl
     /// answer change face as it lands. Zero means there was no live bubble to read.</summary>
     internal double LivePreviewFontSizeForCheck => _live?.Preview.FontSize ?? 0;
     internal double LivePreviewLineHeightForCheck => _live?.Preview.LineHeight ?? 0;
+
+    /// <summary>Whether the live bubble is showing its thinking right now. Read together with
+    /// <see cref="LivePreviewTextForCheck"/> this is the fold itself: reasoning alone is on screen, and the
+    /// first prose chunk arriving takes it off without the run ending.</summary>
+    internal bool LiveThoughtVisibleForCheck => _live?.ThoughtHost.IsVisible ?? false;
+    internal string LiveThoughtTextForCheck => _live?.Thought.Text ?? "";
+
+    /// <summary>Every thinking block the transcript is painting, as its own text. Empty is the pass condition
+    /// for "off means off"; a count is what says a fold hid the words without removing the turn.</summary>
+    internal IReadOnlyList<string> ReasoningTextsForCheck()
+        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+            .Where(block => block.Classes.Contains("turn-reasoning"))
+            .Select(block => block.Text ?? "")
+            .ToArray();
 
     /// <summary>Presses the round button the way a click would, so stopping goes through the view instead of
     /// cancelling a run behind the panel's back.</summary>

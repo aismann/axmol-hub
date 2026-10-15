@@ -107,6 +107,17 @@
               <ComboBoxItem Tag="dark" />
             </ComboBox>
           </StackPanel>
+
+          <!-- What the transcript draws. The first checkbox this pane has owned: language and theme are both a
+               choice from a short list, while this is one yes/no about how much of a reply you have to look at.
+               It belongs with them rather than under permission because it changes nothing the assistant is
+               allowed to do — the thinking is generated, billed and replayed whatever this says. -->
+          <StackPanel>
+            <Border Height="1" Background="{DynamicResource Hub.BorderSubtle}" Margin="0,0,0,20" />
+            <TextBlock Text="{DynamicResource ChatDisplay}" FontSize="16" FontWeight="SemiBold" />
+            <CheckBox x:Name="ShowThinkingCheck" Content="{DynamicResource ShowThinking}" Margin="0,12,0,0" />
+            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource ShowThinkingHint}" />
+          </StackPanel>
         </StackPanel>
 
         <!-- ─────────────── Model providers ───────────────

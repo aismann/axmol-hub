@@ -1891,6 +1891,7 @@ public partial class ShellCheckWindow : Window
         await CheckComposerKeysAsync(shell, panel);
         await CheckTypographyAsync(shell, panel);
         await CheckEmphasisAsync(shell, panel);
+        await CheckThinkingAsync(shell, panel);
         await CheckScrollAsync(shell, panel);
         await CheckActivityOrchestrationAsync(shell, panel);
         await CheckInspectorAndSteerAsync(shell, panel);
@@ -3736,6 +3737,83 @@ public partial class ShellCheckWindow : Window
             Check(leaked.Count == 0,
                 "粗体真的解析了，分隔符没有当字面文字画出来（漏出 " + leaked.Count + " 处："
                 + string.Join(" ∣ ", leaked) + "）");
+        }
+        finally
+        {
+            chat.ClientOverride = savedOverride;
+            if (chat.Conversations.Any(summary => summary.Id == session.Id)) chat.DeleteConversation(session.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+        }
+    }
+
+    /// <summary>
+    /// The model's thinking: on screen while it arrives, folded once the answer does, and switchable.
+    ///
+    /// Three separate claims, because the field has been written, priced and replayed since the day it was
+    /// introduced and none of that ever put a word of it in front of anybody. The live bubble has to show it and
+    /// then get out of the way. A turn that only thought has to stop painting an empty row under a head that
+    /// claims 已思考. And the Settings switch has to reach the turns already on screen — which the incremental
+    /// renderer cannot see on its own, and which is the one part of this a green suite would happily let stay
+    /// broken.
+    /// </summary>
+    private async Task CheckThinkingAsync(MainWindow shell, ChatPanel panel)
+    {
+        var chat = shell.Chat;
+        var savedOverride = chat.ClientOverride;
+        var session = chat.StartConversation();
+        chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
+        try
+        {
+            // ── While it is arriving ──
+            // A reasoning gateway sends thinking first and switches to prose mid-stream, so this is the real
+            // ordering rather than a shape invented for the check — and the fold has to ride the same boundary
+            // the status line already turns on, or the two disagree about which phase the run is in.
+            chat.ClientOverride = (_, _) => new ReasoningTrickleChatClient(
+                2, TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(400), "答案到了");
+            panel.SetInputForCheck("先想清楚再答");
+            await panel.SendComposerForCheck();
+            await WaitUntilAsync(() => panel.LiveThoughtVisibleForCheck);
+            var thoughtText = panel.LiveThoughtTextForCheck;
+            await WaitUntilAsync(() => panel.LivePreviewTextForCheck.Contains("答案到了", StringComparison.Ordinal));
+            Check(thoughtText.Contains("思考片段", StringComparison.Ordinal) && !panel.LiveThoughtVisibleForCheck,
+                "思考在正文之前实时上屏，正文一到就自己收起（思考中读到「" + thoughtText + "」，正文之后已折："
+                + (!panel.LiveThoughtVisibleForCheck ? "是" : "否") + "）");
+            await panel.WaitForRunToFinishForCheck();
+
+            // ── Once it is on the record ──
+            // Two shapes, because they reach the screen by different routes: prose with thinking behind an
+            // expander of its own, and a thinking-only turn that lives inside the collapsed activity group.
+            var proseThought = "先想清楚要动哪几个文件";
+            var onlyThought = "这一段只有思考，没有正文";
+            session.Append(ChatTurn.Assistant("这是答案正文。", proseThought));
+            session.Append(ChatTurn.Assistant("", onlyThought));
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var painted = panel.ReasoningTextsForCheck();
+            Check(painted.Contains(proseThought) && painted.Contains(onlyThought),
+                "落库之后的思考真的被画出来：带正文的挂在「看思考全文」下，只有思考的填掉了那个空行（实际 "
+                + painted.Count + " 块：" + string.Join(" ∣ ", painted) + "）");
+
+            // ── And the switch reaches what is already painted ──
+            // Pressed through the checkbox rather than written to the preference: the link between the two is the
+            // part that can be missing while both ends still look right. And read back off the file, because a
+            // flip that only repainted without persisting would survive a restart as the opposite answer.
+            var settings = OpenSettingsOn(shell, "appearance");
+            settings.ToggleShowThinkingForCheck();
+            Dispatcher.UIThread.RunJobs();
+            var offPath = PreferencesPathFor(shell.Workspace.Store.Root);
+            Check(!new PreferencesStore(offPath).Load().ShowThinking
+                  && !chat.ShowThinking && panel.ReasoningTextsForCheck().Count == 0,
+                "关掉思考既落进设置文件，也把已在屏上的那几块一起撤了下来——渲染器只往后画，看不见这个开关"
+                + "（屏上还剩 " + panel.ReasoningTextsForCheck().Count + " 块）");
+            settings.ToggleShowThinkingForCheck();
+            Dispatcher.UIThread.RunJobs();
+            var back = panel.ReasoningTextsForCheck();
+            Check(new PreferencesStore(offPath).Load().ShowThinking
+                  && back.Contains(proseThought) && back.Contains(onlyThought),
+                "再开回来，两块都回到原处（实际 " + back.Count + " 块）");
         }
         finally
         {
