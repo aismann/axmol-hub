@@ -75,6 +75,10 @@ public partial class ChatPanel : UserControl
     /// </summary>
     private LiveBubble? _live;
 
+    /// <summary>The build count of the bubble that was last on screen, kept because the bubble itself is
+    /// discarded the moment the answer lands — and the number is only interesting once the stream is over.</summary>
+    private int _lastLiveBuilds;
+
     /// <summary>Set when a live repaint was skipped because the composer was being typed into on Linux; the next
     /// repaint or focus loss clears it. Keeps the message column from re-arranging — and the in-progress ibus
     /// composition from jumping — while the user is composing a sentence during a streamed reply.</summary>
@@ -95,11 +99,28 @@ public partial class ChatPanel : UserControl
     {
         public required ConversationRun Run { get; init; }
         public required Control Row { get; init; }
-        public required TextBlock Preview { get; init; }
+        /// <summary>The arriving answer, laid down as Markdown the whole way: finished blocks stacked above the
+        /// one still being typed. There is no plain-text copy of it any more — showing the source while the model
+        /// spoke was the thing this replaced.</summary>
+        public required StackPanel Prose { get; init; }
 
-        /// <summary>The thinking, and the box that folds it. Both are painted while reasoning is the only thing
-        /// arriving and hidden the moment the answer starts — see <see cref="ShowedText"/>, which is the one
-        /// signal the two of them and the status line all turn on.</summary>
+        /// <summary>How much of <see cref="ConversationRun.LiveText"/> is already a finished block, the source
+        /// the open block was last rendered from, and when that happened. Together they let a frame that changed
+        /// nothing inside the current block do no building at all.</summary>
+        public int Settled { get; set; }
+        public string SettledSource { get; set; } = "";
+        public string OpenBlockSource { get; set; } = "";
+
+        /// <summary>How many documents this bubble has built. Not a diagnostic curiosity: rebuilding the whole
+        /// reply on every arriving chunk is the one way this path could be silently as expensive as the plain
+        /// text block it replaced, and a count is the only part of it a check can assert on without a stopwatch.</summary>
+        public int Builds { get; set; }
+        public long OpenBlockPaintedAt { get; set; }
+
+        /// <summary>The text the bubble last drew, kept only so a deferred frame can tell whether anything
+        /// arrived while the repaint was held back.</summary>
+        public string PaintedText { get; set; } = "";
+
         public required TextBlock Thought { get; init; }
         public required Control ThoughtHost { get; init; }
         public required TextBlock Status { get; init; }
@@ -3584,12 +3605,12 @@ public partial class ChatPanel : UserControl
             IsVisible = false,
             Child = BoundedDetailScroll(thought, 200),
         };
-        // The same class the persisted turn wears: an answer must not change size, ink or line pitch in the
-        // moment it is written to the transcript. Inline setters here would drift from the style by surprise.
-        var preview = new TextBlock { Classes = { "turn-text" } };
+        // The answer's own slot is a panel rather than a run of text: every finished Markdown block is built once
+        // and then left alone, and only the one still being typed is replaced, at the bottom of the stack.
+        var prose = new StackPanel { Spacing = 8 };
         var body = new StackPanel { Spacing = 8 };
         body.Children.Add(thoughtHost);
-        body.Children.Add(preview);
+        body.Children.Add(prose);
         var activity = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -3624,7 +3645,7 @@ public partial class ChatPanel : UserControl
         {
             Run = run,
             Row = BuildMessageRow(false, body, null, ChatRoles.Assistant, "", isLast: true),
-            Preview = preview,
+            Prose = prose,
             Thought = thought,
             ThoughtHost = thoughtHost,
             Status = status,
@@ -3660,6 +3681,8 @@ public partial class ChatPanel : UserControl
         if (_live is not { } live) return;
         live.Timer?.Stop();
         live.Timer = null;
+        // The bubble is about to be the only record of what streaming cost, and it is thrown away here.
+        _lastLiveBuilds = live.Builds;
         MessageFlow.Children.Remove(live.Row);
         _live = null;
         _liveRepaintPending = false;
@@ -3680,14 +3703,14 @@ public partial class ChatPanel : UserControl
         // accrues server-side, so nothing is lost — focus loss flushes the held-back paint.
         if (DeferringLiveRepaint)
         {
-            if ((bubble.Preview.Text ?? "") != text || (bubble.Thought.Text ?? "") != thought)
-                _liveRepaintPending = true;
+            if (bubble.PaintedText != text || (bubble.Thought.Text ?? "") != thought) _liveRepaintPending = true;
             RefreshGlyphPhase(bubble);
             return;
         }
 
         _liveRepaintPending = false;
-        bubble.Preview.Text = text;
+        PaintStreamingMarkdown(bubble, text);
+        bubble.PaintedText = text;
         if (text.Length == 0) bubble.ShowedText = false;
         else if (!bubble.ShowedText)
         {
@@ -3704,6 +3727,77 @@ public partial class ChatPanel : UserControl
 
         RefreshGlyphPhase(bubble);
         ScrollToEndIfSticky();
+    }
+
+    /// <summary>How often the block still being typed is rebuilt. Every chunk would be a rebuild per frame —
+    /// a fresh document, a fresh parse, a fresh code editor for each fence — and the transcript is not
+    /// virtualized, so each one re-measures the whole column. At this interval the answer keeps up with a fast
+    /// model while a long reply costs a handful of small builds a second.</summary>
+    private const long OpenBlockMilliseconds = 120;
+
+    /// <summary>
+    /// Lays the arriving answer down as Markdown, building each finished block exactly once.
+    ///
+    /// <para>The whole reply is never re-rendered. <see cref="MarkdownMessageRenderer.SettlePoint"/> says how
+    /// much of it is made of blocks that can no longer change; those are appended and then never touched again,
+    /// and only the open block underneath them is replaced — and only when its text actually moved and the
+    /// throttle has expired. A frame that arrives inside the same block therefore does no building at all.</para>
+    ///
+    /// <para>The open block is rendered from a repaired copy, so a fence or an emphasis the model has not closed
+    /// yet still reads as formatting rather than as markup. The run's own buffer is never touched: what gets
+    /// filed in the transcript is what was actually said.</para>
+    /// </summary>
+    private static void PaintStreamingMarkdown(LiveBubble bubble, string text)
+    {
+        // A run clears its buffer between tool-loop rounds, so a bubble that survives the switch can be handed a
+        // shorter string than the one it last drew from — and a longer one that merely starts the same is the
+        // same answer only by luck. Anything that is no longer a prefix of what is on screen belongs to a reply
+        // already filed in the transcript, and this slot starts over.
+        if (bubble.Settled > text.Length || !text.StartsWith(bubble.SettledSource, StringComparison.Ordinal))
+        {
+            bubble.Prose.Children.Clear();
+            bubble.Settled = 0;
+            bubble.SettledSource = "";
+            bubble.OpenBlockSource = "";
+        }
+
+        var settled = MarkdownMessageRenderer.SettlePoint(text);
+        var force = false;
+        if (settled > bubble.Settled)
+        {
+            // The open block's slot is about to be filled by the finished version of itself. Whatever the repair
+            // had guessed at is discarded and the real text, closed or not, is laid down once.
+            DropOpenBlock(bubble);
+            var finished = text[bubble.Settled..settled];
+            bubble.Prose.Children.Add(MarkdownMessageRenderer.Render(finished));
+            bubble.Builds++;
+            bubble.Settled = settled;
+            bubble.SettledSource += finished;
+            force = true;
+        }
+
+        var open = text[bubble.Settled..];
+        if (open == bubble.OpenBlockSource) return;
+        if (!force && bubble.OpenBlockSource.Length > 0
+            && Environment.TickCount64 - bubble.OpenBlockPaintedAt < OpenBlockMilliseconds) return;
+
+        DropOpenBlock(bubble);
+        if (open.Length > 0)
+        {
+            bubble.Prose.Children.Add(MarkdownMessageRenderer.Render(MarkdownMessageRenderer.CloseOpenConstructs(open)));
+            bubble.Builds++;
+        }
+        bubble.OpenBlockSource = open;
+        bubble.OpenBlockPaintedAt = Environment.TickCount64;
+    }
+
+    /// <summary>Takes the still-being-typed block out of the stack. It is always the last child when there is
+    /// one, because finished blocks only ever go underneath nothing.</summary>
+    private static void DropOpenBlock(LiveBubble bubble)
+    {
+        if (bubble.OpenBlockSource.Length == 0 || bubble.Prose.Children.Count == 0) return;
+        bubble.Prose.Children.RemoveAt(bubble.Prose.Children.Count - 1);
+        bubble.OpenBlockSource = "";
     }
 
     /// <summary>Paints the reply the deferred ticks were holding back, once it is safe to re-arrange the column:
@@ -5540,14 +5634,27 @@ public partial class ChatPanel : UserControl
 
     /// <summary>What the live bubble on screen says. It is read off the run, so this is also the proof that a
     /// reply kept arriving while its session was out of sight.</summary>
-    internal string LivePreviewTextForCheck => _live?.Preview.Text ?? "";
+    /// <summary>Everything that has arrived for this answer. Read off the run rather than off a control: the
+    /// bubble now lays its text down as Markdown blocks, so no single control holds the whole of it any more.</summary>
+    internal string LivePreviewTextForCheck => _live?.Run.LiveText ?? "";
     internal bool LiveRepaintDeferredForCheck => _liveRepaintPending;
 
-    /// <summary>What the streaming bubble actually paints with, read off the control rather than from the style.
-    /// The persisted turn is a different control built later, so a pair of these two is the only way to see the
-    /// answer change face as it lands. Zero means there was no live bubble to read.</summary>
-    internal double LivePreviewFontSizeForCheck => _live?.Preview.FontSize ?? 0;
-    internal double LivePreviewLineHeightForCheck => _live?.Preview.LineHeight ?? 0;
+    /// <summary>How many blocks the streaming bubble has laid down. Text arriving with this still at zero means
+    /// the answer is being shown as source, which is the one failure the incremental path exists to prevent.</summary>
+    internal int LiveBlockCountForCheck => _live?.Prose.Children.Count ?? 0;
+
+    /// <summary>How many Markdown documents streaming this answer built, read after it lands. The bound a naive
+    /// implementation cannot meet: rebuilding the whole reply per chunk scales with the stream's frame rate,
+    /// while building each block once scales with the number of blocks.</summary>
+    internal int LiveRenderBuildsForCheck => _live?.Builds ?? _lastLiveBuilds;
+
+    /// <summary>Whether a heading the model wrote is being <i>drawn</i> as one while the reply is still coming.
+    /// Raw markup on screen produces no heading element at all, so this distinguishes rendered from tidy-looking
+    /// text in a way no amount of reading the string back can.</summary>
+    internal bool LiveHasRenderedHeadingForCheck
+        => _live is { } live && live.Prose.GetVisualDescendants()
+            .OfType<ColorTextBlock.Avalonia.CTextBlock>()
+            .Any(block => block.Classes.Contains("Heading1"));
 
     /// <summary>Whether the live bubble is showing its thinking right now. Read together with
     /// <see cref="LivePreviewTextForCheck"/> this is the fold itself: reasoning alone is on screen, and the

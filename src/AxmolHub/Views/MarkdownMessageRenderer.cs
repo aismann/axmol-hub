@@ -415,6 +415,114 @@ internal static class MarkdownMessageRenderer
         return url;
     }
 
+    private static readonly Regex ListLinePattern = new(@"^\s*(?:[-*+]|\d+[.)])\s", RegexOptions.Compiled);
+    private static readonly Regex FenceMarkerPattern = new(@"^\s{0,3}(`{3,}|~{3,})", RegexOptions.Compiled);
+
+    /// <summary>
+    /// How much of a reply that is still arriving is made of blocks that can no longer change.
+    ///
+    /// <para>Everything from the returned offset on is the block being typed; everything before it is finished,
+    /// because CommonMark closes a paragraph at a blank line. That is the seam the streaming bubble renders along:
+    /// the finished part is built once and left alone, and only the open block is rebuilt as it grows.</para>
+    ///
+    /// <para>A blank line between two list items is deliberately not a seam. That is what a loose list <i>is</i>,
+    /// and cutting one there would render its second half as a new list — which for an ordered list means the
+    /// numbering restarts at 1 halfway down the answer, a corruption worse than the raw markup it replaced.</para>
+    /// </summary>
+    internal static int SettlePoint(string text)
+    {
+        if (text.Length == 0) return 0;
+
+        // Split once and carry the offsets, rather than searching for each line's start as the scan goes.
+        var lines = text.Split('\n');
+        var starts = new int[lines.Length];
+        var offset = 0;
+        for (var line = 0; line < lines.Length; line++)
+        {
+            starts[line] = offset;
+            offset += lines[line].Length + 1;
+        }
+
+        var boundary = 0;
+        string fence = "";
+        for (var line = 0; line < lines.Length; line++)
+        {
+            var content = lines[line].TrimEnd('\r');
+            var marker = FenceMarkerPattern.Match(content) is { Success: true } match ? match.Groups[1].Value : "";
+            if (fence.Length == 0 && marker.Length > 0)
+            {
+                fence = marker;
+                continue;
+            }
+
+            if (fence.Length > 0)
+            {
+                if (marker.Length >= fence.Length && content.Trim().Length == marker.Length) fence = "";
+                continue;
+            }
+
+            if (content.Length != 0) continue;
+
+            var next = line + 1;
+            while (next < lines.Length && lines[next].TrimEnd('\r').Length == 0) next++;
+            if (next >= lines.Length || ListLinePattern.IsMatch(lines[next].TrimEnd('\r'))) continue;
+            boundary = starts[next];
+        }
+
+        return boundary;
+    }
+
+    /// <summary>
+    /// Closes what the stream left open, so the block being typed renders the way it will read once finished.
+    ///
+    /// <para>Without this the tail is the one place raw markup still reaches the screen: a <c>**</c> with no
+    /// partner is exactly the "裸露标记，闭合后跳变" failure the incremental renderers are known for, and a fence
+    /// left open swallows the rest of the document. The repair is applied to a copy handed to the renderer —
+    /// what the model actually said is never rewritten, and the transcript is filed from the run's own buffer.</para>
+    /// </summary>
+    internal static string CloseOpenConstructs(string text)
+    {
+        if (text.Length == 0) return text;
+
+        var chips = new List<string>();
+        var masked = MaskCodeSpans(text, chips);
+        if (masked is null) return text;
+
+        // An open fence is not a marker to be balanced — everything after it is code, and nothing else applies.
+        string? openFence = null;
+        var lastMarker = "";
+        foreach (var line in text.Split('\n'))
+        {
+            var content = line.TrimEnd('\r');
+            var marker = FenceMarkerPattern.IsMatch(content)
+                ? FenceMarkerPattern.Match(content).Groups[1].Value : "";
+            if (openFence is null && marker.Length > 0) openFence = marker;
+            else if (openFence is not null && marker.Length >= openFence.Length && content.Trim().Length == marker.Length)
+                openFence = null;
+            lastMarker = marker;
+        }
+
+        if (openFence is not null) return text + "\n" + openFence;
+
+        // A stray backtick survived masking, so an inline span is open and its own delimiters outrank any bold
+        // started inside it. Otherwise an odd number of `**` pairs is a clause the model is still emphasising.
+        if (masked.Contains('`')) return text + "`";
+        return CountOccurrences(masked, "**") % 2 == 1 ? text + "**" : text;
+    }
+
+    private static int CountOccurrences(string text, string needle)
+    {
+        var count = 0;
+        for (var index = text.IndexOf(needle, StringComparison.Ordinal);
+             index >= 0;
+             index = text.IndexOf(needle, index + needle.Length, StringComparison.Ordinal))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
     /// <summary>
     /// Re-wraps the plain text that a code span cut in half inside a bold run.
     ///

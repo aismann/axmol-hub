@@ -3673,29 +3673,40 @@ public partial class ShellCheckWindow : Window
                 + "，markdown " + markdownPitch.ToString(CultureInfo.InvariantCulture) + "/"
                 + markdown.ToString(CultureInfo.InvariantCulture) + "）");
 
-            // The streaming bubble is built on a path of its own, and while it wore no class of its own it answered
-            // at the theme's default size — so an answer changed face in the moment it was written to the
-            // transcript. That is the one boundary the pair above exists to guard and neither of them can see,
-            // because the persisted look is only reached once the live row is already gone. Parked after the first
-            // chunk so the bubble is genuinely on screen while it is read.
+            // The streaming bubble used to be a plain text block wearing no class of its own, so it answered at
+            // the theme's default size and changed face the moment the turn was persisted. It now renders Markdown
+            // the way the finished turn does, which retires that comparison and replaces it with the stronger
+            // claim: a heading that arrives mid-stream is drawn as a heading, not shown as a pound sign. Parked
+            // after the first chunk so the bubble is genuinely on screen while it is read.
             var park = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var arrived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            chat.ClientOverride = (_, _) => new ScriptedChatClient(
-                ["流式期间停在屏幕上的第一段中文，长度要够把这一行撑到换行，才量得出行距。",
-                 "\n\n第二段收尾，好让这一轮真的答完。"], null, park.Task, arrived);
-            panel.SetInputForCheck("再来一段长的");
+            var stream = new[]
+            {
+                "# 流式中的标题\n\n停在屏幕上的第一段中文，长度要够把这一行撑到换行。",
+                "\n\n第二段中文，同样撑满一行之后就该定型了。",
+                "\n\n第三段中文，也撑满一行。",
+                "\n\n最后一段，落在这里收尾。",
+            };
+            chat.ClientOverride = (_, _) => new ScriptedChatClient(stream, null, park.Task, arrived);
+            panel.SetInputForCheck("边流边渲染给我看");
             await panel.SendComposerForCheck();
             await WaitForSignalAsync(arrived.Task);
             Dispatcher.UIThread.RunJobs();
-            var liveSize = panel.LivePreviewFontSizeForCheck;
-            var livePitch = panel.LivePreviewLineHeightForCheck;
+            var blocksWhileParked = panel.LiveBlockCountForCheck;
+            var headingRendered = panel.LiveHasRenderedHeadingForCheck;
             park.SetResult(true);
             await panel.WaitForRunToFinishForCheck();
-            Check(liveSize == markdown && livePitch == markdownPitch,
-                "流式气泡与落盘后的正文同字号同线距，答案不在写进记录的那一刻换个字（流式 "
-                + liveSize.ToString(CultureInfo.InvariantCulture) + "/" + livePitch.ToString(CultureInfo.InvariantCulture)
-                + "，落盘 " + markdown.ToString(CultureInfo.InvariantCulture) + "/"
-                + markdownPitch.ToString(CultureInfo.InvariantCulture) + "）");
+            Check(headingRendered && blocksWhileParked > 0,
+                "流式期间到达的标题就按标题渲染，不必等落库（停在流上时已铺 " + blocksWhileParked
+                + " 块，标题已渲染：" + (headingRendered ? "是" : "否") + "）");
+            // The cost bound, and the answer to "what does this do to performance". Four chunks can be laid down
+            // in a handful of documents, or in one per repaint — and the second is exactly how this path would
+            // end up slower than the plain text block it replaced. Counting documents is the part that can be
+            // asserted without a stopwatch and without a machine-dependent millisecond budget.
+            var builds = panel.LiveRenderBuildsForCheck;
+            Check(builds > 0 && builds <= stream.Length * 3,
+                "流式渲染按块建文档，不随重画次数走（" + stream.Length + " 段共铺了 " + builds
+                + " 个文档，上限 " + stream.Length * 3 + "）");
         }
         finally
         {
