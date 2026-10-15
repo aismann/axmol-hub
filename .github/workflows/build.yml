@@ -1,8 +1,12 @@
-# 构建 + 验证 + 安装器打包，三个职责合在一个 workflow 里，靠 job 分层：
-#   - meta：解析提交信息是否为 "Version x.y.z"，决定是否打包（普通提交只验证，不打包）。
-#   - verify：三平台矩阵，验证代码正确性（编译、宿主判定、CLI 契约、下载契约），任何提交都跑。
-#   - package-*：四平台各自在原生 runner 上跑 vpk pack（不能交叉出包），仅在 "Version" 提交或手动触发时跑。
-# 是否发布由 dist.yml 根据提交信息与结果决定（与 axslcc 的 build.yml + dist.yml 语义一致）。
+# Build + verify + installer packaging: three responsibilities in one workflow, layered by job.
+#   - meta: parses the commit message for "Version x.y.z" and decides whether to package (an ordinary
+#     commit is verified only, never packaged).
+#   - verify: the three-platform matrix that checks the code is correct (compile, host detection, CLI
+#     contract, download contract); it runs on every commit.
+#   - package-*: four platforms, each running vpk pack on its own native runner (packaging cannot be
+#     cross-built); only a "Version" commit or a manual trigger reaches them.
+# Whether a release is published is decided by dist.yml from the commit message and the run result
+# (the same split as axslcc's build.yml + dist.yml).
 name: Build
 
 on:
@@ -29,8 +33,9 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
 
 jobs:
-  # ── 是否打包：解析提交信息。普通提交（非 "Version x.y.z"）只验证、不打包；
-  #    只有发版提交或手动触发才走打包，把昂贵的 vpk pack 留给真正要发版的那一次。──
+  # ── Package or not: parse the commit message. An ordinary commit (not "Version x.y.z") is verified
+  #    only, never packaged; only a release commit or a manual trigger walks the packaging path, which
+  #    saves the expensive vpk pack for the run that really publishes. ──
   meta:
     name: Decide packaging
     runs-on: ubuntu-24.04
@@ -54,10 +59,10 @@ jobs:
           [xml]$product = Get-Content -LiteralPath ./Directory.Build.props
           $productVersion = @($product.Project.PropertyGroup.Version) | Where-Object { $_ } | Select-Object -First 1
           $release = Get-ReleaseMetadata -CommitMessage $msg -FallbackVersion $productVersion
-          # 手动触发视为发版（和 dist 的 workflow_dispatch 允许手动输版本呼应）。
+          # A manual trigger counts as a release (mirroring the manual version input dist's workflow_dispatch allows).
           $isDispatch = '${{ github.event_name }}' -eq 'workflow_dispatch'
           $should = ($isDispatch -or $release.IsVersionCommit) -and '${{ github.event_name }}' -ne 'pull_request'
-          # 输出小写 true/false，与 job 条件 needs.meta.outputs.should_package == 'true' 对齐。
+          # Emit lowercase true/false, aligned with the job condition needs.meta.outputs.should_package == 'true'.
           $flag = if ($should) { 'true' } else { 'false' }
           $prereleaseFlag = if ($release.IsPrerelease) { 'true' } else { 'false' }
           "should_package=$flag" >> $env:GITHUB_OUTPUT
@@ -65,7 +70,8 @@ jobs:
           Write-Host "should_package=$flag"
           Write-Host "is_prerelease=$prereleaseFlag"
 
-  # ── 验证：代码没坏。三平台矩阵，与打包解耦，失败只代表代码回归，与发布无关。──
+  # ── Verify: the code is not broken. A three-platform matrix, decoupled from packaging, so a failure
+  #    here means a code regression and says nothing about a release. ──
   verify:
     name: Verify (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
@@ -86,8 +92,9 @@ jobs:
             rid: linux-x64
             host: linux
     steps:
-      # action 均取浮动主版本标签：这些主版本要求 Actions Runner >= 2.327.1（Node.js 24 运行时），
-      # GitHub 托管 runner 满足。迁移到自托管 runner 时需先升级 runner。
+      # Every official action takes a floating major tag: those majors require Actions Runner >= 2.327.1
+      # (the Node.js 24 runtime), which GitHub-hosted runners satisfy. Moving to a self-hosted runner
+      # means upgrading the runner first.
       - name: Check out
         uses: actions/checkout@v7
 
@@ -96,12 +103,13 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
 
-      # 上面的 env 只是"申请 10.0.x"，setup-dotnet 实际解析到哪个补丁版本才决定编译器版本。
-      # 这个差异已经真实咬过一次（2026-10-03）：本机 Ubuntu 用 apt 装 dotnet-sdk-8.0
-      # 只能拿到 8.0.1xx（编译器 4.8.0.0），而 Avalonia 12.1.3 的分析器与生成器是按
-      # 4.14 编译的，源生成器整个不产出，表现为一排
-      # `CS0103: The name 'InitializeComponent' does not exist`。
-      # 以后本机与 CI 构建结果不一致时，先比这一行，不要靠猜。
+      # The env above only *asks* for 10.0.x; which patch version setup-dotnet actually resolves to is
+      # what decides the compiler version, and that difference has bitten for real (2026-10-03): a
+      # local Ubuntu installing dotnet-sdk-8.0 through apt only gets 8.0.1xx (compiler 4.8.0.0), while
+      # the Avalonia 12.1.3 analyzers and generators are compiled against 4.14, so the source generator
+      # emits nothing at all and the build fails with a row of
+      # `CS0103: The name 'InitializeComponent' does not exist`.
+      # When a local build and CI ever disagree, compare this line first instead of guessing.
       - name: Print .NET SDK version
         run: |
           dotnet --version
@@ -114,20 +122,25 @@ jobs:
           key: nuget-${{ matrix.rid }}-${{ hashFiles('**/*.csproj') }}
           restore-keys: nuget-${{ matrix.rid }}-
 
-      # 仓库没有解决方案文件：四个项目各自独立构建，一次只能接一个 csproj。
+      # There is no solution file in this repo: the projects build independently, one csproj per
+      # invocation.
       - name: Build Core
         run: dotnet build src/AxmolHub.Core/AxmolHub.Core.csproj -c ${{ env.CONFIGURATION }}
 
       - name: Build CLI
         run: dotnet build src/AxmolHub.Cli/AxmolHub.Cli.csproj -c ${{ env.CONFIGURATION }}
 
-      # 运行时地板。`net8.0` 目标 + 默认可滚前策略（Minor，不跨主版本）合起来是硬锁 8.0 运行时：
-      # Ubuntu 26.04 起源里已经没有 dotnet-runtime-8.0，而只装 `Microsoft.DotNet.SDK.10` 的 Windows
-      # 开发机同病（SDK 只带 10.0 运行时）。`Directory.Build.props` 的 `RollForward=Major` 把这件事从
-      # "锁版本"改成"声明地板"，SDK 把它写进可执行产物的 runtimeconfig.json。
-      # 这条断言只能证明属性确实落进了文件 —— 它**证不了**真的能滚前：runner 自带 8.0，走的仍是 8.0
-      # 那条分支。真正的证明只能在缺少 8.0 的机器上做（2026-10-15 已在 Ubuntu 26.04.1 实测）。
-      # 之所以还是留着它：属性被改名或挪出 props 时，地板会无声消失，而这里会红。
+      # The runtime floor. TargetFramework net8.0 plus the default roll-forward policy (Minor, which
+      # never crosses a major version) adds up to a hard lock on the 8.0 runtime: Ubuntu 26.04's archive
+      # no longer carries dotnet-runtime-8.0, and a Windows dev machine that installed only
+      # `Microsoft.DotNet.SDK.10` has the same problem (that SDK brings the 10.0 runtime and no 8.0).
+      # `RollForward=Major` in Directory.Build.props turns that from a version lock back into a floor,
+      # and the SDK writes it into the runtimeconfig.json of every executable artifact.
+      # What this step proves is only that the property really lands in that file. It cannot prove the
+      # app actually rolls forward: the runner ships 8.0, so it still takes the 8.0 branch. The real
+      # proof needs a machine without 8.0 (measured 2026-10-15 on Ubuntu 26.04.1).
+      # It is kept anyway because a property that gets renamed or moved out of the props file would
+      # make the floor disappear silently, and this step goes red instead.
       - name: Verify runtime floor
         shell: bash
         run: |
@@ -137,9 +150,10 @@ jobs:
           grep -q '"rollForward": "Major"' "$f" || { echo "::error::$f does not declare rollForward=Major"; exit 1; }
           cat "$f"
 
-      # 宿主判定（BuildTargets.Host）是 Core 里最早按操作系统分叉的逻辑，
-      # 目标是否可在本机构建直接决定 GUI 给用户显示什么，因此三个平台都要断言。
-      # （密钥存储后端也按 OS 分叉了，见下面的 --check-secrets；那条断言只覆盖 CLI 这一半。）
+      # Host detection (BuildTargets.Host) is the earliest OS-dependent branch in Core, and whether a
+      # target can be built on this host decides directly what the GUI shows the user, so all three
+      # platforms assert it. (The secret-store backend branches on OS as well — see --check-secrets
+      # below; that assertion covers only the CLI half of it.)
       - name: Verify host detection
         shell: bash
         run: |
@@ -187,16 +201,19 @@ jobs:
           dotnet src/AxmolHub.Cli/bin/Release/net8.0/AxmolHub.Cli.dll help | tr -d '\r' | tee help.txt
           grep -q 'install-tools' help.txt
 
-      # Avalonia 版 GUI 是 net8.0，不含任何 Windows 专属目标框架，因此三平台都必须构建。
-      # 这是唯一的 GUI **构建**步骤：P6 删掉 WPF 版后，App 就只剩 Avalonia 这一个实现了。
+      # The Avalonia GUI is net8.0 with no Windows-specific target framework, so all three platforms
+      # must build it. This is the only GUI *build* step: after P6 deleted the WPF version, Avalonia is
+      # the only implementation the App has.
       - name: Build App (GUI)
         run: dotnet build src/AxmolHub/AxmolHub.csproj -c ${{ env.CONFIGURATION }}
 
-      # 密钥存储是**按平台分叉**的产品行为，而 Windows 侧的 Checks 与需要显示器的 --verify-shell
-      # 都到不了 Linux 这条路径：前者是 net8.0-windows，后者在 CI 里从不真跑 GUI（见 docs/ci.md §2.2）。
-      # 所以用 App 的无头自检补上这格：它在 Avalonia 启动之前就返回，不需要 X11，
-      # 跑的是生产入口 SecretStoreFactory.Create()，不是另写一份测试专用实现。
-      # macOS 会把"本平台暂无后端"当 PASS 分支（Keychain 是有意延后，不该让矩阵为它变红）。
+      # The secret store is *OS-branched* product behaviour, and neither route on the Windows side can
+      # reach the Linux path: the Checks project is net8.0-windows, and --verify-shell needs a display,
+      # which CI never really provides (see docs/ci.md §2.2). So the App's headless self-check fills
+      # that cell: it returns before Avalonia starts, needs no X11, and runs the production entry point
+      # SecretStoreFactory.Create(), not a second, test-only implementation.
+      # On macOS "no backend on this platform yet" is a PASS branch (Keychain is deliberately deferred;
+      # the matrix should not go red for it).
       - name: Verify secret store on this host
         shell: bash
         run: |
@@ -208,8 +225,9 @@ jobs:
           fi
           ! grep -q '^FAIL' secrets.txt
 
-      # Checks 是 net8.0-windows（Windows 特有的断言需要它），因此留在 Windows。
-      # 这里只做编译验证，不跑 GUI：无头截图环节已去掉，理由见 docs/ci.md §2.2。
+      # Checks is net8.0-windows (the Windows-only assertions need it), so it stays on Windows.
+      # This step only compiles: the headless-screenshot stage was removed, for the reason in
+      # docs/ci.md §2.2.
       - name: Build behavior checks
         if: matrix.host == 'windows'
         shell: bash
@@ -217,12 +235,13 @@ jobs:
           set -euo pipefail
           dotnet build tests/AxmolHub.Checks/AxmolHub.Checks.csproj -c ${{ env.CONFIGURATION }}
 
-      # --json 是 Hub 对外契约的一部分（docs/cli-json-contract.md），它唯一的失败模式是
-      # "stdout 不再是恰好一份 JSON 文档" —— 编译期和形状断言都测不到那种错（help 就是这么漏过去的）。
-      # 该模式自带 return，不需要真实引擎与工具链，因此能在干净 runner 上跑。
-      # 只放 Windows 是因为 Checks 是 net8.0-windows（Core 里 Windows 特有的断言需要它），
-      # 不是因为这个契约只在 Windows 成立 —— CLI 本身三平台都发布。
-      # bin/Release 的写法与上面的"宿主判定"步骤一致。
+      # --json is part of Hub's outward contract (docs/cli-json-contract.md), and its only failure mode
+      # is "stdout is no longer exactly one JSON document" — a mistake neither the compiler nor a shape
+      # assertion catches (that is how `help` slipped through). This mode returns on its own and needs
+      # no real engine or toolchain, so it can run on a clean runner. It is confined to Windows because
+      # Checks is net8.0-windows (the Windows-only assertions in Core need it), not because the contract
+      # holds only there — the CLI itself publishes for all three platforms. The bin/Release path is
+      # written the same way as the host-detection step above.
       - name: Verify CLI JSON contract
         if: matrix.host == 'windows'
         shell: bash
@@ -231,8 +250,9 @@ jobs:
           dotnet run --project tests/AxmolHub.Checks -c ${{ env.CONFIGURATION }} -- \
             artifacts/checks --check-cli-json src/AxmolHub.Cli/bin/Release/net8.0/AxmolHub.Cli.dll
 
-      # 下载契约（原子落盘 / 缓存复用 / 坏哈希拒绝 / 断点续传 / 流式 SHA-256）自带 return、
-      # 用注入的 FixtureHandler、不联网、不依赖真实引擎，因此能在干净 runner 上跑。
+      # The download contract (atomic write to disk / cache reuse / bad-hash rejection / resume /
+      # streaming SHA-256) returns on its own, uses an injected FixtureHandler, needs no network and no
+      # real engine, so it can run on a clean runner.
       - name: Verify download contract
         if: matrix.host == 'windows'
         shell: bash
@@ -241,9 +261,10 @@ jobs:
           dotnet run --project tests/AxmolHub.Checks -c ${{ env.CONFIGURATION }} -- \
             artifacts/checks --check-download
 
-      # 密钥格式（AAD 绑定、篡改拒绝、外来 DPAPI blob 识别）、后端选择表、密钥路径优先级、
-      # OAuth 回调解析与 Linux 浏览器启动参数表——全部是纯函数或注入式假传输，
-      # 因此在 Windows 上就能把 Linux 分支断言到；能在本机真跑的 Linux 那半是上面的 --check-secrets。
+      # The secret format (AAD binding, tamper rejection, recognising a foreign DPAPI blob), the backend
+      # selection table, the key-path precedence, OAuth callback parsing and the Linux browser launch
+      # argument table are all pure functions or injected fake transports, so the Linux branches can be
+      # asserted from Windows; the Linux half that really runs on the host is --check-secrets above.
       - name: Verify secret store contract
         if: matrix.host == 'windows'
         shell: bash
@@ -255,7 +276,8 @@ jobs:
       - name: Publish self-contained CLI
         run: dotnet publish src/AxmolHub.Cli/AxmolHub.Cli.csproj -c ${{ env.CONFIGURATION }} -r ${{ matrix.rid }} --self-contained true -o artifacts/cli/${{ matrix.rid }}
 
-      # 交叉发布不等于可用：自包含产物必须在目标宿主上真的执行过。
+      # Cross-publishing is not the same as working: a self-contained artifact must have actually been
+      # executed on the target host.
       - name: Run published CLI on this host
         shell: bash
         run: |
@@ -268,12 +290,15 @@ jobs:
           ls -l "$exe"
           "$exe" targets | tr -d '\r' | head -3
 
-      # 这里曾有一步 "Upload CLI host"，把 artifacts/cli/<rid> 作为 cli-<rid> 上传。2026-10-03 删除：
-      # 没有任何后续消费方（发布链路的 App 产物由 installer/Build.ps1 自行发布，不读 CI 的 CLI 产物），
-      # 它想证明的"产物可用"已由上面两步（发布 + 在目标宿主真跑）证明，artifact 只是把同一个结论再存一份。
+      # There used to be an "Upload CLI host" step here, uploading artifacts/cli/<rid> as cli-<rid>.
+      # Removed 2026-10-03: nothing downstream consumed it (the release chain's App artifacts are
+      # published by installer/Build.ps1 and never read CI's CLI artifacts), and what it meant to prove
+      # — that the artifact is usable — the two steps above already prove (publish, then really run it
+      # on the target host); the artifact only stored the same conclusion a second time.
 
-  # ── 打包：安装器产物。artifact 名必须恰好等于平台目录名（win-x64 等），
-  #    因为 dist 的 Publish-All.ps1 按平台目录名（Dir）在下载目录里找子目录。──
+  # ── Packaging: the installer artifacts. An artifact name must equal the platform directory name
+  #    exactly (win-x64 and so on), because dist's Publish-All.ps1 looks for a subdirectory by that
+  #    platform directory name (Dir) inside the download directory. ──
   package-win-x64:
     name: Package Windows x64
     needs: meta

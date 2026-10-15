@@ -1,6 +1,8 @@
-# 发布编排：解析提交信息 "Version x.y.z" 决定是否发版，下载三平台产物，合并上传到一个 release。
-# 触发 = workflow_run（监听 build 完成）+ workflow_dispatch（手动输入 version）。
-# 与 axslcc 的 dist.yml 语义一致：任何 build 完成都触发，靠提交信息正则 + 结果决定是否真发。
+# Release orchestration: parse the commit message for "Version x.y.z" to decide whether to release,
+# download the three platforms' artifacts, and upload them merged into one release.
+# Triggers = workflow_run (listening for a completed build) + workflow_dispatch (manual version input).
+# Same semantics as axslcc's dist.yml: every completed build triggers it, and a regex on the commit
+# message plus the run result decide whether a release really happens.
 name: Dist
 
 on:
@@ -27,8 +29,9 @@ jobs:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
           fetch-depth: 0
 
-      # 发布标记：Version 1.8.0；也接受 Version 1.8.0-beta 与 Version 1.8.0 (Preview)。
-      # 匹配不到时用手动输入的 version；两者都无 → release_ver 为空，后续步骤全部跳过。
+      # The release marker: Version 1.8.0; Version 1.8.0-beta and Version 1.8.0 (Preview) are accepted
+      # too. When nothing matches, the manually entered version is used; with neither, release_ver is
+      # empty and every later step is skipped.
       - name: Check release version
         id: check_ver
         shell: pwsh
