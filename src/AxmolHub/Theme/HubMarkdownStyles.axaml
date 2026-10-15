@@ -22,9 +22,11 @@
     Button theme and showed no icon at all).
   -->
 
-  <!-- Body text. The theme leaves Foreground alone but sets FontSize 14, so both belong here. -->
+  <!-- Body text. The theme leaves Foreground alone but sets FontSize 14, so both belong here. The ink is the
+       reading rung rather than Hub.TextPrimary: headings below keep the primary, and that gap is how a reader
+       tells a heading from the paragraph under it. -->
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock">
-    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
     <Setter Property="FontSize" Value="12" />
     <Setter Property="LineHeight" Value="20" />
   </Style>
@@ -62,8 +64,11 @@
     <Setter Property="LineHeight" Value="19" />
   </Style>
 
+  <!-- Inline code is a raised chip whose emphasis is the surface and the mono face, not a brighter glyph: the
+       reference shells paint it at the body's own ink, so a paragraph reads as one line of text with chips in
+       it rather than as prose dimmed around white code. -->
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CCode">
-    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
     <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
   </Style>
 
@@ -80,14 +85,17 @@
   <Style Selector=".Markdown_Avalonia_MarkdownViewer TextBlock.CodeBlock">
     <Setter Property="FontFamily" Value="{DynamicResource Hub.Font.Mono}" />
     <Setter Property="FontSize" Value="12" />
-    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
   </Style>
 
   <!-- The fenced block's editor and its copy button are built by MarkdownMessageRenderer in code
        (class names only, no Content), so both their chrome and the icon live here as a template. -->
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ae|TextEditor.markdown-code-editor">
     <Setter Property="Background" Value="Transparent" />
-    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    <!-- The default ink for text no highlighting rule claims (and for plain fences). The spans that do have a
+         rule carry DarkSyntax's palette, which is fitted to this same well by its own 4.5:1 floor — so the
+         reading rung here is not a claim about the coloured spans, only about the text between them. -->
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
     <Setter Property="FontFamily" Value="{DynamicResource Hub.Font.Mono}" />
     <Setter Property="FontSize" Value="12" />
   </Style>
@@ -154,7 +162,7 @@
 
   <Style Selector=".Markdown_Avalonia_MarkdownViewer Border.TableHeader ctxt|CTextBlock">
     <Setter Property="Background" Value="Transparent" />
-    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
   </Style>
 
   <Style Selector=".Markdown_Avalonia_MarkdownViewer Border.OddTableRow">
@@ -166,6 +174,6 @@
   </Style>
 
   <Style Selector=".Markdown_Avalonia_MarkdownViewer Grid.Table ctxt|CTextBlock">
-    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
   </Style>
 </Styles>

@@ -23,14 +23,15 @@
     </Style>
 
     <!-- The in-place message editor replaces the bubble's own text, so it has to disappear into the pill:
-         no frame, no background, no minimum height of its own. -->
+         no frame, no background, no minimum height of its own. Its ink is the body's for the same reason —
+         editing a message must not brighten the words being edited. -->
     <Style Selector="TextBox.message-edit">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="Padding" Value="0" />
       <Setter Property="MinHeight" Value="0" />
       <Setter Property="VerticalContentAlignment" Value="Top" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
     </Style>
 
     <!-- The fork provenance line: muted text that is also the way back to the source session. -->
@@ -1097,9 +1098,11 @@
     </Style>
     <!-- A turn's own words, whether or not they are Markdown. The rendered-Markdown layer is 13 (declared in
          HubMarkdownStyles, which is the winning style set for that subtree), and only the last 40 turns go
-         through it — so a plain 14 here would make the same message change size as it scrolled away. -->
+         through it — so a plain 14 here would make the same message change size as it scrolled away. The ink
+         follows the same argument: Hub.TextBody, or a message would also brighten at that boundary. -->
     <Style Selector="TextBlock.turn-text">
       <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
       <Setter Property="TextWrapping" Value="Wrap" />
       <Setter Property="LineHeight" Value="20" />
     </Style>

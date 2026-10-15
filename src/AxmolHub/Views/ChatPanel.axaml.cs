@@ -5503,6 +5503,20 @@ public partial class ChatPanel : UserControl
             ? body.FontSize
             : 0;
 
+    /// <summary>The ink those two blocks paint with, read off the same elements and for the same reason as the
+    /// size pair above: a message that scrolled out of the Markdown window must not change brightness either.</summary>
+    internal IBrush? PlainTurnForegroundForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(block => block.Classes.Contains("turn-text"))?.Foreground;
+
+    internal IBrush? MarkdownBodyForegroundForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>().FirstOrDefault() is { } viewer
+           && viewer.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>()
+               .FirstOrDefault(text => !text.Classes.Any(name =>
+                   name.StartsWith("Heading", StringComparison.Ordinal))) is { } body
+            ? body.Foreground
+            : null;
+
     /// <summary>The font a rendered code block actually draws with — empty when the reply had no code to look at.
     /// The fenced block becomes a text editor rather than a text block, so this is the element that answers the
     /// question a person can see the answer to.</summary>

@@ -300,7 +300,7 @@ internal static class MarkdownMessageRenderer
         var headerText = header.GetVisualDescendants().OfType<CTextBlock>().FirstOrDefault();
         return headerText is not null
                && IsTransparent(headerText.Background)
-               && MatchesToken(headerText.Foreground, "Hub.TextPrimary");
+               && MatchesToken(headerText.Foreground, "Hub.TextBody");
     }
 
     /// <summary>Whether the document's own elements resolve to Hub tokens. GithubLike hardcodes black
@@ -319,11 +319,15 @@ internal static class MarkdownMessageRenderer
         var link = viewer.GetLogicalDescendants().OfType<CHyperlink>().FirstOrDefault();
 
         // The heading size is part of the assertion because this file is the winning style layer: a body
-        // FontSize written here outranks the theme's heading sizes by position, not by specificity.
+        // FontSize written here outranks the theme's heading sizes by position, not by specificity. The two
+        // inks are named apart on purpose: a heading keeps Hub.TextPrimary and the prose — including the code
+        // inside it — reads in Hub.TextBody, so a rung that went missing would be caught as a wrong colour
+        // rather than as a passing assertion that only ever looked at one of them.
         return heading is not null && body is not null
                && MatchesToken(heading.Foreground, "Hub.TextPrimary")
+               && MatchesToken(body.Foreground, "Hub.TextBody")
                && body.FontSize == 13 && heading.FontSize > body.FontSize
-               && inline is not null && MatchesToken(inline.Foreground, "Hub.TextPrimary")
+               && inline is not null && MatchesToken(inline.Foreground, "Hub.TextBody")
                && MatchesToken(inline.Background, "Hub.SurfaceRaised")
                && codeBlock is not null && MatchesToken(codeBlock.Background, "Hub.SurfaceSunken")
                && MatchesToken(codeBlock.BorderBrush, "Hub.BorderSubtle")

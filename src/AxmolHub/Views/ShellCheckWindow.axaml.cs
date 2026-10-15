@@ -3544,6 +3544,37 @@ public partial class ShellCheckWindow : Window
                 "markdown 正文仍是主题里那档 13，而不是被拉回控件默认的 14（实际 "
                 + markdown.ToString(CultureInfo.InvariantCulture) + "）");
 
+            // The ink, for the same boundary the size pair above guards: only the last forty turns are Markdown,
+            // so a message must not change brightness as it scrolls out of that window. Both readings come off the
+            // control that paints the words and are pinned to the reading token, so a literal would not pass.
+            Check(ThemeProbe.IsToken(panel.PlainTurnForegroundForCheck, "Hub.TextBody")
+                  && ThemeProbe.IsToken(panel.MarkdownBodyForegroundForCheck, "Hub.TextBody"),
+                "纯文本与 markdown 正文同一个墨色（Hub.TextBody），滚过渲染边界不换亮度（实际 "
+                + ThemeProbe.Describe(panel.PlainTurnForegroundForCheck) + " / "
+                + ThemeProbe.Describe(panel.MarkdownBodyForegroundForCheck) + "）");
+
+            // What the rung means, rather than which hex it happens to be: softer than the primary that headings
+            // and chrome wear, still readable on every surface a body of prose or code can land on. The relation
+            // holds in both variants, which is what lets it be asserted here without switching the theme first.
+            var bodyInk = ThemeProbe.TokenColor("Hub.TextBody");
+            var primaryInk = ThemeProbe.TokenColor("Hub.TextPrimary");
+            var wells = new[] { "Hub.Background", "Hub.SurfaceRaised", "Hub.SurfaceSunken" }
+                .Select(ThemeProbe.TokenColor).ToArray();
+            var readable = bodyInk is { } ink
+                           && wells.All(well => well is { } surface
+                               && DarkSyntax.Contrast(ink, surface) >= DarkSyntax.MinimumContrast);
+            var calmer = bodyInk is { } body && primaryInk is { } primary && wells[0] is { } page
+                         && DarkSyntax.Contrast(body, page) < DarkSyntax.Contrast(primary, page);
+            var ratios = string.Join(" / ", wells.Select(well => bodyInk is { } ink && well is { } surface
+                ? DarkSyntax.Contrast(ink, surface).ToString("0.0", CultureInfo.InvariantCulture)
+                : "null"));
+            Check(readable && calmer,
+                "正文墨色在页面/行内代码芯片/围栏代码底上都过 AA，且比标题与壳层的主墨色更柔（正文 "
+                + ratios + "，主墨色在页面上 "
+                + (primaryInk is { } primaryInkColor && wells[0] is { } pageColor
+                    ? DarkSyntax.Contrast(primaryInkColor, pageColor).ToString("0.0", CultureInfo.InvariantCulture)
+                    : "null") + "）");
+
             // The code face: the markdown theme used to name "Consolas, Menlo" itself, which is a second answer to
             // a question HubStyles has already answered, and the two answers drift.
             var codeFont = panel.MarkdownCodeFontFamilyForCheck;
