@@ -1571,13 +1571,21 @@ public partial class ChatPanel : UserControl
 
     /// <summary>What a refused send should say. The picture refusals are worded with the limit in them, so they
     /// go through the same formatter the composer used when it refused the picture on the way in — a key shown
-    /// raw would print the brace.</summary>
-    private static string NoticeFor(string? refusalKey) => refusalKey switch
+    /// raw would print the brace.
+    ///
+    /// <para><c>NoAvailableChatModels</c> splits in two, because one sentence cannot describe both states: the
+    /// picker genuinely empty, which is a settings problem, and this session naming a model its provider stopped
+    /// offering while other models sit in the list right there. The second is fixable in the chip — provided the
+    /// line says which name went missing, rather than claiming nothing is available when plenty is.</para></summary>
+    private string NoticeFor(string? refusalKey, string? conversationId) => refusalKey switch
     {
         "ChatImageEmpty" => ImageNotice(ChatImageVerdict.Empty),
         "ChatImageUnrecognized" => ImageNotice(ChatImageVerdict.Unrecognized),
         "ChatImageTooLarge" => ImageNotice(ChatImageVerdict.TooLarge),
         "ChatImageTooMany" => ImageNotice(ChatImageVerdict.TooMany),
+        "NoAvailableChatModels" when _chat.UnresolvableSessionModel(conversationId ?? "") is { } gone
+            => string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatSessionModelGoneFormat"), gone),
         _ => HubStrings.Get(refusalKey ?? "ChatFailed"),
     };
 
@@ -3477,7 +3485,9 @@ public partial class ChatPanel : UserControl
         if (text.Length == 0 && pictures is null) return;
         if (_chat.SelectedChatModel is null)
         {
-            AppendNotice(HubStrings.Get("NoAvailableChatModels"), danger: true);
+            // One sentence, one door: the pre-check and the refusal behind <c>TryEnqueueSend</c> both come through
+            // <see cref="NoticeFor"/>, so a session missing its own model says its name here and there alike.
+            AppendNotice(NoticeFor("NoAvailableChatModels", _chat.ActiveConversation?.Id), danger: true);
             return;
         }
 
@@ -3513,7 +3523,7 @@ public partial class ChatPanel : UserControl
 
         if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, out var refusalKey))
         {
-            AppendNotice(NoticeFor(refusalKey), danger: true);
+            AppendNotice(NoticeFor(refusalKey, conversation.Id), danger: true);
             return false;
         }
 

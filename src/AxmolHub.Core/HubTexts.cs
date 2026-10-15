@@ -671,6 +671,10 @@ public static class HubTexts
         // is said as work in progress on the row the tool and the search already use, not as a second label.
         ["ChatRetryWaitFormat"] = ("模型服务在限流，第 {0}/{1} 次尝试，等待 {2} 秒", "Rate-limited by the provider: attempt {0}/{1}, waiting {2}s"),
         ["ChatNoResponse"] = ("模型没有返回内容，请重试或检查模型配置。", "The model returned no content. Try again or check the model configuration."),
+        // A session that names a model its provider no longer offers. Saying "no models are available" would be
+        // false — the picker is full — and would hide the one fact the person can act on: which name went missing,
+        // and that the chip is where to put a new one. {0} = the model name the session carries.
+        ["ChatSessionModelGoneFormat"] = ("这条会话指定的模型 {0} 现在不在这个提供商可用的模型里。请在模型胶囊里选一个再问。", "The model this session names, {0}, is not among the provider's usable models. Pick another in the model chip and ask again."),
         // Said when the model asked for the same call twice after being refused, and the turn was ended rather
         // than paid for a third time. Not a failure and not silence: everything it found is above this line.
         ["ChatToolSpinStopped"] = ("模型反复请求同一个调用，本轮到此为止——上面已有的结果都还在。换一种问法或直接给出指示即可继续。",

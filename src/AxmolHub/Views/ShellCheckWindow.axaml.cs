@@ -2007,6 +2007,47 @@ public partial class ShellCheckWindow : Window
         shell.Chat.SetRouting(routedSession.Id, ChatRouting.Manual);
         Check(shell.Chat.LastRouteFor(routedSession.Id) is null,
             "切回手动后那次路由的读数不再冒充现状");
+
+        // ── A manual session that names a model its provider no longer offers ──
+        // Every auto route writes a line; a manual session being moved onto another model was the one silent model
+        // change left in the app — the composer wore one name, the request went out on the provider's active model,
+        // and the session's own window, token calibration and last-usage stamp all quietly described the wrong
+        // model. It now refuses, names the model it could not find, and stays recoverable from the chip.
+        var gapProvider = shell.Chat.AddProvider("Model gap local", "http://localhost:11437/v1", "gap-model", null);
+        var otherModel = shell.Chat.AddModel(gapProvider!.Id, "other-model")?.Name ?? "other-model";
+        var gapSession = shell.Chat.StartConversation(gapProvider.Id);
+        shell.Chat.SelectChatModel(gapProvider.Id, "gap-model");
+        panel.Reload();
+        Dispatcher.UIThread.RunJobs();
+        var gapAudits = new List<string>();
+        var savedGapAudit = shell.Chat.AuditWrite;
+        shell.Chat.AuditWrite = line => gapAudits.Add(line);
+        var gapDisabled = shell.Chat.SetModelEnabled(gapProvider.Id, "gap-model", false);
+        // The door and the sentence are two different facts, and the composer's own pre-check reaches the first one
+        // before the workspace is ever asked — so the refusal and its log line are asserted on the door itself,
+        // while the wording is asserted on the path a person actually presses.
+        var gapRefused = !shell.Chat.TryEnqueueSend(gapSession.Id, "这轮该被拒", null, out var gapKey);
+        await panel.SendForCheckAsync("这轮该被拒");
+        var gapNotice = panel.LastNoticeTextForCheck ?? "";
+        Check(gapDisabled && gapRefused && gapKey == "NoAvailableChatModels",
+            "会话点名的模型不再可用时，发送这道门直接拒绝，而不是换一个模型悄悄跑掉（拒绝 " + gapRefused
+            + "，key " + (gapKey ?? "无") + "）");
+        Check(gapNotice.Contains("gap-model", StringComparison.Ordinal)
+              && gapNotice != HubStrings.Get("NoAvailableChatModels")
+              && !gapNotice.Contains("ChatSessionModelGoneFormat", StringComparison.Ordinal),
+            "提示点名那条会话缺的模型，既不说「没有可用模型」这句假话，也不漏出裸 key（实际「" + gapNotice + "」）");
+        Check(gapAudits.Any(line => line.Contains("Model unavailable", StringComparison.Ordinal)
+                && line.Contains("gap-model", StringComparison.Ordinal)),
+            "拦下这一次拒绝在日志里留一行，写的就是那条会话点名的模型（实际抓到 " + gapAudits.Count
+            + " 行审计）");
+        Check(shell.Chat.StoredCopyForCheck(gapSession.Id)?.ModelName == "gap-model"
+              && shell.Chat.SelectChatModel(gapProvider.Id, otherModel)
+              && shell.Chat.ModelFor(gapSession.Id)?.ModelName == otherModel,
+            "拒绝不改写会话点名的模型名，在胶囊里换一个就能继续（名字 "
+            + (shell.Chat.StoredCopyForCheck(gapSession.Id)?.ModelName ?? "无") + "，换后解析到 "
+            + (shell.Chat.ModelFor(gapSession.Id)?.ModelName ?? "无") + "）");
+        shell.Chat.AuditWrite = savedGapAudit;
+        shell.Chat.RemoveProvider(gapProvider.Id);
         shell.Chat.RemoveProvider(routeProvider.Id);
 
         // ── Provider management lives in Settings now (it moved off the assistant page) ──

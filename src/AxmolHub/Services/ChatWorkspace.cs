@@ -143,22 +143,70 @@ public sealed class ChatWorkspace : IDisposable
     public ChatModelOption? SelectedChatModel
         => _active is { } viewed ? ModelFor(viewed.Id) : FindChatModel(_selectedProviderId, _selectedModelName) ?? AvailableChatModels.FirstOrDefault();
 
-    /// <summary>The provider/model a given session will use: what it was last set to, falling back to that
-    /// provider's active model, then to any usable model of the same provider.</summary>
+    /// <summary>The provider/model a given session will use.
+    ///
+    /// <para><b>A session that names a model gets that model, or it gets nothing.</b> A manual session whose name
+    /// did not resolve used to fall through to "any usable model of the same provider" — and since that list is
+    /// ordered by which model the provider has active, the request went out on a different model than the one the
+    /// composer was wearing while the session file still named the old one. Every reading of that session then
+    /// described the wrong model: the window its context is priced against, the token calibration that voids
+    /// itself the moment the measured model is not the model being asked (<see cref="MatchesMeasuredModel"/>), and
+    /// the last-usage stamp that overwrites the evidence of the swap on the next reply. Nothing was logged, so the
+    /// only way to find it was to notice a number that did not add up.</para>
+    ///
+    /// <para>Two fallbacks stay, both of them asked for rather than assumed. A session with no name yet takes its
+    /// provider's active model — rarer than it looks, since <see cref="StartConversation"/> stamps that name. And
+    /// an auto session's name is a starting point the router replaces on every request, so for that mode "any
+    /// usable model of this provider" is precisely what the person chose.</para></summary>
     public ChatModelOption? ModelFor(string conversationId)
     {
         var conversation = _sessions.Peek(conversationId) ?? _sessions.Load(conversationId);
         if (conversation is null) return null;
 
-        var modelName = conversation.ModelName;
-        if (string.IsNullOrWhiteSpace(modelName))
+        if (string.IsNullOrWhiteSpace(conversation.ModelName))
         {
-            modelName = _providerList.FirstOrDefault(provider => provider.Id == conversation.ProviderId)
+            var active = _providerList.FirstOrDefault(provider => provider.Id == conversation.ProviderId)
                 ?.ActiveModel?.Name;
+            return FindChatModel(conversation.ProviderId, active)
+                   ?? AvailableChatModels.FirstOrDefault(choice => choice.Provider.Id == conversation.ProviderId);
         }
 
-        return FindChatModel(conversation.ProviderId, modelName)
-               ?? AvailableChatModels.FirstOrDefault(choice => choice.Provider.Id == conversation.ProviderId);
+        var named = FindChatModel(conversation.ProviderId, conversation.ModelName);
+        return named ?? (ChatRouting.Normalize(conversation.Routing) == ChatRouting.Auto
+            ? AvailableChatModels.FirstOrDefault(choice => choice.Provider.Id == conversation.ProviderId)
+            : null);
+    }
+
+    /// <summary>The model a session names but can no longer be answered with, or null when nothing is missing.
+    /// Refusals say this name and the audit line records it, so both read it from the session rather than each
+    /// keeping its own copy of the guess.</summary>
+    public string? UnresolvableSessionModel(string conversationId)
+        => ModelFor(conversationId) is null
+           && (_sessions.Peek(conversationId) ?? _sessions.Load(conversationId)) is { } conversation
+           && ChatRouting.Normalize(conversation.Routing) != ChatRouting.Auto
+           && !string.IsNullOrWhiteSpace(conversation.ModelName)
+            ? conversation.ModelName
+            : null;
+
+    /// <summary>The model this session can actually be answered with, and which sentence to say when it cannot.
+    /// One helper for the three doors that ask, because a session quietly moved onto another model is a defect
+    /// that surfaces later as a number nobody can explain — and every door has to refuse in the same words, with
+    /// the missing name in them and a line in the log beside it.</summary>
+    private ChatModelOption? ResolvedModel(string conversationId, out string? refusalKey)
+    {
+        var choice = ModelFor(conversationId);
+        if (choice is not null)
+        {
+            refusalKey = null;
+            return choice;
+        }
+
+        refusalKey = "NoAvailableChatModels";
+        if (UnresolvableSessionModel(conversationId) is { } gone)
+            Audit(conversationId,
+                $"Model unavailable: this session names {gone}, which the provider does not offer any more — "
+                + "refusing rather than answering on another model");
+        return null;
     }
 
     public ModelProvider? ActiveProvider => SelectedChatModel?.Provider;
@@ -2682,11 +2730,7 @@ public sealed class ChatWorkspace : IDisposable
                 return false;
             }
 
-            if (ModelFor(conversationId) is null)
-            {
-                refusalKey = "NoAvailableChatModels";
-                return false;
-            }
+            if (ResolvedModel(conversationId, out refusalKey) is null) return false;
 
             if (_runs.Count >= MaxConcurrentRuns)
             {
@@ -3224,12 +3268,8 @@ public sealed class ChatWorkspace : IDisposable
             return false;
         }
 
-        var choice = ModelFor(conversationId);
-        if (choice is null)
-        {
-            refusalKey = "NoAvailableChatModels";
-            return false;
-        }
+        var choice = ResolvedModel(conversationId, out refusalKey);
+        if (choice is null) return false;
 
         if (IsRunning(conversationId))
         {
@@ -3312,11 +3352,7 @@ public sealed class ChatWorkspace : IDisposable
             return false;
         }
 
-        if (ModelFor(conversationId) is null)
-        {
-            refusalKey = "NoAvailableChatModels";
-            return false;
-        }
+        if (ResolvedModel(conversationId, out refusalKey) is null) return false;
 
         if (IsRunning(conversationId))
         {
@@ -4680,7 +4716,17 @@ public sealed class ChatWorkspace : IDisposable
     {
         run.BeginSegment();
         var request = await ReadOnUiAsync(() => PrepareRequest(run.ConversationId, run.SteerCount)).ConfigureAwait(false);
-        if (request is null) return (RunResult.Failed, "NoAvailableChatModels", true, null);
+        if (request is null)
+        {
+            // The session lost the model it names between segments — a list refresh that retired the name, a
+            // provider switched off while the reply was going. None of the three doors above saw this one coming,
+            // and a run that ends on a missing model without a line in the log is the silence this file exists to
+            // end, so the name goes down while it is still knowable.
+            if (UnresolvableSessionModel(run.ConversationId) is { } gone)
+                Audit(run.ConversationId,
+                    $"Model unavailable: this session names {gone}, which the provider does not offer any more");
+            return (RunResult.Failed, "NoAvailableChatModels", true, null);
+        }
 
         // The retry records its own reply, so the segment that retried must not append a second copy of the same
         // text the call below already wrote to the transcript.
