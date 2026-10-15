@@ -231,7 +231,7 @@ public static class HubTexts
         // sections and so needs a name that is neither of them.
         ["SettingsCatAppearance"] = ("外观与语言", "Appearance & language"),
         ["SettingsOverlayClose"] = ("关闭设置", "Close settings"),
-        ["Language"] = ("界面语言", "Interface language"),
+        ["Language"] = ("语言", "Language"),
         ["LanguageHint"] = ("切换立即生效，重启后保留。", "Applies immediately and is remembered."),
         ["Appearance"] = ("外观", "Appearance"),
         ["Theme"] = ("主题", "Theme"),
