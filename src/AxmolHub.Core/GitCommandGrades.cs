@@ -24,6 +24,12 @@ namespace AxmolHub.Core;
 /// (<c>git lfs install</c>, <c>git flow feature start</c>) can move the tree, and nothing about a verb nobody
 /// recognised says it will not.
 ///
+/// <para>What a grade then <i>costs</i> is a second question, decided one step out from here:
+/// <see cref="LocalWriteVerbs"/> is the whole list of writes that stay inside the repository and are undone
+/// there, and every other write — including a verb nobody recognised — is the reach the tier table calls a system
+/// command. So this classifier never says "safe". It says what the line does, and the table beside it says who
+/// has to be asked.</para>
+///
 /// <para>The line is split by <see cref="ShellCommandLine"/>, the same reader
 /// <see cref="BuildCommandGrades"/> uses: two classifiers with two tokenizers would answer two different
 /// questions about one command string.</para>
@@ -37,8 +43,10 @@ public enum GitGrade
     /// today's tier, so the model can look at the repository under 自动审批 exactly as it looks at files.</summary>
     GitRead,
 
-    /// <summary>A git command that moves the index, the working tree, a ref, or history — and, unlike
-    /// <c>file_write</c>, does it to state Hub cannot hand back.</summary>
+    /// <summary>A git command that moves the index, the working tree, a ref, or history — state no file tool can
+    /// hand back. What that <i>costs</i> is not decided here: <see cref="LocalWriteVerbs"/> is the half of this
+    /// grade that stays inside the repository and is undone there, and the tier table says what the rest ask
+    /// for.</summary>
     GitWrite,
 
     /// <summary>Git was called with a verb this build has never heard of. Graded as a write, because the honest
@@ -55,16 +63,25 @@ public enum GitGrade
 public static class GitCommandGrades
 {
     /// <summary>
-    /// Verbs whose writes never cost a card: reversible index operations. The admission bar is "undoing it is
-    /// <c>git reset</c>", which <c>add</c> clears and nothing else in the write table does — <c>commit</c> moves
-    /// history, <c>stash</c> hides work, <c>mv</c> touches the tree. Extending the list is a one-word edit and a
-    /// one-cell assertion change, which is the point of keeping it small and named.
+    /// Verbs whose writes stay inside the repository and can be reached back, so no mode has to ask about them:
+    /// <c>add</c> undoes with <c>git reset</c>, and <c>commit</c> undoes with <c>git reset --soft</c> or the reflog.
+    /// Neither throws away uncommitted work, and neither sends anything off this machine — that pair of questions
+    /// is the admission bar, which is why <c>push</c> is not on the list (it leaves the machine), <c>reset --hard</c>
+    /// and <c>clean</c> are not (they destroy work nothing can hand back), and <c>stash</c> is not (hiding work is
+    /// not recording it). Extending the list is a one-word edit and a one-cell assertion change, which is the point
+    /// of keeping it small and named.
+    ///
+    /// <para><b>One table, and <c>add</c> and <c>commit</c> have to stay in it together.</b> The exemption is read
+    /// as one set that has to cover every write in the line, never as a union of sets (see
+    /// <see cref="AllWritesAllowed"/>): split them across two tables and <c>git add -A &amp;&amp; git commit -m x</c>
+    /// — the ordinary way anyone commits — would straddle both and keep asking, which is the one line this table
+    /// exists for.</para>
     ///
     /// <para>It is the <i>policy</i> half of the exemption; the grant half is the user's own list
-    /// (<see cref="CommandTrust"/>). The two are consulted as one set of allowed verbs and never as a union that
-    /// a compound line can straddle: see <see cref="AllWritesAllowed"/>.</para>
+    /// (<see cref="CommandTrust"/>). The two are consulted one at a time and never as a union, and a grant names a
+    /// verb rather than a table.</para>
     /// </summary>
-    public static readonly IReadOnlyCollection<string> BuiltInAllowedVerbs = ["add"];
+    public static readonly IReadOnlyCollection<string> LocalWriteVerbs = ["add", "commit"];
     /// <summary>Verbs that only read. A verb missing from both sets lands on
     /// <see cref="GitGrade.GitUnclassifiable"/>, which asks, so an omission costs a card rather than opening a
     /// hole — which is why the write set is allowed to be short.</summary>
@@ -93,9 +110,6 @@ public static class GitCommandGrades
     {
         "-C", "-c", "--exec-path", "--git-dir", "--namespace", "--super-prefix", "--work-tree",
     };
-
-    /// <summary>Whether a grade has to cost more than the sandbox tier. Reads are not here on purpose.</summary>
-    public static bool Elevates(GitGrade grade) => grade is GitGrade.GitWrite or GitGrade.GitUnclassifiable;
 
     /// <summary>
     /// The grade of the <c>command</c> argument of a tool call. Absent, blank, or unparseable arguments answer
@@ -146,14 +160,18 @@ public static class GitCommandGrades
     }
 
     /// <summary>
-    /// The whole exemption, as one rule: the built-in table <b>or</b> the person's granted verbs must cover every
-    /// write in the line — never the union of the two. A line whose writes straddle the tables (<c>git add &amp;&amp;
-    /// git push</c> with only <c>push</c> granted) is a line neither table speaks for as a whole, so it keeps asking;
-    /// that cell exists because taking the union is the easy mistake here, and it would let one grant quietly widen
-    /// the other table's reach.
+    /// Whether the line's git content is nothing but writes that stay in the repository — every write a direct
+    /// <c>git &lt;verb&gt;</c> call naming a verb in <see cref="LocalWriteVerbs"/>, and at least one of them.
+    ///
+    /// <para>The "at least one" half is what keeps a command with no git write in it — a build, a test run, a bare
+    /// <c>git status</c> — out of this answer: those keep the sandbox tier they already had, and a caller that read
+    /// a true here as "nothing in this line needs asking" would be reading it the wrong way round. A line this
+    /// build could not read answers false by construction rather than by a second rule
+    /// (<see cref="WriteVerbsOf"/> reports no verb for an unrecognised subcommand or for a write reached through a
+    /// wrapper, so neither can be covered), which is the direction every uncertain case has to fail in.</para>
     /// </summary>
-    public static bool CoveredByOneTable(string? argumentsJson, IReadOnlyCollection<string> grantedVerbs)
-        => AllWritesAllowed(argumentsJson, BuiltInAllowedVerbs) || AllWritesAllowed(argumentsJson, grantedVerbs);
+    public static bool LocalWritesOnly(string? argumentsJson)
+        => WriteVerbsOf(argumentsJson).Count > 0 && AllWritesAllowed(argumentsJson, LocalWriteVerbs);
 
     private static string? CommandTextOf(string? argumentsJson)
     {

@@ -99,7 +99,8 @@ internal static class ChatTools
     };
 
     /// <summary>
-    /// A command's tier: the directory it will run in, and what the command does to a repository or to a build.
+    /// A command's tier: the directory it will run in, what the command does to a repository or to a build, and —
+    /// where those two do not already decide it — which write verbs a person has said to stop asking about.
     ///
     /// <para>The root comes from the same check the tool body runs before it spawns the shell
     /// (<see cref="WorkspacePaths.VerifyCommandRoot"/>, which <c>WorkspaceTools.RunCommand</c> calls first), so
@@ -107,12 +108,16 @@ internal static class ChatTools
     /// drift apart. A missing, protected or link-ridden root is not a workspace command, and a command with no
     /// sandbox asks in every tier but full.</para>
     ///
-    /// <para>The verb is the second half, and it is the reason the arm is a method: <c>git reset --hard</c> does run
-    /// in the directory the person chose, and still moves state no file tool can hand back, so it belongs on the same
-    /// tier as the screen and another session — the one tier a 「总是允许」 grant cannot open (see the gate in
-    /// <c>ChatWorkspace</c>) and the one that keeps asking under 自动审批. Git <i>reads</i> stay on the sandbox tier
-    /// where every established client leaves them: a model that has to ask permission to see <c>git status</c>
-    /// answers from a file it read three turns ago instead, which is a worse guard, not a stricter one.</para>
+    /// <para>The verb is the second half, and it is the reason the arm is a method: two different things can make a
+    /// command cost more than the sandbox, and the line between them is a ruling rather than a ranking.
+    /// <c>git reset --hard</c> and <c>git push</c> do run in the directory the person chose and still belong on the
+    /// same tier as the screen and another session — the one tier a 「总是允许」 grant cannot open (see the gate in
+    /// <c>ChatWorkspace</c>) and the one that keeps asking under 自动审批. The writes that stay inside the
+    /// repository and are put back from it (<see cref="GitCommandGrades.LocalWriteVerbs"/>, deliberately two words
+    /// long) are ordinary work instead, exactly like a build: <see cref="ToolRisk.RepositoryWrite"/> is a card in
+    /// 询问审批 and nothing at all in 自动审批. Git <i>reads</i> stay on the sandbox tier where every established
+    /// client leaves them: a model that has to ask permission to see <c>git status</c> answers from a file it read
+    /// three turns ago instead, which is a worse guard, not a stricter one.</para>
     ///
     /// <para><b>A cache break is asked about before a git verb is</b>, and that order is the rule rather than a
     /// detail: <c>git commit -m x &amp;&amp; rm -rf build</c> under 完全访问 must still produce a card, and if the git read
@@ -125,10 +130,12 @@ internal static class ChatTools
     /// </summary>
     /// <summary>
     /// The command ladder, in the one order that matters. The sandbox test comes first, then the build classifier's
-    /// cache-break verdict, and only then the git write exemption — so <c>git clean -fdx</c> is a cache break even
-    /// with <c>git clean</c> granted, and no grant can walk a command past the first two rungs. The exemption itself
-    /// is <see cref="GitCommandGrades.CoveredByOneTable"/>: one table covers the whole line, never the union of the
-    /// built-in policy and the person's grants.
+    /// cache-break verdict, then the local-write table, and the person's granted verbs last — so <c>git clean -fdx</c>
+    /// is a cache break even with <c>git clean</c> granted, and no grant can walk a command past the first two rungs.
+    /// The two git questions are asked one at a time rather than as one union: <see cref="GitCommandGrades.LocalWritesOnly"/>
+    /// is what this build calls ordinary work, and <see cref="GitCommandGrades.AllWritesAllowed"/> is what a person has
+    /// answered for. A line whose writes straddle the two (<c>git add &amp;&amp; git push</c> with only <c>push</c>
+    /// granted) is covered by neither, because a grant names a verb and a mode does not get to widen it.
     /// </summary>
     private static ToolRisk RunCommandRisk(WorkspaceToolScope scope, string? argumentsJson,
         IReadOnlyList<string>? trustedCommands)
@@ -136,7 +143,8 @@ internal static class ChatTools
         if (WorkspacePaths.VerifyCommandRoot(scope.WorkspaceRoot, scope.Guards) != WorkspacePathVerdict.Allowed)
             return ToolRisk.SystemCommand;
         if (BuildCommandGrades.CommandOf(argumentsJson) == BuildGrade.CacheBreak) return ToolRisk.CacheBreak;
-        return GitCommandGrades.CoveredByOneTable(argumentsJson, CommandTrust.VerbsOf(trustedCommands))
+        if (GitCommandGrades.LocalWritesOnly(argumentsJson)) return ToolRisk.RepositoryWrite;
+        return GitCommandGrades.AllWritesAllowed(argumentsJson, CommandTrust.VerbsOf(trustedCommands))
             ? ToolRisk.WorkspaceCommand
             : ToolRisk.SystemCommand;
     }

@@ -4795,9 +4795,10 @@ if (args.Contains("--check-ai-tools"))
     if (!commandPreview.Contains("cmake --build build") || !commandPreview.Contains(workspace)
         || !commandPreview.Contains("Hub asks after 60s of silence"))
         throw new Exception($"A command did not preview with its shell, directory and silence limit:{Environment.NewLine}{commandPreview}");
-    // The command card says which of the two ladders it is answering for: somebody watching a command park under
-    // 自动审批 needs to read that it moves the repository, and a `git status` card in the strict tier must not claim
-    // the same thing.
+    // The command card says which of the two ladders it is answering for: somebody looking at a command that parked
+    // under 询问审批 needs to read that it moves the repository, and a `git status` card in the same tier must not
+    // claim the same thing. (Under 自动审批 only the verbs that move real state still park, and they say so on the
+    // same line — the local writes that stopped parking are the ones this card is no longer drawn for.)
     var gitWriteCard = Preview("run_command", """{"command":"git commit -m x"}""");
     if (!gitWriteCard.Contains("git write · moves the index", StringComparison.Ordinal)
         || !gitWriteCard.Contains("git commit -m x", StringComparison.Ordinal))
@@ -5500,6 +5501,13 @@ if (args.Contains("--check-ai-tool-policy"))
         // promises to run without a click, while the tier above it — the screen, another session, a directory
         // nobody chose — still asks.
         (ToolApprovalModes.Auto, ToolRisk.WorkspaceCommand, false),
+        // …and the other half of that same complaint, ruled later and answered the same way: a git write that stays
+        // in the repository — add, commit — is ordinary work too, so 自动审批 runs it unannounced while 询问审批 still
+        // asks. The strict-tier row is the one that keeps it honest: drop it and "the mode lets a commit through"
+        // would be indistinguishable from a gate that stopped asking about git at all.
+        (ToolApprovalModes.Ask, ToolRisk.RepositoryWrite, true),
+        (ToolApprovalModes.Auto, ToolRisk.RepositoryWrite, false),
+        (ToolApprovalModes.Full, ToolRisk.RepositoryWrite, false),
         (ToolApprovalModes.Auto, ToolRisk.SystemCommand, true),
         (ToolApprovalModes.Full, ToolRisk.ReadOnly, false),
         (ToolApprovalModes.Full, ToolRisk.WorkspaceWrite, false),
@@ -5549,6 +5557,9 @@ if (args.Contains("--check-ai-tool-policy"))
         // Building sits here, not above: a grant that stops asking about `run_command` was always going to cover a
         // compile, and that is the ruling rather than an oversight — the loop is the work.
         (ToolRisk.WorkspaceCommand, true),
+        // The git write that stays in the repository is here for the same reason, one rung over: a person who wants a
+        // commit to stop asking in 询问审批 as well gets that from a grant, not from the mode table.
+        (ToolRisk.RepositoryWrite, true),
         (ToolRisk.AssistantNote, true),
         (ToolRisk.SystemCommand, false),
         (ToolRisk.AskUser, false),
@@ -6081,11 +6092,17 @@ if (args.Contains("--check-ai-tool-policy"))
     }
     Console.WriteLine($"PASS: all {gitCases.Length} git command lines grade to the tier the ladder intends.");
 
-    // An unrecognised git verb has to behave like a write where the ladder is read, or the extra enum value would
-    // be decoration: this is the assertion that connects the grade to the gate.
-    if (GitCommandGrades.Elevates(GitGrade.NotGit) || GitCommandGrades.Elevates(GitGrade.GitRead)
-        || !GitCommandGrades.Elevates(GitGrade.GitWrite) || !GitCommandGrades.Elevates(GitGrade.GitUnclassifiable))
-        throw new Exception("Elevates() no longer means exactly \"more than the sandbox tier\".");
+    // The grade answers what a line does, and the table below answers what that costs — two questions, and this is
+    // the assertion that keeps them apart. The predicate that used to sit here (`Elevates()`, "more than the sandbox
+    // tier") answered both with one bool, and that is the collapse the local-write table exists to undo: a commit is
+    // a git write that costs no card, and a table that could not say so had to send every write to the top tier.
+    // Asserted on the pair that has to disagree, because agreeing is what a future edit would restore.
+    if (GitCommandGrades.Grade("git commit -m x") != GitGrade.GitWrite
+        || GitCommandGrades.Grade("git push origin main") != GitGrade.GitWrite
+        || !GitCommandGrades.LocalWritesOnly(CommandArgs("git commit -m x"))
+        || GitCommandGrades.LocalWritesOnly(CommandArgs("git push origin main")))
+        throw new Exception("The grade stopped describing what a git line does, or the local-write table stopped "
+            + "deciding what it costs.");
 
     // The gate hands the raw arguments in, so the wrapper is asserted with the rest: absent, blank, unparseable
     // and unrelated JSON all keep today's tier, which is what the approval-card fixtures and the audit lines in
@@ -6105,10 +6122,11 @@ if (args.Contains("--check-ai-tool-policy"))
     // they are asserted here rather than in the window — the tier they feed is a pure function of them too.
     static string CommandArgs(string command) => $"{{\"command\":{JsonSerializer.Serialize(command)}}}";
 
-    if (!GitCommandGrades.BuiltInAllowedVerbs.SequenceEqual(["add"]))
-        throw new Exception("The built-in verb table changed. It is the whole list of git writes that never cost a "
-            + "card — the one place a verb is judged reversible enough to run unattended — so a change here is a "
-            + "ruling, not a detail.");
+    if (!GitCommandGrades.LocalWriteVerbs.SequenceEqual(["add", "commit"]))
+        throw new Exception("The local-write table changed. It is the whole list of git writes that run unattended "
+            + "under 自动审批 — the one place a verb is judged to stay inside the repository and be put back from it — "
+            + "so a change here is a ruling, not a detail. `add` and `commit` also have to stay in the same table: "
+            + "split them and `git add -A && git commit -m x` straddles both and keeps asking.");
 
     // What a card may offer to stop asking about: the verbs a line spells itself, lowercase, in order, deduplicated.
     // Three lines report nothing on purpose — a verb this build cannot name, a read, and a write that only exists
@@ -6141,34 +6159,64 @@ if (args.Contains("--check-ai-tool-policy"))
     }
     Console.WriteLine("PASS: a card can only ever offer to trust a verb the line spells itself.");
 
-    // The exemption, one row per cell the ruling named. Two of them are the ones an implementation plausibly gets
-    // wrong: a line whose writes straddle the built-in table and the granted list (the union of the two tables is
-    // never taken), and a verb laundered through a shell (a grant names the call as it is written). The rest pin
-    // the edges: reads and non-git lines need no table at all, a verb this build cannot name is never covered, and
-    // one table covering several writes is fine.
+    // What this build calls ordinary work, one row per cell the ruling named. The line everyone actually types
+    // (`git add -A && git commit -m x`, two verbs from one table) is the cell the whole shape exists for, and the
+    // verb reached through a shell is the one that must not sneak in beside it. The rest pin the edges: a read, a
+    // non-git line and a verb this build cannot name are not local writes, and "at least one write" is what keeps a
+    // bare build out of this answer and on the sandbox tier it already had.
+    foreach (var (label, command, expected) in new (string, string, bool)[]
+             {
+                 ("可撤销的索引操作是本地写", "git add -A", true),
+                 ("提交是本地写：仓库里已记录、能撤回来、不出这台机器", "git commit -m \"fix: the title\"", true),
+                 ("最常走的那条两动词的行来自同一张表", "git add -A && git commit -m x", true),
+                 ("同一张表里的多个写动词照旧放行", "git add -A && git add -p", true),
+                 ("未授权的写不是本地写", "git push", false),
+                 ("fetch 出这台机器，不在本地表里", "git fetch origin", false),
+                 ("重写历史不是本地写", "git rebase main", false),
+                 ("销毁未提交改动的写不是本地写", "git reset --hard", false),
+                 ("删除已构建的东西不是本地写", "git clean -fdx", false),
+                 ("认不出的子命令不是本地写", "git my-tool thing", false),
+                 ("读命令不是本地写", "git status", false),
+                 ("没有 git 的行不受影响", "npm test", false),
+                 ("穿透段里的 commit 不是直接写出来的动词", "pwsh -c \"git commit -m x\"", false),
+                 ("sudo 包着的 commit 也一样", "sudo git commit -m x", false),
+             })
+    {
+        var local = GitCommandGrades.LocalWritesOnly(CommandArgs(command));
+        if (local != expected)
+            throw new Exception($"{label}: LocalWritesOnly(「{command}」) said {local}, expected {expected}.");
+    }
+    // The same question with nothing readable in the arguments: a call the tool body will refuse before it runs
+    // anything must not be classed as work this build trusts.
+    if (GitCommandGrades.LocalWritesOnly(null) || GitCommandGrades.LocalWritesOnly("{}")
+        || GitCommandGrades.LocalWritesOnly("not json at all"))
+        throw new Exception("A run_command whose arguments name no command was read as a local git write.");
+    Console.WriteLine("PASS: the local-write table is exactly the git writes that run unattended.");
+
+    // The grant table, on the cells where it is the thing that decides: a grant names one verb and has to cover every
+    // write in the line, which is what stops it from quietly widening a table it does not own. The straddle cell is
+    // the one that matters — `git add && git push` with only `push` granted is covered by neither table, and the
+    // union of the two is never taken.
     foreach (var (label, command, granted, expected) in new (string, string, string[], bool)[]
              {
-                 ("内置表放行可撤销的索引操作", "git add -A", [], true),
-                 ("未授权的写仍升", "git push", [], false),
                  ("授权 push 后它落在沙箱档", "git push origin main", ["push"], true),
                  ("两表并集也救不了跨表的行", "git add && git push", ["push"], false),
+                 ("本地的那半也授权了才算覆盖整行", "git add && git push", ["add", "push"], true),
                  ("穿透段要自己命中授权", "pwsh -c \"git push\"", ["push"], false),
                  ("sudo 包着的写也一样", "sudo git push", ["push"], false),
                  ("认不出的子命令永不可授权", "git lfs install", ["lfs"], false),
-                 ("同一张表里的多个写动词照旧放行", "git add -A && git add -p", [], true),
                  ("两个都授权的动词来自同一张表时放行", "git fetch origin && git push", ["fetch", "push"], true),
-                 ("同一张表覆盖整行才放行，两个动词都在授权表里也一样", "git add && git push", ["add", "push"], true),
                  ("读命令不需要任何表", "git status", [], true),
                  ("没有 git 的行不受影响", "npm test", [], true),
                  ("认不出的行也照旧要问", "git my-tool thing", ["my-tool"], false),
              })
     {
-        var covered = GitCommandGrades.CoveredByOneTable(CommandArgs(command), granted);
+        var covered = GitCommandGrades.AllWritesAllowed(CommandArgs(command), granted);
         if (covered != expected)
-            throw new Exception($"{label}: CoveredByOneTable(「{command}」, [{string.Join(", ", granted)}]) said "
+            throw new Exception($"{label}: AllWritesAllowed(「{command}」, [{string.Join(", ", granted)}]) said "
                 + $"{covered}, expected {expected}.");
     }
-    Console.WriteLine("PASS: one table covers a line's git writes, and never the union of two.");
+    Console.WriteLine("PASS: a grant covers a line's git writes, and never the union with the local table.");
 
     // The stored shape of a grant, which is what the settings file holds and what the card's verb button writes: the
     // two words the person read, matched Ordinal, and an entry this build cannot read matching nothing rather than

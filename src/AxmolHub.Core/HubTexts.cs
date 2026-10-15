@@ -958,11 +958,15 @@ public static class HubTexts
         ["ToolApprovalAuto"] = ("自动审批", "Auto-approve"),
         // Both hints name the deletion, not the build: the user ruled that reading an error, changing code and
         // building again is ordinary work, while throwing away what was already built is the one thing no mode speaks
-        // for. A hint that said otherwise would be the layer that lies about the gate.
-        ["ToolApprovalAutoHint"] = ("工作目录里的写入和命令直接执行，构建也算；git 写命令里 add 直接放行，其余动词看授权；删除已构建的东西、抓屏、派生子会话、换工作目录仍要问",
-            "Writes and commands inside the workspace run on their own, builds included; among git write commands "
-            + "add runs on its own and the rest follow what was granted; clearing what was built, the screen, a "
-            + "child session and a new working directory still ask"),
+        // for. A hint that said otherwise would be the layer that lies about the gate. The auto hint names the two
+        // git verbs the same way and for the same reason: a person who read only "commands run on their own" would
+        // be surprised by a card for a commit, and one who read only "git asks" would be surprised by a push that
+        // went through, so both halves are spelled out rather than left to the button below.
+        ["ToolApprovalAutoHint"] = ("工作目录里的写入和命令直接执行，构建也算；git 命令里 add 和 commit 这两条留在仓库里的写也直接执行，其余动词照旧要问（push、reset、clean 这些会离开这台机器或丢掉没提交的东西）；删除已构建的东西、抓屏、派生子会话、换工作目录仍要问",
+            "Writes and commands inside the workspace run on their own, builds included; among git commands the two "
+            + "that stay in the repository, add and commit, run on their own too, while the rest still ask — push, "
+            + "reset and clean leave this machine or throw away work nothing can hand back; clearing what was built, "
+            + "the screen, a child session and a new working directory still ask"),
         ["ToolApprovalFull"] = ("完全访问", "Full access"),
         ["ToolApprovalFullHint"] = ("除了删除已构建的东西，什么都不再问，包括抓屏和这个版本没登记过的工具",
             "Nothing asks any more except clearing what was built, including the screen and any tool this build "

@@ -471,7 +471,10 @@ public partial class ChatPanel
             Data = ThemeGeometry(risk switch
             {
                 ToolRisk.SystemCommand or ToolRisk.CacheBreak => "Hub.Icon.PermissionFull",
-                ToolRisk.WorkspaceWrite => "Hub.Icon.PermissionAsk",
+                // A write, and the same glyph a file write gets: the tier a commit lands on was carved out to say
+                // "this is ordinary work", which it does by asking in 询问审批 — and a card that drew the auto
+                // glyph while it waited for an answer would be contradicting the mode it is asking under.
+                ToolRisk.WorkspaceWrite or ToolRisk.RepositoryWrite => "Hub.Icon.PermissionAsk",
                 _ => "Hub.Icon.PermissionAuto",
             }),
         };

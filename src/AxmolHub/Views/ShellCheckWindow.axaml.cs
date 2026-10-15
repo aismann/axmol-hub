@@ -6493,10 +6493,17 @@ public partial class ShellCheckWindow : Window
         var peerSession = chat.StartConversation();
         // A call on the tier no grant can open, so its card can be shown to have lost the button that would lie.
         var screenSession = chat.StartConversation();
-        // The same tier, reached through the sandbox's own tool rather than past it: a git write starts in the
-        // directory the person chose and still moves state <c>file_write</c> cannot hand back. This fixture is the
-        // one that proves a grant on <c>run_command</c> does not open it.
+        // The same tier, reached through the sandbox's own tool rather than past it: a git write that moves a ref
+        // starts in the directory the person chose and still belongs on the reach tier. This fixture is the one that
+        // proves a grant on <c>run_command</c> does not open it — and it stays a fixture about *that* verb after the
+        // local-write ruling: add and commit left this tier, the writes that leave the machine or rewrite it did not.
         var gitWriteSession = chat.StartConversation();
+        // The verb the ruling moved off the asking rung, and the same command under the two modes that disagree
+        // about it: one session to prove 自动审批 runs a commit with no card at all, one to prove 询问审批 still asks.
+        // Asserted as a pair for the standing reason — "the mode let it through" and "the gate stopped asking about
+        // git" look identical from one side.
+        var commitAutoSession = chat.StartConversation();
+        var commitAskSession = chat.StartConversation();
         // The tier a grant <i>can</i> open, reached through the tool that leaves the machine: web_fetch shares it
         // with a sandbox command, so its card is the pair to the capture card below — one ladder, two answers, and
         // a fixture that only ever shows one of them cannot say which button the gate actually reads.
@@ -6561,21 +6568,32 @@ public partial class ShellCheckWindow : Window
         };
         var grantClient = new ApprovalChatClient { ToolName = "run_command" };
         var peerClient = new ApprovalChatClient { ToolName = "run_command" };
-        // Chosen so the cell is safe even when the rule it tests is broken: `tmp/` is gitignored and the index is
-        // clean, so a `git commit` that escaped the check would answer "nothing to commit" rather than write
-        // history into the repository the check is running in. The verb is `commit` on purpose as well, and not
-        // `push`: it is outside the built-in table (whose only entry is `add`), so this line really is a card under
-        // 自动审批, while a push the check let through would leave the machine. The message varies per round because
-        // the spin guard refuses a third byte-identical call on purpose, and this fixture is asked twice — once to
-        // park on the verb button and once to prove the grant that button wrote means the next one does not ask.
+        // The verb is one the ruling left on the asking rung, and it is chosen so the cell stays safe even when the
+        // rule it tests is broken: this check *approves* the call it parked, so the command really runs. `git branch
+        // -D` on a name no repository has changes nothing, while still being a write by its verb — and it is outside
+        // the local-write table (add, commit), so this line really is a card under 自动审批. `push` would have been
+        // the obvious verb and the wrong one: a push the check let through would leave the machine, which is the one
+        // risk this fixture must not carry. The message varies per round because the spin guard refuses a third
+        // byte-identical call on purpose, and this fixture is asked twice — once to park on the verb button and once
+        // to prove the grant that button wrote means the next one does not ask.
         var gitWriteClient = new ApprovalChatClient
         {
             ToolName = "run_command",
             ArgumentsByCall = round => new Dictionary<string, object?>
             {
-                ["command"] = $"git commit -m \"hub self-check {round}\"",
+                ["command"] = $"git branch -D \"hub self-check {round}\"",
             },
         };
+        // One command, two clients, because a client answers one session. The `--dry-run` is not decoration: this
+        // pair has to *run* the command to prove no card came up, and these fixtures start inside the repository
+        // under test, so a commit that created history would be writing into the user's own checkout. `--dry-run`
+        // keeps the verb as the thing being judged and the side effect as none.
+        var localCommit = new Dictionary<string, object?>
+        {
+            ["command"] = "git commit --dry-run -m \"hub self-check local\"",
+        };
+        var commitAutoClient = new ApprovalChatClient { ToolName = "run_command", Arguments = localCommit };
+        var commitAskClient = new ApprovalChatClient { ToolName = "run_command", Arguments = localCommit };
         var screenClient = new ApprovalChatClient
         {
             ToolName = "capture_screen",
@@ -6667,6 +6685,8 @@ public partial class ShellCheckWindow : Window
                 var id when id == grantSession.Id => grantClient,
                 var id when id == peerSession.Id => peerClient,
                 var id when id == gitWriteSession.Id => gitWriteClient,
+                var id when id == commitAutoSession.Id => commitAutoClient,
+                var id when id == commitAskSession.Id => commitAskClient,
                 var id when id == screenSession.Id => screenClient,
                 var id when id == longCardSession.Id => longCardClient,
                 _ => new ScriptedChatClient(["不该被使用"]),
@@ -6707,7 +6727,8 @@ public partial class ShellCheckWindow : Window
             batchClient.Thinking = [batchThinking];
             foreach (var session in new[] { readSession, parkSession, denySession, supersededSession, restartSession,
                     badgeSession, batchSession, autoRunSession, askRunSession, movedSession, grantSession, peerSession,
-                    gitWriteSession, fetchSession, searchSession, searchedSession, longCardSession, tripleSession,
+                    gitWriteSession, commitAutoSession, commitAskSession, fetchSession, searchSession, searchedSession,
+                    longCardSession, tripleSession,
                     buildSession, quietBuildSession, stallSession })
                 chat.SetWorkspaceRoot(session.Id, workspace);
 
@@ -6782,30 +6803,40 @@ public partial class ShellCheckWindow : Window
                   && ChatTools.RiskOf("run_command", Command("git clean -fdx"), sandbox) == ToolRisk.CacheBreak
                   && ChatTools.RiskOf("run_command", Command("dotnet clean"), sandbox) == ToolRisk.CacheBreak
                   && ChatTools.RiskOf("run_command", Command("git commit -m x && rm -rf build"), sandbox) == ToolRisk.CacheBreak
-                  // The order, asserted where the two ladders are read: a git <i>write</i> beside a <i>build</i> is
-                  // the reach tier (full access answers it), because the build half no longer outranks anything.
+                  // The order, asserted where the two ladders are read: a git write beside a build is decided by the
+                  // verb rather than by the build — and the verb now splits in two. A commit after a compile is the
+                  // local tier (it records work the person can put back), while the same pair behind a shell is still
+                  // the reach tier, because no part of that line spells the call a grant could name.
                   && ChatTools.RiskOf("run_command", Command("pwsh -c \"git commit -m x && cmake --build build\""), sandbox) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("run_command", Command("git commit -m x && cmake --build build"), sandbox) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("git commit -m x && cmake --build build"), sandbox) == ToolRisk.RepositoryWrite
                   // …while a build the classifier cannot name keeps the sandbox tier — the fail-open the plan named
                   // out loud, recorded here so it is a known shape and not an accident: still inside the sandbox,
                   // still holding the change gate, so the worst it does is skip the question.
                   && ChatTools.RiskOf("run_command", Command("cmd /c build.bat"), sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", Command("ls build"), sandbox) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", null, sandbox) == ToolRisk.WorkspaceCommand
-                  && ChatTools.RiskOf("run_command", Command("git commit -m x"), sandbox) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("run_command", Command("git add -A && git commit -m x"), sandbox) == ToolRisk.SystemCommand
+                  // The verb the ruling moved, with the write it most often rides with: both are the local tier, and
+                  // the same line behind a shell is not.
+                  && ChatTools.RiskOf("run_command", Command("git commit -m x"), sandbox) == ToolRisk.RepositoryWrite
+                  && ChatTools.RiskOf("run_command", Command("git add -A && git commit -m x"), sandbox) == ToolRisk.RepositoryWrite
+                  && ChatTools.RiskOf("run_command", Command("""pwsh -c "git commit -m x"""), sandbox) == ToolRisk.SystemCommand
                   // The route around the rule: a shell started for one command is that command.
                   && ChatTools.RiskOf("run_command", Command("""pwsh -c "git push"""), sandbox) == ToolRisk.SystemCommand
+                  // …and the writes that stayed where they were, because this line is about the repository and not
+                  // about the word "git": leaving the machine and destroying uncommitted work both still ask.
+                  && ChatTools.RiskOf("run_command", Command("git push origin main"), sandbox) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("git reset --hard"), sandbox) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("git fetch origin"), sandbox) == ToolRisk.SystemCommand
                   // A verb this build has never heard of is not assumed harmless, and the directory still decides
                   // when there is no directory to decide with.
                   && ChatTools.RiskOf("run_command", Command("git lfs install"), sandbox) == ToolRisk.SystemCommand
                   && ChatTools.RiskOf("run_command", Command("git status"), WorkspaceToolScope.Empty) == ToolRisk.SystemCommand
-                  // 内置表的那半：可撤销的索引操作不再花卡——而它旁边那半必须原地不动，读命令、包在 shell 里的写
-                  // 和认不出的子命令都还是原来的档，否则这条规则就顺手放行了别的东西。
-                  && ChatTools.RiskOf("run_command", Command("git add -A"), sandbox) == ToolRisk.WorkspaceCommand
-                  && ChatTools.RiskOf("run_command", Command("git add -A && git add -p"), sandbox) == ToolRisk.WorkspaceCommand
+                  // 本地写那半：留在仓库里、能撤回的写在「自动审批」下不再花卡——而它旁边那半必须原地不动，读命令、
+                  // 包在 shell 里的写和认不出的子命令都还是原来的档，否则这条规则就顺手放行了别的东西。
+                  && ChatTools.RiskOf("run_command", Command("git add -A"), sandbox) == ToolRisk.RepositoryWrite
+                  && ChatTools.RiskOf("run_command", Command("git add -A && git add -p"), sandbox) == ToolRisk.RepositoryWrite
                   // 授权表的那半，以及两表之间的边界：按动词授权后它自己落回沙箱档，但一张表必须覆盖整行——跨表的
-                  // 复合行（内置表管 add、授权表管 push）和包在 shell 里的写都不吃这张授权，顺序格也一样：授权盖不过
+                  // 复合行（本地表管 add、授权表管 push）和包在 shell 里的写都不吃这张授权，顺序格也一样：授权盖不过
                   // 前两级，没有沙箱根和删除已构建的东西都照旧。
                   && ChatTools.RiskOf("run_command", Command("git push origin main"), sandbox, null, ["git push"]) == ToolRisk.WorkspaceCommand
                   && ChatTools.RiskOf("run_command", Command("git add && git push"), sandbox, null, ["git push"]) == ToolRisk.SystemCommand
@@ -6816,8 +6847,9 @@ public partial class ShellCheckWindow : Window
                   && ChatTools.RiskOf("run_command", Command("git clean -fdx"), sandbox, null, ["git clean"]) == ToolRisk.CacheBreak
                   && ChatTools.RiskOf("run_command", Command("git commit -m x && rm -rf build"), sandbox, null, ["git commit"]) == ToolRisk.CacheBreak
                   && ChatTools.RiskOf("run_command", Command("git push"), WorkspaceToolScope.Empty, null, ["git push"]) == ToolRisk.SystemCommand,
-                "git 写命令按子命令升到最高档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照样升，认不出的子命令按写处理；"
-                + "内置放行的 add 让可撤销的索引操作留在沙箱档，而授权只认直接写出来的那个动词、一张表要么覆盖整行要么不覆盖，"
+                "git 写命令按子命令分档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照旧升到最高档，认不出的子命令按写处理；"
+                + "留在仓库里、能撤回来的写（add、commit）自成一档：「自动审批」不问、「询问审批」仍要问，而 push、"
+                + "reset --hard、fetch 这些照旧是最高档；授权只认直接写出来的那个动词、一张表要么覆盖整行要么不覆盖，"
                 + "跨表复合行、穿透段与 sudo 包着的写都照旧要问；构建留在沙箱档，删除已构建的东西升到重建档并且盖过 git 写，也盖过授权");
 
             // web_fetch on its own line rather than folded into the aggregate above, because of a specific negative
@@ -7046,15 +7078,18 @@ public partial class ShellCheckWindow : Window
             Check(agentPrompt.Contains("run the check the project itself uses")
                   && agentPrompt.Contains("if you did not run it, say so")
                   && agentPrompt.Contains("output written to a file inside the workspace")
-                  // The tier is now a fact about the verb, and a model that does not know it will spend the turn
-                  // discovering it: the prompt has to state that git reads are free and git writes cost a card,
-                  // and name the route around the rule so the model does not take it.
+                  // The tier is a fact about the verb, and a model that does not know it will spend the turn
+                  // discovering it: the prompt has to state that git reads and the local writes are free, that the
+                  // writes which move real state cost a card, and name the route around the rule so the model does
+                  // not take it.
                   && agentPrompt.Contains("git status, git diff and git log are graded as ordinary sandbox commands")
+                  && agentPrompt.Contains("add and commit")
                   && agentPrompt.Contains("costs a card in every mode but full access")
                   && agentPrompt.Contains("instead of hiding it inside a shell -c payload")
                   && !agentPrompt.Contains("axmol", StringComparison.OrdinalIgnoreCase)
                   && !agentPrompt.Contains("1kiss", StringComparison.OrdinalIgnoreCase),
-                "Agent 提示词写明「验证过才报结果、输出被截断就落文件再读」，并写清 git 读命令免批、写命令必弹卡且不许绕进脚本，且不含引擎专属命令名");
+                "Agent 提示词写明「验证过才报结果、输出被截断就落文件再读」，并写清 git 读命令与 add/commit 这类本地写免批、"
+                + "其余写命令必弹卡且不许绕进脚本，且不含引擎专属命令名");
 
             // Every cell above reads the prompt with `Contains`, so a sentence that appears twice passes them all:
             // the prose still reads correctly, the model just pays for the same rule on every turn of every session.
@@ -7451,12 +7486,12 @@ public partial class ShellCheckWindow : Window
                 "另一个没被授权过的会话里，同一条命令不再弹卡——应用级信任是跨会话的（实际工具结果 "
                 + peerSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) + " 条）");
             // The grant is live app-wide at this exact moment, which is when the top tier has to show it: the same
-            // tool, the same sandbox, a verb that moves the repository — it still parks under 自动审批, and its
-            // card carries no 「总是允许」 that the gate would ignore. Without this cell the trust list asserted
-            // above would only prove that a grant opens the tier it is meant to open.
+            // tool, the same sandbox, a verb that moves a ref — it still parks under 自动审批, and its card carries
+            // no 「总是允许」 that the gate would ignore. Without this cell the trust list asserted above would only
+            // prove that a grant opens the tier it is meant to open.
             chat.SetApprovalMode(gitWriteSession.Id, ToolApprovalModes.Auto);
             chat.OpenConversation(gitWriteSession.Id);
-            chat.TryEnqueueSend(gitWriteSession.Id, "把改动提交一下", null, out _);
+            chat.TryEnqueueSend(gitWriteSession.Id, "把那个临时分支删掉", null, out _);
             var gitCallId = await WaitForPendingCallAsync(gitWriteSession);
             panel.Reload();
             shell.UpdateLayout();
@@ -7479,10 +7514,10 @@ public partial class ShellCheckWindow : Window
             gitWriteClient.CallsRemaining = 2;
             panel.ClickApprovalActionForCheck("ApprovalAllowAlwaysForVerb");
             await WaitUntilAsync(() => gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) >= 1);
-            Check(CommandTrust.Contains(chat.TrustedCommands, "git commit")
+            Check(CommandTrust.Contains(chat.TrustedCommands, "git branch")
                   && chat.TrustedCommands.Count == 1
                   && gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 1,
-                "「以后都不问 git commit」记下的是那个动词而不是整只工具：这张卡上的调用跑完了，清单上是 git commit（清单 "
+                "「以后都不问 git branch」记下的是那个动词而不是整只工具：这张卡上的调用跑完了，清单上是 git branch（清单 "
                 + string.Join("、", chat.TrustedCommands) + "，工具结果 "
                 + gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) + " 条）");
             chat.TryEnqueueSend(gitWriteSession.Id, "再提交一次", null, out _);
@@ -7503,6 +7538,43 @@ public partial class ShellCheckWindow : Window
             Check(revokedCallId is not null && chat.TrustedTools.Count == 0,
                 "撤销之后又开始问，清单不是一段再也回不去的记忆（挂起的调用 " + (revokedCallId ?? "无") + "）");
             chat.TryResolveApproval(peerSession.Id, revokedCallId ?? "", approved: false, alwaysAllow: false, out _);
+            await WaitForIdleAsync(chat);
+
+            // The verb the ruling moved, under the mode that was the whole complaint: a git write that records work
+            // inside the repository runs unannounced, exactly like the build above — and the transcript proves it ran,
+            // rather than only proving that nothing asked. The command is a `--dry-run` commit because these sessions
+            // start inside the repository under test: the verb is the thing being judged, the side effect is none.
+            chat.SetApprovalMode(commitAutoSession.Id, ToolApprovalModes.Auto);
+            chat.OpenConversation(commitAutoSession.Id);
+            chat.TryEnqueueSend(commitAutoSession.Id, "把改动提交一下", null, out var commitRefusal);
+            await WaitForIdleAsync(chat);
+            var commitAutoStored = chat.StoredCopyForCheck(commitAutoSession.Id);
+            Check(commitRefusal is null
+                  && commitAutoStored?.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 1
+                  && commitAutoStored.Messages.All(turn => turn.ApprovalState is null)
+                  && chat.RunFor(commitAutoSession.Id) is null,
+                "「自动审批」下 git commit 这条本地写没有卡片、也没留下审批状态，命令真的跑了（工具结果 "
+                + (commitAutoStored?.Messages.Count(turn => turn.Role == ChatRoles.Tool) ?? -1) + " 条）");
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.PendingApprovalCardsForCheck == 0,
+                "「自动审批」下的 git commit 根本不弹审批卡（卡 " + panel.PendingApprovalCardsForCheck + " 张）");
+
+            // …and the same command, the same sandbox, the strict tier: it still parks. 免批的是档位，不是闸门 —
+            // without this cell the one above could be reporting a gate that stopped working.
+            chat.SetApprovalMode(commitAskSession.Id, ToolApprovalModes.Ask);
+            chat.OpenConversation(commitAskSession.Id);
+            chat.TryEnqueueSend(commitAskSession.Id, "把改动提交一下", null, out _);
+            var commitAskedCallId = await WaitForPendingCallAsync(commitAskSession);
+            Check(commitAskedCallId is not null
+                  && commitAskSession.Messages.Any(turn => turn.ToolCallId == commitAskedCallId
+                      && turn.ApprovalState == ChatApprovalStates.Pending)
+                  && commitAskSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 0,
+                "同一条 git commit 在「询问审批」下仍然挂起等决定——免批的是档位，不是闸门（停在 "
+                + commitAskSession.Messages.Count + " 条）");
+            // Refused rather than left parked: the run has to be off the registry before the next fixture starts, and
+            // a refusal is the answer that runs nothing.
+            chat.TryResolveApproval(commitAskSession.Id, commitAskedCallId ?? "", approved: false, alwaysAllow: false, out _);
             await WaitForIdleAsync(chat);
 
             // The tier no grant can open. Its card has two answers rather than three, because a 「总是允许」 the
@@ -8424,7 +8496,8 @@ public partial class ShellCheckWindow : Window
             chat.FirstFrameTimeout = savedFirstFrameTimeout;
             foreach (var id in new[] { readSession.Id, parkSession.Id, denySession.Id, supersededSession.Id,
                     restartSession.Id, badgeSession.Id, batchSession.Id, autoRunSession.Id, askRunSession.Id,
-                    movedSession.Id, grantSession.Id, peerSession.Id, gitWriteSession.Id, screenSession.Id,
+                    movedSession.Id, grantSession.Id, peerSession.Id, gitWriteSession.Id, commitAutoSession.Id,
+                    commitAskSession.Id, screenSession.Id,
                     fetchSession.Id, longCardSession.Id, tripleSession.Id, buildSession.Id, quietBuildSession.Id,
                     stallSession.Id,
                     searchSession.Id, searchedSession.Id })

@@ -37,6 +37,26 @@ public enum ToolRisk
     /// invent.</para></summary>
     WorkspaceCommand,
 
+    /// <summary>A git write recorded inside the repository the session works in — <c>git add</c>, <c>git commit</c>.
+    /// <see cref="ToolApprovalModes.Auto"/> lets it through exactly as it lets a build through, and
+    /// <see cref="ToolApprovalModes.Ask"/> still asks about it.
+    ///
+    /// <para>It answers the same in every mode as <see cref="WorkspaceCommand"/>, and it is a tier of its own
+    /// anyway, because the reason is different and the reason is what a person holds the app to: that tier is about
+    /// <i>where</i> a process runs, while this one writes to <c>.git</c> — state a file tool may not touch at all
+    /// (<see cref="WorkspacePaths.IsExcludedDirectory"/>), which is why the write guard and this table disagree about
+    /// it in the first place. Calling a commit "a command in your directory" would be true by accident and
+    /// misleading by design.</para>
+    ///
+    /// <para>So it is not on <see cref="SystemCommand"/> either, which is where every git write used to land: that
+    /// tier means the call reaches past the sandbox, and a commit does not — it records work that is already on this
+    /// machine, and a person puts it back with one <c>git reset --soft</c> or from the reflog. A write that leaves
+    /// the machine (<c>git push</c>) or destroys what nothing can hand back (<c>git reset --hard</c>,
+    /// <c>git clean</c>) is still that reach and still asks under 自动审批.
+    /// <see cref="GitCommandGrades.LocalWriteVerbs"/> is the whole list of what landed here, and it is deliberately
+    /// two words long.</para></summary>
+    RepositoryWrite,
+
     /// <summary>Reaches past the sandbox — the user's screen, another session, a directory nobody chose — or is a
     /// tool this build has never heard of. A new name lands here rather than nowhere: an unknown tool is the one
     /// least able to vouch for itself, and no "always allow" grant opens this tier.</summary>
@@ -87,9 +107,11 @@ public static class ToolApprovalModes
     /// <summary>Ask for approval — the default, and the fallback for anything unrecognized.</summary>
     public const string Ask = "ask";
 
-    /// <summary>Auto-approve — the session's sandbox is trusted: a write inside it and a command run inside it both go
-    /// through. Anything that reaches past it still asks — the screen, another session, a directory nobody chose,
-    /// a tool name this build does not know.</summary>
+    /// <summary>Auto-approve — the session's sandbox is trusted: a write inside it, a command run inside it and a
+    /// git write recorded in the repository it holds (<see cref="ToolRisk.RepositoryWrite"/>) all go through.
+    /// Anything that reaches past it still asks — the screen, another session, a directory nobody chose, a command
+    /// that would leave the machine or destroy work nothing can hand back, a tool name this build does not
+    /// know.</summary>
     public const string Auto = "auto";
 
     /// <summary>Full access — nothing asks. The workspace guard still runs inside each tool, because approving
@@ -106,9 +128,10 @@ public static class ToolApprovalPolicy
 {
     /// <summary>Whether <paramref name="risk"/> has to be approved before it runs under <paramref name="mode"/>.
     /// The assistant's own notes are exempt in every mode; everything else follows the table. The auto arm names
-    /// only the top tier rather than listing what it allows, which is what lets a new tier that stays inside the
-    /// sandbox (<see cref="ToolRisk.WorkspaceCommand"/>) go through without a second edit here: adding a tier in
-    /// the middle means "trusted by default", and only an added tier <i>above</i> this one should ever ask.
+    /// only the top tier rather than listing what it allows, which is what lets a tier that stays inside the
+    /// session's own work go through without a second edit here — <see cref="ToolRisk.WorkspaceCommand"/> and now
+    /// <see cref="ToolRisk.RepositoryWrite"/>, the git write a person can put back. Adding a tier in the middle
+    /// means "trusted by default", and only an added tier <i>above</i> this one should ever ask.
     ///
     /// <para><see cref="ToolRisk.AskUser"/> answers above the mode switch rather than inside it, which is the
     /// only place a mode cannot reach: <c>Full =&gt; false</c> would delete every question, and a person who has
