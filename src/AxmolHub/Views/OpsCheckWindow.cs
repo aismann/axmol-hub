@@ -61,7 +61,7 @@ public sealed class OpsCheckWindow : Window
 
             try
             {
-                File.WriteAllLines(reportPath, _lines);
+                TextEol.WriteLines(reportPath, _lines);
             }
             catch (Exception ex)
             {

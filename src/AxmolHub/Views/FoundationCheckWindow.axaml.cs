@@ -38,7 +38,7 @@ public partial class FoundationCheckWindow : Window
 
             try
             {
-                System.IO.File.WriteAllLines(reportPath, lines);
+                TextEol.WriteLines(reportPath, lines);
             }
             catch (Exception ex)
             {

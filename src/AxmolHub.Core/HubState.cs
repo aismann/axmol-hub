@@ -69,7 +69,11 @@ public sealed class StateStore(string root)
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(data, Json));
+            // Indented JSON writes the host's newline (net8 has no NewLineString option), so every state,
+            // settings and conversation file this funnel writes would be CRLF on Windows and LF elsewhere.
+            // Folded here because a data root copied between hosts should not differ by a byte per line. Only
+            // the formatter's own newlines are folded: a CR inside a stored string reaches disk as an escape.
+            File.WriteAllText(temporary, TextEol.ToLf(JsonSerializer.Serialize(data, Json)));
             File.Move(temporary, path, overwrite: true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }

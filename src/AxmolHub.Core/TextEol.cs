@@ -10,4 +10,9 @@ public static class TextEol
     /// newline and removes none: a file that ended without one still ends without one.</summary>
     public static string ToLf(string text)
         => text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal);
+
+    /// <summary>Writes a report as lines joined by LF. <c>File.WriteAllLines</c> joins them with the host's
+    /// newline, which is the CRLF these files used to carry; the trailing newline it adds is kept.</summary>
+    public static void WriteLines(string path, IEnumerable<string> lines)
+        => File.WriteAllText(path, ToLf(string.Join('\n', lines) + "\n"));
 }

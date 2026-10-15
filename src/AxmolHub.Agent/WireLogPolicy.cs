@@ -1,6 +1,7 @@
 using System.ClientModel.Primitives;
 using System.Text;
 using System.Text.Json;
+using AxmolHub.Core;
 
 namespace AxmolHub.Agent;
 
@@ -24,7 +25,8 @@ public static class WireLog
     public static int NextPair() => Interlocked.Increment(ref sequence);
 
     /// <summary>Writes one file under <see cref="Directory"/>. Never throws: a recording that cannot be written
-    /// must not be the reason a request fails.</summary>
+    /// must not be the reason a request fails. The text is <b>not</b> folded to LF on purpose — these are the
+    /// bytes the wire carried, and <see cref="WireLogPolicy"/> exists so a claim can be checked against them.</summary>
     public static void TryWrite(string name, string text)
     {
         var root = Directory;
@@ -48,7 +50,9 @@ public static class WireLog
         try
         {
             System.IO.Directory.CreateDirectory(root);
-            File.AppendAllText(Path.Combine(root, "index.log"), line + Environment.NewLine);
+            // The index is Hub's own line, unlike the recordings above, so it is LF even when a field carried in
+            // from the body — a raw `thinking` object — spans more than one line.
+            File.AppendAllText(Path.Combine(root, "index.log"), TextEol.ToLf(line) + "\n");
         }
         catch (Exception)
         {

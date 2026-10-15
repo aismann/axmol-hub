@@ -2088,6 +2088,18 @@ if (args.Contains("--check-ai-sessions"))
     if (PlanStore.Read(planRoot, last, out _) != $"计划 {PlanStore.MaxFiles + 9:D3}：file the body")
         throw new Exception("The eviction pass took the plan that had just been written.");
     Console.WriteLine("PASS: PlanStore files a plan as ai/plans/<guid>.md, refuses every other name, and bounds itself.");
+
+    // Hub's own JSON leaves through one funnel, and the indented formatter wrote the host's newline into every
+    // state, settings and conversation file. Folded at the funnel — and only the formatter's: a CRLF inside a
+    // stored string is data, and it has to come back exactly as it went in.
+    var eolState = Path.Combine(root, "cache/eol-state.json");
+    StateStore.WriteJson(eolState, new { text = "a\r\nb" });
+    var eolJson = File.ReadAllText(eolState);
+    if (eolJson.Contains('\r'))
+        throw new Exception($"A state file wrote the host's newline into its JSON ({eolJson.Replace("\r", "\\r")}).");
+    if (JsonDocument.Parse(eolJson).RootElement.GetProperty("text").GetString() != "a\r\nb")
+        throw new Exception("Folding the JSON newlines changed a newline inside a stored value.");
+    Console.WriteLine("PASS: state JSON is LF on every host, and a newline inside a stored value survives the fold.");
     return;
 }
 if (args.Contains("--check-ai-memory"))
@@ -3566,6 +3578,14 @@ if (args.Contains("--check-ai-workspace"))
         throw new Exception("The ambiguous refusal does not say how many places matched.");
     Console.WriteLine("PASS: an anchored edit lands once, loudly, and what it writes is LF end to end.");
 
+    // The check reports go out through the same policy: File.WriteAllLines joined them with the host's newline,
+    // so three hosts produced three byte streams from one run. The trailing newline it added is kept.
+    var reportEol = Path.Combine(guardRoot, "eol-report.txt");
+    TextEol.WriteLines(reportEol, ["one\r\ntwo", "three"]);
+    if (File.ReadAllText(reportEol) != "one\ntwo\nthree\n")
+        throw new Exception($"A check report did not come out LF ('{File.ReadAllText(reportEol).Replace("\r", "\\r")}').");
+    Console.WriteLine("PASS: a check report is LF, an embedded newline included, and still ends with one.");
+
     // Shell choice is per host and must be assertable on any host, so it is a pure function of two values.
     var windows = CommandShells.For("windows", pwshAvailable: false);
     // WindowsShell.PowerShell mixes separators on purpose (Path.Combine over a literal with '/'), so compare
@@ -3921,6 +3941,16 @@ if (args.Contains("--check-ai-tools"))
     if (!tools.FileWrite("src/noop.cpp", "b", "b").Contains("identical", StringComparison.Ordinal)
         || !File.ReadAllBytes(crlfNoop).SequenceEqual(noopBefore))
         throw new Exception("A no-op edit normalized a CRLF file it was only supposed to refuse.");
+
+    // The log folds at the sink as well, because a message can arrive with the host's newline already inside it:
+    // a command's output, a reply echoed in. Disk gets LF, and the break the message carried is kept.
+    log.Write("two\r\nlines");
+    var logBytes = File.ReadAllBytes(log.FilePath);
+    if (logBytes.Contains((byte)13))
+        throw new Exception($"The hub log wrote the host's newline into the log ({logBytes.Count(b => b == 13)} CR bytes).");
+    if (!File.ReadAllText(log.FilePath).Contains("two\nlines", StringComparison.Ordinal))
+        throw new Exception("A log line folded to LF lost the break it was written with.");
+    Console.WriteLine("PASS: the hub log keeps LF newlines whatever the message arrived with.");
 
     // ── the line tally a write hands back: only for a change that landed, and never capped ──
     // The transcript cannot answer "how far did this move the file" by itself. The only diff a session keeps is the
@@ -8145,6 +8175,8 @@ if (args.Contains("--check-cli-json"))
     var described = CliContract.Describe(new InvalidDataException("boom"));
     Judge(described.Type == nameof(InvalidDataException) && described.Message == "boom",
         "Describe keeps the exception type and message and leaves the stack to stderr");
+    Judge(!CliContract.Encode("noop", true, 0).Contains('\r'),
+        "the envelope's internal newlines are LF, so the contract bytes do not depend on which host printed them");
 
     Console.WriteLine($"{count} CLI --json contract checks passed.");
     return;

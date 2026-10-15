@@ -14,8 +14,10 @@ public sealed class HubLog
     }
     public void Write(string message)
     {
-        var line = $"{DateTimeOffset.Now:O} {message}";
-        lock (gate) File.AppendAllText(FilePath, line + Environment.NewLine);
+        // Folded at the sink as well as at the source: this is a Hub file, and a log whose newline depends on
+        // which host wrote it cannot be read side by side with one written on another.
+        var line = $"{DateTimeOffset.Now:O} {TextEol.ToLf(message)}";
+        lock (gate) File.AppendAllText(FilePath, line + "\n");
         Written?.Invoke(line);
     }
 }

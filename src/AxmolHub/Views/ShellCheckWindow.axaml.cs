@@ -69,7 +69,7 @@ public partial class ShellCheckWindow : Window
 
             try
             {
-                System.IO.File.WriteAllLines(reportPath, _lines);
+                TextEol.WriteLines(reportPath, _lines);
             }
             catch (Exception ex)
             {

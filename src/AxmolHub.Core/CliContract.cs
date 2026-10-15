@@ -57,9 +57,11 @@ public static class CliContract
     };
 
     public static string Encode(string command, bool ok, int exitCode, object? data = null, CliError? error = null)
-        => JsonSerializer.Serialize(
+        // LF inside the envelope, so the contract's bytes are the same on every host. The console still ends its
+        // line with the host's newline, which is why the CI pipes keep `tr -d '\r'`.
+        => TextEol.ToLf(JsonSerializer.Serialize(
             new CliEnvelope { Command = command, Ok = ok, ExitCode = exitCode, Data = data, Error = error },
-            Json);
+            Json));
 
     /// <summary>Translates an exception into the envelope's <c>error</c>. Takes only the type name and message, no stack — the stack still goes to stderr.</summary>
     public static CliError Describe(Exception exception) => new(exception.GetType().Name, exception.Message);

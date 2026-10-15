@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using AxmolHub.Core;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -79,7 +80,7 @@ public partial class ControlGalleryWindow : Window
 
             try
             {
-                System.IO.File.WriteAllLines(reportPath, lines);
+                TextEol.WriteLines(reportPath, lines);
             }
             catch (Exception ex)
             {
