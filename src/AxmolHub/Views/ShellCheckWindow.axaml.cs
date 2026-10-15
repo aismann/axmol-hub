@@ -1691,7 +1691,7 @@ public partial class ShellCheckWindow : Window
         // The summarizing request read back off the request itself: the six headings are a contract with the
         // next model read, and the answer budget is what stops a thinking model from spending the whole budget on
         // its chain of thought and returning an empty summary.
-        var summaryPrompt = string.Join(Environment.NewLine, summaryRequest?.LastMessages?.Select(message => message.Text) ?? []);
+        var summaryPrompt = string.Join('\n', summaryRequest?.LastMessages?.Select(message => message.Text) ?? []);
         Check(summaryPrompt.Contains("## Task", StringComparison.Ordinal)
               && summaryPrompt.Contains("## Decisions", StringComparison.Ordinal)
               && summaryPrompt.Contains("## Files", StringComparison.Ordinal)
@@ -7547,8 +7547,10 @@ public partial class ShellCheckWindow : Window
                   && crowdedLabels.Sum(label => label.Length) <= 64 && crowdedLabels.Length < crowdedSources.Length,
                 "五条来源挤不进这一行：每条胶囊截到 34 字，整行只花 64 字的额度，剩下的让给 +N（实际 "
                 + crowdedLabels.Length + " 条、共 " + crowdedLabels.Sum(label => label.Length) + " 字）");
+            // Split on the same '\n' the +N tooltip is joined with in ChatPanel: the two spellings are one
+            // contract, and a host newline here would silently fold the whole list into one entry.
             var crowdedFold = panel.SearchOverflowTipForCheck
-                .Split([Environment.NewLine], StringSplitOptions.RemoveEmptyEntries);
+                .Split(['\n'], StringSplitOptions.RemoveEmptyEntries);
             Check(panel.SearchChipTargetsForCheck.Concat(crowdedFold).SequenceEqual(crowdedSources, StringComparer.Ordinal)
                   && crowdedFold.Length == crowdedSources.Length - panel.SearchChipTargetsForCheck.Length
                   && crowdedFold.Length > 0,

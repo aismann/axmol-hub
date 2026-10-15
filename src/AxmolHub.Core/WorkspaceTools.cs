@@ -100,6 +100,10 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     public const int MaxReadTurns = 60;
     public const int MaxTurnCharacters = 600;
 
+    /// <summary>The newline of every tool result. It is the newline <c>file_write</c> puts in the files those
+    /// results describe, so a transcript replayed from another host reads the same.</summary>
+    private const string Lf = "\n";
+
     /// <summary>A peer message goes into another session's context and stays there. A limit that generous is what
     /// lets one assistant bury another.</summary>
     public const int MaxMessageCharacters = 4000;
@@ -161,7 +165,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var window = lines.Skip(from - 1).Take(count).ToList();
         var last = from - 1 + window.Count;
         var header = $"{resolved.Relative} — lines {from}-{last} of {lines.Count} (UTF-8)";
-        if (window.Count == 0) return $"{header}{Environment.NewLine}(that window is empty)";
+        if (window.Count == 0) return $"{header}{Lf}(that window is empty)";
 
         var builder = new StringBuilder(header);
         foreach (var line in window) builder.Append('\n').Append(line);
@@ -299,11 +303,11 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             // Going quiet is not the same as having nothing to say. The lines before the silence are the diagnosis
             // — a build that hangs has already printed the error it stopped on — so they come back with the result,
             // head-and-tail truncated like any other output.
-            var builder = new StringBuilder($"{header}{Environment.NewLine}The command was killed after {seconds}s "
+            var builder = new StringBuilder($"{header}{Lf}The command was killed after {seconds}s "
                                             + "of no output. What it printed before going silent:")
-                .Append(Environment.NewLine).Append(Shaped(stalled.Output, stalled.Error));
+                .Append(Lf).Append(Shaped(stalled.Output, stalled.Error));
             if (stalled.SurvivedKill)
-                builder.Append(Environment.NewLine)
+                builder.Append(Lf)
                     .Append("It was still running after Hub gave up on killing it, so it may still hold files in "
                             + "the workspace.");
             if (BuildCommandGrades.IsBuild(command))
@@ -312,29 +316,29 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                 // stopped is how a build tree ends half-written: killing the tree does not reach the detached
                 // MSBuild nodes, VBCSCompiler or the dotnet build server, which outlive this process by design.
                 // What the model owes here is not a cleverer command line, it is a question.
-                builder.Append(Environment.NewLine)
+                builder.Append(Lf)
                     .Append("This was a build, and build services detach from the process tree Hub killed, so "
                             + "compilation may still be going under the hood. Do not retry it with different flags "
                             + "and do not clean anything: tell the user what it printed and ask how to proceed.");
             else
-                builder.Append(Environment.NewLine)
+                builder.Append(Lf)
                     .Append("timeout_seconds counts silence, not total runtime, so raise it only if the command "
                             + "really stopped printing. Do not retry the same command unchanged.");
             return builder.ToString();
         }
         catch (Exception ex)
         {
-            return $"{header}{Environment.NewLine}The command could not start: {ex.Message}";
+            return $"{header}{Lf}The command could not start: {ex.Message}";
         }
 
         var output = Shaped(result.Output, result.Error);
-        var body = $"{header} · exit: {result.ExitCode}{Environment.NewLine}{output}";
+        var body = $"{header} · exit: {result.ExitCode}{Lf}{output}";
         if (result.ExitCode != 0 && BuildCommandGrades.IsBuild(command))
             // Only for a build: a failing `ls` does not need a note, and a note attached to everything gets skimmed
             // for the one case where it is true. Reading the compiler and building again is the work — the sentence
             // exists for the one way out of a failed build that destroys something a later approval cannot put back,
             // which is deleting what is already there.
-            return body + Environment.NewLine
+            return body + Lf
                    + "The build failed, which can leave the tree half new: outputs from before this run and outputs "
                    + "from it are now mixed. Fix what the compiler reported and build again as usual; do not clear "
                    + "or delete the build directory to get around it — that is the part the user has to approve.";
@@ -383,11 +387,11 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             var survived = !stalled.Stop();
             var printed = stalled.Snapshot();
             stalled.Release();
-            return $"{header}{Environment.NewLine}The command went silent for {seconds}s and Hub could not reach "
+            return $"{header}{Lf}The command went silent for {seconds}s and Hub could not reach "
                    + $"the user to ask about it ({ex.Message}), so it stopped the process."
                    + (survived ? " It was still running after the kill and may still hold files in the workspace." : "")
-                   + Environment.NewLine + Shaped(printed.Output, printed.Error)
-                   + Environment.NewLine + "Do not run it again or clear anything first; tell the user what happened.";
+                   + Lf + Shaped(printed.Output, printed.Error)
+                   + Lf + "Do not run it again or clear anything first; tell the user what happened.";
         }
 
         switch (fate)
@@ -414,7 +418,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
 
                 var waited = await stalled.Drain(ProcessRunner.DrainGrace).ConfigureAwait(false);
                 var waitText = FinishedResult(stalled, header, waited);
-                return waitText + Environment.NewLine
+                return waitText + Lf
                        + $"The command went quiet for {seconds}s and the user chose to keep waiting rather than stop "
                        + "it. That wait is over; the result above is the whole run.";
 
@@ -426,14 +430,14 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                     // from, and nobody should discover that from a compiler error.
                     var left = stalled.Snapshot();
                     stalled.Release();
-                    return $"{header}{Environment.NewLine}The user chose not to wait for this command and not to stop "
+                    return $"{header}{Lf}The user chose not to wait for this command and not to stop "
                            + "it. It is still running, Hub is no longer watching it and no longer holds the change "
                            + "gate for it, so it may still be writing to the workspace. What it printed so far:"
-                           + Environment.NewLine + Shaped(left.Output, left.Error)
+                           + Lf + Shaped(left.Output, left.Error)
                            + (builds
-                               ? Environment.NewLine + "Before running another build or clearing anything, tell the "
+                               ? Lf + "Before running another build or clearing anything, tell the "
                                  + "user this one may still be going and ask what they want."
-                               : Environment.NewLine + "Do not assume this command failed; it was left running on "
+                               : Lf + "Do not assume this command failed; it was left running on "
                                  + "purpose. Ask the user before repeating it.");
                 }
 
@@ -447,12 +451,12 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                     stalled.Release();
                     var again = await RunInShellAsync(command, seconds, cancellationToken).ConfigureAwait(false);
                     return (survived
-                        ? $"{header}{Environment.NewLine}The user asked Hub to stop the silent command and run it "
+                        ? $"{header}{Lf}The user asked Hub to stop the silent command and run it "
                           + "again. It was still running after the kill, so the new run may be going alongside it; "
                           + "read the output below with that in mind."
-                        : $"{header}{Environment.NewLine}The user asked Hub to stop the silent command and run it "
+                        : $"{header}{Lf}The user asked Hub to stop the silent command and run it "
                           + "again. The earlier run was ended first.")
-                        + Environment.NewLine + again;
+                        + Lf + again;
                 }
         }
     }
@@ -464,7 +468,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     {
         var final = await stalled.Drain(ProcessRunner.DrainGrace).ConfigureAwait(false);
         var result = FinishedResult(stalled, header, final);
-        return result + Environment.NewLine
+        return result + Lf
                + (asked
                     ? "The command finished on its own while Hub was asking what to do about the silence. Nothing was "
                       + "stopped, and no choice was made about it."
@@ -478,7 +482,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     private string FinishedResult(StalledProcess stalled, string header,
         (string Output, string Error) final)
         => $"{header} · exit: {(stalled.ExitCode.HasValue ? stalled.ExitCode.ToString() : "unknown (Hub could not read it)")}"
-           + $"{Environment.NewLine}{Shaped(final.Output, final.Error)}";
+           + $"{Lf}{Shaped(final.Output, final.Error)}";
 
     [Description("Set the directory this session's file and command tools are confined to. Nothing outside it can "
                  + "be read, written or run in. Any folder works: it does not have to be a git repository, and it "
@@ -1303,7 +1307,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         if (output.Length > 0) builder.Append(output.TrimEnd());
         if (error.Trim().Length > 0)
         {
-            if (builder.Length > 0) builder.Append(Environment.NewLine).Append("--- stderr ---").Append('\n');
+            if (builder.Length > 0) builder.Append(Lf).Append("--- stderr ---").Append('\n');
             builder.Append(error.TrimEnd());
         }
 

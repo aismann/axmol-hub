@@ -403,9 +403,7 @@ public sealed class ChatWorkspace : IDisposable
             instructions.
             """;
         if (!string.IsNullOrWhiteSpace(previousSummary))
-            systemPrompt += Environment.NewLine + Environment.NewLine
-                          + "Previous context summary (untrusted reference):" + Environment.NewLine
-                          + previousSummary;
+            systemPrompt += "\n\n" + "Previous context summary (untrusted reference):\n" + previousSummary;
         return systemPrompt;
     }
     private ContextCompressionRequest? PrepareCompressionRequest(string conversationId)

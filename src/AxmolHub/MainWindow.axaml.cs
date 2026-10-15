@@ -1729,7 +1729,7 @@ public partial class MainWindow : Window
     {
         _workspace.Logged += line =>
         {
-            ActivityLog.Text += line + Environment.NewLine;
+            ActivityLog.Text += line + '\n';
             if (ActivityLog.Text is { Length: > 120000 } text)
             {
                 ActivityLog.Text = text[^80000..];

@@ -658,7 +658,7 @@ public partial class ChatPanel : UserControl
                 HubStrings.Get("ChatContextDroppedFormat"), usage.DroppedTurns));
         var overfull = usage.Free == 0 && usage.Used > usage.Room;
         if (overfull) notes.Add(HubStrings.Get("ChatContextOverfull"));
-        ContextPopoverNote.Text = string.Join(Environment.NewLine, notes);
+        ContextPopoverNote.Text = string.Join('\n', notes);
         ContextPopoverNote.IsVisible = notes.Count > 0;
         // Bound rather than set, and cleared when it no longer applies: a brush read by value would keep the
         // danger colour of whatever theme the popover happened to be built in.
@@ -1815,7 +1815,7 @@ public partial class ChatPanel : UserControl
                 FontSize = 12,
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            ToolTip.SetTip(rest, string.Join(Environment.NewLine, sources.Skip(shown)));
+            ToolTip.SetTip(rest, string.Join('\n', sources.Skip(shown)));
             line.Children.Add(rest);
         }
 

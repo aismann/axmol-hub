@@ -95,20 +95,22 @@ internal static class ChatContextReader
         // long file in the middle would push the eleven around it out of the request, and the person who
         // attached the folder would get back an answer about a file they were not asking about.
         var perFileTokens = Math.Max(ToolResultCap.MinimumTokens, ceilingTokens / MaxFiles);
-        output.AppendLine($"Attached local folder: {displayName}");
-        output.AppendLine($"Included up to {MaxFiles} text files; each is limited to {MaxFileBytes / 1024} KiB and the folder to {MaxTotalBytes / 1024} KiB, "
-                          + $"and the whole attachment to about {ceilingTokens} tokens of the model's window.");
+        // Every line here ends with \n rather than the host's newline: this block is pasted into the request, and
+        // the files it quotes were read into it verbatim.
+        output.Append($"Attached local folder: {displayName}").Append('\n');
+        output.Append($"Included up to {MaxFiles} text files; each is limited to {MaxFileBytes / 1024} KiB and the folder to {MaxTotalBytes / 1024} KiB, "
+                      + $"and the whole attachment to about {ceilingTokens} tokens of the model's window.").Append('\n');
         foreach (var file in files)
         {
             var content = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(file));
-            output.AppendLine();
-            output.AppendLine($"--- {Path.GetRelativePath(root, file)} ---");
-            output.AppendLine(ToolResultCap.ApplyTokenBudget(content, perFileTokens));
+            output.Append('\n');
+            output.Append($"--- {Path.GetRelativePath(root, file)} ---").Append('\n');
+            output.Append(ToolResultCap.ApplyTokenBudget(content, perFileTokens)).Append('\n');
         }
 
-        if (skippedLarge > 0) output.AppendLine($"\nSkipped {skippedLarge} oversized files.");
-        if (skippedBinary > 0) output.AppendLine($"\nSkipped {skippedBinary} non-UTF-8 files.");
-        if (scanLimitReached) output.AppendLine($"\nStopped scanning after {MaxScannedEntries} entries.");
+        if (skippedLarge > 0) output.Append($"\nSkipped {skippedLarge} oversized files.");
+        if (skippedBinary > 0) output.Append($"\nSkipped {skippedBinary} non-UTF-8 files.");
+        if (scanLimitReached) output.Append($"\nStopped scanning after {MaxScannedEntries} entries.");
         return ToolResultCap.ApplyTokenBudget(output.ToString(), ceilingTokens);
     }
 }

@@ -91,7 +91,7 @@ public static class WorkspaceMap
         Units(lines, root, files);
         Directories(lines, root, files);
         Boundaries(lines, files, ignoredEntirely);
-        return string.Join(Environment.NewLine, lines);
+        return string.Join('\n', lines);
     }
 
     /// <summary>The files git counts as this tree: what it tracks plus what is new on disk, minus whatever the

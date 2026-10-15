@@ -416,7 +416,9 @@ public sealed class ProcessRunner(Action<string> log)
             {
                 onOutput?.Invoke();
                 line = redact(line);
-                lock (sink) sink.AppendLine(line);
+                // Not AppendLine: this sink becomes the command output a tool result quotes, and the host's
+                // newline would arrive in text the model reads and a log file keeps.
+                lock (sink) sink.Append(line).Append('\n');
                 var text = error ? $"stderr: {line}" : line;
                 log(text);
                 // The one who started this process may want its lines for itself: a task row fed from the
