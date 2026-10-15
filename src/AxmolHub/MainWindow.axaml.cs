@@ -37,6 +37,7 @@ public partial class MainWindow : Window
     private bool? _attentionDiagnosticBadge;
     private string? _attentionDiagnosticConversationId;
     private bool _windowIsOpen;
+    private bool _trayCloseEnabled;
 
     /// <summary>Whether this window has lost the foreground at least once since it was shown. A notification click
     /// arrives as a *return* to the foreground, and a window that never left cannot be returning: without this,
@@ -233,10 +234,13 @@ public partial class MainWindow : Window
 
     internal void ActivateFromRequest()
     {
-        if (ConsumeActivationTarget()) return;
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        if (ShouldShowForRequest(!IsVisible, App.Options.IsAutomation)) Show();
+        if (ConsumeActivationTarget()) return;
         Activate();
     }
+
+    internal static bool ShouldShowForRequest(bool isHidden, bool isAutomation) => isHidden && !isAutomation;
 
     /// <summary>The window came back to the foreground — the only signal a desktop gives for a click on a
     /// notification when it raises the running window instead of naming a conversation. Gated on the window
@@ -1013,6 +1017,46 @@ public partial class MainWindow : Window
         _quitConfirmed = true;
         Close();
     }
+
+    internal void RestoreFromTray()
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        Activate();
+    }
+
+    internal void ExitFromTray()
+    {
+        if (_workspace.IsBusy)
+        {
+            _workspace.Cancel();
+            SetStatus(HubStrings.Get("Cancelling"));
+            return;
+        }
+
+        if (TaskQueue.Instance.ActiveCount > 0)
+        {
+            RestoreFromTray();
+            _ = ConfirmQuitAsync();
+            return;
+        }
+
+        _quitConfirmed = true;
+        Close();
+    }
+
+    internal void EnableTrayCloseBehavior() => _trayCloseEnabled = true;
+
+    internal static bool ShouldHideOnCloseForCheck(bool isWindows, bool isAutomation, bool quitConfirmed, bool trayAvailable)
+        => isWindows && !isAutomation && !quitConfirmed && trayAvailable;
 
 
     private void ToggleTaskPopup()
@@ -2124,6 +2168,14 @@ public partial class MainWindow : Window
         // child processes would be left behind.
         Closing += (_, e) =>
         {
+            if (ShouldHideOnCloseForCheck(
+                    OperatingSystem.IsWindows(), App.Options.IsAutomation, _quitConfirmed, _trayCloseEnabled))
+            {
+                e.Cancel = true;
+                Hide();
+                return;
+            }
+
             if (_workspace.IsBusy)
             {
                 // An exclusive operation is mid-write and must not be left half-done: the close becomes a

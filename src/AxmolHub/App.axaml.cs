@@ -13,6 +13,7 @@ public partial class App : Application
     /// <summary>Command line and host directory. Filled in by <see cref="Program.Main"/> before AppBuilder.</summary>
     internal static HubHostOptions Options { get; set; } = HubHostOptions.Parse([]);
     internal static DeepLinkActivationBroker? Activations { get; set; }
+    private WindowsTrayIntegration? _trayIntegration;
 
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
@@ -276,6 +277,20 @@ public partial class App : Application
         // otherwise the preferences cached in the shell would diverge from disk.
         var window = new MainWindow(Options.ResolveDataRoot(preferences), preferencesStore, preferences);
         desktop.MainWindow = window;
+
+        if (OperatingSystem.IsWindows() && !Options.IsAutomation)
+        {
+            _trayIntegration = WindowsTrayIntegration.Create(this, window);
+            if (_trayIntegration is { } trayIntegration)
+            {
+                window.EnableTrayCloseBehavior();
+                desktop.Exit += (_, _) =>
+                {
+                    trayIntegration.Dispose();
+                    _trayIntegration = null;
+                };
+            }
+        }
 
         if (!Options.IsAutomation)
         {

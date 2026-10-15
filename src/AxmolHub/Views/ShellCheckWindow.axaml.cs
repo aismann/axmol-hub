@@ -916,6 +916,22 @@ public partial class ShellCheckWindow : Window
               && shell.CloseTipForCheck == HubTexts.Get("CloseWindow", HubStrings.Language),
             "最大化 / 关闭按钮的提示随当前窗口状态正确（实际「" + shell.MaximizeTipForCheck + "」/「"
             + shell.CloseTipForCheck + "」）");
+        var trayMenuCommands = WindowsTrayIntegration.CreateMenu(shell).Items.OfType<NativeMenuItem>().ToArray();
+        Check(MainWindow.ShouldHideOnCloseForCheck(true, false, false, true)
+              && !MainWindow.ShouldHideOnCloseForCheck(false, false, false, true)
+              && !MainWindow.ShouldHideOnCloseForCheck(true, true, false, true)
+              && !MainWindow.ShouldHideOnCloseForCheck(true, false, true, true)
+              && !MainWindow.ShouldHideOnCloseForCheck(true, false, false, false),
+            "Windows 交互关闭隐藏主窗口，显式退出、自动化与其他平台仍执行原关闭流程");
+        Check(MainWindow.ShouldShowForRequest(true, false)
+              && !MainWindow.ShouldShowForRequest(false, false)
+              && !MainWindow.ShouldShowForRequest(true, true),
+            "第二实例的普通启动会重新显示托盘中隐藏的主窗口，自动化验证不意外弹出窗口");
+        Check(trayMenuCommands.Length == 2
+              && trayMenuCommands[0].Header == HubTexts.Get("TrayShowWindow", HubStrings.Language)
+              && trayMenuCommands[1].Header == HubTexts.Get("TrayExit", HubStrings.Language)
+              && trayMenuCommands.All(command => command.HasClickHandlers),
+            "托盘菜单提供本地化的显示主窗口与退出动作");
         shell.SetWindowStateForCheck(WindowState.Maximized);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
