@@ -77,6 +77,25 @@ Without it the app falls back to the per-user root (`%LocalAppData%\AxmolHub\dat
 would operate on the user's real engines, projects, toolchains and credentials. `data/` is gitignored and must
 never be committed.
 
+## Line endings are LF
+
+**LF, on every host, in everything Hub writes** — the file `file_write` creates or edits, the JSON state and
+conversation files, the logs, the check reports, and the text sent to the model and shown in the shell. The
+model emits `\n`, `read_file` shows `\n`, so writing LF is also what makes a copied anchor match first time.
+`TextEol.ToLf` is the policy; new write paths go through it rather than inventing their own.
+
+Two exceptions, both deliberate:
+
+- **The wire recording** (`WireLog.TryWrite`) keeps the bytes as they arrived. It exists so a claim can be
+  checked against what actually left the machine; folding it would destroy the evidence.
+- **Files Hub does not own** (`EngineMirror` editing the engine's `1k/.env`) keep the newline they arrived with.
+  Changing one key there must not become a whole-file diff in somebody else's checkout.
+
+Consequences to expect: editing a CRLF file rewrites its whole line endings, so `git diff` there shows every
+line (the diff card and the `+N −M` tally normalize both sides and stay honest), and a repository whose
+`.gitattributes` pins source to CRLF will fight this. A no-op edit changes nothing — a refused anchor leaves
+the file exactly as it was, newline style included.
+
 ## Commit style
 
 Follow the repository's existing convention: a short one-line title in the imperative mood, with a

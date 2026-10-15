@@ -1,0 +1,12 @@
+root = true
+
+# Hub writes LF: every file the assistant edits, every state file, log and report it writes (TextEol.ToLf),
+# so the checkout agrees instead of fighting it. .gitattributes carries the same policy at commit time.
+[*]
+charset = utf-8
+end_of_line = lf
+
+# The one exception, and it is the repository's own: installer scripts are CRLF in .gitattributes, because
+# Windows PowerShell 5.1 is their audience. This is about checked-in files, not about what Hub writes.
+[*.ps1]
+end_of_line = crlf

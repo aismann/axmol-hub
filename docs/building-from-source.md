@@ -175,9 +175,9 @@ dotnet run --project src/AxmolHub.Cli -- --json verify ./data windows-x64
 dotnet run --project tests/AxmolHub.Checks -c Release -- ./artifacts/checks ../axmol-2.11.5
 ```
 
-每次复验使用新的输出目录，避免已有测试工具影响"组件缺失"检查。行为检查现共 **139 条断言**：主流程 **105 条**（覆盖进程参数、取消、下载校验、路径边界、metadata、配置隔离、资源发布及 Android 打包/设备参数等）+ CLI `--json` 契约 **34 条**；不替代真实设备或干净宿主验收。
+每次复验使用新的输出目录，避免已有测试工具影响"组件缺失"检查。行为检查现共 **140 条断言**：主流程 **105 条**（覆盖进程参数、取消、下载校验、路径边界、metadata、配置隔离、资源发布及 Android 打包/设备参数等）+ CLI `--json` 契约 **35 条**（2026-10-15 重数：新增一条「信封内部换行是 LF」）；不替代真实设备或干净宿主验收。
 
-其中 CLI 契约那 34 条**不依赖引擎与工具链**，因此已接进 CI（[ci.md](ci.md) §2.6），可单独跑：
+其中 CLI 契约那 35 条**不依赖引擎与工具链**，因此已接进 CI（[ci.md](ci.md) §2.6），可单独跑：
 
 ```powershell
 dotnet run --project tests/AxmolHub.Checks -c Release -- ./artifacts/checks --check-cli-json src/AxmolHub.Cli/bin/Release/net8.0/AxmolHub.Cli.dll
@@ -195,7 +195,7 @@ foreach ($g in 'providers','sessions','context','workspace','tool-policy','memor
 }
 ```
 
-每组只打 `PASS:` / `FAIL:` 行、不打汇总，退出码非 0 即有失败。2026-10-12 实测（计划正文独立成 `ai/plans/<guid>.md` 一轮之后）：providers 35 / copilot 55 / sessions 43 / context 20 / workspace 8 / tool-policy 9 / memory 5 / tools 22 / cross-session 41 / images 7 / routing 1 / web-search 11 = **257 条**。
+每组只打 `PASS:` / `FAIL:` 行、不打汇总，退出码非 0 即有失败。2026-10-15 实测（统一 LF 那一轮之后）：providers 49 / copilot 67 / sessions 47 / context 22 / workspace 9 / tool-policy 19 / memory 5 / tools 31 / cross-session 41 / images 7 / routing 1 / web-search 11 = **309 条**。
 
 **图片有四条入口，收到同一套准入里**：composer 的「+ → 添加图片…」、Ctrl+V 粘贴截图、把文件拖到输入框上，以及模型自己调 `capture_screen`。准入只看**文件头**（PNG / JPEG / GIF / WebP），扩展名不算数；单张上限 8 MiB、一条消息最多 4 张，**按大小先拒再读字节**，所以一次拖进一整文件夹的原图也不会先把窗口卡住。四条入口的图都落 `data-root/ai/sessions/{会话 id}/`（**不进工作区**，所以不会被文件工具当项目文件读到），并在消息边界以 user 角色发出去 —— `tool` 结果在 OpenAI 协议里带不了图。抓屏在 Windows 上是 GDI `PrintWindow`，黑帧不入库也不发送；macOS / Linux 尚无抓取后端，`capture_screen` 会明确拒答而不是给一张假图。**派生子会话**（`spawn_session`）默认关，需在「设置 → 工具权限」卡片里勾上「允许助手派生子会话」才可用。
 

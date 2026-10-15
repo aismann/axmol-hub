@@ -56,7 +56,7 @@ Windows 额外做两件事：
 
 这套断言不依赖工具链、不依赖引擎源码、不依赖网络，是最早能**在三平台都**跑起来的行为检查，因此放在必跑路径上。（另两件行为断言：§2.6 的 CLI JSON 契约同样不依赖引擎，但受 `AxmolHub.Checks` 的 TFM 限制只能跑在 Windows；§2.7 的密钥存储则反过来拆成两件——契约断言进 Windows 的 Checks，三平台真机跑 App 的无头自检。）
 
-> **实现细节**：CLI 在 Windows 上输出 CRLF，`grep -E '...current=True$'` 会因行尾残留的 `\r` 匹配失败。管道里统一加了 `tr -d '\r'`。这一条已在本机用 Git Bash 正反两向实测（错误宿主断言返回 1、正确宿主返回 0）。
+> **实现细节**：`--json` 信封内部的换行现在是 LF（`CliContract.Encode` 过 `TextEol.ToLf`，三平台字节一致），但 `Console.WriteLine` 那一行的**结尾**仍是宿主换行符，human 模式（`targets`/`help`）更是不经 `Encode`。所以管道里的 `tr -d '\r'` 继续保留，`grep -E '...current=True$'` 才不会因行尾残留的 `\r` 匹配失败。这一条已在本机用 Git Bash 正反两向实测（错误宿主断言返回 1、正确宿主返回 0）。
 
 ### 2.2 GUI 只有一条线：Avalonia 走全矩阵
 

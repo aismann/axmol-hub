@@ -250,6 +250,9 @@ public static class EngineMirror
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         var text = File.Exists(path) ? File.ReadAllText(path) : "";
+        // The deliberate exception to TextEol: this is the engine checkout's own file, which its setup script
+        // wrote and may rewrite. Hub is changing one key inside it, so the file keeps the newline it arrived with
+        // rather than turning a value switch into a whole-file diff in somebody else's repository.
         var newLine = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
         var lines = text.Split('\n').Select(line => line.TrimEnd('\r')).ToList();
         // A trailing newline yields a final empty element; keeping it would append one blank line per
