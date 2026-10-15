@@ -3219,6 +3219,17 @@ public partial class ChatPanel : UserControl
         bool retryable = false, bool fromRun = false, ConversationRun? run = null)
         => _notices[conversationId] = (text, danger, ownTurns, retryable, fromRun, run);
 
+    /// <summary>Which endings are worth asking for again. Everything on this list is a round that never got an
+    /// answer through no fault of the question: a window ran out, the stream stopped, the connection or the limit
+    /// got in the way, the model closed the response with nothing in it. A refusal the person made (ChatCancelled,
+    /// an approval that went away) is not on the list — pressing ↻ after saying "no" would ask for the same thing
+    /// they just declined. One rule, read both by the ending as it arrives and by the stored line as it is painted
+    /// back, so a retry button cannot appear at one door and be missing at the other.</summary>
+    private static bool NoticeIsRetryable(string key)
+        => key is "ChatNoFirstFrame" or "ChatTimedOut" or "ChatTimedOutAfterRetries"
+            or "ChatStreamInterrupted" or "ChatConnectionFailed" or "ChatRateLimited"
+            or "ChatFailed" or "ChatNoResponse";
+
     /// <summary>Paints the stored notice, if it still is news: same conversation, nothing of the person's said
     /// since, and — for the news a run brought — no newer run begun. Called from the render path, so a rebuild
     /// cannot erase it and a new message cannot be answered by an old warning. With no conversation at all — the
@@ -3238,21 +3249,31 @@ public partial class ChatPanel : UserControl
                                   && !_chat.Conversations.Any(session => session.Id == id))
                      .ToList())
             _notices.Remove(stale);
-        if (!_notices.TryGetValue(conversationId, out var notice)) return;
-
-        // The registry is the authority on which round this conversation is in. A finished run leaves it before
-        // the notice is filed, so a stored null and a live instance both mean "a newer round has begun" — and a
-        // continuation that begins one without adding a message of the person's is exactly the case the count
-        // below cannot see. Only a run's own news is measured this way; what an action said about the conversation
-        // outlives the round it was said in.
-        if (notice.FromRun && _chat.RunFor(conversationId) is { } current
-            && !ReferenceEquals(current, notice.Run))
+        var ownTurns = viewed?.Messages.Count(turn => turn.Role == ChatRoles.User) ?? 0;
+        if (!_notices.TryGetValue(conversationId, out var notice))
         {
+            // Nothing in memory for the session on screen, so read back how its last run ended. This is the half
+            // that makes the difference observable: a line that lives only in a dictionary is a line that
+            // disappears on a conversation switch, and "the model returned no content" is news somebody may still
+            // want to act on after they go and come back. Never while a round is in flight — the newest ending
+            // owns the strip, and a stored one must not speak over a reply that is arriving.
+            if (viewed?.LastNotice is not { } stored || _chat.RunFor(conversationId) is not null
+                || ownTurns != stored.UserTurns) return;
+            notice = (HubStrings.Get(stored.Key) + (stored.Detail ?? ""), stored.Danger, stored.UserTurns,
+                NoticeIsRetryable(stored.Key), false, null);
+        }
+        else if (notice.FromRun && _chat.RunFor(conversationId) is { } current
+                 && !ReferenceEquals(current, notice.Run))
+        {
+            // The registry is the authority on which round this conversation is in. A finished run leaves it
+            // before the notice is filed, so a stored null and a live instance both mean "a newer round has
+            // begun" — and a continuation that begins one without adding a message of the person's is exactly the
+            // case the count below cannot see. Only a run's own news is measured this way; what an action said
+            // about the conversation outlives the round it was said in.
             _notices.Remove(conversationId);
             return;
         }
 
-        var ownTurns = viewed?.Messages.Count(turn => turn.Role == ChatRoles.User) ?? 0;
         if (ownTurns != notice.OwnTurns)
         {
             _notices.Remove(conversationId);
@@ -3895,22 +3916,14 @@ public partial class ChatPanel : UserControl
     /// which is how "the user pressed stop" and "the stream stalled" used to blur together.</summary>
     private void AppendRunNotice(string conversationId, RunOutcome outcome)
     {
-        // Which endings are worth asking for again. Everything here is a round that never got an answer through
-        // no fault of the question: a window ran out, the stream stopped, the connection or the limit got in the
-        // way. A refusal the person made (ChatCancelled, an approval that went away) is not on the list — pressing
-        // ↻ after saying "no" would ask for the same thing the person just declined.
+        // Which endings are worth asking for again is one rule, read the same way here and when a stored line is
+        // painted back (<see cref="NoticeIsRetryable"/>).
         if (outcome.NoticeKey is { } key)
             RememberNotice(conversationId, HubStrings.Get(key) + (outcome.Detail ?? ""),
-                outcome.NoticeDanger, outcome.UserTurns,
-                key is "ChatNoFirstFrame" or "ChatTimedOut" or "ChatTimedOutAfterRetries"
-                    or "ChatStreamInterrupted" or "ChatConnectionFailed" or "ChatRateLimited"
-                    or "ChatFailed" or "ChatNoResponse",
+                outcome.NoticeDanger, outcome.UserTurns, NoticeIsRetryable(key),
                 // The run that just ended has already left the registry, so this reads null: the line belongs to a
                 // round that is over, and the next one to appear retires it however that round began.
-                run: _chat.RunFor(conversationId), fromRun: true);
-        else if (!outcome.ReceivedText)
-            RememberNotice(conversationId, HubStrings.Get("ChatNoResponse"), true, outcome.UserTurns,
-                retryable: true, fromRun: true, run: _chat.RunFor(conversationId));
+                fromRun: true, run: _chat.RunFor(conversationId));
 
         // A session that finished out of sight is filed and left alone: repainting or scrolling it would move
         // the reading position of the conversation the person is actually looking at.
@@ -4999,6 +5012,15 @@ public partial class ChatPanel : UserControl
     /// <summary>Appends a notice row through the real path, so the row's layout can be read back off the
     /// controls instead of inferred from code.</summary>
     internal void AppendNoticeForCheck(string text, bool danger = false) => AppendNotice(text, danger);
+
+    /// <summary>Takes the panel's own memory of how runs ended away, leaving nothing but what the session file
+    /// says. The question it exists for is whether a notice survives on the record alone — memory first, disk
+    /// second — and a check cannot ask that while the dictionary is still holding the answer.</summary>
+    internal void ClearNoticesForCheck()
+    {
+        _notices.Clear();
+        NoticeHost.Children.Clear();
+    }
 
     /// <summary>The last notice row's column layout — (icon column, text column, declared column count) —
     /// or null when no notice is on screen. Notice rows live below the message flow, so this

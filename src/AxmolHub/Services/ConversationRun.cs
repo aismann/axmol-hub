@@ -224,13 +224,44 @@ internal sealed class ConversationRun : IDisposable
     {
         lock (_gate)
         {
+            // Whatever this segment had said was handed over when it ended — as its own assistant turn, or as the
+            // prose riding a tool call — so this is the one point both doors pass through, and the run's answer is
+            // the sum rather than the last buffer. Kept here instead of at the two write sites because a count
+            // that a caller has to remember to take is a count that a new write site forgets.
+            _filedText += _text.Length;
+            _filedReasoning += _reasoning.Length;
             _text.Clear();
             _reasoning.Clear();
             _spinStopped = false;
+            // Each segment is answered by its own response, so the reason belongs to the one now starting.
+            _finishReason = null;
         }
 
         BeginRound();
     }
+
+    private int _filedText;
+    private int _filedReasoning;
+
+    /// <summary>Whether the model said anything at all across this run — text or thinking, still in the bubble or
+    /// already handed to the transcript. A run that spoke over three tool calls and then stopped on an empty
+    /// message did answer, and only the last segment's buffer would have disagreed; this is the reading that
+    /// decides whether the person is told the model returned nothing.</summary>
+    internal bool SaidAnything
+    {
+        get
+        {
+            lock (_gate)
+                return _filedText > 0 || _filedReasoning > 0 || _text.Length > 0 || _reasoning.Length > 0;
+        }
+    }
+
+    private string? _finishReason;
+
+    /// <summary>Why the endpoint closed the response of the segment now running, in its own token.</summary>
+    internal void NoteFinishReason(string reason) => Volatile.Write(ref _finishReason, reason);
+
+    internal string? FinishReason => Volatile.Read(ref _finishReason);
 
     private bool _spinStopped;
 
@@ -559,7 +590,6 @@ internal sealed class ConversationRun : IDisposable
 /// the strings never have to be matched against.</summary>
 internal readonly record struct RunOutcome(
     RunResult Result,
-    bool ReceivedText,
     string? NoticeKey,
     bool NoticeDanger,
     string? Detail,

@@ -341,6 +341,23 @@ public sealed class Conversation
     /// rather than needing a default the old file cannot carry.</summary>
     public int ContextEstimateDriftPermille { get; set; }
 
+    /// <summary>
+    /// How this session's last run ended, when the ending was something the person had to be told about. Null
+    /// once a run ends without news, so the field describes the newest ending and a retry that answered retires
+    /// the line by itself rather than through a second rule somebody has to remember.
+    ///
+    /// <para><b>Why a session field rather than a turn.</b> Anything in <see cref="Messages"/> is priced by the
+    /// context trimmer, counted as a message, walked by the tool-pairing repairs, aged by the meter, and — last
+    /// and worst — emitted onto the wire as part of the history the model reads back. A notice is none of those:
+    /// it is a record of an ending, addressed to the person, and a sentence of the app's own has no business
+    /// being re-sent to a model as though the assistant had said it.</para>
+    ///
+    /// <para>The key is stored and never the sentence, so the line is drawn in whatever language the shell is
+    /// wearing. Nullable under the standing rule for this file: a session written before it existed loads with no
+    /// notice rather than needing a default an old file cannot carry.</para>
+    /// </summary>
+    public SessionNotice? LastNotice { get; set; }
+
     /// <summary>The session that started this one, when a session was spawned rather than typed into. Nullable
     /// for the same reason <see cref="BranchSourceId"/> is: every conversation file written before spawning
     /// existed has no such property and still has to load, and a session nobody spawned has no parent to name.
@@ -661,3 +678,17 @@ public sealed class ConversationSummary
     /// </summary>
     public override string ToString() => Title.Length > 0 ? Title : "—";
 }
+
+/// <summary>
+/// One ending worth reading again: which sentence the shell should say (<paramref name="Key" />, never the
+/// sentence itself, so the line is drawn in the language the shell is wearing), what the run added to it
+/// (<paramref name="Detail" /> — the provider's own reason when it gave one), whether it is bad news, and how
+/// many of the person's own messages the transcript held at that moment (<paramref name="UserTurns" />), which is
+/// what ages the line out when they speak.
+///
+/// <para><paramref name="At" /> is not decoration. A stored line has to be attributable to the ending it
+/// describes — otherwise a check can only ask whether something was said, not whether this is the run that said
+/// it — and a record of an ending that cannot name the ending is a claim about the session file rather than about
+/// the run.</para>
+/// </summary>
+public sealed record SessionNotice(string Key, string? Detail, bool Danger, int UserTurns, DateTimeOffset At);

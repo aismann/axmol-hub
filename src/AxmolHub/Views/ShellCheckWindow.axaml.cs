@@ -1424,6 +1424,54 @@ public partial class ShellCheckWindow : Window
         Check(panel.LastNoticeTextForCheck == HubStrings.Get("ChatNoResponse"),
             "模型正常结束但没有文本时显示无回复提示");
 
+        // An ending that carried neither an answer nor a thought used to leave no trace anywhere at all: nothing
+        // in the transcript (an empty assistant turn would go back out on the wire as the model's own words),
+        // nothing in the log, and one line above the composer that a conversation switch erased. Three doors now
+        // hold the same fact, and the reason the endpoint gave is what makes the log line worth opening.
+        var silentRun = shell.Chat.StartConversation();
+        panel.Reload();
+        var silenceAudits = new List<string>();
+        var savedSilenceAudit = shell.Chat.AuditWrite;
+        shell.Chat.AuditWrite = line => silenceAudits.Add(line);
+        try
+        {
+            ScriptedChatClient? silentClient = null;
+            shell.Chat.ClientOverride = (_, _) => silentClient = new ScriptedChatClient([], finish: "length");
+            await panel.SendForCheckAsync("什么都没说的结束");
+            Check(panel.LastNoticeTextForCheck?.StartsWith(HubStrings.Get("ChatNoResponse"), StringComparison.Ordinal) == true
+                  && panel.LastNoticeTextForCheck!.Contains("finish_reason: length", StringComparison.Ordinal),
+                "端点给了理由，提示就把理由一起说清楚（实际「" + panel.LastNoticeTextForCheck + "」）");
+            Check(silenceAudits.Any(line => line.Contains("Completed with no content", StringComparison.Ordinal)
+                    && line.Contains("finish_reason=length", StringComparison.Ordinal)),
+                "一声不吭的结束在日志里留下一行，带模型名和端点给的理由（实际抓到 " + silenceAudits.Count + " 行审计）");
+            var silentCopy = shell.Chat.StoredCopyForCheck(silentRun.Id);
+            Check(silentCopy is not null && silentCopy.Messages.Count == 1
+                  && silentCopy.LastNotice is { Key: "ChatNoResponse", UserTurns: 1 },
+                "无内容不落成一个空回合，而是记在会话的结局上（消息 " + (silentCopy?.Messages.Count ?? -1)
+                + " 条，提示 " + (silentCopy?.LastNotice?.Key ?? "无") + "）");
+
+            // The line survives on the record alone: the panel's memory is taken away and the transcript
+            // repainted, and what is left is still the truth about how this session's last run ended.
+            panel.ClearNoticesForCheck();
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.NoticeVisibleForCheck
+                  && panel.LastNoticeTextForCheck?.Contains(HubStrings.Get("ChatNoResponse"), StringComparison.Ordinal) == true,
+                "无内容提示换页重开仍在，它不再是只活在内存里的一瞬（可见 " + panel.NoticeVisibleForCheck + "）");
+
+            // …and it never reaches the model. The next request's own wire copy is the only place that question
+            // can be answered, because a sentence of ours sent back as though the assistant had said it would
+            // teach the model to keep saying it.
+            await panel.SendForCheckAsync("再来一轮");
+            Check(silentClient?.LastMessages?.Any(message => message.Text.Contains(HubStrings.Get("ChatNoResponse"),
+                      StringComparison.Ordinal)) == false,
+                "这条提示不进发给模型的那份历史（那一次带了 " + (silentClient?.LastMessages?.Count ?? -1) + " 条消息）");
+        }
+        finally
+        {
+            shell.Chat.AuditWrite = savedSilenceAudit;
+        }
+
         shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient([], exception: new TimeoutException());
         await panel.SendForCheckAsync("超时问题");
         Check(panel.LastNoticeTextForCheck == HubStrings.Get("ChatTimedOut"),
@@ -12035,7 +12083,10 @@ public partial class ShellCheckWindow : Window
         // that has happened, which a client that answers instantly can never show.
         IList<Microsoft.Extensions.AI.AIContent>? searchStart = null,
         IList<Microsoft.Extensions.AI.AIContent>? searchEnd = null,
-        System.Threading.Tasks.TaskCompletionSource<bool>? searchStartReached = null) : Microsoft.Extensions.AI.IChatClient
+        System.Threading.Tasks.TaskCompletionSource<bool>? searchStartReached = null,
+        // Why the response stopped, on the frame that closes it. A gateway that ends without one is common enough
+        // that null has to stay a possible answer, and it is the case the caller must not report as a reason.
+        string? finish = null) : Microsoft.Extensions.AI.IChatClient
     {
         /// <summary>The options of the request that was just made, so a check can read what would have gone on
         /// the wire. The scripted client answers instead of a gateway, and the field a gateway would have been
@@ -12085,6 +12136,16 @@ public partial class ShellCheckWindow : Window
                 }
                 await Task.Yield();
             }
+
+            // The reason on a frame of its own, carrying no content — the shape an OpenAI-compatible endpoint
+            // actually sends it in, and precisely why a caller that only reads contents never learns why the
+            // answer stopped.
+            if (finish is { Length: > 0 } ended)
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant, "")
+                {
+                    FinishReason = new Microsoft.Extensions.AI.ChatFinishReason(ended),
+                };
 
             // The end-of-stream token report, in the same shape the gateway puts it: a sibling content on its own
             // update, after the text. Without it the read-back path could only ever be tested against a network.

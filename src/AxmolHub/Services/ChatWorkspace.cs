@@ -4661,7 +4661,7 @@ public sealed class ChatWorkspace : IDisposable
         await WriteRunLogAsync(run, result, compacted).ConfigureAwait(false);
         // Compaction is reported only when nothing more important happened: a failure the user has to act on
         // must not be replaced by an informational line.
-        CompleteRun(run, result, run.LiveText.Length > 0,
+        CompleteRun(run, result, run.SaidAnything,
             noticeKey ?? (compacted ? "ChatContextCompacted" : null), noticeDanger, detail);
     }
 
@@ -4697,11 +4697,23 @@ public sealed class ChatWorkspace : IDisposable
 
             // Either the stream ran out or the gate parked it and the enumeration stopped without throwing; the
             // run's phase is what tells those apart, and a parked run must not be reported as an answer that end.
-            return run.Phase == RunPhase.AwaitingApproval
-                ? (RunResult.Parked, null, false, null)
-                : run.SpinStopped
-                    ? (RunResult.Completed, "ChatToolSpinStopped", false, null)
-                    : (RunResult.Completed, null, false, null);
+            if (run.Phase == RunPhase.AwaitingApproval) return (RunResult.Parked, null, false, null);
+            if (run.SpinStopped) return (RunResult.Completed, "ChatToolSpinStopped", false, null);
+            if (run.SaidAnything) return (RunResult.Completed, null, false, null);
+            // The stream ended and carried neither an answer nor a thought across the whole run. This used to be
+            // the silent ending of the house: nothing was written to the transcript, because an empty assistant
+            // turn would go back out on the wire, and nothing was written to the log either, so a session that
+            // stopped answering left no trace a person could read afterwards — only a line above the composer
+            // that lived until the next repaint. The reason the endpoint gave is the single thing that separates
+            // a truncated answer from a filtered one from a call this build never decoded, so it is the fact
+            // worth keeping.
+            var ended = run.FinishReason;
+            Audit(run.ConversationId,
+                $"Completed with no content on {request.Value.ModelName} ({request.Value.Provider.Name}): "
+                + (ended is { Length: > 0 } reason ? $"finish_reason={reason}" : "no finish reason reported")
+                + ", 0 chars of reasoning and 0 of text across the run");
+            return (RunResult.Completed, "ChatNoResponse", true,
+                ended is { Length: > 0 } closed ? $" (finish_reason: {closed})" : null);
         }
         catch (OperationCanceledException) when (run.Phase == RunPhase.AwaitingApproval)
         {
@@ -5302,6 +5314,7 @@ public sealed class ChatWorkspace : IDisposable
             // The measurement lands while the reply is still streaming, which is the point: the ring the person
             // is watching has to be reading the model's numbers before they decide whether to keep typing.
             onUsage: report => NoteContextUsage(run.ConversationId, request.ModelName, report),
+            onFinishReason: reason => run.NoteFinishReason(reason),
             // A search the endpoint ran for itself. Nothing here is waited on, gated, or answered — the fact is
             // folded into the run so the row under the bubble can show it while the reply streams, and so the
             // reply's own turn carries it afterwards. The repaint is the whole UI cost: the bubble reads the run
@@ -5379,12 +5392,19 @@ public sealed class ChatWorkspace : IDisposable
             {
                 opened.MarkEngaged();
                 userTurns = opened.Messages.Count(turn => turn.Role == ChatRoles.User);
+                // The ending is stored with the age it belongs to, so the line survives a switch and a restart
+                // instead of living only until the next repaint. Written on every ending: a run that answered
+                // retires the previous one's complaint by setting the field back to null, which is why the view
+                // needs no clearing rule of its own.
+                opened.LastNotice = noticeKey is { Length: > 0 } key
+                    ? new SessionNotice(key, detail, danger, userTurns, DateTimeOffset.Now)
+                    : null;
             });
             Changed?.Invoke();
             RunsChanged?.Invoke(run.ConversationId);
             if (pendingPlan) AttentionRequired?.Invoke(run.ConversationId, ChatAttentionKind.PlanApproval);
             RunCompleted?.Invoke(run.ConversationId,
-                new RunOutcome(result, receivedText, noticeKey, danger, detail, userTurns));
+                new RunOutcome(result, noticeKey, danger, detail, userTurns));
             run.Dispose();
             // Last, after the slot is really gone: a wake waiting for one may only start once this run has left
             // the registry, or the fleet would be one session over its own cap.

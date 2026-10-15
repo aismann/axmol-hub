@@ -138,6 +138,13 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         Func<ChatImage, BinaryData?>? images = null,
         Action<string>? onReasoning = null,
         Action<ContextReport>? onUsage = null,
+        // Why the endpoint ended a response, in its own words: `stop`, `length`, `content_filter`, `tool_calls`,
+        // or whatever token a gateway invents. This is a wire fact and stays a wire string — a provider's reason
+        // is not this file's sentence to write. It fires on the stream's thread like the two above, once per
+        // response the tool loop answers, so the last one describes the turn that ended the run. Without it an
+        // answer-less stream is one indistinguishable event: the caller cannot tell a truncated answer from a
+        // filtered one from a call it never decoded.
+        Action<string>? onFinishReason = null,
         // A search the endpoint ran for itself, reported as it arrives. Same thread rule as the two above: this
         // fires inside the stream, on whatever thread the response is being read on.
         Action<ServerSearchNotice>? onServerSearch = null,
@@ -420,6 +427,9 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
             // file has never seen is still activity, and treating it as silence is how a thinking model that
             // streams reasoning was read as a dead stream.
             onActivity?.Invoke();
+            // Read off the frame, not off the contents: a response that says why it stopped while carrying nothing
+            // else is exactly the case the caller needs the reason for.
+            if (update.FinishReason is { } ended) onFinishReason?.Invoke(ended.Value);
             foreach (var content in update.Contents)
             {
                 if (content is TextContent text && text.Text.Length > 0)
