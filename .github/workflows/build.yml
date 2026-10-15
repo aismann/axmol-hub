@@ -121,6 +121,22 @@ jobs:
       - name: Build CLI
         run: dotnet build src/AxmolHub.Cli/AxmolHub.Cli.csproj -c ${{ env.CONFIGURATION }}
 
+      # 运行时地板。`net8.0` 目标 + 默认可滚前策略（Minor，不跨主版本）合起来是硬锁 8.0 运行时：
+      # Ubuntu 26.04 起源里已经没有 dotnet-runtime-8.0，而只装 `Microsoft.DotNet.SDK.10` 的 Windows
+      # 开发机同病（SDK 只带 10.0 运行时）。`Directory.Build.props` 的 `RollForward=Major` 把这件事从
+      # "锁版本"改成"声明地板"，SDK 把它写进可执行产物的 runtimeconfig.json。
+      # 这条断言只能证明属性确实落进了文件 —— 它**证不了**真的能滚前：runner 自带 8.0，走的仍是 8.0
+      # 那条分支。真正的证明只能在缺少 8.0 的机器上做（2026-10-15 已在 Ubuntu 26.04.1 实测）。
+      # 之所以还是留着它：属性被改名或挪出 props 时，地板会无声消失，而这里会红。
+      - name: Verify runtime floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=src/AxmolHub.Cli/bin/Release/net8.0/AxmolHub.Cli.runtimeconfig.json
+          test -f "$f" || { echo "::error::missing $f"; exit 1; }
+          grep -q '"rollForward": "Major"' "$f" || { echo "::error::$f does not declare rollForward=Major"; exit 1; }
+          cat "$f"
+
       # 宿主判定（BuildTargets.Host）是 Core 里最早按操作系统分叉的逻辑，
       # 目标是否可在本机构建直接决定 GUI 给用户显示什么，因此三个平台都要断言。
       # （密钥存储后端也按 OS 分叉了，见下面的 --check-secrets；那条断言只覆盖 CLI 这一半。）

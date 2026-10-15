@@ -59,6 +59,8 @@ The detailed guide — running the GUI from source, the runtime verification fla
 
 **You need a .NET SDK, and it needs a recent enough compiler.** The projects target `net8.0`, but the Avalonia 12.1.3 analyzers/source-generators are compiled against compiler version 4.14 — an older SDK 8 patch (e.g. the 8.0.1xx that `apt install dotnet-sdk-8.0` gives you on Ubuntu) only carries compiler 4.8, which silently fails to run the source generator and the build errors out with `CS0103: The name 'InitializeComponent' does not exist`. **.NET 10 SDK always works** (it ships a far newer compiler), so it's the safest choice on a dev machine. The SDK version you install and the `net8.0` target in the build output are two different things — that's why a successful build still prints `AxmolHub -> .../net8.0/AxmolHub.dll`. See [docs/ci.md](docs/ci.md) §2.4 for how CI pins its own SDK (10.0.x) and why the dev-machine wording is only a floor.
 
+**The runtime floor is separate from the SDK requirement, and it is declared.** The default roll-forward policy never crosses a major version, so a `net8.0` target used to mean "the 8.0 runtime, exactly" and refused to start on a machine that carries only a newer one. `Directory.Build.props` now sets `RollForward=Major` for the repo: the build runs on 8.0 when it is installed (which is what CI's runners do) and on the lowest newer major otherwise — the .NET 10 runtime alone is enough to run Hub from source, on Linux and Windows alike. Note that .NET 8 reaches end of support on 2026-11-10.
+
 Per-OS installation steps for the required **.NET 10 SDK** live in [docs/building-from-source.md](docs/building-from-source.md#安装-net-10-sdk) (macOS and Ubuntu; Windows via `winget install Microsoft.DotNet.SDK.10`).
 
 Quick start:

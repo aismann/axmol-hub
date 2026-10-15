@@ -91,4 +91,44 @@
 
   </PropertyGroup>
 
+  <!-- The .NET **runtime floor**, declared once for the whole repo. This is not a version pin: it says
+       "8.0 at the oldest", not "8.0 exactly".
+
+       Without it there is a hard lock on the 8.0 runtime, and it comes from two defaults adding up:
+       TargetFramework is net8.0, and the default roll-forward policy is Minor, which never crosses a
+       major version. A machine carrying only a newer runtime does not run the build at all. Measured
+       2026-10-15 on Ubuntu 26.04.1 (.NET SDK 10.0.112, runtime 10.0.12, no 8.0 installed anywhere):
+
+         $ dotnet src/AxmolHub.Cli/bin/Release/net8.0/AxmolHub.Cli.dll targets
+         You must install or update .NET to run this application.
+         Framework: 'Microsoft.NETCore.App', version '8.0.0' (x64)
+         The following frameworks were found: 10.0.12
+
+       and the same command runs on 10.0.12 with the equivalent DOTNET_ROLL_FORWARD=Major in the
+       environment. Not a Linux-only trap either: the README's own Windows path installs
+       Microsoft.DotNet.SDK.10, which brings the 10.0 runtime and no 8.0, so a fresh dev machine could
+       not run the GUI verification flags or the Checks project.
+
+       Why `Major` rather than `LatestMajor`: Major is exactly "8.0 if it is installed, otherwise the
+       lowest higher major", so a host that has 8.0 keeps running on 8.0 — including the CI verify
+       matrix, whose runners ship 8.0 alongside the 10.0 SDK that setup-dotnet installs. LatestMajor
+       would silently move what CI actually exercises to 10.0.
+
+       Where it lands: the SDK writes "rollForward" into the runtimeconfig.json of every project that
+       produces one (App / Cli / Checks), and all three entry points — `dotnet run`, `dotnet <app>.dll`,
+       and the apphost — honour it. Core and Agent are libraries and emit no runtimeconfig, so declaring
+       it here is a no-op for them. That is also why it lives in this file: one place, no chance of the
+       next Exe project forgetting it.
+
+       Boundary: shipped artifacts are self-contained (installer/Build.ps1, installer/Build-Hosts.ps1 and
+       the publish step in .github/workflows/build.yml all pass the self-contained switch), so they carry
+       their own runtime, ignore this setting, and bundle the same version as before. What it does not
+       remove: building net8.0 still restores the 8.0 targeting pack from NuGet. Only the 8.0 runtime at
+       run time stops being a requirement. If a single project ever needs a different policy, its own
+       RollForward wins; a runtimeconfig.template.json in that project is the fallback if the property is
+       ever found not to land in the emitted runtimeconfig.json. -->
+  <PropertyGroup>
+    <RollForward>Major</RollForward>
+  </PropertyGroup>
+
 </Project>

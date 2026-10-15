@@ -46,13 +46,15 @@ brew install --cask dotnet-sdk
 **Ubuntu**
 
 ```bash
-# Ubuntu 24.04 / 25.04 / 25.10 —— .NET 已在 Ubuntu 自己的源里，不用加任何第三方源
-sudo apt-get update && sudo apt-get install -y dotnet-sdk-10.0 dotnet-runtime-8.0
+# Ubuntu 24.04 / 25.04 / 25.10 / 26.04 —— .NET 已在 Ubuntu 自己的源里，不用加任何第三方源
+sudo apt-get update && sudo apt-get install -y dotnet-sdk-10.0
 
 # Ubuntu 22.04 —— .NET 10 只来自 Canonical 的 backports PPA
 sudo add-apt-repository ppa:dotnet/backports
-sudo apt-get update && sudo apt-get install -y dotnet-sdk-10.0 dotnet-runtime-8.0
+sudo apt-get update && sudo apt-get install -y dotnet-sdk-10.0
 ```
+
+**这里只装 SDK，不再装 `dotnet-runtime-8.0`。** 产物是 `net8.0`，但仓库在 `Directory.Build.props` 里声明了 `RollForward=Major`：运行期要的是**地板 8.0**，本机装的 10.0 运行时就够（`dotnet --list-runtimes` 只列出 10.0.x 也能跑）。过去这里多写一个 `dotnet-runtime-8.0`，是因为默认可滚前策略（`Minor`）不跨主版本——而 Ubuntu 26.04 起源里已经没有这个包，.NET 8 也已于 2026-11-10 出保。若你仍想让它跑在 8.0 上，装上它同样可以：声明的是地板，不是钉。已经构建好的树不想重编，也可以临时 `DOTNET_ROLL_FORWARD=Major dotnet src/AxmolHub/bin/Release/net8.0/AxmolHub.dll ...`。
 
 不要再按老教程去加 `packages.microsoft.com`：微软**已不再**通过它为 Ubuntu 提供包（且该源只有 x64），和 Ubuntu 源混用正是 .NET 包冲突（package mix-up）报错的来源。arm64 主机请用 Ubuntu 源或上面的安装脚本。
 
