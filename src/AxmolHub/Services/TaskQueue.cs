@@ -576,13 +576,19 @@ internal sealed class TaskQueue
     }
 
     /// <summary>
-    /// Runs a failed task again, as the same row. It takes the item rather than an identity because the
-    /// row offering the press already holds the one it means, and an identity would have to answer "which
-    /// of the rows with this identity" — a question that only exists once a superseded failure lingers.
+    /// Runs a failed **or cancelled** task again, as the same row. It takes the item rather than an identity
+    /// because the row offering the press already holds the one it means, and an identity would have to
+    /// answer "which of the rows with this identity" — a question that only exists once a superseded
+    /// failure lingers.
+    ///
+    /// A cancel is included on purpose: an update download the user stopped used to settle into a row with
+    /// no press on it at all (no retry, no dismiss), while <c>StartPendingDownload</c> — the thing that
+    /// would fetch it again — was gated behind auto-download being off. Cancelled and failed are the same
+    /// question ("run this again?") and deserve the same answer.
     /// </summary>
     public void Retry(Item item)
     {
-        if (item.State != Phase.Failed)
+        if (item.State is not (Phase.Failed or Phase.Cancelled))
         {
             return;
         }

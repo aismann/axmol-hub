@@ -12622,6 +12622,44 @@ public partial class ShellCheckWindow : Window
               && !shell.TaskSlotVisibleForCheck,
             "忽略之后这一行不再报，槽也跟着熄灭");
 
+        // A cancelled row used to get *neither* button — no retry, no dismiss — so with auto-download on
+        // (the default) a cancelled update download left no way to ask for it again anywhere in the app.
+        // Two transfers on purpose: while the second one runs, the slot stays lit and keeps the popover's
+        // rows alive, so the cancelled row's own buttons are what gets pressed here rather than a rebuild.
+        var cancelA = "hub:update:7.7.7";
+        var cancelB = "engine:install:7.7.6";
+        TaskQueue.Instance.EnqueueForCheck(cancelA, "TaskHubUpdate", "7.7.7");
+        TaskQueue.Instance.EnqueueForCheck(cancelB, "TaskEnginePackage", "7.7.6");
+        TaskQueue.Instance.Cancel(cancelA);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        shell.OpenTaskPopupForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(TaskQueue.Instance.Items.FirstOrDefault(item => item.Identity == cancelA)?.State
+              == TaskQueue.Phase.Cancelled
+              && shell.TaskRowActionsForCheck == retryWord + "+" + dismissWord + " / " + cancelWord,
+            "取消的那一行给重试和忽略，跑着的那一行给取消（实际 " + shell.TaskRowActionsForCheck + "）");
+        shell.ClickTaskRowActionForCheck(cancelA, retryWord);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(TaskQueue.Instance.Items.FirstOrDefault(item => item.Identity == cancelA)?.State
+              is TaskQueue.Phase.Queued or TaskQueue.Phase.Running,
+            "点重试把取消的行原地拉回队列（实际 "
+            + TaskQueue.Instance.Items.FirstOrDefault(item => item.Identity == cancelA)?.State + "）");
+        TaskQueue.Instance.Cancel(cancelA);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        shell.ClickTaskRowActionForCheck(cancelA, dismissWord);
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(!TaskQueue.Instance.Items.Any(item => item.Identity == cancelA),
+            "再取消一次后也能被忽略，行彻底离场");
+        shell.CloseTaskPopupForCheck();
+        TaskQueue.Instance.ClearForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
         var dupIdentity = "engine:install:9.9.1";
         TaskQueue.Instance.EnqueueForCheck(dupIdentity, "TaskEnginePackage", "9.9.1");
         TaskQueue.Instance.FinishTaskForCheck(dupIdentity, TaskQueue.Phase.Failed, "fixture: first attempt");

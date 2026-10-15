@@ -1079,8 +1079,11 @@ public partial class MainWindow : Window
             // A finished row keeps no cancel: there is nothing left to stop, and a button that answers to
             // nothing is the thing this shell already refused to do in the version picker.
             _cancel.IsVisible = _item.IsActive;
-            _retry.IsVisible = _item.State == TaskQueue.Phase.Failed;
-            _dismiss.IsVisible = _item.State == TaskQueue.Phase.Failed;
+            // A cancelled row used to get *neither* button — no retry and no dismiss — which left it as a
+            // row nothing could act on or remove (it only ever left on the next Enqueue's cleanup). Cancel
+            // settles work the same way failure does, and both settle states offer the same two ways out.
+            _retry.IsVisible = _item.State is TaskQueue.Phase.Failed or TaskQueue.Phase.Cancelled;
+            _dismiss.IsVisible = _item.State is TaskQueue.Phase.Failed or TaskQueue.Phase.Cancelled;
         }
 
         private static Button StripButton() => new()
