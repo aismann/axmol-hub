@@ -994,8 +994,8 @@ public static class HubTexts
         ["StatusRepoDirtyTruncatedFormat"] = ("仓库 {0}+ 处未提交 · {1}", "repository: {0}+ uncommitted · {1}"),
         ["StatusRepoFailed"] = ("仓库状态读不到", "the repository state could not be read"),
         ["StatusRepoOpenHint"] = ("看仓库里有什么改动", "see what the repository holds"),
-        ["ChatPreparing"] = ("正在准备回复", "Preparing a response"),
-        ["ChatGenerating"] = ("正在生成回复", "Generating response"),
+        ["ChatPreparing"] = ("思考中...", "Thinking..."),
+        ["ChatGenerating"] = ("正在生成...", "Generating..."),
         ["You"] = ("你", "You"),
         // Message-level actions (the action bar that appears when a bubble is hovered).
         ["CopyMessage"] = ("复制", "Copy"),
