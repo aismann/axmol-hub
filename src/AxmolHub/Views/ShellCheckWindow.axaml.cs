@@ -2975,8 +2975,29 @@ public partial class ShellCheckWindow : Window
             "工具调用前说的话随调用一起落库，顺序不乱（实际 "
             + (transcript?.Count ?? -1) + " 条：" + string.Join(" / ", transcript?.Select(turn => turn.Role + ":" + turn.Text) ?? []));
 
+        // What the model said while asking for a read used to be filed and then painted by nobody: the call owned
+        // no approval card and no undo, so the fold skipped its row and the sentence — which the person had just
+        // watched type itself out — left the screen with the live bubble. It now opens a flat piece: the sentence
+        // as a row of the transcript, its one action under it, and nothing to expand. Asserted on the streamed
+        // shape first, because that is the shape the report was about.
+        Dispatcher.UIThread.RunJobs();
+        Check(panel.UnfoldedRowTextsForCheck.Any(text => text.Contains("先说的话", StringComparison.Ordinal))
+              && panel.ActivityGroupCountForCheck == 0
+              && panel.ActivityRowsForCheck.Length == 1,
+            "随只读调用一起到达的话画成流里的一行，那个动作就在它下面，屏幕上没有需要展开的东西（流内行 "
+            + panel.UnfoldedRowTextsForCheck.Count + "，折叠 " + panel.ActivityGroupCountForCheck
+            + "，动作行 " + panel.ActivityRowsForCheck.Length + "）");
+
         panel.Reload();
         Dispatcher.UIThread.RunJobs();
+
+        // The same record painted twice must say the same thing. A rebuild is the reader's second look — a switch
+        // away and back, a result filed beside its call — and a sentence that only survives the streaming pass is
+        // a sentence that disappears the moment they go to check it.
+        Check(panel.UnfoldedRowTextsForCheck.Any(text => text.Contains("先说的话", StringComparison.Ordinal))
+              && panel.PaintedRowsForCheck.Count == panel.UnfoldedRowTextsForCheck.Count,
+            "同一份记录重建后那句话还在原地，屏幕上没有任何一行是藏着不让看的（重建后流内 "
+            + panel.UnfoldedRowTextsForCheck.Count + " / 全部 " + panel.PaintedRowsForCheck.Count + "）");
 
         // A tool result is filed beside the call it answers, which is an insert rather than an append whenever a
         // sibling call from the same response ran first. The incremental renderer could only see the count grow,

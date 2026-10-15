@@ -2060,33 +2060,51 @@ public partial class ChatPanel : UserControl
         var lastIndex = conversation.Messages.Count - 1;
         for (var i = _renderedCount; i < visible.Count;)
         {
-            // A run of consecutive machine turns — calls, their results, a thinking-only answer — folds into one
-            // collapsible group. Prose, user turns and system turns break the run. The fold is a paint-time
-            // shape only: every folded turn still produces its own row inside the group, so the row count the
-            // transcript checks key on is unchanged, and MessageRows expands groups to find them.
+            // Machine turns — calls, their results, a thinking-only answer — lay out in pieces. A piece opened by
+            // a call that came with its own sentence is painted flat: the sentence is what the person is reading,
+            // and one action under it has no fold to earn. The machine work the model asked for without saying why
+            // still folds into one collapsible group. Prose, user turns and system turns break the run. The shape
+            // is paint-time only: every turn still produces its own row inside its piece, so the row count the
+            // transcript checks key on is unchanged, and MessageRows expands either container to find them.
             if (IsActivityTurn(visible[i].Turn))
             {
                 var start = i;
-                while (i < visible.Count && IsActivityTurn(visible[i].Turn)) i++;
-                var turns = visible.GetRange(start, i - start);
-                // The run is still open while its group is the last thing on the page, so the turns that arrived
-                // since are the same piece of work: grow that group where it stands. Rebuilding it would answer a
-                // person reading the opened fold by closing it, once per tool call, for as long as the model
-                // keeps calling tools.
-                if (_openGroup is { } open && open.ConversationId == conversation.Id && open.EndVisible == start
+                var carriesSentence = IsNarratedCall(visible[start].Turn);
+                // The piece on the page continues when this turn belongs to it: a fold takes the silent turns
+                // behind it, a flat exchange takes only the results filed beside the call that opened it — which
+                // is how a result landing after its sentence reaches the row under that sentence instead of
+                // opening a fold of its own. A call carrying its own sentence always starts a new piece.
+                var prior = _openGroup;
+                var attach = prior is not null && !carriesSentence
+                    && prior.ConversationId == conversation.Id && prior.EndVisible == start
                     && MessageFlow.Children.Count > 0
-                    && ReferenceEquals(MessageFlow.Children[^1], open.Group))
+                    && ReferenceEquals(MessageFlow.Children[^1], prior.Group)
+                    && (prior.Folded || visible[start].Turn.Role == ChatRoles.Tool);
+                var flat = attach ? !prior!.Folded : carriesSentence;
+                i++;
+                if (flat)
+                {
+                    while (i < visible.Count && visible[i].Turn.Role == ChatRoles.Tool) i++;
+                }
+                else
+                {
+                    while (i < visible.Count && IsActivityTurn(visible[i].Turn) && !IsNarratedCall(visible[i].Turn))
+                        i++;
+                }
+
+                if (attach && prior is { } same)
                 {
                     // Re-sliced from where the run began, not the turns that just arrived: a row is drawn from a
                     // call <i>and</i> the result that answered it, so handing the group only the new second half
                     // would draw every result as a call nobody had asked for.
-                    open.Turns = visible.GetRange(open.FirstVisible, i - open.FirstVisible);
-                    open.EndVisible = i;
-                    DeriveActivityGroup(open, conversation.Id, lastIndex, visible.Count);
+                    same.Turns = visible.GetRange(same.FirstVisible, i - same.FirstVisible);
+                    same.EndVisible = i;
+                    DeriveActivityGroup(same, conversation.Id, lastIndex, visible.Count);
                 }
                 else
                 {
-                    _openGroup = CreateActivityGroup(conversation.Id, start, turns);
+                    _openGroup = CreateActivityGroup(conversation.Id, start,
+                        visible.GetRange(start, i - start), folded: !flat);
                     DeriveActivityGroup(_openGroup, conversation.Id, lastIndex, visible.Count);
                 }
 
@@ -2094,7 +2112,7 @@ public partial class ChatPanel : UserControl
                 continue;
             }
 
-            // Prose closes the run: the next piece of machine work is a different exchange and gets its own fold.
+            // Prose closes the piece: the next piece of machine work is a different exchange and stands on its own.
             _openGroup = null;
             var (index, turn, toolName) = visible[i];
             AppendRenderedTurn(conversation.Id, index, turn, toolName, isLast: index == lastIndex,
@@ -2229,8 +2247,7 @@ public partial class ChatPanel : UserControl
     /// <summary>Whether a turn is machine work rather than something said: a tool result, a call, or a
     /// thinking-only answer. These are the turns a run folds into one group; prose and user turns break it.
     /// A thinking turn that also carries prose is prose — the answer is what was asked for, and folding it
-    /// away would hide the reply. A call's own prose — what the model said before it asked — stays with the call
-    /// it rode in on, and is painted through the Markdown layer under the same window the transcript uses.
+    /// away would hide the reply.
     ///
     /// <para>A plan is prose whatever its text says, so it is excepted by name. Its body lives in its own document
     /// and its turn's text is legitimately empty, which is the shape this test would otherwise read as
@@ -2244,6 +2261,20 @@ public partial class ChatPanel : UserControl
                                    && turn.PlanApprovalState is null),
         _ => false,
     };
+
+    /// <summary>Whether this turn is a call the model asked for <i>while saying why</i>, and owns no surface of
+    /// its own: an auto-allowed read or command, whose prose would otherwise be filed on the call turn and drawn by
+    /// nobody. A call that owed a decision, or a write that left a copy, is excluded — it already paints its prose
+    /// through its own row, inside the fold, and asserting that is <c>d7c3f9f</c>'s job. Whitespace does not count:
+    /// a blank sentence must not buy a blank row, which is the gap this whole branch used to be argued on.
+    ///
+    /// <para>These are what the flat pieces of the transcript are made of — the sentence goes in the flow and its
+    /// one action sits under it, because the words are the thread the person is reading and hiding them behind a
+    /// collapsed head is indistinguishable from the model having said nothing.</para></summary>
+    private static bool IsNarratedCall(ChatTurn turn) => turn.Role == ChatRoles.Assistant
+                                                         && turn.ToolCallId is { Length: > 0 }
+                                                         && !string.IsNullOrWhiteSpace(turn.Text)
+                                                         && turn.ApprovalState is null && turn.UndoName is null;
 
     /// <summary>
     /// <summary>
@@ -2265,18 +2296,47 @@ public partial class ChatPanel : UserControl
 
         public required List<(int Index, ChatTurn Turn, string? ToolName)> Turns { get; set; }
 
-        public required Border Group { get; init; }
+        /// <summary>Whether this piece is a collapsible fold. A flat piece (<see cref="IsNarratedCall"/> opened
+        /// it) has no head and nothing to expand: it is the sentence and the one action under it.</summary>
+        public required bool Folded { get; init; }
 
-        public required ToggleButton Head { get; init; }
+        public required Control Group { get; init; }
+
+        /// <summary>The expandable head, or null for a flat piece. Only a fold has a sentence to keep current.</summary>
+        public ToggleButton? Head { get; init; }
 
         public required StackPanel Inner { get; init; }
     }
 
-    /// <summary>Lays down an empty group over the first stretch of a machine run and puts it at the end of the
-    /// flow. Its rows and its sentence come from <see cref="DeriveActivityGroup"/>.</summary>
+    /// <summary>Lays down an empty piece over the first stretch of a machine run and puts it at the end of the
+    /// flow. Its rows and its sentence come from <see cref="DeriveActivityGroup"/>. A folded piece is a head over a
+    /// body the person opens; a flat one is a bare column of rows — the same drawing target, minus the chrome —
+    /// because a call that came with its own sentence has nothing here worth hiding.</summary>
     private ActivityGroupView CreateActivityGroup(string conversationId, int firstVisible,
-        List<(int Index, ChatTurn Turn, string? ToolName)> turns)
+        List<(int Index, ChatTurn Turn, string? ToolName)> turns, bool folded)
     {
+        if (!folded)
+        {
+            // Hugging its own rows the way the fold's body does, and taking the flow's spacing only on the
+            // outside: the sentence and the action under it are one exchange, not two entries in the transcript.
+            var plain = new StackPanel
+            {
+                Classes = { "activity-plain" },
+                Spacing = 2,
+            };
+            MessageFlow.Children.Add(plain);
+            return new ActivityGroupView
+            {
+                ConversationId = conversationId,
+                FirstVisible = firstVisible,
+                EndVisible = firstVisible + turns.Count,
+                Turns = turns,
+                Folded = false,
+                Group = plain,
+                Inner = plain,
+            };
+        }
+
         var head = new ToggleButton { Classes = { "activity-group-head" } };
         var inner = new StackPanel { Spacing = 2 };
         var body = new StackPanel { Name = "ActivityGroupBody", Spacing = 0, IsVisible = false, Margin = new Thickness(0, 2, 0, 2) };
@@ -2305,6 +2365,7 @@ public partial class ChatPanel : UserControl
             FirstVisible = firstVisible,
             EndVisible = firstVisible + turns.Count,
             Turns = turns,
+            Folded = true,
             Group = group,
             Head = head,
             Inner = inner,
@@ -2347,14 +2408,15 @@ public partial class ChatPanel : UserControl
             // A call that owed a decision, or a write that left a copy, keeps its own surface (signpost / record
             // with undo) — those are functional and asserted, so route them through the ordinary turn renderer.
             // The prose this call rode in on belongs to that surface too, so it is painted through the Markdown
-            // layer under the same window the transcript's own rows use rather than left as raw source text.
+            // layer rather than left as raw source text — and a call that only asked for a read or a command gets
+            // its sentence painted the same way, because there it was, until now, drawn by nobody.
             if (turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 } callId)
             {
-                if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 })
+                if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 } || IsNarratedCall(turn))
                     AppendRenderedTurn(conversationId, index, turn, toolName, isLast: index == lastIndex,
                         markdown: index >= visibleCount - EagerMarkdownLimit, target: inner);
-                // A plain read/command call renders no row of its own: its action row is drawn from the result
-                // below, so emitting an empty row here would only add a gap.
+                // A silent call renders no row of its own: its action row is drawn from the result below, so
+                // emitting a row here would only add a gap.
                 continue;
             }
 
@@ -2373,7 +2435,8 @@ public partial class ChatPanel : UserControl
                 markdown: false, target: inner);
         }
 
-        view.Head.Content = BuildActivityGroupHead(turns, calls.Count);
+        // A flat piece has no head to caption: its sentence is the prose row already painted above it.
+        if (view.Head is { } head) head.Content = BuildActivityGroupHead(turns, calls.Count);
     }
 
     /// <summary>
@@ -3915,9 +3978,14 @@ public partial class ChatPanel : UserControl
     // ───────────────────────── Self-check hooks ─────────────────────────
 
     /// <summary>Message rows are Borders carrying the message-row class (both row kinds, since the container
-    /// was unified); the class is what the hover-reveal rules and every row-counting check key on.</summary>
+    /// was unified); the class is what the hover-reveal rules and every row-counting check key on. Both machine
+    /// containers are entered — a fold, and the flat column a narrated call is painted into — because a row the
+    /// person can read without clicking anything is a row of the transcript whatever element happens to hold it.</summary>
+    private static bool IsMachinePanel(Control child)
+        => child.Classes.Contains("activity-group") || child.Classes.Contains("activity-plain");
+
     private IEnumerable<Control> MessageRows
-        => MessageFlow.Children.SelectMany(child => child.Classes.Contains("activity-group")
+        => MessageFlow.Children.SelectMany(child => IsMachinePanel(child)
             ? child.GetLogicalDescendants().OfType<Control>().Where(row => row.Classes.Contains("message-row"))
             : Enumerable.Repeat(child, 1).Where(row => row.Classes.Contains("message-row")));
 
@@ -3941,15 +4009,30 @@ public partial class ChatPanel : UserControl
         }
     }
 
+    /// <summary>What one painted row says: its text blocks in order, plus the raw markdown carried as a viewer's
+    /// Tag so a fenced document can name the row it renders.</summary>
+    private static string RowText(Control row)
+        => string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>()
+            .Select(block => block.Text ?? "").Where(text => text.Length > 0)
+            .Concat(row.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+                .Select(viewer => viewer.Tag as string ?? ""))
+            .Where(text => text.Length > 0));
+
     /// <summary>One entry per painted row, holding the texts that row shows (a Markdown layer contributes the
     /// document it rendered, so a row can be named by what it says). The incremental renderer's whole claim is
     /// that each turn is painted once, in order — and that is only checkable from outside as a list of rows.</summary>
-    internal IReadOnlyList<string> PaintedRowsForCheck => MessageRows
-        .Select(row => string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>()
-                .Select(block => block.Text ?? "").Where(text => text.Length > 0)
-                .Concat(row.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
-                    .Select(viewer => viewer.Tag as string ?? ""))
-                .Where(text => text.Length > 0)))
+    internal IReadOnlyList<string> PaintedRowsForCheck => MessageRows.Select(RowText).ToArray();
+
+    /// <summary>The texts of every message row that is on screen <b>without the person opening anything</b>: prose
+    /// in the flow, and the rows of a flat piece. Rows inside a fold are absent by design, which is what makes this
+    /// the read that separates "the model said it" from "the model said it, then hid it behind a chevron" — the
+    /// second of those used to be indistinguishable from returning nothing at all.</summary>
+    internal IReadOnlyList<string> UnfoldedRowTextsForCheck => MessageFlow.Children
+        .Where(child => !child.Classes.Contains("activity-group"))
+        .SelectMany(child => child.Classes.Contains("activity-plain")
+            ? child.GetLogicalDescendants().OfType<Control>().Where(row => row.Classes.Contains("message-row"))
+            : Enumerable.Repeat(child, 1).Where(row => row.Classes.Contains("message-row")))
+        .Select(RowText)
         .ToArray();
 
     // ── the folded activity runs and the live thinking glyph ──
