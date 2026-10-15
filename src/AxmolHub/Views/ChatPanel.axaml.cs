@@ -2227,20 +2227,29 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>
-    /// The head's full-width row: a chevron, a sentence naming the first action (and how many followed), and an
-    /// aggregate <c>+N −M</c> when the run edited files. Naming the work rather than counting it is what keeps a
-    /// tools-only turn from reading as a lonely pill stranded at the left edge with an empty middle — the AI lane
-    /// stays a full-width line the eye can rest on.
+    /// The head's row: a chevron, a sentence naming the first action (and how many followed), and an aggregate
+    /// <c>+N −M</c> that trails that sentence. Naming the work rather than counting it is what keeps a tools-only
+    /// turn from reading as a lonely pill stranded at the left edge; trailing the count rather than pinning it to
+    /// the right edge is what keeps the head one line the eye finishes in order, rather than a second column whose
+    /// left edge moves with every label width.
     /// </summary>
     private Control BuildActivityGroupHead(List<(int Index, ChatTurn Turn, string? ToolName)> turns, int callCount)
     {
         // The head toggle carries the HubExpanderHeader theme, which supplies the same left `>`/`v` arrow the
         // sidebar's workspace groups use — so no chevron is built here, and the grid only lays out the sentence and
-        // the aggregate diff chip.
-        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        // the aggregate diff chip. The slack goes to the last column, after the chip.
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
 
         var (text, added, removed) = GroupSummary(turns, callCount);
-        var label = new TextBlock { Text = text, TextTrimming = TextTrimming.CharacterEllipsis };
+        // The sentence embeds the first call's description, so its length is not bounded — and an Auto column is
+        // measured against the whole row, where trimming could never bite. The cap is what makes the ellipsis
+        // reachable, the same way tool-result-line carries one.
+        var label = new TextBlock
+        {
+            Text = text,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 420,
+        };
         Grid.SetColumn(label, 0);
         grid.Children.Add(label);
 
@@ -2324,8 +2333,12 @@ public partial class ChatPanel : UserControl
         {
             Classes = { "file-chip-action" },
             Tag = "InspectorOpenChanges",
-            Content = new Border { Classes = { "file-chip" }, Child = row },
+            Content = new Border { Classes = { "file-chip", "inline-chip" }, Child = row },
             VerticalAlignment = VerticalAlignment.Center,
+            // The head's slack now sits after this column, so the button has to hold still at its own width: the
+            // expander template centers its content, and a stretched button would float the count into the middle
+            // of the empty row.
+            HorizontalAlignment = HorizontalAlignment.Left,
         };
         ToolTip.SetTip(chip, HubStrings.Get("InspectorOpenChanges"));
         chip.Click += (_, _) => OpenInspector?.Invoke("changes", -1);
@@ -2447,14 +2460,24 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>One folded tool exchange as a single descriptive row: a status mark, the action named from its
-    /// call, and — for a command — the command itself inline. This is the collapsed line inside
-    /// <see cref="BuildActivityRowShell"/>; the full arguments and payload live in the detail it reveals. The left
-    /// slot carries two glyphs in one cell — the execution status at rest, and the same `>`/`v` arrow the sidebar
-    /// uses, which the row's styles swap in on hover and while expanded — so the affordance sits where the eye
-    /// already is rather than stranded on the right edge.</summary>
+    /// call, and — for a command — the command itself trailing that verb in the same reading order. This is the
+    /// collapsed line inside <see cref="BuildActivityRowShell"/>; the full arguments and payload live in the detail
+    /// it reveals. The left slot carries two glyphs in one cell — the execution status at rest, and the same
+    /// `>`/`v` arrow the sidebar uses, which the row's styles swap in on hover and while expanded — so the
+    /// affordance sits where the eye already is rather than stranded on the right edge.</summary>
     private Control BuildActivityRow(ChatTurn? call, ChatTurn result)
     {
-        var grid = new Grid { Classes = { "activity-row" }, ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+        var command = call?.ToolName == "run_command" ? ArgField(call.ToolArguments, "command", "cmd") : null;
+        var showsCommand = !string.IsNullOrWhiteSpace(command);
+        // The preview owns the star column, so it reads immediately after the verb. A star on the label is what
+        // used to eat all the slack and pin the preview to the row's right edge, which made the eye cross the
+        // whole column to finish the sentence. Without a preview the label keeps the star, because that is where
+        // a long 「读取 <path>」 gets trimmed.
+        var grid = new Grid
+        {
+            Classes = { "activity-row" },
+            ColumnDefinitions = new ColumnDefinitions(showsCommand ? "Auto,Auto,*" : "Auto,*"),
+        };
         if (result.ToolFailed) grid.Classes.Add("failed");
 
         grid.Children.Add(new Avalonia.Controls.Shapes.Path
@@ -2477,17 +2500,23 @@ public partial class ChatPanel : UserControl
         Grid.SetColumn(text, 1);
         grid.Children.Add(text);
 
-        var command = call?.ToolName == "run_command" ? ArgField(call.ToolArguments, "command", "cmd") : null;
-        if (!string.IsNullOrWhiteSpace(command))
+        if (showsCommand)
         {
-            var oneLine = command.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            var oneLine = command!.Replace('\r', ' ').Replace('\n', ' ').Trim();
             var chip = new Border
             {
                 // file-chip for the look, source-chip so a check can tell these from the other chips in the same
                 // panel — the run_command preview and the diff counters share the styling and nothing else.
-                Classes = { "file-chip", "source-chip" },
+                Classes = { "file-chip", "source-chip", "inline-chip" },
                 HorizontalAlignment = HorizontalAlignment.Left,
-                Child = new TextBlock { Text = oneLine.Length > 60 ? oneLine[..60] + "…" : oneLine },
+                Child = new TextBlock
+                {
+                    Text = oneLine.Length > CommandPreviewCharacters
+                        ? oneLine[..CommandPreviewCharacters] + "…"
+                        : oneLine,
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
             };
             Grid.SetColumn(chip, 2);
             grid.Children.Add(chip);
@@ -2495,6 +2524,11 @@ public partial class ChatPanel : UserControl
 
         return grid;
     }
+
+    /// <summary>How much of a command the collapsed row pre-truncates. The visual cut is the trimming's, at whatever
+    /// width the column has left; this only keeps a megabyte-long one-liner out of the measure. Sized so the row
+    /// still reads as one line at the chat column's 560px floor.</summary>
+    private const int CommandPreviewCharacters = 96;
 
     private static string FirstLine(string text)
     {
@@ -3855,6 +3889,57 @@ public partial class ChatPanel : UserControl
     internal double ActivityRowStatusSizeForCheck
         => MessageFlow.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>()
             .FirstOrDefault(path => path.Classes.Contains("activity-status"))?.Width ?? -1;
+
+    // ── where a row's trailing piece sits: beside its sentence, or pinned to the column's right edge ──
+
+    private Grid? ActivityRowGridAt(int index)
+        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+            .Where(grid => grid.Classes.Contains("activity-row"))
+            .ElementAtOrDefault(index);
+
+    /// <summary>The grid column the Nth row's command preview was laid into: the one after the verb, not the one a
+    /// star-sized label could push to the far side.</summary>
+    internal int ActivityRowChipColumnForCheck(int index)
+        => ActivityRowGridAt(index)?.GetLogicalDescendants().OfType<Border>()
+            .FirstOrDefault(border => border.Classes.Contains("inline-chip")) is { } chip
+            ? Grid.GetColumn(chip)
+            : -1;
+
+    /// <summary>The gap between a piece of trailing text and the sentence it belongs to, and the empty row still
+    /// left to its right. Read as a pair, because neither half separates the layouts on its own: a pinned chip has
+    /// no slack and a wide gap, a squeezed one has no slack and a narrow gap, and only the inline one has both
+    /// numbers on the side that says "this is part of the line".</summary>
+    internal (double Gap, double RightSlack)? ActivityRowTrailingGapForCheck(int index)
+    {
+        if (ActivityRowGridAt(index) is not { } row) return null;
+        var label = row.GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(text => text.Classes.Contains("activity-row-text"));
+        var chip = row.GetLogicalDescendants().OfType<Border>()
+            .FirstOrDefault(border => border.Classes.Contains("inline-chip"));
+        return TrailingGap(row, label, chip);
+    }
+
+    /// <summary>The same pair for a group head: its sentence and the aggregate count a person presses.</summary>
+    internal (double Gap, double RightSlack)? ActivityGroupHeadTrailingGapForCheck(int index)
+    {
+        if (ActivityGroupAt(index) is not { } group) return null;
+        var head = group.GetLogicalDescendants().OfType<ToggleButton>()
+            .FirstOrDefault(button => button.Classes.Contains("activity-group-head"));
+        var grid = head?.GetLogicalDescendants().OfType<Grid>().FirstOrDefault();
+        return TrailingGap(grid, grid?.Children.OfType<TextBlock>().FirstOrDefault(),
+            grid?.Children.OfType<Button>().FirstOrDefault());
+    }
+
+    private static (double Gap, double RightSlack)? TrailingGap(Control? container, TextBlock? label, Control? chip)
+    {
+        if (container is null || label is null || chip is null) return null;
+        var chipLeft = chip.TranslatePoint(new Point(0, 0), container)?.X ?? double.NaN;
+        // The ink, not the box: a TextBlock left in a star column is stretched to it, so its Bounds would end where
+        // the chip begins and report a tidy gap for a layout that pinned the chip across the column.
+        var labelRight = label.TranslatePoint(new Point(label.DesiredSize.Width, 0), container)?.X ?? double.NaN;
+        if (double.IsNaN(chipLeft) || double.IsNaN(labelRight)) return null;
+        return (chipLeft - labelRight, container.Bounds.Width - chipLeft - chip.Bounds.Width);
+    }
 
     /// <summary>Whether the group head borrows the sidebar's Expander header theme. That theme is what keeps a
     /// checked head from painting the Fluent accent plate — the purple pill — and gives it the shared left arrow.</summary>

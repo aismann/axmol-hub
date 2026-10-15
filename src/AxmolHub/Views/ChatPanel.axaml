@@ -669,6 +669,13 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
       <Setter Property="Margin" Value="4,0,0,0" />
     </Style>
+    <!-- A count or a command preview that reads immediately after its own sentence is a fragment of that line, not
+         a plate beside it: the raised wash alone separates it from the proportional text. The frame is hidden by
+         colour rather than by thickness, because a 0/1 swap would grow the chip two pixels under the pointer and
+         slide the digits sideways on hover. Declared after Border.file-chip so the later rule is the one that wins. -->
+    <Style Selector="Border.file-chip.inline-chip">
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
     <!-- The run's aggregate +N −M, which is also the way into the pane that lists what produced it. The chip stays
          the same Border, wrapped in a bare transparent Button: a default button plate on the head of a folded
          group is chrome the shell has no room for, and the count is the thing being read. The press is taken by
@@ -693,6 +700,12 @@
       </Setter>
     </Style>
     <Style Selector="Button.file-chip-action:pointerover > Border.file-chip">
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderHover}" />
+    </Style>
+    <!-- Written out for the inline chip rather than left to the rule above: that one names one class on the target
+         node and this rest state names two, and which of them Avalonia ranks higher is not worth guessing at when
+         the whole point is that the frame comes back under the pointer. -->
+    <Style Selector="Button.file-chip-action:pointerover > Border.file-chip.inline-chip">
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderHover}" />
     </Style>
     <!-- The tally above the composer is the run's chip grown into its own row, so it wears the same classes and

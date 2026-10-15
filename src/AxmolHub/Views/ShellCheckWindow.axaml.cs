@@ -3775,6 +3775,38 @@ public partial class ShellCheckWindow : Window
                 "执行状态的对勾/八叉缩到 10，安静地待在箭头旁边（实际 " + panel.ActivityRowStatusSizeForCheck + "）");
             chat.DeleteConversation(detailSession.Id);
 
+            // ── the command preview reads beside its verb, not across the column ──
+            // The row laid its label into a star column and the preview after it, so the label ate the slack and the
+            // preview landed on the row's right edge — the same second-column problem the expander arrow was moved
+            // off, one line further down. A short command on purpose: a preview long enough to fill the column sits
+            // beside its verb for the wrong reason, because there was nowhere else to be, and that is the reading
+            // this pair of numbers exists to rule out.
+            var alignSession = chat.StartConversation();
+            chat.SetWorkspaceRoot(alignSession.Id, workspace);
+            chat.SetApprovalMode(alignSession.Id, ToolApprovalModes.Full);
+            chat.OpenConversation(alignSession.Id);
+            var alignTurns = chat.ActiveConversation!.Messages;
+            alignTurns.Add(ChatTurn.User("跑个短命令"));
+            alignTurns.Add(ChatTurn.FunctionCall("call_align", "run_command",
+                "{\"command\":\"git status --short\"}"));
+            alignTurns.Add(ChatTurn.FunctionResult("call_align", "ok"));
+            panel.Reload();
+            panel.SetActivityGroupExpandedForCheck(0, true);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var (rowInline, rowGapText) = panel.ActivityRowTrailingGapForCheck(0) is { } measured
+                ? (measured.Gap <= 12 && measured.RightSlack > 40,
+                   "间隙 " + measured.Gap.ToString("0.#") + "px，右余 "
+                   + measured.RightSlack.ToString("0.#") + "px")
+                : (false, "量不出来");
+            Check(rowInline,
+                "工具行的命令预览紧跟在动作名后面，不再隔着整列钉到右端（实际 " + rowGapText + "）");
+            Check(panel.ActivityRowChipColumnForCheck(0) == 2 && panel.ActivityRowChevronColumnForCheck(0) == 0,
+                "命令预览排在动作名之后那一列，展开箭头仍在第 0 列（实际 预览第 "
+                + panel.ActivityRowChipColumnForCheck(0) + " 列，箭头第 "
+                + panel.ActivityRowChevronColumnForCheck(0) + " 列）");
+            chat.DeleteConversation(alignSession.Id);
+
             // ── a group the person opened stays open while the model keeps calling tools ──
             // Every cell above reads a finished transcript, which is how this slipped through: each new call used
             // to tear the whole flow down and lay it back out, so the head somebody had opened to read came up
@@ -3926,6 +3958,16 @@ public partial class ShellCheckWindow : Window
                   && panel.RunDiffChipTextForCheck(0).Contains("+1", StringComparison.Ordinal),
                 "这轮运行在组头上带出一个可点的 +N −M，数字正是刚批准的那段 diff（实际「"
                 + panel.RunDiffChipTextForCheck(0) + "」）");
+            // The count is read as the tail of the sentence that produced it. Pinned to the head's right edge it
+            // became a column of its own, and a column whose left edge moves with every label width is not
+            // something the eye learns to scan in a transcript.
+            var (headInline, headGapText) = panel.ActivityGroupHeadTrailingGapForCheck(0) is { } headMeasured
+                ? (headMeasured.Gap <= 12 && headMeasured.RightSlack > 40,
+                   "间隙 " + headMeasured.Gap.ToString("0.#") + "px，右余 "
+                   + headMeasured.RightSlack.ToString("0.#") + "px")
+                : (false, "量不出来");
+            Check(headInline,
+                "组头的 +N −M 跟着那句话走，右端留给空白（实际 " + headGapText + "）");
             var chipTokenBefore = panel.ActivityGroupInstanceTokenForCheck(0);
             var chipPressed = panel.ClickRunDiffChipForCheck(0);
             shell.UpdateLayout();
