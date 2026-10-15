@@ -106,7 +106,7 @@
       "keyValidation": { "type": "httpGetModels", "path": "/models" },
       "oauth": {
         "flow": "deviceCode",
-        "clientId": "Ov23lidzcoGFYNmdeTsg",
+        "clientId": "Ov23li8tweQw6odWQebz",
         "deviceAuthorizationUrl": "https://github.com/login/device/code",
         "tokenUrl": "https://github.com/login/oauth/access_token",
         "scope": "read:user",
