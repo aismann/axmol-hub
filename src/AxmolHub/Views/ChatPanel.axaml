@@ -1101,6 +1101,7 @@
     <Style Selector="TextBlock.turn-text">
       <Setter Property="FontSize" Value="13" />
       <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="LineHeight" Value="20" />
     </Style>
     <!-- The empty state's suggestion chips: the greeting's promise stated as things the assistant can actually
          do. Quiet by default — secondary text on a hairline pill — so the centred column still reads as a greeting

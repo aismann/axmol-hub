@@ -25,7 +25,8 @@
   <!-- Body text. The theme leaves Foreground alone but sets FontSize 14, so both belong here. -->
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock">
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
-    <Setter Property="FontSize" Value="13" />
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="LineHeight" Value="20" />
   </Style>
 
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CHyperlink">
@@ -43,18 +44,22 @@
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock.Heading1">
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     <Setter Property="FontSize" Value="28" />
+    <Setter Property="LineHeight" Value="36" />
   </Style>
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock.Heading2">
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     <Setter Property="FontSize" Value="21" />
+    <Setter Property="LineHeight" Value="27" />
   </Style>
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock.Heading3">
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     <Setter Property="FontSize" Value="17.5" />
+    <Setter Property="LineHeight" Value="23" />
   </Style>
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CTextBlock.Heading4">
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     <Setter Property="FontSize" Value="14" />
+    <Setter Property="LineHeight" Value="19" />
   </Style>
 
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CCode">
@@ -74,7 +79,7 @@
   </Style>
   <Style Selector=".Markdown_Avalonia_MarkdownViewer TextBlock.CodeBlock">
     <Setter Property="FontFamily" Value="{DynamicResource Hub.Font.Mono}" />
-    <Setter Property="FontSize" Value="13" />
+    <Setter Property="FontSize" Value="12" />
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
   </Style>
 
@@ -84,7 +89,7 @@
     <Setter Property="Background" Value="Transparent" />
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     <Setter Property="FontFamily" Value="{DynamicResource Hub.Font.Mono}" />
-    <Setter Property="FontSize" Value="13" />
+    <Setter Property="FontSize" Value="12" />
   </Style>
   <Style Selector=".Markdown_Avalonia_MarkdownViewer Button.markdown-code-copy">
     <Setter Property="Width" Value="22" />
