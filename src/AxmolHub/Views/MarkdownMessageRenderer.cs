@@ -84,6 +84,31 @@ internal static class MarkdownMessageRenderer
         content.Children.Add(Render(markdown));
     }
 
+    /// <summary>
+    /// The host scrolls, not the viewer.
+    ///
+    /// <para>The viewer wraps its document in a <see cref="ScrollViewer"/> of its own, and that bar is drawn over
+    /// the document's right edge: Hub's ScrollBar theme is opaque, always visible and 10px
+    /// (<c>Theme/HubControls.axaml</c>), so a document that fills the width loses the tail of every line behind
+    /// it — the text wraps one bar-width wider than the reader can see. The chat never hits it because its rows
+    /// live in a flow of unbounded height and the viewer's bar never appears; a bounded surface has to hand the
+    /// scrolling to its host, which is where the margin that clears the bar lives.</para>
+    /// </summary>
+    internal static void HandScrollingToHost(MarkdownScrollViewer viewer)
+    {
+        EventHandler? layoutUpdated = null;
+        layoutUpdated = (_, _) =>
+        {
+            viewer.LayoutUpdated -= layoutUpdated;
+            foreach (var scroll in viewer.GetVisualDescendants().OfType<ScrollViewer>())
+            {
+                scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
+                scroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            }
+        };
+        viewer.LayoutUpdated += layoutUpdated;
+    }
+
     internal static bool ApplySyntaxHighlighting(MarkdownScrollViewer viewer)
     {
         var foundEditor = false;

@@ -50,6 +50,7 @@ internal sealed class InspectorPanel : UserControl
     private readonly Button _repoTab;
     private readonly Grid _header;
     private readonly ContentControl _planHost;
+    private readonly ScrollViewer _planScroll;
     private readonly ScrollViewer _changesScroll;
     private readonly StackPanel _changesList;
     private readonly ScrollViewer _repoScroll;
@@ -103,7 +104,16 @@ internal sealed class InspectorPanel : UserControl
         Grid.SetRow(_body, 1);
 
         _planHost = new ContentControl { Margin = new Thickness(12, 0, 12, 12) };
-        _body.Children.Add(_planHost);
+        // The plan is the one tab whose text runs edge to edge, so it scrolls in the pane's own scroller like the
+        // two tabs below it: the viewer's own bar is drawn over the document's right edge and eats the tail of
+        // every line (Hub's ScrollBar is opaque, always visible, 10px). The host's margin is what clears it.
+        _planScroll = new ScrollViewer
+        {
+            Content = _planHost,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+        _body.Children.Add(_planScroll);
 
         _changesList = new StackPanel { Spacing = 6 };
         _changesScroll = new ScrollViewer
@@ -163,7 +173,7 @@ internal sealed class InspectorPanel : UserControl
         _planTab.Classes.Set("selected", plan);
         _changesTab.Classes.Set("selected", changes);
         _repoTab.Classes.Set("selected", repo);
-        _planHost.IsVisible = plan;
+        _planScroll.IsVisible = plan;
         _changesScroll.IsVisible = changes;
         _repoScroll.IsVisible = repo;
         TabSelected?.Invoke(tab);
@@ -180,9 +190,16 @@ internal sealed class InspectorPanel : UserControl
         GitRepositoryState? repository,
         string tab)
     {
-        _planHost.Content = string.IsNullOrWhiteSpace(planMarkdown)
-            ? EmptyLine("InspectorPlanEmpty")
-            : MarkdownMessageRenderer.Render(planMarkdown!);
+        if (string.IsNullOrWhiteSpace(planMarkdown))
+        {
+            _planHost.Content = EmptyLine("InspectorPlanEmpty");
+        }
+        else
+        {
+            var viewer = MarkdownMessageRenderer.Render(planMarkdown!);
+            MarkdownMessageRenderer.HandScrollingToHost(viewer);
+            _planHost.Content = viewer;
+        }
 
         _changesList.Children.Clear();
         if (changes.Count == 0)
@@ -589,7 +606,7 @@ internal sealed class InspectorPanel : UserControl
 
     // ── check accessors ──
 
-    internal bool PlanTabVisibleForCheck => _planHost.IsVisible;
+    internal bool PlanTabVisibleForCheck => _planScroll.IsVisible;
     internal bool ChangesTabVisibleForCheck => _changesScroll.IsVisible;
 
     /// <summary>Which tab button carries the underline. The three visibility booleans say what is on screen; this
