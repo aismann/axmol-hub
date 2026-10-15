@@ -24,6 +24,64 @@ internal static class ChatContextReader
     /// before the first question has been answered.</summary>
     public static int CeilingTokens(int windowTokens) => Math.Clamp(windowTokens / 4, 1024, 32_768);
 
+    /// <summary>How large one file picked or dropped by hand may be before the composer refuses it. Larger than
+    /// the 32 KiB the folder scan allows per file, on purpose: that number is a guess about files found while
+    /// walking a folder nobody chose, while this is one file a person pointed at — and what a single file costs
+    /// the prompt is the token ceiling's business rather than the byte count's.</summary>
+    public const int MaxAttachedFileBytes = 1024 * 1024;
+
+    /// <summary>Why one offered file cannot ride along as text, or that it can. Asked before anything is read,
+    /// and the rule is the extension — the same one <c>read_file</c> and the folder scan answer to, so a file Hub
+    /// will read is a file it will attach, and no megabyte moves for a draft that may never be sent.</summary>
+    public enum FileAttachmentVerdict
+    {
+        Accepted,
+        Unreadable,
+        TooLarge,
+    }
+
+    public static FileAttachmentVerdict AdmitFile(string path)
+    {
+        if (!File.Exists(path) || !WorkspacePaths.IsTextFile(Path.GetFileName(path)))
+            return FileAttachmentVerdict.Unreadable;
+        return new FileInfo(path).Length > MaxAttachedFileBytes
+            ? FileAttachmentVerdict.TooLarge
+            : FileAttachmentVerdict.Accepted;
+    }
+
+    /// <summary>One attachment as the text that rides on the user's turn, whether it named a folder or a single
+    /// file. One entry point because the caller has only what the chip remembers, and reading a file as a folder
+    /// is the failure this dispatch exists to make impossible.</summary>
+    public static string Read(string path, string displayName, int windowTokens)
+        => Directory.Exists(path)
+            ? ReadFolder(path, displayName, windowTokens)
+            : ReadFile(path, displayName, windowTokens);
+
+    /// <summary>
+    /// One file a person picked, as the text of the turn it belongs to. The file is read whole and the token
+    /// ceiling is what shortens it: the folder scan skips an oversized file silently, which is right when the
+    /// assistant is guessing and wrong when somebody pointed at this one, so the shortening is said out loud in
+    /// the block instead — the same head-and-tail shape the folder blocks use.
+    /// </summary>
+    public static string ReadFile(string path, string displayName, int windowTokens)
+    {
+        var file = new FileInfo(path);
+        if (!file.Exists) throw new FileNotFoundException($"The attached file is no longer there: {path}", path);
+        var text = WorkspaceTools.ReadAll(path)
+                   ?? throw new InvalidDataException($"The attached file is not UTF-8 text: {path}");
+
+        var ceilingTokens = CeilingTokens(windowTokens);
+        var output = new StringBuilder();
+        // \n rather than the host's newline: this block is pasted into the request, and the file it quotes was
+        // read into it verbatim.
+        output.Append($"Attached file: {displayName}").Append('\n');
+        output.Append($"{file.Length} bytes; the whole attachment is limited to about {ceilingTokens} tokens of "
+                      + "the model's window.").Append('\n');
+        output.Append('\n');
+        output.Append(ToolResultCap.ApplyTokenBudget(text, ceilingTokens)).Append('\n');
+        return output.ToString();
+    }
+
     public static string ReadFolder(string path, string displayName, int windowTokens)
     {
         var root = Path.GetFullPath(path);

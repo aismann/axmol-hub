@@ -5266,6 +5266,69 @@ public partial class ShellCheckWindow : Window
                 "回答进行到一半时拖进来的图，跟着那条引导一起进会话，composer 随后清空（实际 "
                 + (steered?.Images.Count ?? -1) + " 张）");
             chat.DeleteConversation(entrance.Id);
+
+            // ── One gesture, two channels: a picture becomes a picture, a text file becomes context ──
+            // An .svg is the case that proves the split. A person wants to show what it draws, no picture admission
+            // recognizes it by its header, and the markup is the only form of it a model can be sent — so it rides
+            // as text while the chip draws the vector it is. A binary and an oversized file are the two refusals
+            // that have to name their rule, because "not text" and "too large" are different fixes.
+            var vector = System.IO.Path.Combine(scratch, "icon.svg");
+            System.IO.File.WriteAllText(vector,
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 8 8\">\n"
+                + "  <rect width=\"8\" height=\"8\" fill=\"#3EC8F5\"/>\n</svg>\n");
+            var binary = System.IO.Path.Combine(scratch, "payload.bin");
+            System.IO.File.WriteAllBytes(binary, [0x7F, 0x45, 0x4C, 0x46, 0x00, 0x01]);
+            var oversized = System.IO.Path.Combine(scratch, "huge.svg");
+            using (var stream = System.IO.File.Create(oversized))
+                stream.SetLength(ChatContextReader.MaxAttachedFileBytes + 1);
+
+            var files = chat.StartConversation();
+            chat.SetApprovalMode(files.Id, ToolApprovalModes.Full);
+            chat.ClientOverride = (_, _) => new ScriptedChatClient(["看过了"]);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+
+            Check(panel.ComposerMenuHeadersForCheck.Contains(HubStrings.Get("ChatAddLocalFile")),
+                "「+」菜单里有「添加本地文件…」：文件与文件夹是同一条上下文通道的两个入口");
+
+            var vectorFile = await shell.StorageProvider.TryGetFileFromPathAsync(vector);
+            var draggedVector = new DataTransfer();
+            if (vectorFile is not null) draggedVector.Add(DataTransferItem.CreateFile(vectorFile));
+            var picturesBefore = panel.PendingPictureCountForCheck;
+            panel.DropForCheck(draggedVector);
+            Dispatcher.UIThread.RunJobs();
+            Check(vectorFile is not null && panel.PendingPictureCountForCheck == picturesBefore
+                  && panel.ContextAttachmentLabelsForCheck.Contains(HubStrings.Get("ChatFilePrefix") + "icon.svg")
+                  && panel.ContextChipHasFaceForCheck(panel.ContextAttachmentCountForCheck - 1),
+                "把 .svg 拖到输入框上得到一张带矢量封面的文件附件，而不是被当成图片拒掉或塞进图片通道（实际 "
+                + string.Join(" / ", panel.ContextAttachmentLabelsForCheck) + "）");
+
+            panel.AddContextFileForCheck(binary);
+            Check(panel.LastNoticeTextForCheck?.Contains("文本文件", StringComparison.Ordinal) == true
+                  && panel.ContextAttachmentCountForCheck == 1,
+                "二进制文件按「不是文本」被拒并说清规则是扩展名，附件条没有多出一张（提示："
+                + (panel.LastNoticeTextForCheck ?? "无") + "）");
+
+            panel.AddContextFileForCheck(oversized);
+            Check(panel.LastNoticeTextForCheck?.Contains("MiB", StringComparison.Ordinal) == true
+                  && panel.ContextAttachmentCountForCheck == 1,
+                "超过单文件上限的文件按大小被拒，和图片一样先看大小再读字节（提示："
+                + (panel.LastNoticeTextForCheck ?? "无") + "）");
+
+            panel.SetInputForCheck("这个图标画的是什么");
+            await panel.SendComposerForCheck();
+            await panel.WaitForRunToFinishForCheck();
+            var carried = chat.StoredCopyForCheck(files.Id)?.Messages
+                .LastOrDefault(turn => turn.Role == ChatRoles.User);
+            Check(carried?.AttachedContext?.Contains("Attached file: icon.svg", StringComparison.Ordinal) == true
+                  && carried.AttachedContext.Contains("#3EC8F5", StringComparison.Ordinal)
+                  && carried.Images.Count == 0,
+                "发出去的是这份 SVG 的标记文本、图片通道一字节没走（实际 AttachedContext "
+                + (carried?.AttachedContext?.Length ?? -1) + " 字符，" + (carried?.Images.Count ?? -1) + " 张图）");
+            Check(panel.ContextAttachmentCountForCheck == 0 && panel.ContextAttachmentLabelsForCheck.Length == 0,
+                "发出去之后上下文附件条清空 —— 收到的文本在会话里，chip 不留在输入框上");
+
+            chat.DeleteConversation(files.Id);
         }
         finally
         {
@@ -9014,11 +9077,16 @@ public partial class ShellCheckWindow : Window
             Directory.CreateDirectory(attachRoot);
             File.WriteAllText(Path.Combine(attachRoot, "big.md"), new string('漢', 8000));
             File.WriteAllText(Path.Combine(attachRoot, "small.md"), "small file body");
+            // An .svg rides along as text: markup is the only form of a vector document a model can be handed, and
+            // a folder attachment that dropped the art next to the code would answer half the question.
+            File.WriteAllText(Path.Combine(attachRoot, "icon.svg"),
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"4\"/></svg>");
             var attached = ChatContextReader.ReadFolder(attachRoot, "attachment-ceiling", windowTokens: 8192);
             Directory.Delete(attachRoot, recursive: true);
             Check(TokenWeighing.Units(attached) <= 8192L / 4 * ContextTrimmer.CharactersPerToken + 96
                   && attached.Contains("--- big.md ---", StringComparison.Ordinal)
                   && attached.Contains("small file body", StringComparison.Ordinal)
+                  && attached.Contains("--- icon.svg ---", StringComparison.Ordinal)
                   && attached.Contains("characters truncated", StringComparison.Ordinal),
                 "文件夹附件按窗口体积封顶，超长文件留头留尾，每个文件仍留下自己的名字（实际 "
                 + attached.Length + " 字符 / " + TokenWeighing.Units(attached) + " 单位）");

@@ -548,6 +548,7 @@ public static class HubTexts
         ["ChatContextCompressing"] = ("上下文压缩完成前，暂时不能发送或重试消息。", "Sending or retrying is unavailable until context compression finishes."),
         ["ChatAddContext"] = ("添加上下文", "Add context"),
         ["ChatAddLocalFolder"] = ("添加本地文件夹…", "Add local folder…"),
+        ["ChatAddLocalFile"] = ("添加本地文件…", "Add local file…"),
         // Pictures are a second channel next to the text attachments: a folder becomes bytes of text in the
         // prompt, a picture stays a picture. Same composer, same chips, never the same reader.
         ["ChatAddImage"] = ("添加图片…", "Add image…"),
@@ -573,6 +574,14 @@ public static class HubTexts
         ["ChatNoHubProjects"] = ("Hub 中尚未登记工程", "No projects registered in Hub"),
         ["ChatPickFolderTitle"] = ("选择要作为上下文的文件夹", "Choose a folder to use as context"),
         ["ChatFolderNotLocal"] = ("所选位置无法作为本地文件夹读取。", "The selected location cannot be read as a local folder."),
+        ["ChatPickFileTitle"] = ("选择要作为上下文的文件", "Choose a file to use as context"),
+        ["ChatFileNotLocal"] = ("所选位置无法作为本地文件读取。", "The selected location cannot be read as a local file."),
+        // The file channel's two refusals. Both are about one file a person pointed at, so both name the rule that
+        // fired and the way round it: the extension is what decides, and a large file is read in a window instead.
+        ["ChatFileNotText"] = ("这不是 Hub 能作为上下文读取的文本文件（按扩展名判定）。源码与文本文件可以直接附上；二进制文件请让助手用 run_command 处理。",
+            "That is not a text file Hub can read as context (the extension is what decides). Source and text files attach directly; for a binary, have the assistant use run_command."),
+        ["ChatFileTooLarge"] = ("这个文件太大，作为上下文单文件最多 {0} MiB。用 read_file 分窗口读它，或改附它所在的文件夹。",
+            "That file is too large; one context file is capped at {0} MiB. Read it in windows with read_file, or attach its folder instead."),
         // The session sandbox. Distinct from "add a folder as context": that one attaches text to a message, this
         // one decides where the assistant is allowed to write and run commands.
         ["ChatWorkspaceNone"] = ("未设工作目录", "No workspace"),
@@ -586,6 +595,7 @@ public static class HubTexts
         ["ChatWorkspaceProtected"] = ("这是 Hub 的数据目录、引擎安装目录或 .git，助手在任何审批档位下都不能写它。", "That is Hub's data directory, an engine installation or a .git directory. The assistant cannot write there in any approval mode."),
         ["ChatAttachmentFailed"] = ("读取聊天上下文失败：", "Could not read chat context: "),
         ["ChatFolderPrefix"] = ("文件夹：", "Folder: "),
+        ["ChatFilePrefix"] = ("文件：", "File: "),
         ["ChatProjectPrefix"] = ("工程：", "Project: "),
         ["ChatProjectContextFormat"] = ("Axmol Hub project context — engine {0}; target {1}; configuration {2}; build status {3}.", "Axmol Hub project context — engine {0}; target {1}; configuration {2}; build status {3}."),
         ["ChatToolProjects"] = ("项目", "projects"),

@@ -60,7 +60,9 @@ public static class WorkspacePaths
     /// <summary>Plain-text source and project files, by extension rather than by sniffing bytes: the same set
     /// gates reading and writing, so anything not listed here is a file the assistant has to ask a person to
     /// change. The platform project formats are all text (.pbxproj, .xcconfig, .storyboard, .entitlements,
-    /// .aidl, .pro), and an assistant that cannot edit them cannot help with that platform.</summary>
+    /// .aidl, .pro), and an assistant that cannot edit them cannot help with that platform. An .svg is listed
+    /// for that same reason even though it draws something: it is an XML document, no vision endpoint takes a
+    /// vector file as an image, and seeing it therefore means reading its markup.</summary>
     private static readonly HashSet<string> TextExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".aidl", ".axaml", ".axproj", ".bat", ".c", ".cc", ".cfg", ".cmake", ".cpp", ".cs", ".css", ".cxx",
@@ -68,8 +70,8 @@ public static class WorkspacePaths
         ".go", ".gradle", ".h", ".hlsl", ".hpp", ".html", ".in", ".ini", ".ipp", ".java", ".js", ".json", ".kt",
         ".lua", ".m", ".md", ".metal", ".mm", ".patch", ".pbxproj", ".plist", ".pro", ".props", ".properties",
         ".ps1", ".py", ".rc", ".rs", ".sh", ".sln", ".csproj", ".storyboard", ".strings", ".stringsdict", ".swift",
-        ".targets", ".tmpl", ".toml", ".ts", ".tsx", ".txt", ".vcxproj", ".vert", ".xaml", ".xcconfig", ".xib",
-        ".xml", ".yaml", ".yml",
+        ".svg", ".targets", ".tmpl", ".toml", ".ts", ".tsx", ".txt", ".vcxproj", ".vert", ".xaml", ".xcconfig",
+        ".xib", ".xml", ".yaml", ".yml",
     };
 
     private static readonly HashSet<string> TextFileNames = new(StringComparer.OrdinalIgnoreCase)

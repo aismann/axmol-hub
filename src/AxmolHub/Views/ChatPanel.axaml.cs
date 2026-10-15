@@ -1038,6 +1038,10 @@ public partial class ChatPanel : UserControl
         addFolder.Click += async (_, _) => await AddLocalFolderAsync();
         menu.Items.Add(addFolder);
 
+        var addFile = new MenuItem { Header = HubStrings.Get("ChatAddLocalFile") };
+        addFile.Click += async (_, _) => await AddLocalFileAsync();
+        menu.Items.Add(addFile);
+
         var addPicture = new MenuItem { Header = HubStrings.Get("ChatAddImage") };
         addPicture.Click += async (_, _) => await AddLocalPictureAsync();
         menu.Items.Add(addPicture);
@@ -1245,6 +1249,48 @@ public partial class ChatPanel : UserControl
             path));
     }
 
+    /// <summary>One file as context — the same channel a folder goes down, for the case where the person knows
+    /// exactly which file they mean. This is where a vector document enters: its markup is what a model can be
+    /// handed, and the picture admission refuses it by its header.</summary>
+    private async Task AddLocalFileAsync()
+    {
+        var owner = TopLevel.GetTopLevel(this);
+        if (owner is null) return;
+        var result = await Pickers.PickFileAsync(owner, HubStrings.Get("ChatPickFileTitle"));
+        if (result.Outcome == PickOutcome.Cancelled) return;
+        if (result.Outcome == PickOutcome.NotLocal)
+        {
+            AppendNotice(HubStrings.Get("ChatFileNotLocal"), danger: true);
+            return;
+        }
+
+        AddFileAttachment(result.Path!);
+    }
+
+    /// <summary>Offers one file to the text channel, and says which rule refused it when one does: "that is not
+    /// text" and "that is too large" are different fixes, and a notice that only says no gets the same file
+    /// offered again. The answer is also what lets the drop path fall through to the picture refusal.</summary>
+    private bool AddFileAttachment(string path)
+    {
+        var verdict = ChatContextReader.AdmitFile(path);
+        if (verdict != ChatContextReader.FileAttachmentVerdict.Accepted)
+        {
+            AppendNotice(FileNotice(verdict), danger: true);
+            return false;
+        }
+
+        AddContextAttachment(new ContextAttachment("file", System.IO.Path.GetFileName(path), path));
+        return true;
+    }
+
+    private static string FileNotice(ChatContextReader.FileAttachmentVerdict verdict) => verdict switch
+    {
+        ChatContextReader.FileAttachmentVerdict.TooLarge => string.Format(
+            System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get("ChatFileTooLarge"), ChatContextReader.MaxAttachedFileBytes / (1024 * 1024)),
+        _ => HubStrings.Get("ChatFileNotText"),
+    };
+
     private void AddProjectAttachment(ChatWorkspace.HubProjectSummary project)
     {
         var details = string.Format(
@@ -1275,8 +1321,7 @@ public partial class ChatPanel : UserControl
         {
             var label = new TextBlock
             {
-                Text = (attachment.Kind == "project" ? HubStrings.Get("ChatProjectPrefix") : HubStrings.Get("ChatFolderPrefix"))
-                       + attachment.Name,
+                Text = ContextAttachmentPrefix(attachment) + attachment.Name,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = 240,
@@ -1295,6 +1340,7 @@ public partial class ChatPanel : UserControl
                 }
             };
             var chip = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+            if (VectorCover(attachment) is { } cover) chip.Children.Add(cover);
             chip.Children.Add(label);
             chip.Children.Add(remove);
             var border = new Border { Child = chip };
@@ -1355,12 +1401,54 @@ public partial class ChatPanel : UserControl
         ContextAttachmentPanel.IsVisible = _contextAttachments.Count > 0 || _pendingPictures.Count > 0;
     }
 
+    private static string ContextAttachmentPrefix(ContextAttachment attachment) => attachment.Kind switch
+    {
+        "project" => HubStrings.Get("ChatProjectPrefix"),
+        "file" => HubStrings.Get("ChatFilePrefix"),
+        _ => HubStrings.Get("ChatFolderPrefix"),
+    };
+
+    /// <summary>
+    /// What an .svg attachment looks like, or null when there is nothing to draw with. The attachment is still
+    /// text — the markup is what the model receives — and this is only the chip's face: a vector document drawn
+    /// at chip size by the package the markdown renderer already brought in, so no raster is produced, stored or
+    /// sent. Anything that fails to parse falls back to the name, because a chip that cannot say which file it is
+    /// has stopped being a chip.
+    /// </summary>
+    private static Control? VectorCover(ContextAttachment attachment)
+    {
+        if (attachment.Kind != "file"
+            || !System.IO.Path.GetExtension(attachment.Path).Equals(".svg", StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(attachment.Path)) return null;
+        try
+        {
+            // A null base URI on purpose: the cover is a 34-pixel face, not a browser, and a document that names
+            // a sibling file or a URL must not be able to make the composer read or fetch anything.
+            return new Image
+            {
+                Source = new Avalonia.Svg.SvgImage
+                {
+                    Source = Avalonia.Svg.SvgSource.Load(attachment.Path, null, null),
+                },
+                Width = 34,
+                Height = 34,
+                Stretch = Stretch.Uniform,
+            };
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException
+                                   or System.Security.SecurityException or ArgumentException
+                                   or System.Xml.XmlException or InvalidOperationException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
     private Task<string?> ReadAttachmentContextAsync()
     {
         if (_contextAttachments.Count == 0) return Task.FromResult<string?>(null);
         var attachments = _contextAttachments.ToArray();
-        // The window is read here rather than inside the task: the folder is priced against what the model can
-        // actually hold, and a pool thread must not reach the workspace.
+        // The window is read here rather than inside the task: the attachment is priced against what the model
+        // can actually hold, and a pool thread must not reach the workspace.
         var windowTokens = _chat?.SelectedChatModel is { } selected
             ? ContextBudget.For(selected.Provider, selected.ModelName).Tokens
             : ContextBudget.FallbackTokens;
@@ -1368,7 +1456,7 @@ public partial class ChatPanel : UserControl
         {
             var sections = attachments.Select(attachment =>
             {
-                var contents = ChatContextReader.ReadFolder(attachment.Path, attachment.Name, windowTokens);
+                var contents = ChatContextReader.Read(attachment.Path, attachment.Name, windowTokens);
                 return attachment.Details is { Length: > 0 }
                     ? attachment.Details + "\n\n" + contents
                     : contents;
@@ -1420,6 +1508,18 @@ public partial class ChatPanel : UserControl
 
         if (bytes is null)
         {
+            // A file that is not a picture is not automatically nothing: an .svg, a .md, a source file dragged in
+            // belongs to the text channel, which is the only one that can carry it. The text channel is asked
+            // only when it could take the file — a .png that happens to hold text is a picture someone
+            // mis-exported, and answering it with "not a text file" would name the wrong problem — and whatever
+            // it answers is the last word, because two notices for one gesture read as two problems.
+            if (verdict == ChatImageVerdict.Unrecognized
+                && ChatContextReader.AdmitFile(path) != ChatContextReader.FileAttachmentVerdict.Unreadable)
+            {
+                AddFileAttachment(path);
+                return;
+            }
+
             AppendNotice(ImageNotice(verdict), danger: true);
             return;
         }
@@ -4725,13 +4825,44 @@ public partial class ChatPanel : UserControl
 
     /// <summary>Chips in the composer that carry a thumbnail rather than only a name. Read off the shape of the
     /// chip rather than its visual descendants: a chip built a moment ago has not been through a layout pass
-    /// yet, and "does this attachment show the picture" cannot depend on when the check happens to look.</summary>
+    /// yet, and "does this attachment show the picture" cannot depend on when the check happens to look. The chip
+    /// is identified by the picture entry it takes out being a picture, because a file attachment draws an SVG
+    /// cover of its own — an assertion about attached pictures must not start counting files.</summary>
     internal int PictureChipsForCheck
         => ContextAttachmentPanel.Children.OfType<Border>()
-            .Count(border => border.Child is StackPanel panel && panel.Children.Any(IsThumbnailFace));
+            .Count(border => border.Child is StackPanel panel
+                             && panel.Children.OfType<Button>().Any(button => button.Tag is PendingPicture)
+                             && panel.Children.Any(IsThumbnailFace));
 
     private static bool IsThumbnailFace(Control face)
         => face is Image or Button { Content: Image };
+
+    /// <summary>The context chips' own labels, as painted. Read off the row rather than off the private list: a
+    /// check that reads the list would pass while the chip row drew nothing.</summary>
+    internal string[] ContextAttachmentLabelsForCheck
+        => ContextAttachmentPanel.Children.OfType<Border>()
+            .Select(border => border.Child as StackPanel)
+            .Where(panel => panel is not null)
+            .SelectMany(panel => panel!.Children)
+            .OfType<TextBlock>()
+            .Where(text => text.Classes.Contains("context-attachment-label"))
+            .Select(text => text.Text ?? "")
+            .ToArray();
+
+    /// <summary>Whether one context chip drew a face rather than only a name. The shape a vector cover has to be
+    /// checked by, since a chip that renders nothing still lays out and still measures.</summary>
+    internal bool ContextChipHasFaceForCheck(int index)
+    {
+        var chips = ContextAttachmentPanel.Children.OfType<Border>()
+            .Select(border => border.Child as StackPanel)
+            .Where(panel => panel is not null)
+            .ToList();
+        return index >= 0 && index < chips.Count && chips[index]!.Children.Any(IsThumbnailFace);
+    }
+
+    /// <summary>Drives the file entrance the picker and the drop both end in, without a dialog nobody can
+    /// automate — the picker's own decision is asserted in <c>Pickers.Resolve</c>.</summary>
+    internal bool AddContextFileForCheck(string path) => AddFileAttachment(path);
 
     /// <summary>Presses one chip's own × rather than removing the entry here: what a check has to prove is that
     /// the button takes the picture out of the message, not that the list can be edited.</summary>

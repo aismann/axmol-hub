@@ -66,6 +66,11 @@
          project in P6 — the dependency set did not change, only its host project). Core and Cli stay
          zero-dependency and offline-buildable. -->
     <PackageReference Include="Markdown.Avalonia" Version="12.0.0-a3" />
+    <!-- The SVG cover on a file attachment chip. It already arrives transitively through Markdown.Avalonia.Svg,
+         and a package Hub writes code against is declared here rather than leaned on through someone else's
+         dependency: the day that plugin drops it, a transitive-only reference becomes a compile error nobody
+         links to this decision. Namespace Avalonia.Svg: SvgImage is an IImage, so it goes into Image.Source. -->
+    <PackageReference Include="Svg.Controls.Avalonia" Version="12.0.0.1" />
     <PackageReference Include="Markdig" Version="0.40.0" />
     <PackageReference Include="Velopack" Version="1.2.161" />
     <PackageReference Include="Avalonia" Version="12.1.3" />

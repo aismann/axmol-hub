@@ -73,6 +73,17 @@
           "Markdown.Avalonia.Tight": "12.0.0-a3"
         }
       },
+      "Svg.Controls.Avalonia": {
+        "type": "Direct",
+        "requested": "[12.0.0.1, )",
+        "resolved": "12.0.0.1",
+        "contentHash": "VzeANFBwPxQvd7iIZ5OUxCudxylOtKRsRTbHAWYts8y03BUyEBlKYF/CiZ0xZJbARsn2gKyOSXQaevWRkIkyvA==",
+        "dependencies": {
+          "Avalonia": "12.0.0",
+          "Svg.Model": "4.1.0",
+          "Svg.SceneGraph": "4.1.0"
+        }
+      },
       "Velopack": {
         "type": "Direct",
         "requested": "[1.2.161, )",
@@ -430,16 +441,6 @@
         "resolved": "3.119.4",
         "contentHash": "XOpbx/4CReO2wYsq2s6rbvdauc6dntG4Zv499sHGTJ87bwZaFXszFkwql3+FIZMc8kUPeaj3Mx2ezIJmo8a1Kg=="
       },
-      "Svg.Controls.Avalonia": {
-        "type": "Transitive",
-        "resolved": "12.0.0.1",
-        "contentHash": "VzeANFBwPxQvd7iIZ5OUxCudxylOtKRsRTbHAWYts8y03BUyEBlKYF/CiZ0xZJbARsn2gKyOSXQaevWRkIkyvA==",
-        "dependencies": {
-          "Avalonia": "12.0.0",
-          "Svg.Model": "4.1.0",
-          "Svg.SceneGraph": "4.1.0"
-        }
-      },
       "Svg.Custom": {
         "type": "Transitive",
         "resolved": "4.1.0",
@@ -544,7 +545,7 @@
       "axmolhub.agent": {
         "type": "Project",
         "dependencies": {
-          "AxmolHub.Core": "[0.2.4, )",
+          "AxmolHub.Core": "[0.11.3, )",
           "Microsoft.Extensions.AI": "[10.10.0, )",
           "Microsoft.Extensions.AI.OpenAI": "[10.10.1, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.12, )"

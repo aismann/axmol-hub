@@ -31,8 +31,8 @@
          file is not a signature.
 
          **Policy: one lock file is tracked, the dependency-chain root.**
-           · AxmolHub (the app, shipped) — tracked. Measured shape: a net8.0 node of 8 Direct
-             plus 60 Transitive plus 2 Project entries, then one 9-entry node per declared
+           · AxmolHub (the app, shipped) — tracked. Measured shape: a net8.0 node of 9 Direct
+             plus 59 Transitive plus 2 Project entries, then one 9-entry node per declared
              RuntimeIdentifiers (linux-x64, osx-arm64, osx-x64, win-x64).
            · AxmolHub.Agent — opted out in its own csproj and untracked. Common code that both
              App and Checks reference and that is never shipped alone, and NuGet's own wording

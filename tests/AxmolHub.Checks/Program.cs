@@ -3461,13 +3461,14 @@ if (args.Contains("--check-ai-workspace"))
             throw new Exception($"{name} was refused as a write target.");
 
     // Every platform's project format is text, and the extension is what says so. An assistant that cannot write
-    // a .pbxproj cannot help with the iOS build it is being shown, and a .axaml is Hub's own UI language.
+    // a .pbxproj cannot help with the iOS build it is being shown, and a .axaml is Hub's own UI language. An .svg
+    // is on the list because a vector document reaches a model as markup: no vision endpoint takes one as an image.
     foreach (var text in new[]
              {
                  "src/ui.axaml", "src/Main.xaml", "ios/App.xcconfig", "ios/project.pbxproj",
                  "ios/App.entitlements", "ios/LaunchScreen.storyboard", "ios/Icon.xib", "ios/en.strings",
                  "ios/plural.stringsdict", "android/callback.aidl", "qt/app.pro", "server/app.cfg",
-                 "email/welcome.tmpl",
+                 "email/welcome.tmpl", "assets/icon.svg",
              })
         if (WorkspacePaths.ResolveWrite(workspace, text, guards).Verdict != WorkspacePathVerdict.Allowed)
             throw new Exception($"{text} was refused as a write target even though it is a text project file "
@@ -4538,6 +4539,10 @@ if (args.Contains("--check-ai-tools"))
     File.WriteAllText(Path.Combine(probe, "deep", "deeper", "other.md"), "two directories down\n");
     File.WriteAllText(Path.Combine(probe, "build", "app.cpp"), "App::go in a build directory\n");
     File.WriteAllText(Path.Combine(probe, "raw.bin"), "App::go is not text\n");
+    // An .svg is source, not only a picture: it is XML, and its markup is the one form of it a model can be
+    // handed. A folder of vector art the look-around tools cannot read is a blind spot in a workspace.
+    File.WriteAllText(Path.Combine(probe, "icon.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\">\n  <path id=\"probe-svg-marker\"/>\n</svg>\n");
 
     var search = tools.SearchText("App::go", path: "probe");
     if (!search.Contains("probe/app.cpp:3:") || !search.Contains("probe/deep/note.md:1:"))
@@ -4546,6 +4551,11 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception("search_text walked into a build directory.");
     if (search.Contains("raw.bin", StringComparison.Ordinal))
         throw new Exception("search_text opened a file the reader would refuse as binary.");
+    // The other side of the same rule: an .svg is XML, so it is read where a .bin is skipped. Its markup is the
+    // only form of it a model can be handed, and a workspace's vector art is source the assistant has to reach.
+    var vector = tools.SearchText("probe-svg-marker", path: "probe");
+    if (!vector.Contains("probe/icon.svg:2:"))
+        throw new Exception($"search_text skipped an .svg, which is a text source file:{Environment.NewLine}{vector}");
     if (!search.Contains("under 'probe/'") || !search.Contains("2 match(es) in 2 file(s)"))
         throw new Exception($"search_text did not report its scope or its counts:{Environment.NewLine}{search}");
     if (!tools.SearchText("app::GO", path: "probe").Contains("No match", StringComparison.Ordinal)
