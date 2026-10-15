@@ -6327,11 +6327,18 @@ public partial class ShellCheckWindow : Window
         var peerClient = new ApprovalChatClient { ToolName = "run_command" };
         // Chosen so the cell is safe even when the rule it tests is broken: `tmp/` is gitignored and the index is
         // clean, so a `git commit` that escaped the check would answer "nothing to commit" rather than write
-        // history into the repository the check is running in.
+        // history into the repository the check is running in. The verb is `commit` on purpose as well, and not
+        // `push`: it is outside the built-in table (whose only entry is `add`), so this line really is a card under
+        // 自动审批, while a push the check let through would leave the machine. The message varies per round because
+        // the spin guard refuses a third byte-identical call on purpose, and this fixture is asked twice — once to
+        // park on the verb button and once to prove the grant that button wrote means the next one does not ask.
         var gitWriteClient = new ApprovalChatClient
         {
             ToolName = "run_command",
-            Arguments = new Dictionary<string, object?> { ["command"] = "git commit -m \"hub self-check\"" },
+            ArgumentsByCall = round => new Dictionary<string, object?>
+            {
+                ["command"] = $"git commit -m \"hub self-check {round}\"",
+            },
         };
         var screenClient = new ApprovalChatClient
         {
@@ -6556,8 +6563,26 @@ public partial class ShellCheckWindow : Window
                   // A verb this build has never heard of is not assumed harmless, and the directory still decides
                   // when there is no directory to decide with.
                   && ChatTools.RiskOf("run_command", Command("git lfs install"), sandbox) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("run_command", Command("git status"), WorkspaceToolScope.Empty) == ToolRisk.SystemCommand,
-                "git 写命令按子命令升到最高档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照样升，认不出的子命令按写处理；构建留在沙箱档，删除已构建的东西升到重建档并且盖过 git 写");
+                  && ChatTools.RiskOf("run_command", Command("git status"), WorkspaceToolScope.Empty) == ToolRisk.SystemCommand
+                  // 内置表的那半：可撤销的索引操作不再花卡——而它旁边那半必须原地不动，读命令、包在 shell 里的写
+                  // 和认不出的子命令都还是原来的档，否则这条规则就顺手放行了别的东西。
+                  && ChatTools.RiskOf("run_command", Command("git add -A"), sandbox) == ToolRisk.WorkspaceCommand
+                  && ChatTools.RiskOf("run_command", Command("git add -A && git add -p"), sandbox) == ToolRisk.WorkspaceCommand
+                  // 授权表的那半，以及两表之间的边界：按动词授权后它自己落回沙箱档，但一张表必须覆盖整行——跨表的
+                  // 复合行（内置表管 add、授权表管 push）和包在 shell 里的写都不吃这张授权，顺序格也一样：授权盖不过
+                  // 前两级，没有沙箱根和删除已构建的东西都照旧。
+                  && ChatTools.RiskOf("run_command", Command("git push origin main"), sandbox, null, ["git push"]) == ToolRisk.WorkspaceCommand
+                  && ChatTools.RiskOf("run_command", Command("git add && git push"), sandbox, null, ["git push"]) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("""pwsh -c "git push"""), sandbox, null, ["git push"]) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("sudo git push"), sandbox, null, ["git push"]) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("git fetch origin && git push"), sandbox, null, ["git fetch", "git push"]) == ToolRisk.WorkspaceCommand
+                  && ChatTools.RiskOf("run_command", Command("git lfs install"), sandbox, null, ["git lfs"]) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("git clean -fdx"), sandbox, null, ["git clean"]) == ToolRisk.CacheBreak
+                  && ChatTools.RiskOf("run_command", Command("git commit -m x && rm -rf build"), sandbox, null, ["git commit"]) == ToolRisk.CacheBreak
+                  && ChatTools.RiskOf("run_command", Command("git push"), WorkspaceToolScope.Empty, null, ["git push"]) == ToolRisk.SystemCommand,
+                "git 写命令按子命令升到最高档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照样升，认不出的子命令按写处理；"
+                + "内置放行的 add 让可撤销的索引操作留在沙箱档，而授权只认直接写出来的那个动词、一张表要么覆盖整行要么不覆盖，"
+                + "跨表复合行、穿透段与 sudo 包着的写都照旧要问；构建留在沙箱档，删除已构建的东西升到重建档并且盖过 git 写，也盖过授权");
 
             // web_fetch on its own line rather than folded into the aggregate above, because of a specific negative
             // control: deleting its arm drops the name into the fallback, and the fallback answers SystemCommand —
@@ -7040,12 +7065,17 @@ public partial class ShellCheckWindow : Window
             Dispatcher.UIThread.RunJobs();
             Check(buildCallId is not null && panel.PendingApprovalCardsForCheck == 1
                   && panel.ApprovalCardTextForCheck.Contains("rm -rf build", StringComparison.Ordinal)
-                  // The grant button is not drawn here: it would be a promise that the next deletion is silent, and
-                  // the gate ignores it, so the button would teach the person that the ladder is decoration.
+                  // Two answers and no third: the grant button is not drawn here (it would be a promise that the
+                  // next deletion is silent, and the gate ignores it, so the button would teach the person that the
+                  // ladder is decoration), and neither is the verb button — a deletion is not a git write, so there
+                  // is no verb to name.
+                  && panel.ApprovalCardActionsForCheck.SequenceEqual(
+                      new[] { "ApprovalDeny", "ApprovalAllow" }, StringComparer.Ordinal)
                   && !panel.ApprovalCardActionsForCheck.Contains("ApprovalAllowAlways")
+                  && !panel.ApprovalCardActionsForCheck.Contains("ApprovalAllowAlwaysForVerb")
                   && panel.ComposerInputEnabledForCheck,
-                "完全访问下删除已构建的东西照样挂卡、卡上没有「总是允许」（卡 " + panel.PendingApprovalCardsForCheck
-                + "，按钮 " + panel.ApprovalCardActionsForCheck + "）");
+                "完全访问下删除已构建的东西照样挂卡、卡上照旧两个按钮：既没有「总是允许」，也没有按动词授权（卡 "
+                + panel.PendingApprovalCardsForCheck + "，按钮 " + panel.ApprovalCardActionsForCheck + "）");
             var buildAnswers = buildClient.Answers;
             chat.TryResolveApproval(buildSession.Id, buildCallId ?? "", approved: false, alwaysAllow: false, out _);
             await WaitUntilAsync(() => buildClient.Answers > buildAnswers);
@@ -7195,17 +7225,40 @@ public partial class ShellCheckWindow : Window
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
+            // The card's third answer is the narrow one, and this cell is where the ruling is visible: one verb,
+            // granted for every session, instead of the whole run_command tool — which is exactly why the tool-level
+            // 「总是允许」 stays off this card. Asserted as a triple because the two halves fail differently: without
+            // the verb button the grant is unreachable, and with the wide button in its place 「以后都不问」 would be
+            // promising far more than the gate honours.
             Check(ToolTrust.Contains(chat.TrustedTools, "run_command")
                   && gitCallId is not null
                   && gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 0
-                  && panel.ApprovalCardActionsForCheck.SequenceEqual(new[] { "ApprovalDeny", "ApprovalAllow" },
-                      StringComparer.Ordinal),
-                "「总是允许」也开不了这一档：git 写命令在自动审批下仍然挂起，卡上不给那个不会兑现的按钮（实际 "
+                  && panel.ApprovalCardActionsForCheck.SequenceEqual(
+                      new[] { "ApprovalAllowAlwaysForVerb", "ApprovalDeny", "ApprovalAllow" }, StringComparer.Ordinal)
+                  && !panel.ApprovalCardActionsForCheck.Contains("ApprovalAllowAlways"),
+                "git 写卡给出三个出口：按动词授权、拒绝、批准；那个开不了这一档的工具级「总是允许」照旧不给（实际 "
                 + string.Join(",", panel.ApprovalCardActionsForCheck) + "）");
-            chat.TryResolveApproval(gitWriteSession.Id, gitCallId ?? "", approved: false, alwaysAllow: false, out _);
-            await WaitForIdleAsync(chat);
-            // Taken straight back: a grant left here would let a later session's expectation pass for the wrong
-            // reason, and "it stopped asking" would stop meaning "the tier allows it".
+            // …and the button keeps its word, which is the only reason it may be drawn at all: this call runs, the
+            // name it wrote lands on the settings page's verb list, and the next call of that same verb does not ask.
+            gitWriteClient.CallsRemaining = 2;
+            panel.ClickApprovalActionForCheck("ApprovalAllowAlwaysForVerb");
+            await WaitUntilAsync(() => gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) >= 1);
+            Check(CommandTrust.Contains(chat.TrustedCommands, "git commit")
+                  && chat.TrustedCommands.Count == 1
+                  && gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 1,
+                "「以后都不问 git commit」记下的是那个动词而不是整只工具：这张卡上的调用跑完了，清单上是 git commit（清单 "
+                + string.Join("、", chat.TrustedCommands) + "，工具结果 "
+                + gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) + " 条）");
+            chat.TryEnqueueSend(gitWriteSession.Id, "再提交一次", null, out _);
+            await WaitUntilAsync(() => gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) >= 2);
+            Check(gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 2
+                  && panel.PendingApprovalCardsForCheck == 0,
+                "同一个动词的下一次调用不再弹卡：授权记在动词上，不是记在那一条命令文本上（工具结果 "
+                + gitWriteSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) + " 条，卡 "
+                + panel.PendingApprovalCardsForCheck + "）");
+            // Taken straight back, both kinds: a grant left here would let a later session's expectation pass for the
+            // wrong reason, and "it stopped asking" would stop meaning "the tier allows it".
+            chat.RevokeAllTrustedCommands();
             chat.RevokeAllTrustedTools();
             peerClient.CallsRemaining = 1;
             chat.OpenConversation(peerSession.Id);
@@ -8034,6 +8087,34 @@ public partial class ShellCheckWindow : Window
                   && settings.TrustedToolsForCheck.Length == 0
                   && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedTools.Count == 0,
                 "「全部撤销」一次收干净，设置文件里也不留残留");
+
+            // The verb list beside it, drawn and revoked the same way — and written into the settings file, because
+            // the whole point of the narrow grant is that it outlives the session whose card it was answered on. The
+            // wording on the page is checked too: this list has to say what a verb grant does not cover, or a person
+            // reads "以后都不问 git push" as covering a push hidden inside a shell.
+            Check(settings.TrustedCommandsEmptyShownForCheck && settings.TrustedCommandRowsShownForCheck == 0
+                  && settings.TrustedCommandsForCheck.Length == 0,
+                "命令动词清单为空时设置页说明还没有信任过任何命令动词");
+            Check(settings.TrustCommandForCheck("git push")
+                  && settings.TrustedCommandsForCheck.SequenceEqual(new[] { "git push" }, StringComparer.Ordinal)
+                  && settings.TrustedCommandRowsShownForCheck == 1
+                  && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedCommands
+                      .SequenceEqual(new[] { "git push" }, StringComparer.Ordinal),
+                "卡上按动词授权写下的那条，设置页看得见、设置文件里也在（实际 "
+                + string.Join(",", settings.TrustedCommandsForCheck) + "）");
+            Check(settings.RevokeTrustedCommandForCheck("git push")
+                  && settings.TrustedCommandsForCheck.Length == 0 && settings.TrustedCommandsEmptyShownForCheck,
+                "撤销那个动词之后清单回到空状态，那句说明也回来了");
+            settings.TrustCommandForCheck("git push");
+            settings.TrustCommandForCheck("git commit");
+            Check(settings.TrustedCommandRowsShownForCheck == 2 && settings.RevokeAllTrustedCommandsForCheck()
+                  && settings.TrustedCommandsForCheck.Length == 0
+                  && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedCommands.Count
+                      == 0,
+                "命令动词的「全部撤销」一次收干净，设置文件里也不留残留");
+            Check(HubStrings.Get("TrustedCommandsHint").Contains("包在 shell 里", StringComparison.Ordinal)
+                  && HubStrings.Get("TrustedCommandsHint").Contains("多个动词", StringComparison.Ordinal),
+                "命令动词那一节把授权够不到的两处写出来：包在 shell 里的调用、一次写多个动词的行");
 
             // A pick that agrees with the default needs no second row; one that does not is a standing preference
             // the user should be able to say so about without finding the settings page.

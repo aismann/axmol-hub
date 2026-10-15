@@ -6010,6 +6010,103 @@ if (args.Contains("--check-ai-tool-policy"))
         throw new Exception("The command-argument reader graded a call it should have left on its old tier.");
     Console.WriteLine("PASS: a run_command with nothing readable in its arguments keeps the tier it had.");
 
+    // The git write exemption: which git writes never cost a card, and under whose word. Two pure questions, so
+    // they are asserted here rather than in the window — the tier they feed is a pure function of them too.
+    static string CommandArgs(string command) => $"{{\"command\":{JsonSerializer.Serialize(command)}}}";
+
+    if (!GitCommandGrades.BuiltInAllowedVerbs.SequenceEqual(["add"]))
+        throw new Exception("The built-in verb table changed. It is the whole list of git writes that never cost a "
+            + "card — the one place a verb is judged reversible enough to run unattended — so a change here is a "
+            + "ruling, not a detail.");
+
+    // What a card may offer to stop asking about: the verbs a line spells itself, lowercase, in order, deduplicated.
+    // Three lines report nothing on purpose — a verb this build cannot name, a read, and a write that only exists
+    // behind a wrapper — because a card must never offer a key nothing honours. `pwsh -c "git push"` is graded as a
+    // write and still is not the call the person read on a card.
+    foreach (var (command, expected) in new (string, string[])[]
+             {
+                 ("git add -A", ["add"]),
+                 ("git add -A && git add -p", ["add"]),
+                 ("git commit -m \"fix: the title\"", ["commit"]),
+                 ("git push origin main", ["push"]),
+                 ("git add -A && git commit -m x", ["add", "commit"]),
+                 ("git status && git log -1", []),
+                 ("git lfs install", []),
+                 ("git -C", []),
+                 ("pwsh -c \"git push\"", []),
+                 ("cmd /c git push", []),
+                 ("sudo git commit -m x", []),
+                 ("env LC_ALL=C git commit -m x", []),
+                 ("timeout 60 git clone https://example.com/x.git", []),
+                 ("npm test", []),
+                 ("not json at all", []),
+             })
+    {
+        var said = GitCommandGrades.WriteVerbsOf(CommandArgs(command))
+            .OrderBy(verb => verb, StringComparer.Ordinal).ToArray();
+        if (!said.SequenceEqual(expected.OrderBy(verb => verb, StringComparer.Ordinal)))
+            throw new Exception($"WriteVerbsOf(「{command}」) said [{string.Join(", ", said)}], expected "
+                + $"[{string.Join(", ", expected)}].");
+    }
+    Console.WriteLine("PASS: a card can only ever offer to trust a verb the line spells itself.");
+
+    // The exemption, one row per cell the ruling named. Two of them are the ones an implementation plausibly gets
+    // wrong: a line whose writes straddle the built-in table and the granted list (the union of the two tables is
+    // never taken), and a verb laundered through a shell (a grant names the call as it is written). The rest pin
+    // the edges: reads and non-git lines need no table at all, a verb this build cannot name is never covered, and
+    // one table covering several writes is fine.
+    foreach (var (label, command, granted, expected) in new (string, string, string[], bool)[]
+             {
+                 ("内置表放行可撤销的索引操作", "git add -A", [], true),
+                 ("未授权的写仍升", "git push", [], false),
+                 ("授权 push 后它落在沙箱档", "git push origin main", ["push"], true),
+                 ("两表并集也救不了跨表的行", "git add && git push", ["push"], false),
+                 ("穿透段要自己命中授权", "pwsh -c \"git push\"", ["push"], false),
+                 ("sudo 包着的写也一样", "sudo git push", ["push"], false),
+                 ("认不出的子命令永不可授权", "git lfs install", ["lfs"], false),
+                 ("同一张表里的多个写动词照旧放行", "git add -A && git add -p", [], true),
+                 ("两个都授权的动词来自同一张表时放行", "git fetch origin && git push", ["fetch", "push"], true),
+                 ("同一张表覆盖整行才放行，两个动词都在授权表里也一样", "git add && git push", ["add", "push"], true),
+                 ("读命令不需要任何表", "git status", [], true),
+                 ("没有 git 的行不受影响", "npm test", [], true),
+                 ("认不出的行也照旧要问", "git my-tool thing", ["my-tool"], false),
+             })
+    {
+        var covered = GitCommandGrades.CoveredByOneTable(CommandArgs(command), granted);
+        if (covered != expected)
+            throw new Exception($"{label}: CoveredByOneTable(「{command}」, [{string.Join(", ", granted)}]) said "
+                + $"{covered}, expected {expected}.");
+    }
+    Console.WriteLine("PASS: one table covers a line's git writes, and never the union of two.");
+
+    // The stored shape of a grant, which is what the settings file holds and what the card's verb button writes: the
+    // two words the person read, matched Ordinal, and an entry this build cannot read matching nothing rather than
+    // everything. A hand-edited settings line has to fail toward asking.
+    if (CommandTrust.KeyFor("PUSH") != "git push" || CommandTrust.KeyFor("  push ") != "git push"
+        || CommandTrust.KeyFor("") != "" || CommandTrust.KeyFor(null) != ""
+        || CommandTrust.VerbOf("git push") != "push" || CommandTrust.VerbOf("GIT PUSH") != "push"
+        || CommandTrust.VerbOf("push") != "" || CommandTrust.VerbOf("rm -rf") != "" || CommandTrust.VerbOf("git ") != ""
+        || CommandTrust.VerbOf("git push --force") != "" || !CommandTrust.Contains(["git push"], "git push")
+        || CommandTrust.Contains(["git push"], "git Push") || CommandTrust.Contains(["rm -rf /"], "git push"))
+        throw new Exception("A command-verb key no longer round-trips through the shape the list stores.");
+
+    var messyKeys = CommandTrust.Normalize(["  git push ", "git PUSH", "rm -rf /", ""]);
+    if (messyKeys.Count != 2 || !CommandTrust.VerbOf(messyKeys[0]).Equals("push"))
+        throw new Exception($"Normalizing the verb list kept {messyKeys.Count} entries, expected 2: the same grant "
+            + "written twice is one grant, and one this build cannot read is kept but names nothing.");
+    if (!CommandTrust.VerbsOf(messyKeys).SequenceEqual(["push"]))
+        throw new Exception("An unreadable entry contributed a verb, so a stale settings line could widen a grant.");
+
+    var verbList = new List<string>();
+    if (!CommandTrust.Add(verbList, "git commit") || CommandTrust.Add(verbList, "git commit")
+        || CommandTrust.Remove(verbList, "git push") || !CommandTrust.Remove(verbList, "git commit")
+        || verbList.Count != 0)
+        throw new Exception("Adding, re-adding and removing a verb grant no longer reports what changed.");
+    for (var i = 0; i < CommandTrust.Limit + 5; i++) CommandTrust.Add(verbList, $"git v{i}");
+    if (verbList.Count != CommandTrust.Limit || CommandTrust.Add(verbList, "git one-more"))
+        throw new Exception($"The verb list is not bounded at {CommandTrust.Limit} entries.");
+    Console.WriteLine("PASS: a command-verb grant has one shape, one key, and a bound.");
+
     // A question the card cannot be built from must not park: the run would sit waiting on a card that shows
     // nothing. So the shape rules are the gate's guard, and they are asserted here rather than trusted to the
     // schema — a gateway is free to answer a tool call with anything its own model wanted.
