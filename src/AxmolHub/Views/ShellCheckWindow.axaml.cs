@@ -12698,13 +12698,31 @@ public partial class ShellCheckWindow : Window
         Check(foundLine == string.Format(HubTexts.Get("UpdateReady", HubStrings.Language), "9.9.9"),
             "检测到新版本时卡片的状态行说出版本号（实际 " + foundLine + "）");
 
-        // The transfer moving is nobody's business on this page any more: the line must not change, and no
+        // The card's one button stays where it is once the check has found something. The old shape took it
+        // away and left the user with a version number and nothing to press, while the fetch that number
+        // pointed at lives on the sidebar's update button — so what the card owes instead is the sentence
+        // saying where the bytes are going to move.
+        Check(settings.UpdateCardButtonVisible && settings.UpdateCardButtonEnabled
+              && settings.UpdateCardButtonLabel == HubTexts.Get("CheckForUpdates", HubStrings.Language)
+              && settings.UpdateHintShown
+              && settings.UpdateHintText == HubTexts.Get("UpdatePendingDownloadHint", HubStrings.Language),
+            "发现新版本后卡片仍留着按钮，并说清去哪开始下载（按钮「" + settings.UpdateCardButtonLabel
+            + "」，说明「" + settings.UpdateHintText + "」）");
+
+        // The transfer moving is nobody's business on this page: the line must not change, and no
         // second progress bar may exist here to disagree with the row in the popover.
         UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Downloading);
         settings.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(settings.UpdateStatusText == foundLine && settings.ProgressBarCount == 0,
             "下载进行中卡片既不加进度条也不换掉那行版本号（页面内进度条 " + settings.ProgressBarCount + " 个）");
+        // What it does say is which phase the transfer is in and which surface holds it — and the button goes
+        // dark rather than inviting a second press at a transfer that is already running.
+        Check(settings.UpdateCardButtonVisible && !settings.UpdateCardButtonEnabled
+              && settings.UpdateCardButtonLabel == HubTexts.Get("CheckForUpdates", HubStrings.Language)
+              && settings.UpdateHintText == HubTexts.Get("UpdateDownloadingHint", HubStrings.Language),
+            "下载进行中卡片把按钮留在原处只是按不动，并说下载在底部任务栏里（按钮「"
+            + settings.UpdateCardButtonLabel + "」，说明「" + settings.UpdateHintText + "」）");
 
         UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Ready);
         settings.UpdateLayout();
@@ -12717,6 +12735,10 @@ public partial class ShellCheckWindow : Window
               && shell.UpdateActionLabelForCheck == HubTexts.Get("TaskRestartAction", HubStrings.Language),
             "更新就绪后版本号仍在卡片上，并且进了侧栏更新按钮的重启提示（提示 " + shell.UpdateActionTipForCheck
             + "，形态 " + shell.UpdateActionShapeForCheck + "）");
+        Check(settings.UpdateCardButtonVisible && settings.UpdateCardButtonEnabled
+              && settings.UpdateCardButtonLabel == HubTexts.Get("TaskRestartAction", HubStrings.Language)
+              && !settings.UpdateHintShown && settings.UpdateHintText.Length == 0,
+            "下载完成后卡片上那枚按钮自己变成重启，说明行让位给它（实际「" + settings.UpdateCardButtonLabel + "」）");
 
         // And the card must come back down: a scripted update left behind would leak into every render
         // check that follows (the shell's update button included).
@@ -12725,9 +12747,13 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(settings.UpdateStatusText == HubTexts.Get("UpdateCheckHint", HubStrings.Language)
+              && settings.UpdateCardButtonVisible
+              && settings.UpdateCardButtonLabel == HubTexts.Get("CheckForUpdates", HubStrings.Language)
+              && !settings.UpdateHintShown
               && shell.TaskSlotTipForCheck == HubTexts.Get("TaskSlotTip", HubStrings.Language)
               && !shell.UpdateActionVisibleForCheck,
-            "清掉脚本更新后卡片、槽位提示与侧栏更新按钮都回到未检查的初始态（状态行 " + settings.UpdateStatusText + "）");
+            "清掉脚本更新后卡片按钮回到检查、说明行收起，槽位提示与侧栏更新按钮都回到未检查的初始态（状态行 "
+            + settings.UpdateStatusText + "，按钮「" + settings.UpdateCardButtonLabel + "」）");
 
         // --- 5.1b The task queue's own surface ---
         // The queue's contract with the shell, read off the shell. The label matrix goes through the pure
@@ -12817,6 +12843,24 @@ public partial class ShellCheckWindow : Window
               && silentState.LabelKey is null && silentState.TipKey is null,
             "没有更新（未检查 / 已是最新）时按钮整个不在屏上");
 
+        // The settings card's own matrix, through its pure functions for the same reason: the branch "the
+        // button became the restart" needs a finished download to reach live, and what decides it is the
+        // phase, not the switch. Both words are the rail's — one action, one sentence.
+        Check(SettingsPage.UpdateCardLabelKey(outcomeAvailable, UpdateService.DownloadState.None, false) == "CheckForUpdates"
+              && SettingsPage.UpdateCardLabelKey(outcomeAvailable, UpdateService.DownloadState.Downloading, false) == "CheckForUpdates"
+              && SettingsPage.UpdateCardLabelKey(outcomeAvailable, UpdateService.DownloadState.Ready, false) == "TaskRestartAction"
+              && SettingsPage.UpdateCardLabelKey(outcomeAvailable, UpdateService.DownloadState.Ready, true) == "TaskRestartArmed"
+              && SettingsPage.UpdateCardLabelKey(null, UpdateService.DownloadState.None, false) == "CheckForUpdates",
+            "卡片按钮的两态只看相位：没下载完是检查，下载完才是重启，忙时是再点一次（就绪 "
+            + SettingsPage.UpdateCardLabelKey(outcomeAvailable, UpdateService.DownloadState.Ready, false)
+            + "／忙 " + SettingsPage.UpdateCardLabelKey(outcomeAvailable, UpdateService.DownloadState.Ready, true) + "）");
+        Check(SettingsPage.UpdateCardHintKey(outcomeAvailable, UpdateService.DownloadState.None) == "UpdatePendingDownloadHint"
+              && SettingsPage.UpdateCardHintKey(outcomeAvailable, UpdateService.DownloadState.Downloading) == "UpdateDownloadingHint"
+              && SettingsPage.UpdateCardHintKey(outcomeAvailable, UpdateService.DownloadState.Ready) is null
+              && SettingsPage.UpdateCardHintKey(null, UpdateService.DownloadState.None) is null,
+            "卡片的说明行只说相位：没开始说去哪按、下载中说在任务栏、就绪交给按钮说（就绪相位 "
+            + (SettingsPage.UpdateCardHintKey(outcomeAvailable, UpdateService.DownloadState.Ready) ?? "不说话") + "）");
+
         // And live, on the real strip: one scripted transfer that never ends.
         TaskQueue.Instance.EnqueueForCheck("engine:install:9.9.6", "TaskEnginePackage", "9.9.6");
         shell.UpdateLayout();
@@ -12898,13 +12942,20 @@ public partial class ShellCheckWindow : Window
         var (readyButton, readyDot, readyGear) = shell.UpdateActionGeometryForCheck();
         Check(readyButton.Right <= readyGear.X + 0.5
               && readyButton.Width > 0 && readyGear.Width > 0
+              && readyDot.Width >= 10
               && readyDot.Right - readyButton.Right is > 0 and < 6
               && readyButton.Top - readyDot.Top is > 0 and < 6,
-            "重启按钮长在齿轮左侧，红点压着它的右上角（按钮右缘 " + Fmt(readyButton.Right)
-            + " ≤ 齿轮左缘 " + Fmt(readyGear.X) + "，红点外探 横 "
+            "重启按钮长在齿轮左侧，红点 ≥10px 压着它的右上角（按钮右缘 " + Fmt(readyButton.Right)
+            + " ≤ 齿轮左缘 " + Fmt(readyGear.X) + "，红点 " + Fmt(readyDot.Width) + " 见方，外探 横 "
             + Fmt(readyDot.Right - readyButton.Right) + " / 纵 " + Fmt(readyButton.Top - readyDot.Top) + "）");
         Check(shell.UpdateActionDotAboveButtonForCheck,
             "红点画在按钮之上——同一张 Grid 里子序决定叠放，两个矩形断言看不出先后");
+        // The pill's corners are the gear's, and that relation is the assertion rather than a number written
+        // here: the two controls share a row, so "consistent with the one beside it" is what the style is for.
+        Check(shell.UpdateActionRadiusForCheck == shell.SettingsRadiusForCheck
+              && shell.UpdateActionRadiusForCheck <= 8,
+            "重启胶囊和旁边的齿轮用同一个圆角，不是全圆头（胶囊 " + Fmt(shell.UpdateActionRadiusForCheck)
+            + "，齿轮 " + Fmt(shell.SettingsRadiusForCheck) + "）");
 
         // The frame, not the tree. Two captures: the dot has to be real red ink (a dot whose Fill went null
         // keeps every bounds assertion above green while the screen shows nothing), and the pill has to be
@@ -12980,6 +13031,26 @@ public partial class ShellCheckWindow : Window
         shell.ClickUpdateActionForCheck();
         Check(applied == "9.9.9" && !shell.RestartArmedForCheck,
             "没有在跑的东西时重启一下就走，不要求第二下（实际 " + applied + "）");
+
+        // The settings card's button is that same gate, not a second one. Pressed from the card while other
+        // work is running, the first press arms the **shared** state — which this reads back off the rail's
+        // pill, so a per-button arm hiding behind the card would fail here — and only the second press applies.
+        settings.SelectCategoryForCheck("updates");
+        shell.RestartInterruptsWork = () => true;
+        applied = "";
+        settings.ClickUpdateCardButtonForCheck();
+        shell.UpdateLayout();
+        settings.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(settings.UpdateCardButtonLabel == HubTexts.Get("TaskRestartArmed", HubStrings.Language)
+              && shell.UpdateActionLabelForCheck == HubTexts.Get("TaskRestartArmed", HubStrings.Language)
+              && shell.RestartArmedForCheck && applied.Length == 0,
+            "设置卡片上的重启与侧栏共用一次武装：卡片第一下只改词，侧栏胶囊同时改口，谁都没重启（卡片「"
+            + settings.UpdateCardButtonLabel + "」，胶囊「" + shell.UpdateActionLabelForCheck + "」）");
+        settings.ClickUpdateCardButtonForCheck();
+        Check(applied == "9.9.9" && !shell.RestartArmedForCheck,
+            "卡片上第二下才真的走重启，并且带上那个版本（实际 " + applied + "）");
+        shell.RestartInterruptsWork = () => false;
         UpdateService.Instance.ApplyOverrideForCheck = null;
 
         // Everything scripted goes back down, or every render check after this inherits a lit strip — and a
@@ -13032,9 +13103,9 @@ public partial class ShellCheckWindow : Window
 
         // The hole this button exists to close: auto-download **on** is the default, and a cancelled
         // transfer puts Download back to None — before this button that state had no entry point anywhere
-        // in the app (the strip only offered with auto-download off, and the settings card hides its check
-        // button while an update is known). The button's condition is the phase's, not the setting's:
-        // cancelled or never-started, the press fetches.
+        // in the app (the strip only offered with auto-download off, and the settings card's own button
+        // never offers the fetch: it is the check until the bytes land). The button's condition is the
+        // phase's, not the setting's: cancelled or never-started, the press fetches.
         UpdateService.Instance.AutoDownload = true;
         downloaded = "";
         UpdateService.Instance.SetPendingForCheck(pendingUpdate); // Download back to None, as a cancel leaves it
@@ -13158,15 +13229,19 @@ public partial class ShellCheckWindow : Window
               && rowReading.Contains("MB/s", StringComparison.Ordinal),
             "更新行只报百分比，估算的体积与速率留在 tooltip（实际 " + rowReading + "）");
 
-        // And the round's original defect, closed: no control on the settings page may hand out a restart,
-        // because that press bypasses the armed second tap the sidebar's update button does the deciding
-        // for.
+        // The round's original defect was a settings-page button that restarted *around* the armed second tap.
+        // The card now carries a restart word on purpose — through that same gate, asserted where the card is
+        // ready — so what is left to read here is the other half of the rule: while nothing is ready, the page
+        // holds no restart word at all (the card's button has gone back to 检查更新), so nothing on it can be
+        // reached as a restart and bypass the confirmation.
         var restartWords = settings.GetVisualDescendants().OfType<Button>()
             .Select(button => button.Content as string ?? "")
             .Where(text => text.Contains("重启", StringComparison.Ordinal))
             .ToList();
-        Check(restartWords.Count == 0,
-            "设置页上没有任何会重启的按钮，两下闸门只长在侧栏更新按钮上（实际 " + string.Join("/", restartWords) + "）");
+        Check(restartWords.Count == 0
+              && settings.UpdateCardButtonLabel == HubTexts.Get("CheckForUpdates", HubStrings.Language),
+            "没有就绪的更新时设置页一个重启字样都没有，卡片按钮也已退回检查（实际 "
+            + string.Join("/", restartWords) + "，按钮「" + settings.UpdateCardButtonLabel + "」）");
 
         // --- 5.1d The change on this surface, and the page it no longer freezes ---
         // A build is now a task row, so the gate that used to grey everything has to answer a refused press

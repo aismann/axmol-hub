@@ -377,6 +377,15 @@ public static class HubTexts
         ["UpdateFailed"] = ("检查更新失败，请稍后重试。", "Couldn't check for updates. Try again later."),
         ["UpdateCheckHint"] = ("点「检查更新」查看是否有新版本。", "Click \"Check for updates\" to see if a newer version exists."),
         ["AutoDownloadUpdates"] = ("自动下载更新", "Auto-download updates"),
+        // The switch above decides *when* the transfer starts and nothing else, and the two things a person
+        // would otherwise have to guess are both in here: that the bytes move in the strip's task queue rather
+        // than on this page, and that finishing a download is not the same as installing it. Written as the
+        // switch's own hint rather than as a phase line, because it is true in every phase.
+        ["AutoDownloadUpdatesHint"] = (
+            "开着时，检查到新版本就立刻在后台下载，下载会在底部任务栏里排队显示；它只负责下载，重启安装仍要你自己按下「重启完成更新」。",
+            "On: a new version is downloaded in the background as soon as a check finds it, and the transfer "
+            + "queues up in the task bar at the bottom. It only downloads — installing still waits for your "
+            + "\"Restart to update\"."),
         ["AllowSpawnSessions"] = ("允许助手派生子会话", "Let the assistant spawn helper sessions"),
         ["AllowSpawnSessionsHint"] = (
             "子会话在自己的上下文里干活，只把结论送回本会话——读一个大文件只要带回几行，就不必把它塞满当前窗口。"
@@ -402,6 +411,19 @@ public static class HubTexts
             + "a search of its own; that kind of search runs inside the service, and no approval card can stop one "
             + "mid-reply."),
         ["UpdateReady"] = ("发现新版本 {0}。", "Version {0} is available."),
+        // The settings card's phase line: the line above names the version and stays true through every phase,
+        // and this one says where the transfer is and which control the user still owes a press. It is a
+        // separate line rather than a prefix on the version so that the number the user just read never moves
+        // and never disappears while the bytes are moving somewhere else. The card keeps no percentage of its
+        // own: the strip's queue row is what measures the transfer, and two measuring surfaces would be one
+        // fact told twice.
+        ["UpdatePendingDownloadHint"] = (
+            "这个版本还没开始下载：用侧栏的「下载更新」开始，进度会出现在底部任务栏。",
+            "This version is not downloaded yet. Start it with \"Download update\" in the sidebar; progress "
+            + "appears in the task bar."),
+        ["UpdateDownloadingHint"] = (
+            "更新正在后台下载，进度和取消在底部任务栏。",
+            "The update is downloading in the background; progress and cancel are in the task bar."),
         // The version the restart will install rides on the strip slot's tooltip: the label there counts, so
         // this is where the number has to be said. The download itself is a queue row now, and the settings
         // card keeps only the line above — which therefore stays true through every phase and no longer needs

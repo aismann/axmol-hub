@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 // GetLogicalDescendants (not GetVisualDescendants) on purpose: the model section is read for a group that may
 // not be attached to a visual root yet, and the visual walk returns an empty collection in that case — which
@@ -175,7 +176,10 @@ public partial class SettingsPage : UserControl
         OpenDataFolderButton.Click += (_, _) => _openFolder(_workspace.Store.Root);
         SelectVisualStudioButton.Click += async (_, _) => await SelectEditorAsync(visualStudio: true);
         SelectCodeButton.Click += async (_, _) => await SelectEditorAsync(visualStudio: false);
-        CheckForUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync();
+        // One button, two jobs, decided by the phase the card is rendering (see RenderUpdateState): a check
+        // while nothing is downloaded, and the restart once the bytes have landed — the same restart, through
+        // the same armed gate, as the sidebar's update pill.
+        CheckForUpdatesButton.Click += async (_, _) => await OnUpdateActionClickedAsync();
         AutoDownloadCheck.IsCheckedChanged += (_, _) => OnAutoDownloadChanged();
         SpawnCheck.IsCheckedChanged += (_, _) => OnSpawnChanged();
         WebFetchCheck.IsCheckedChanged += (_, _) => OnWebFetchChanged();
@@ -183,9 +187,11 @@ public partial class SettingsPage : UserControl
         InitializeCategories();
 
         // The update card is a *view* of the shared UpdateService, so a check started elsewhere (the shell's
-        // startup check) shows up here live. The download itself is no longer this page's to report — that is
-        // the strip's queue slot — so what is rendered is the check result and nothing else. Hooked while the
-        // page is on screen only: a cached page that has been navigated away shouldn't keep rendering.
+        // startup check) shows up here live. The download's **progress** is still not this page's to report —
+        // that is the strip's queue slot, which measures it — but its **phase** is, because this card is where
+        // the user pressed 「检查更新」: it says where the bytes are going, and it turns its own button into the
+        // restart once they have landed. Hooked while the page is on screen only: a cached page that has been
+        // navigated away shouldn't keep rendering.
         AttachedToVisualTree += (_, _) => HookUpdateService();
         DetachedFromVisualTree += (_, _) => UnhookUpdateService();
 
@@ -1152,13 +1158,32 @@ public partial class SettingsPage : UserControl
     }
 
     /// <summary>
+    /// The update card's one press, in whichever phase the card is showing. The check is the entry point — the
+    /// button is clicked *because* the user wants a visible answer — until the bytes have landed, and then the
+    /// same button owes the restart. That restart is the rail's own press (<see cref="UpdateService.PressUpdateRestart"/>,
+    /// the armed second tap included) rather than a second gate of this page's: replacing the process is the one
+    /// thing the app cannot undo from the inside, so it keeps one rule and one arm wherever it is offered from.
+    /// </summary>
+    private async Task OnUpdateActionClickedAsync()
+    {
+        var service = UpdateService.Instance;
+        if (IsRestartPending(service.Last, service.Download))
+        {
+            service.PressUpdateRestart();
+            return;
+        }
+
+        await CheckForUpdatesAsync();
+    }
+
+    /// <summary>
     /// The settings-page "Check for updates" entry point. Unlike the silent startup check, this one
     /// surfaces every outcome: the button is clicked *because* the user wants a visible answer.
     /// </summary>
     private async Task CheckForUpdatesAsync()
     {
-        // The status line doubles as a "busy" indicator; the button is disabled while a check runs so
-        // a second click can't stack a second network round-trip on top of the first.
+        // The status line doubles as a "busy" indicator; the button goes dark for the duration so a second
+        // click can't stack a second network round-trip on top of the first.
         _checking = true;
         CheckForUpdatesButton.IsEnabled = false;
         UpdateStatusLine.Text = HubStrings.Get("CheckingUpdate");
@@ -1168,25 +1193,56 @@ public partial class SettingsPage : UserControl
         }
         finally
         {
+            // The renderer owns the button's enabled state from here (see RenderUpdateState): the busy flag is
+            // one of the two reasons it can be dark, so clearing it is what lets the renderer decide again.
             _checking = false;
-            CheckForUpdatesButton.IsEnabled = true;
             RenderUpdateState();
         }
     }
 
+    /// <summary>Whether the card's button owes the restart rather than a check: an update is pending *and* its
+    /// bytes have landed. The phase, not the switch — a cancelled or never-started transfer leaves
+    /// <see cref="UpdateService.DownloadState.None"/>, which still wants the check button.</summary>
+    private static bool IsRestartPending(UpdateService.CheckOutcome? last, UpdateService.DownloadState download)
+        => last is { Result: UpdateService.CheckResult.UpdateAvailable }
+           && download == UpdateService.DownloadState.Ready;
+
+    /// <summary>The word on the card's button, as a pure function so the branches can be asserted without a real
+    /// download behind them. The three keys are borrowed from the rail on purpose: one action, one sentence —
+    /// "重启完成更新" means the same thing wherever it is offered, and a second translation of it would let the
+    /// two buttons name the same press differently.</summary>
+    internal static string UpdateCardLabelKey(
+        UpdateService.CheckOutcome? last, UpdateService.DownloadState download, bool armed)
+        => IsRestartPending(last, download)
+            ? (armed ? "TaskRestartArmed" : "TaskRestartAction")
+            : "CheckForUpdates";
+
+    /// <summary>The card's phase line: where the transfer is, or that nobody has started it. Null means the line
+    /// is not shown at all — an up-to-date or unchecked card has nothing to add to the result line above, and
+    /// the ready phase is the button's own sentence rather than a second one.</summary>
+    internal static string? UpdateCardHintKey(
+        UpdateService.CheckOutcome? last, UpdateService.DownloadState download)
+        => last is { Result: UpdateService.CheckResult.UpdateAvailable }
+            ? download switch
+            {
+                UpdateService.DownloadState.Downloading => "UpdateDownloadingHint",
+                UpdateService.DownloadState.Ready => null,
+                _ => "UpdatePendingDownloadHint",
+            }
+            : null;
+
     /// <summary>
-    /// Renders the card from <see cref="UpdateService"/>: the check result — the status line, and whether the
-    /// check button is offered. Called when the page is shown, on <see cref="UpdateService.Changed"/>, and
-    /// after a manual check, so a check started elsewhere (the shell's startup check) shows up here too and
-    /// the line re-localizes on a language switch.
+    /// Renders the card from <see cref="UpdateService"/>: the check result, the phase line under it, and what the
+    /// card's one button is for right now. Called when the page is shown, on <see cref="UpdateService.Changed"/>,
+    /// and after a manual check, so a check started elsewhere (the shell's startup check) shows up here too and
+    /// the words re-localize on a language switch.
     ///
-    /// <para>What is deliberately <b>not</b> on this card any more: the download's progress, its cancel, and
-    /// the restart. Those live on two surfaces that are always on screen — the sidebar's update button (the
-    /// fetch and the restart) and the strip's queue slot with its popover (the count, the percentage, the
-    /// row's cancel) — because this page can be navigated away from while the bytes are moving, and an
-    /// update whose end nobody can see is an update nobody can restart. The result line keeps naming the
-    /// version for that same reason: it is the one thing this page owns, and it stays true while the
-    /// transfer runs somewhere else.</para>
+    /// <para>What is deliberately <b>not</b> on this card: the download's progress, its percentage and its cancel
+    /// — the strip's queue slot measures the transfer and its popover cancels it, because this page can be
+    /// navigated away from while the bytes are moving, and an update whose end nobody can see is an update nobody
+    /// can restart. What <b>is</b> here is which phase that transfer is in and what the user owes it, because this
+    /// card is where they asked: the result line names the version and keeps naming it through every phase, the
+    /// phase line says where the bytes are, and the button becomes the restart the moment there is one to press.</para>
     /// </summary>
     private void RenderUpdateState()
     {
@@ -1208,10 +1264,21 @@ public partial class SettingsPage : UserControl
             _ => HubStrings.Get("UpdateCheckHint"),
         };
 
-        // The check button steps aside when there is already something to act on: offering another 检查更新
-        // under the line that says what the last check found would repeat the question it answered. Fetching
-        // that version is the update button's press in the rail, reachable from whatever page is on screen.
-        CheckForUpdatesButton.IsVisible = last?.Result is not UpdateService.CheckResult.UpdateAvailable;
+        var hintKey = UpdateCardHintKey(last, service.Download);
+        UpdateHintLine.Text = hintKey is null ? "" : HubStrings.Get(hintKey);
+        UpdateHintLine.IsVisible = hintKey is not null;
+
+        // The button never leaves the card. It used to: a check that found something took it away and left the
+        // user with a sentence about a version and nothing to press, while the fetch that sentence pointed at
+        // lives on another surface. Now one button follows the phase — the check while nothing is downloaded, the
+        // restart once the bytes have landed — and it goes dark only while it has nothing to offer: a check is
+        // already running, or the transfer is and the queue row is what reports it.
+        var restartPending = IsRestartPending(last, service.Download);
+        CheckForUpdatesButton.Content = HubStrings.Get(UpdateCardLabelKey(last, service.Download, service.RestartArmed));
+        CheckForUpdatesButton.Classes.Set("primary", restartPending);
+        CheckForUpdatesButton.IsVisible = true;
+        CheckForUpdatesButton.IsEnabled = !_checking
+            && service.Download != UpdateService.DownloadState.Downloading;
     }
 
     /// <summary>
@@ -2895,6 +2962,27 @@ public partial class SettingsPage : UserControl
     /// <summary>The update card's status line **as rendered**. Read back rather than recomputed: what the
     /// user sees is this control's text, and the check result is only one of the strings it can hold.</summary>
     internal string UpdateStatusText => UpdateStatusLine.Text ?? "";
+
+    /// <summary>The card's phase line as rendered, and whether it is on screen at all — the two are read
+    /// separately because "the line says nothing" and "the line is not there" are different states of the card
+    /// (an up-to-date card holds an empty, hidden line rather than an empty visible one).</summary>
+    internal string UpdateHintText => UpdateHintLine.Text ?? "";
+
+    internal bool UpdateHintShown => UpdateHintLine.IsVisible;
+
+    /// <summary>The word on the card's one button, as rendered: "检查更新" until the download lands, then the
+    /// restart's own word. Read off the control because the point of this round is that the button stays on the
+    /// card in every phase.</summary>
+    internal string UpdateCardButtonLabel => CheckForUpdatesButton.Content as string ?? "";
+
+    internal bool UpdateCardButtonVisible => CheckForUpdatesButton.IsVisible;
+
+    internal bool UpdateCardButtonEnabled => CheckForUpdatesButton.IsEnabled;
+
+    /// <summary>Presses the card's button the way the user does, so a check walks the same routing — including
+    /// the branch that hands the press to the restart's own armed gate.</summary>
+    internal void ClickUpdateCardButtonForCheck()
+        => CheckForUpdatesButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
     /// <summary>Progress bars this page can still draw. The update card is meant to hold none: its download
     /// moved to the strip's queue, and a bar left here would be a second surface reporting one transfer —

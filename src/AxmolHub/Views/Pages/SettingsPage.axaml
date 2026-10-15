@@ -279,9 +279,13 @@
 
           <!-- Off by default? No: with it on, finding an update is enough and the only thing left is a
                restart, which is the whole point of a background updater. Turning it off does not stop the
-               update being fetched — it hands the decision to a press on the strip's download slot, which
-               is where the transfer then reports. -->
-          <CheckBox x:Name="AutoDownloadCheck" Content="{DynamicResource AutoDownloadUpdates}" />
+               update being fetched — it hands the decision to a press on the sidebar's update button, which
+               is where the transfer then reports (the hint under the switch says so, because "where did my
+               download go" is the one question this switch's own name cannot answer). -->
+          <StackPanel Spacing="6">
+            <CheckBox x:Name="AutoDownloadCheck" Content="{DynamicResource AutoDownloadUpdates}" />
+            <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource AutoDownloadUpdatesHint}" />
+          </StackPanel>
 
           <!-- The rule divides policy above from readout below: the two pickers and the switch decide how an
                update arrives, and everything under the line reports where this install stands. Nothing that
@@ -292,8 +296,17 @@
             <StackPanel>
               <TextBlock x:Name="CurrentVersionLine" FontWeight="SemiBold" />
               <TextBlock x:Name="UpdateStatusLine" Classes="muted" TextWrapping="Wrap" />
+              <!-- The phase line under the result. The version line above is what this card owns and stays
+                   true through every phase; this one says the other half — nobody has started the transfer
+                   yet, or it is moving in the strip's queue while this page is not measuring it. Hidden in
+                   between rather than emptied in place: an empty line still costs the row's height. -->
+              <TextBlock x:Name="UpdateHintLine" Classes="muted" TextWrapping="Wrap" IsVisible="False" />
             </StackPanel>
-            <Button Grid.Column="1" x:Name="CheckForUpdatesButton" Content="{DynamicResource CheckForUpdates}"
+            <!-- No Content here: the word on this button is one of two, decided by the update's phase (see
+                 SettingsPage.RenderUpdateState), and it is set from code so that the re-render Reload already
+                 runs is what re-localizes it on a language switch. A {DynamicResource} on the same property
+                 would be a second author, and the loser would be the one that keeps the old language. -->
+            <Button Grid.Column="1" x:Name="CheckForUpdatesButton"
                     VerticalAlignment="Center" Margin="12,0,0,0" />
           </Grid>
         </StackPanel>

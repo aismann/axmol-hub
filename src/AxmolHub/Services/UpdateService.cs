@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AxmolHub.Core;
+using Avalonia.Threading;
 using Velopack;
 using Velopack.Sources;
 
@@ -20,18 +21,24 @@ namespace AxmolHub;
 /// There is deliberately **no modal update prompt**. An update's *progress* is surfaced by the same
 /// thing that surfaces every other download: a row in <see cref="TaskQueue"/>, whose slot in the status
 /// strip counts it and whose popover carries the percentage. Its *decisions* — fetch it, restart to
-/// install it — live on the sidebar's update button (see <c>MainWindow.UpdateActionStateFor</c>), which
-/// is the only control that offers them: a strip line and a rail button asking for the same press would
-/// be one fact told twice. The settings page keeps what is neither — the channel, the auto-download
-/// switch, and the version this would move to.
+/// install it — have exactly two press surfaces, and the line between them is the phase rather than the
+/// surface: the fetch stays the sidebar update button's alone (see <c>MainWindow.UpdateActionStateFor</c>),
+/// while the restart is offered by that button's pill *and* by the settings card the check was started
+/// from. A strip line and a rail button asking for the same press would still be one fact told twice —
+/// both restart surfaces are the same <see cref="RestartArmed"/> gate and the same
+/// <see cref="PressUpdateRestart"/> (a second arm with a decay timer of its own would let the two buttons
+/// disagree about whether the next click replaces the process). The settings page keeps what is neither:
+/// the channel, the auto-download switch, the version this would move to, and the phase line that says
+/// where the bytes are.
 ///
 /// Two drivers share this service: the silent startup check (<see cref="CheckAsync"/>) and the settings
 /// page's 「检查更新」 button (also <see cref="CheckAsync"/>). With <see cref="AutoDownload"/> on, finding an
 /// update is enough and the fetch starts by itself; with it off — or after a cancel, which lands back in
 /// <see cref="DownloadState.None"/> — the sidebar button's press is <see cref="StartPendingDownload"/>,
 /// and it does not care which. Either way the transfer ends in <see cref="DownloadState.Ready"/>: applying is
-/// never automatic, because it replaces the process, so it stays that button's explicit press
-/// (<see cref="ApplyAndRestart"/>) — with a second tap when something is still running.
+/// never automatic, because it replaces the process, so it stays an explicit press
+/// (<see cref="PressUpdateRestart"/>, from whichever of the two restart surfaces the user is looking at) —
+/// with a second tap when something is still running.
 ///
 /// Everything is deliberately fire-and-forget friendly: no call blocks <c>Main</c>, and failures are
 /// swallowed into a result so the UI can decide what to say. A broken update check must never take
@@ -131,6 +138,7 @@ internal sealed class UpdateService
             _updateChannel = normalized;
             Last = null;
             Download = DownloadState.None;
+            DropRestartArm();
             Changed?.Invoke();
         }
     }
@@ -265,6 +273,14 @@ internal sealed class UpdateService
         }
 
         Last = outcome;
+        // A check that found nothing (or failed) takes the restart away with the update it was armed for: the
+        // arm is only ever true while an update is available *and* downloaded, and a check is one of the ways
+        // out of that phase. Silent — the Changed below is this phase change's own notification.
+        if (outcome.Result is not CheckResult.UpdateAvailable)
+        {
+            DropRestartArm();
+        }
+
         Changed?.Invoke();
 
         // With auto-download on, merely finding an update is enough to start fetching it — the user
@@ -288,6 +304,14 @@ internal sealed class UpdateService
     {
         Last = new CheckOutcome(CheckResult.UpdateAvailable, update);
         Download = download;
+        // The arm belongs to the Ready phase alone, and this hook is the one writer that can install any
+        // phase directly: a check that scripted a download phase after an armed restart would read back an
+        // arm that no longer exists on screen.
+        if (download != DownloadState.Ready)
+        {
+            DropRestartArm();
+        }
+
         Changed?.Invoke();
     }
 
@@ -297,6 +321,7 @@ internal sealed class UpdateService
     {
         Last = null;
         Download = DownloadState.None;
+        DropRestartArm();
         Changed?.Invoke();
     }
 
@@ -324,22 +349,27 @@ internal sealed class UpdateService
         }
     }
 
-    /// <summary>Applies the already-downloaded update and restarts (the "Restart now" button, shown
-    /// after a background download finishes). Never returns on success.</summary>
-    public void ApplyAndRestart()
+    /// <summary>Applies the already-downloaded update and restarts. Never returns on success.
+    ///
+    /// <para>Private on purpose: the two-tap rule and the arm live in <see cref="PressUpdateRestart"/>, which
+    /// is its only caller. A surface that reached this directly would be a process swap the confirmation never
+    /// saw, which is exactly the defect that rule was written for.</para></summary>
+    private void ApplyAndRestart()
     {
-        if (Download == DownloadState.Ready && Last?.Update is { } update)
+        if (Last?.Update is not { } update)
         {
-            // Verification hook: a self-check that really applied would take the process running the
-            // assertions with it, so the suite installs an observer and reads the decision instead.
-            if (ApplyOverrideForCheck is { } observer)
-            {
-                observer(update);
-                return;
-            }
-
-            CreateManager().ApplyUpdatesAndRestart(update.TargetFullRelease);
+            return;
         }
+
+        // Verification hook: a self-check that really applied would take the process running the
+        // assertions with it, so the suite installs an observer and reads the decision instead.
+        if (ApplyOverrideForCheck is { } observer)
+        {
+            observer(update);
+            return;
+        }
+
+        CreateManager().ApplyUpdatesAndRestart(update.TargetFullRelease);
     }
 
     /// <summary>Set by <c>--verify-shell</c> to observe a restart decision without making one.</summary>
@@ -351,6 +381,92 @@ internal sealed class UpdateService
     /// Velopack would reach GitHub, and a delta would end with the updater taking the process.
     /// </summary>
     internal Action<UpdateInfo>? DownloadOverrideForCheck { get; set; }
+
+    /// <summary>
+    /// Whether the restart is armed — the first press of a restart that arrived while other work was still
+    /// running, waiting for the confirming second press.
+    ///
+    /// <para>One flag for the whole app rather than one per button: the rail's pill and the settings card's
+    /// button offer the same press, and two flags would let one of them read "restart" while the other had
+    /// already been armed — so the next stray click would replace the process from a button the user had not
+    /// pressed twice.</para>
+    ///
+    /// <para>It is only ever true in <see cref="DownloadState.Ready"/>, which is the only phase a press can arm
+    /// it from. Every writer that moves the update out of that phase clears it (through
+    /// <see cref="DropRestartArm"/>) rather than leaving the reset to whichever renderer runs next: an arm that
+    /// outlived its state is a restart waiting behind the next click. Setting it raises <see cref="Changed"/>,
+    /// so both buttons re-label from the one event they already render on.</para>
+    /// </summary>
+    public bool RestartArmed
+    {
+        get => _restartArmed;
+        internal set => SetRestartArmed(value, notify: true);
+    }
+
+    private bool _restartArmed;
+
+    /// <summary>
+    /// Whether a restart would interrupt something, asked at the moment of the press. Set by the shell
+    /// (a workspace operation or a running answer); the default keeps a caller that drives this service
+    /// directly — a self-check — on the one-press path.
+    /// </summary>
+    public Func<bool> RestartInterruptsWork { get; set; } = () => false;
+
+    /// <summary>
+    /// The restart's own press, shared by the two surfaces that offer one: the sidebar's update pill and the
+    /// settings card's button. Nothing else may apply an update (see <see cref="ApplyAndRestart"/>).
+    ///
+    /// <para>Replacing the process is the one thing this app cannot undo from the inside, so while other work is
+    /// running the first press only arms the button and says so on its own label — the rail's pill and the
+    /// card's button both, because the arm is one field. The arm decays by itself after ten seconds: a button
+    /// left armed restarts on the next stray click, minutes later, when whatever made it busy has long
+    /// finished.</para>
+    ///
+    /// <para>Phases that cannot apply are refused here rather than by each caller: a press arriving with a
+    /// cancelled download (or none) behind it is a restart nobody asked for.</para>
+    /// </summary>
+    public void PressUpdateRestart()
+    {
+        if (Download != DownloadState.Ready || Last?.Update is null)
+        {
+            return;
+        }
+
+        if (RestartInterruptsWork() && !_restartArmed)
+        {
+            SetRestartArmed(true, notify: true);
+            DispatcherTimer.RunOnce(() =>
+            {
+                if (!_restartArmed) return;
+                SetRestartArmed(false, notify: true);
+            }, TimeSpan.FromSeconds(10));
+            return;
+        }
+
+        // The arm is spent by the press that used it, even though in the real case the process ends here:
+        // a button left armed is a button that restarts on the next stray click.
+        SetRestartArmed(false, notify: false);
+        ApplyAndRestart();
+    }
+
+    /// <summary>Gives up the arm on the way out of <see cref="DownloadState.Ready"/>. Silent, because every
+    /// caller is already raising <see cref="Changed"/> for the phase change that caused it — two notifications
+    /// for one state change would paint the same frame twice.</summary>
+    private void DropRestartArm() => SetRestartArmed(false, notify: false);
+
+    private void SetRestartArmed(bool armed, bool notify)
+    {
+        if (_restartArmed == armed)
+        {
+            return;
+        }
+
+        _restartArmed = armed;
+        if (notify)
+        {
+            Changed?.Invoke();
+        }
+    }
 
     /// <summary>
     /// Puts this update's download on the shared <see cref="TaskQueue"/> rather than on a cancellation
@@ -449,8 +565,10 @@ internal sealed class UpdateService
         {
             case TaskQueue.Phase.Failed:
             case TaskQueue.Phase.Cancelled:
-                // The row keeps the message and the retry; this service only gives up the restart action.
+                // The row keeps the message and the retry; this service only gives up the restart action —
+                // and the arm that was waiting on it.
                 Download = DownloadState.None;
+                DropRestartArm();
                 break;
         }
 

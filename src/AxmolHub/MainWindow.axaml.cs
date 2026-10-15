@@ -870,15 +870,10 @@ public partial class MainWindow : Window
         if (UpdateActionHost is null) return;
 
         var service = UpdateService.Instance;
-        var (kind, labelKey, tipKey) = UpdateActionStateFor(service.Last, service.Download, _restartArmed);
-        if (kind != UpdateActionKind.Ready && _restartArmed)
-        {
-            // Whatever the second press was standing by for is gone (the download was cancelled, a new check
-            // found nothing): the arm goes back before the next click can find it still spent on a state
-            // that no longer exists.
-            _restartArmed = false;
-            (kind, labelKey, tipKey) = UpdateActionStateFor(service.Last, service.Download, false);
-        }
+        // The arm is the service's, not this window's: the settings card's button offers the same press, and
+        // two flags would let the two buttons disagree about whether the next click restarts. The service
+        // clears it as soon as the update leaves the Ready phase, so there is nothing to un-arm here.
+        var (kind, labelKey, tipKey) = UpdateActionStateFor(service.Last, service.Download, service.RestartArmed);
 
         UpdateActionHost.IsVisible = kind != UpdateActionKind.Hidden;
         if (kind == UpdateActionKind.Hidden)
@@ -926,18 +921,18 @@ public partial class MainWindow : Window
     /// <summary>
     /// The button's one press, decided by the state it was showing: fetch it (which is also the retry after
     /// a cancelled download — the reason <see cref="UpdateService.StartPendingDownload"/> does not care
-    /// about auto-download), lift the queue popover while it downloads, or arm/apply the restart.
+    /// about auto-download), lift the queue popover while it downloads, or — the third branch, past the
+    /// switch — hand the press to the restart's own gate.
     ///
-    /// <para>The restart keeps the strip's old two-tap rule verbatim: replacing the process is the one thing
-    /// this app cannot undo from the inside, so while other work runs the first press only arms the button
-    /// and says so on its own label, and the arm decays on its own — a button left armed is a button that
-    /// restarts on the next stray click, minutes later, when whatever made it busy has long since
-    /// finished.</para>
+    /// <para>That gate is <see cref="UpdateService.PressUpdateRestart"/> rather than a copy of the two-tap
+    /// rule kept here: replacing the process is the one thing this app cannot undo from the inside, and the
+    /// settings card's button offers the same press, so the rule and the arm it uses have to be one thing
+    /// (see <see cref="UpdateService.RestartArmed"/>).</para>
     /// </summary>
     private void OnUpdateActionClicked()
     {
         var service = UpdateService.Instance;
-        var (kind, _, _) = UpdateActionStateFor(service.Last, service.Download, _restartArmed);
+        var (kind, _, _) = UpdateActionStateFor(service.Last, service.Download, service.RestartArmed);
         switch (kind)
         {
             case UpdateActionKind.Hidden:
@@ -954,35 +949,21 @@ public partial class MainWindow : Window
                 return;
         }
 
-        var busy = RestartInterruptsWork();
-        if (busy && !_restartArmed)
-        {
-            _restartArmed = true;
-            SyncUpdateAction();
-            DispatcherTimer.RunOnce(() =>
-            {
-                if (!_restartArmed) return;
-                _restartArmed = false;
-                SyncUpdateAction();
-            }, TimeSpan.FromSeconds(10));
-            return;
-        }
-
-        // The arm is spent by the press that used it, even though in the real case the process ends here:
-        // a button left armed is a button that restarts on the next stray click.
-        _restartArmed = false;
-        service.ApplyAndRestart();
+        service.PressUpdateRestart();
     }
-
-    /// <summary>Set while the update button is waiting for its confirming second press.</summary>
-    private bool _restartArmed;
-
     /// <summary>
-    /// What a restart would interrupt. A probe rather than an inline read because the armed second tap is
-    /// a rule worth asserting on its own, and parking a live stream behind it to reach one branch is not a
-    /// fixture anyone could read. The window installs the real answer where it wires the button.
+    /// What a restart would interrupt — a workspace operation, or a running answer. The arm and the decision
+    /// live in the service both restart buttons press (see <see cref="UpdateService.RestartArmed"/>), so this
+    /// is a forwarding view of <see cref="UpdateService.RestartInterruptsWork"/> rather than a second answer.
+    /// A probe rather than an inline read because the armed second tap is a rule worth asserting on its own,
+    /// and parking a live stream behind it to reach one branch is not a fixture anyone could read. The window
+    /// installs the real answer where it wires the button.
     /// </summary>
-    internal Func<bool> RestartInterruptsWork { get; set; } = () => false;
+    internal Func<bool> RestartInterruptsWork
+    {
+        get => UpdateService.Instance.RestartInterruptsWork;
+        set => UpdateService.Instance.RestartInterruptsWork = value;
+    }
 
     /// <summary>Set once the user has answered "quit anyway" to running transfers, so the re-issued
     /// <see cref="Window.Close"/> is not met by the same question.</summary>
@@ -1293,17 +1274,15 @@ public partial class MainWindow : Window
     internal void OpenTaskPopupForCheck() => ToggleTaskPopup();
     internal void CloseTaskPopupForCheck() => TaskPopup.IsOpen = false;
 
-    /// <summary>The update button's armed state (the second tap of the restart). Setting it repaints, so a
-    /// check reads what the user would see rather than what the field happens to hold. A test reaches the
-    /// busy half through <see cref="RestartInterruptsWork"/>, not through this.</summary>
+    /// <summary>The update button's armed state (the second tap of the restart), read and written through the
+    /// service that owns it: the settings card's button presses the same gate, so a check that read a field
+    /// here would be reading half of the state. Setting it repaints, so a check reads what the user would see
+    /// rather than what a field happens to hold. A test reaches the busy half through
+    /// <see cref="RestartInterruptsWork"/>, not through this.</summary>
     internal bool RestartArmedForCheck
     {
-        get => _restartArmed;
-        set
-        {
-            _restartArmed = value;
-            SyncUpdateAction();
-        }
+        get => UpdateService.Instance.RestartArmed;
+        set => UpdateService.Instance.RestartArmed = value;
     }
 
     /// <summary>Presses the slot the way the user does, so a check walks the same routing.</summary>
@@ -1375,6 +1354,12 @@ public partial class MainWindow : Window
     internal void ClickUpdateActionForCheck() => UpdateActionButton.RaiseEvent(
         new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
 
+    /// <summary>The restart pill's corner radius, and the gear's beside it. Two readings rather than one
+    /// constant so the assertion can be the relation the design actually wants — the pill is rounded like the
+    /// control it stands next to, not like a value written down here (see Button.update-action.pill).</summary>
+    internal double UpdateActionRadiusForCheck => UpdateActionButton.CornerRadius.TopLeft;
+
+    internal double SettingsRadiusForCheck => SettingsButton.CornerRadius.TopLeft;
 
     /// <summary>Presses the strip's own button, so a check drives the wiring rather than the shell method the
     /// button happens to end up calling.</summary>

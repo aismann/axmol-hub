@@ -181,11 +181,13 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
     <!-- Ready: the pill. One word-cluster at a fixed 28 height so the row's other two controls, which are
-         31-32 tall, never jump when the state changes under them. -->
+         31-32 tall, never jump when the state changes under them. Its corners are the gear's (6), not half its
+         height: the two sit in the same bottom row a few pixels apart, and a fully rounded cap beside a 6px
+         plate reads as a control of another kind rather than as the one to press. -->
     <Style Selector="Button.update-action.pill">
       <Setter Property="Height" Value="28" />
       <Setter Property="MinWidth" Value="28" />
-      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="CornerRadius" Value="6" />
       <Setter Property="Padding" Value="11,0" />
     </Style>
     <Style Selector="Button.update-action Path.icon">
@@ -701,8 +703,11 @@
                        sidebar's own chrome colour is what keeps the dot legible where it overlaps the
                        accent-filled button underneath it. It is declared **after** the button rather than
                        lifted with a ZIndex: child order is the only stacking rule here, so the z-order check
-                       in the shell suite and the pixels it cannot see agree about what decides the paint. -->
-                  <Ellipse x:Name="UpdateActionDot" Width="8" Height="8"
+                       in the shell suite and the pixels it cannot see agree about what decides the paint.
+                       10px against the session row's 6: the same red, a size up, because this one sits on a
+                       32px accent plate in the corner rather than in a row's own status column — the -3
+                       margin is what keeps the overhang a corner press rather than a floating mark. -->
+                  <Ellipse x:Name="UpdateActionDot" Width="10" Height="10"
                            Fill="{DynamicResource Hub.AlertDot}"
                            Stroke="{DynamicResource Hub.SurfaceChrome}" StrokeThickness="1.5"
                            HorizontalAlignment="Right" VerticalAlignment="Top"
