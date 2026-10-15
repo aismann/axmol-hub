@@ -3575,6 +3575,45 @@ public sealed class ChatWorkspace : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// The git write verbs the whole app has been told to stop asking about — the other half of what
+    /// <see cref="ChatTools.RiskOf"/> consults, and the list the settings page shows beside the tools.
+    /// </summary>
+    public IReadOnlyList<string> TrustedCommands => PreferencesProvider?.Invoke()?.TrustedCommands ?? [];
+
+    /// <summary>
+    /// Grants one command verb for every session, from the card's verb button or the settings page. App-level with
+    /// no per-session copy on purpose: the tool list has one because a grant there answers a whole batch of calls at
+    /// once, while this one names a single git verb, and a second list would only be a second thing to keep in step.
+    /// </summary>
+    public bool TrustCommand(string key)
+    {
+        var preferences = PreferencesProvider?.Invoke();
+        if (preferences is null || !CommandTrust.Add(preferences.TrustedCommands, key)) return false;
+        PersistPreferences(preferences);
+        NotifyAppSettingsChanged();
+        return true;
+    }
+
+    public bool RevokeTrustedCommand(string key)
+    {
+        var preferences = PreferencesProvider?.Invoke();
+        if (preferences is null || !CommandTrust.Remove(preferences.TrustedCommands, key)) return false;
+        PersistPreferences(preferences);
+        NotifyAppSettingsChanged();
+        return true;
+    }
+
+    public bool RevokeAllTrustedCommands()
+    {
+        var preferences = PreferencesProvider?.Invoke();
+        if (preferences is null || preferences.TrustedCommands.Count == 0) return false;
+        preferences.TrustedCommands.Clear();
+        PersistPreferences(preferences);
+        NotifyAppSettingsChanged();
+        return true;
+    }
+
     private void PersistPreferences(HubPreferences preferences)
     {
         // Written through the shell's store rather than a copy this class keeps: the settings file has one owner,
@@ -3671,7 +3710,18 @@ public sealed class ChatWorkspace : IDisposable
     public ToolRisk RiskFor(string conversationId, string name, string? argumentsJson)
     {
         var scope = ScopeFor(conversationId);
-        return ChatTools.RiskOf(name, argumentsJson, scope.Workspace, ProjectPaths(scope));
+        return ChatTools.RiskOf(name, argumentsJson, scope.Workspace, ProjectPaths(scope), TrustedCommands);
+    }
+
+    /// <summary>
+    /// The single git verb this call's card may offer to stop asking about, or null. The card and the gate ask this
+    /// one question — <see cref="ChatTools.TrustCandidateVerb"/> — so a button can never be drawn for a grant the gate
+    /// would then ignore, and the settings list can never gain an entry nothing honours.
+    /// </summary>
+    public string? CommandVerbForGrant(string conversationId, string name, string? argumentsJson)
+    {
+        var scope = ScopeFor(conversationId);
+        return ChatTools.TrustCandidateVerb(name, argumentsJson, scope.Workspace, TrustedCommands);
     }
 
     /// <summary>The directories a <c>set_workspace</c> can point at that somebody already agreed to: Hub's own
@@ -3805,7 +3855,7 @@ public sealed class ChatWorkspace : IDisposable
     /// the audit line and the card, and a verdict computed twice is a verdict that can disagree with itself.</summary>
     private readonly record struct CallVerdict(
         ChatPipeline.ToolCallInfo Call, ToolRisk Risk, bool Asks, bool Malformed, bool Granted,
-        bool SessionGrant, bool Parks);
+        bool SessionGrant, bool VerbGrant, bool Parks);
 
     /// <summary>
     /// Asked before every tool call, and asked for every call of one model response before any of them runs. A read
@@ -3845,16 +3895,24 @@ public sealed class ChatWorkspace : IDisposable
             // one file write, and nobody ever said "you may delete what I built whenever you like" either.
             CallVerdict Judge(ChatPipeline.ToolCallInfo member)
             {
-                var risk = ChatTools.RiskOf(member.Name, member.ArgumentsJson, scope.Workspace, projects);
+                var risk = ChatTools.RiskOf(member.Name, member.ArgumentsJson, scope.Workspace, projects,
+                    TrustedCommands);
                 var asks = risk == ToolRisk.AskUser;
                 var sessionGrant = ToolTrust.Contains(conversation.AutoApprovedTools, member.Name);
-                var granted = ToolApprovalPolicy.IsGrantable(risk)
-                              && (sessionGrant || ToolTrust.Contains(TrustedTools, member.Name));
+                // A granted command verb is the second way this call is covered, and it covers the way a tool grant
+                // does — everywhere. The card says "以后都不问 git push", so ask mode asks about it no more than
+                // 自动审批 does, and the audit line names the grant as the reason rather than the mode. It is
+                // deliberately not a tier of its own: the tiers are about what a call can reach, and this is one verb
+                // the person answered for. It cannot walk past the ladder's first two rungs either, because those
+                // refuse a call before any verb is consulted — a missing sandbox root and a cache break are not verbs.
+                var verbGrant = ChatTools.GrantedCommandVerb(member.Name, member.ArgumentsJson, TrustedCommands);
+                var granted = verbGrant || (ToolApprovalPolicy.IsGrantable(risk)
+                              && (sessionGrant || ToolTrust.Contains(TrustedTools, member.Name)));
                 // Nothing to show, so nothing to wait on. Letting it through hands the call to the tool's own body,
                 // which answers with the sentence about what the model got wrong — the alternative is a card that
                 // renders an empty question and a run parked on it forever.
                 var malformed = asks && !AskUserQuestion.TryParse(member.ArgumentsJson, out _, out _, out _);
-                return new CallVerdict(member, risk, asks, malformed, granted, sessionGrant,
+                return new CallVerdict(member, risk, asks, malformed, granted, sessionGrant, verbGrant,
                     !granted && !malformed && ToolApprovalPolicy.RequiresApproval(mode, risk));
             }
 
@@ -3866,7 +3924,7 @@ public sealed class ChatWorkspace : IDisposable
                 // card was meant to answer.
                 Audit(run.ConversationId,
                     $"Tool gate: {(verdict.Malformed ? "refused-malformed-question"
-                        : VerdictFor(verdict.Parks, verdict.Granted, verdict.SessionGrant))} {verdict.Call.Name}"
+                        : VerdictFor(verdict.Parks, verdict.Granted, verdict.SessionGrant, verdict.VerbGrant))} {verdict.Call.Name}"
                     + $" · {mode} · {verdict.Risk} · {scope.Workspace.WorkspaceRoot ?? "(no workspace)"}");
             }
 
@@ -3943,8 +4001,9 @@ public sealed class ChatWorkspace : IDisposable
     /// inlined because the line is the only place a person can see that a call went through on a <i>grant</i>
     /// rather than on the mode — the difference between "auto-approval allows this" and "I once clicked a
     /// button", and the second one is the one that surprises somebody when they change the mode back.</summary>
-    private static string VerdictFor(bool parks, bool granted, bool sessionGrant)
+    private static string VerdictFor(bool parks, bool granted, bool sessionGrant, bool verbGrant)
         => parks ? "asked"
+            : verbGrant ? "allowed-by-command-verb-grant"
             : granted ? sessionGrant ? "allowed-by-session-grant" : "allowed-by-app-grant"
             : "allowed-by-mode";
 
@@ -4013,7 +4072,8 @@ public sealed class ChatWorkspace : IDisposable
     /// not be answered by more talking, and <see cref="Regenerate"/> is how a wrap-up gets asked for.
     /// </summary>
     public bool TryResolveApproval(
-        string conversationId, string callId, bool approved, bool alwaysAllow, out string? refusalKey)
+        string conversationId, string callId, bool approved, bool alwaysAllow, out string? refusalKey,
+        bool alwaysAllowVerb = false)
     {
         refusalKey = null;
         var conversation = _sessions.Peek(conversationId) ?? _sessions.Load(conversationId);
@@ -4066,6 +4126,14 @@ public sealed class ChatWorkspace : IDisposable
         // trusted from the caller: a tier that reaches past the sandbox ignores every grant, so remembering its
         // name would put a line on the settings page that buys nothing.
         var grantable = IsGrantable(conversationId, toolName, conversation.Messages[index].ToolArguments);
+        // The third answer, decided the same way and in the same place as the second one: the card only draws the
+        // verb button where TrustCandidateVerb says one verb would settle this call, and asking again here keeps a
+        // caller from turning that click into a grant the gate would ignore. Null means the ground moved since the
+        // card was drawn — the click still approves the call, and no grant is written for it.
+        var verbKey = alwaysAllowVerb
+            ? ChatTools.TrustCandidateVerb(toolName, conversation.Messages[index].ToolArguments,
+                ScopeFor(conversationId).Workspace, TrustedCommands)
+            : null;
         _sessions.TryUpdate(conversationId, opened =>
         {
             foreach (var owed in opened.UnansweredCallsOfBatch(batchId))
@@ -4091,7 +4159,10 @@ public sealed class ChatWorkspace : IDisposable
         // Outside the session gate: the app-wide half is a different file, with a different owner, and the registry
         // lock must not be held while the settings store is written.
         if (alwaysAllow && grantable) TrustTool(toolName);
-        AuditApproval(conversationId, toolName, alwaysAllow ? "always allowed" : "allowed");
+        // The verb grant is app-level only: the session list above is the tool answer's, and a second per-session
+        // list for verbs would be a second place for the two to disagree.
+        if (verbKey is not null) TrustCommand(verbKey);
+        AuditApproval(conversationId, verbKey ?? toolName, alwaysAllow ? "always allowed" : "allowed");
         Changed?.Invoke();
         _ = PumpApprovedBatchAsync(run, batchId);
         return true;
@@ -4266,7 +4337,7 @@ public sealed class ChatWorkspace : IDisposable
     {
         var scope = ScopeFor(conversationId);
         return ToolApprovalPolicy.IsGrantable(
-            ChatTools.RiskOf(toolName, argumentsJson, scope.Workspace, ProjectPaths(scope)));
+            ChatTools.RiskOf(toolName, argumentsJson, scope.Workspace, ProjectPaths(scope), TrustedCommands));
     }
 
     /// <summary>Runs what one answered decision owes: every still-unanswered call of the response the person
@@ -5152,7 +5223,7 @@ public sealed class ChatWorkspace : IDisposable
             // and recomputing it here keeps the pipeline from having to learn what any tool does.
             concurrencySafe: info => ToolConcurrency.IsSafe(info.Name,
                 ChatTools.RiskOf(info.Name, info.ArgumentsJson, request.Scope.Workspace,
-                    ProjectPaths(request.Scope))),
+                    ProjectPaths(request.Scope), TrustedCommands)),
             onToolStarted: async info =>
             {
                 // Ahead of the UI hop, not after it: the deadline measures the stream, so a message pump that

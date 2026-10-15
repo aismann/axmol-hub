@@ -2714,10 +2714,13 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>Hands one decision to the workspace. A refusal is spoken out loud rather than swallowed: the card
-    /// would otherwise sit there having done nothing, which reads as a broken button.</summary>
-    private void ResolveApproval(string conversationId, string callId, bool approved, bool alwaysAllow)
+    /// would otherwise sit there having done nothing, which reads as a broken button. <paramref name="alwaysAllowVerb"/>
+    /// is the third answer, the one that grants a single git verb instead of the whole tool.</summary>
+    private void ResolveApproval(string conversationId, string callId, bool approved, bool alwaysAllow,
+        bool alwaysAllowVerb = false)
     {
-        if (_chat.TryResolveApproval(conversationId, callId, approved, alwaysAllow, out var refusalKey)) return;
+        if (_chat.TryResolveApproval(conversationId, callId, approved, alwaysAllow, out var refusalKey,
+                alwaysAllowVerb)) return;
         AppendNotice(HubStrings.Get(refusalKey ?? "ChatApprovalGone"), danger: true);
     }
 

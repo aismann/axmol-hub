@@ -47,7 +47,7 @@ internal static class ChatTools
     /// have to agree by habit instead of by construction.
     /// </summary>
     public static ToolRisk RiskOf(string name, string? argumentsJson, WorkspaceToolScope scope,
-        IReadOnlyList<string>? projectPaths = null) => name switch
+        IReadOnlyList<string>? projectPaths = null, IReadOnlyList<string>? trustedCommands = null) => name switch
     {
         "get_projects" or "get_engines" or "get_toolchain_status" or "read_file" or "memory_read"
             or "list_sessions" or "read_session"
@@ -56,7 +56,7 @@ internal static class ChatTools
         "file_write" or "send_to_session" => ToolRisk.WorkspaceWrite,
         // Decided by one method rather than an inline ternary, because there are now two things that can make a
         // command cost more than the sandbox tier, and both have to be read from the same place the gate reads.
-        "run_command" => RunCommandRisk(scope, argumentsJson),
+        "run_command" => RunCommandRisk(scope, argumentsJson, trustedCommands),
         // Reading a page sends nothing the shell could not already send: a sandboxed run_command has been able to
         // reach the same address without a card since the auto tier was drawn, and a refusal that pushes the model
         // off the named, bounded, source-showing tool and onto that path is a worse guard, not a stricter one. So
@@ -123,14 +123,58 @@ internal static class ChatTools
     /// cache break (it removes what the tree was built from), and the destructive reading is the one that gets the
     /// card in every mode.</para>
     /// </summary>
-    private static ToolRisk RunCommandRisk(WorkspaceToolScope scope, string? argumentsJson)
+    /// <summary>
+    /// The command ladder, in the one order that matters. The sandbox test comes first, then the build classifier's
+    /// cache-break verdict, and only then the git write exemption — so <c>git clean -fdx</c> is a cache break even
+    /// with <c>git clean</c> granted, and no grant can walk a command past the first two rungs. The exemption itself
+    /// is <see cref="GitCommandGrades.CoveredByOneTable"/>: one table covers the whole line, never the union of the
+    /// built-in policy and the person's grants.
+    /// </summary>
+    private static ToolRisk RunCommandRisk(WorkspaceToolScope scope, string? argumentsJson,
+        IReadOnlyList<string>? trustedCommands)
     {
         if (WorkspacePaths.VerifyCommandRoot(scope.WorkspaceRoot, scope.Guards) != WorkspacePathVerdict.Allowed)
             return ToolRisk.SystemCommand;
         if (BuildCommandGrades.CommandOf(argumentsJson) == BuildGrade.CacheBreak) return ToolRisk.CacheBreak;
-        return GitCommandGrades.Elevates(GitCommandGrades.CommandOf(argumentsJson))
-            ? ToolRisk.SystemCommand
-            : ToolRisk.WorkspaceCommand;
+        return GitCommandGrades.CoveredByOneTable(argumentsJson, CommandTrust.VerbsOf(trustedCommands))
+            ? ToolRisk.WorkspaceCommand
+            : ToolRisk.SystemCommand;
+    }
+
+    /// <summary>
+    /// The single git write verb a card may offer to trust, or null when no one verb would change this call's
+    /// verdict. The card's third button and the gate read this one predicate, so a button can never be drawn for a
+    /// grant the gate would ignore: a compound line writing two verbs has no single key, a write reached through a
+    /// shell has no spelled key (<c>pwsh -c "git push"</c>), a verb this build cannot name has none either, and a
+    /// call that asks for another reason — no sandbox root, a cache break — is not helped by trusting a verb.
+    /// </summary>
+    public static string? TrustCandidateVerb(string name, string? argumentsJson, WorkspaceToolScope scope,
+        IReadOnlyList<string>? trustedCommands = null)
+    {
+        if (!string.Equals(name, "run_command", StringComparison.Ordinal)) return null;
+        var verbs = GitCommandGrades.WriteVerbsOf(argumentsJson);
+        if (verbs.Count != 1) return null;
+        var key = CommandTrust.KeyFor(verbs.First());
+        if (key.Length == 0) return null;
+        // Ask the same ladder twice: what the call is now, and what it would be with this one verb granted.
+        if (RiskOf(name, argumentsJson, scope, null, trustedCommands) != ToolRisk.SystemCommand) return null;
+        var granted = new List<string>(trustedCommands ?? []);
+        if (!CommandTrust.Add(granted, key)) return null;
+        return RiskOf(name, argumentsJson, scope, null, granted) == ToolRisk.WorkspaceCommand ? key : null;
+    }
+
+    /// <summary>Whether a granted command verb is the reason this call runs: the person's list, and not the built-in
+    /// policy, covers every write in the line. The gate reads it for one thing the tier cannot express — a grant
+    /// silences the call in every mode, the way a tool grant does, while the built-in policy only makes it a sandbox
+    /// command that 询问档 still asks about.</summary>
+    public static bool GrantedCommandVerb(string name, string? argumentsJson, IReadOnlyList<string>? trustedCommands)
+    {
+        // The line has to write something, or every command that is not git would count as granted: "no git write in
+        // it" is exactly the state AllWritesAllowed allows vacuously, and the gate reads a true here as "a person
+        // answered for this".
+        if (!string.Equals(name, "run_command", StringComparison.Ordinal)) return false;
+        if (GitCommandGrades.WriteVerbsOf(argumentsJson).Count == 0) return false;
+        return GitCommandGrades.AllWritesAllowed(argumentsJson, CommandTrust.VerbsOf(trustedCommands));
     }
 
     /// <summary>Finds a registered tool by name. The path that executes an <i>approved</i> call needs this,

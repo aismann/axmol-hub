@@ -724,6 +724,12 @@ public static class HubTexts
         ["ApprovalAllowAlwaysTip"] = ("记进「设置 → 工具权限」的信任清单，随时可以撤销；对越出工作目录的操作无效",
             "Remembered in Settings → Tool permission, where it can be revoked. Has no effect on anything that "
             + "reaches past the workspace."),
+        // The third answer on a git write card, and the narrower one: it grants a single verb rather than the whole
+        // run_command tool, so the tip has to say both what it does not cover and where it can be taken back.
+        ["ApprovalAllowAlwaysForVerbTip"] = ("只对这一个命令动词生效，记进「设置 → 工具权限」，随时可以撤销；同一个动词直接写在命令行里才算，包在 shell 里的调用和一次写多个动词的行仍要问",
+            "Applies to this one command verb only, remembered in Settings → Tool permission, and revocable there. "
+            + "Only counts where the line spells that verb itself: a write hidden inside a shell, or a line writing "
+            + "more than one verb, still asks."),
         // ── A command that went quiet while it is still running ──
         // The question Hub asks instead of killing the process on its own. Three answers because the three real
         // outcomes are different acts: wait, walk away, or stop it and try again. The tips are where the promises are
@@ -921,9 +927,10 @@ public static class HubTexts
         // Both hints name the deletion, not the build: the user ruled that reading an error, changing code and
         // building again is ordinary work, while throwing away what was already built is the one thing no mode speaks
         // for. A hint that said otherwise would be the layer that lies about the gate.
-        ["ToolApprovalAutoHint"] = ("工作目录里的写入和命令直接执行，构建也算；删除已构建的东西、抓屏、派生子会话、换工作目录仍要问",
-            "Writes and commands inside the workspace run on their own, builds included; clearing what was built, "
-            + "the screen, a child session and a new working directory still ask"),
+        ["ToolApprovalAutoHint"] = ("工作目录里的写入和命令直接执行，构建也算；git 写命令里 add 直接放行，其余动词看授权；删除已构建的东西、抓屏、派生子会话、换工作目录仍要问",
+            "Writes and commands inside the workspace run on their own, builds included; among git write commands "
+            + "add runs on its own and the rest follow what was granted; clearing what was built, the screen, a "
+            + "child session and a new working directory still ask"),
         ["ToolApprovalFull"] = ("完全访问", "Full access"),
         ["ToolApprovalFullHint"] = ("除了删除已构建的东西，什么都不再问，包括抓屏和这个版本没登记过的工具",
             "Nothing asks any more except clearing what was built, including the screen and any tool this build "
@@ -939,6 +946,14 @@ public static class HubTexts
         ["TrustedToolsNone"] = ("还没有信任过任何工具。", "Nothing is trusted yet."),
         ["RevokeTrustedTool"] = ("撤销", "Revoke"),
         ["RevokeAllTrustedTools"] = ("全部撤销", "Revoke all"),
+        // The other half of the same list: the git write verbs a card's verb button wrote. Its hint carries what a
+        // verb grant deliberately does not reach — a wrapper, or a line that writes two verbs.
+        ["TrustedCommandsTitle"] = ("以后都不问的命令动词", "Command verbs it stops asking about"),
+        ["TrustedCommandsHint"] = ("在审批卡上点过「以后都不问 git …」的动词，本机每个会话都不再问；只认直接写在命令行里的那个动词，包在 shell 里的调用和一次写多个动词的行仍要问。",
+            "Verbs clicked on an approval card stop asking in every session on this machine. Only the verb a line "
+            + "spells itself is covered: a write hidden inside a shell, or a line writing more than one verb, still "
+            + "asks."),
+        ["TrustedCommandsNone"] = ("还没有信任过任何命令动词。", "No command verb is trusted yet."),
         ["RunningSessionsFormat"] = ("{0} 个会话运行中", "{0} sessions running"),
         // The strip's repository slot. It speaks in two states only: something uncommitted, and a read that could
         // not answer. A clean tree, a directory that is not a repository and a directory nobody has read yet all

@@ -152,6 +152,7 @@ public partial class SettingsPage : UserControl
         // The revoke-all button is the one escape from a grant the user cannot find the card for any more — the
         // session that made it may be long archived, while the trust it wrote is still answering for every session.
         RevokeAllTrustedToolsButton.Click += (_, _) => RevokeAllTrusted();
+        RevokeAllTrustedCommandsButton.Click += (_, _) => RevokeAllTrustedCommands();
         UpdateChannelPicker.SelectionChanged += (_, _) => OnUpdateChannelChanged();
         CustomDownloadSourceBox.LostFocus += (_, _) => OnCustomDownloadSourceChanged();
         ChooseDataDirectoryButton.Click += async (_, _) => await ChooseDataDirectoryAsync();
@@ -305,8 +306,10 @@ public partial class SettingsPage : UserControl
             LocalizeDownloadSourceItems();
             LocalizeToolApprovalItems();
             // The trust list is rebuilt rather than re-bound, for the same reason the provider groups are: every
-            // row carries the tool name its revoke button has to write back.
+            // row carries the tool name its revoke button has to write back — and the verb list below it is drawn
+            // the same way, from the same signal.
             RebuildTrustedTools();
+            RebuildTrustedCommands();
             LocalizeUpdateChannelItems();
             SelectLanguage(HubStrings.Language);
             SelectTheme(_preferences.Theme);
@@ -643,6 +646,65 @@ public partial class SettingsPage : UserControl
         RebuildTrustedTools();
     }
 
+    /// <summary>
+    /// The command-verb list, drawn the way the tool list is drawn and for the same reason: each row carries its
+    /// own key for revocation, so what the page shows and what it takes back cannot drift apart. The key is the two
+    /// words the card showed ("git push"), which is what the settings file stores, so revoking here is exactly
+    /// undoing the card's third button.
+    /// </summary>
+    private void RebuildTrustedCommands()
+    {
+        TrustedCommandList.Children.Clear();
+        if (_chat is null) return;
+        var trusted = _chat.TrustedCommands;
+        if (trusted.Count == 0)
+        {
+            TrustedCommandList.Children.Add(new TextBlock
+            {
+                Text = HubStrings.Get("TrustedCommandsNone"),
+                Classes = { "muted" },
+                TextWrapping = TextWrapping.Wrap,
+                Tag = TrustedCommandRowTag.None,
+            });
+            RevokeAllTrustedCommandsButton.IsVisible = false;
+            return;
+        }
+
+        RevokeAllTrustedCommandsButton.IsVisible = true;
+        foreach (var key in trusted)
+        {
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Tag = TrustedCommandRowTag.Row };
+            row.Children.Add(new TextBlock
+            {
+                Text = key,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            var revoke = new Button
+            {
+                Classes = { "quiet" },
+                Content = HubStrings.Get("RevokeTrustedTool"),
+                Tag = key,
+            };
+            revoke.Click += (_, _) => RevokeTrustedCommand(key);
+            row.Children.Add(revoke);
+            Grid.SetColumn(revoke, 1);
+            TrustedCommandList.Children.Add(row);
+        }
+    }
+
+    private void RevokeTrustedCommand(string key)
+    {
+        if (!_chat.RevokeTrustedCommand(key)) return;
+        RebuildTrustedCommands();
+    }
+
+    private void RevokeAllTrustedCommands()
+    {
+        if (!_chat.RevokeAllTrustedCommands()) return;
+        RebuildTrustedCommands();
+    }
+
     /// <summary>The trust list as stored, for the assertion that a grant written from a card lands here.</summary>
     internal string[] TrustedToolsForCheck => (_chat?.TrustedTools ?? []).ToArray();
 
@@ -680,6 +742,43 @@ public partial class SettingsPage : UserControl
     {
         internal const string Row = "trusted-tool-row";
         internal const string None = "trusted-tools-none";
+    }
+
+    /// <summary>The verb list as stored, and the rows it drew — the assertion that a grant written from a card's
+    /// verb button lands here and can be taken back from here.</summary>
+    internal string[] TrustedCommandsForCheck => (_chat?.TrustedCommands ?? []).ToArray();
+
+    internal int TrustedCommandRowsShownForCheck
+        => TrustedCommandList.Children.OfType<Control>().Count(child => TrustedCommandRowTag.Row.Equals(child.Tag));
+
+    internal bool TrustedCommandsEmptyShownForCheck
+        => TrustedCommandList.Children.OfType<Control>().Any(child => TrustedCommandRowTag.None.Equals(child.Tag));
+
+    internal bool TrustCommandForCheck(string key)
+    {
+        var granted = _chat?.TrustCommand(key) == true;
+        if (granted) RebuildTrustedCommands();
+        return granted;
+    }
+
+    internal bool RevokeTrustedCommandForCheck(string key)
+    {
+        var revoked = _chat?.RevokeTrustedCommand(key) == true;
+        if (revoked) RebuildTrustedCommands();
+        return revoked;
+    }
+
+    internal bool RevokeAllTrustedCommandsForCheck()
+    {
+        var revoked = _chat?.RevokeAllTrustedCommands() == true;
+        if (revoked) RebuildTrustedCommands();
+        return revoked;
+    }
+
+    private static class TrustedCommandRowTag
+    {
+        internal const string Row = "trusted-command-row";
+        internal const string None = "trusted-commands-none";
     }
 
     private bool TrySaveDownloadSource(string source, string custom)

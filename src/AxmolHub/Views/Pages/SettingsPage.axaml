@@ -165,6 +165,16 @@
           <Button x:Name="RevokeAllTrustedToolsButton" Classes="quiet" HorizontalAlignment="Left"
                   Content="{DynamicResource RevokeAllTrustedTools}" />
 
+          <!-- The other half of that list: the git write verbs a card's verb button stopped asking about. A
+               separate list because the two grants are different sizes — one whole tool, one verb — and the
+               revocation has to say which is which. Built in code, as the list above is. -->
+          <TextBlock Text="{DynamicResource TrustedCommandsTitle}" FontSize="13" FontWeight="SemiBold"
+                     Margin="0,12,0,0" />
+          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource TrustedCommandsHint}" />
+          <StackPanel x:Name="TrustedCommandList" Spacing="4" />
+          <Button x:Name="RevokeAllTrustedCommandsButton" Classes="quiet" HorizontalAlignment="Left"
+                  Content="{DynamicResource RevokeAllTrustedTools}" />
+
           <!-- Sub-session spawning gets its own switch rather than folding into the three tiers above: the
                approval mode governs "should one action ask first", while this governs "may the assistant open
                another session and spend money on its own". Default off, and with it off the tool itself says

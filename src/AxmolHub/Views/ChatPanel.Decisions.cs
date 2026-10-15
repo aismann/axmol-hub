@@ -580,6 +580,28 @@ public partial class ChatPanel
             always.Click += (_, _) => ResolveApproval(conversationId, callId, approved: true, alwaysAllow: true);
             secondary.Children.Add(always);
         }
+        // The verb answer: the third way out of a git write card, and the one a tier cannot express. Drawn only where
+        // trusting that single verb would move this call out of the asking rung — the gate asks the same predicate
+        // (ChatTools.TrustCandidateVerb), so the button cannot promise a grant the gate would ignore: not on a
+        // compound line writing two verbs, not on a write that only exists inside a shell, not on a subcommand this
+        // build cannot name, and not on a card that is asking for a different reason (no sandbox root, a cache break).
+        var verbKey = group.Count == 1 && risk == ToolRisk.SystemCommand
+            ? _chat.CommandVerbForGrant(conversationId, turn.ToolName ?? "", turn.ToolArguments)
+            : null;
+        if (verbKey is not null)
+        {
+            var verb = new Button
+            {
+                Classes = { "approval-action", "approval-secondary" },
+                Content = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("ApprovalAllowAlwaysForTool"), verbKey),
+                Tag = "ApprovalAllowAlwaysForVerb",
+            };
+            ToolTip.SetTip(verb, HubStrings.Get("ApprovalAllowAlwaysForVerbTip"));
+            verb.Click += (_, _) => ResolveApproval(conversationId, callId, approved: true, alwaysAllow: false,
+                alwaysAllowVerb: true);
+            secondary.Children.Add(verb);
+        }
         footer.Children.Add(secondary);
 
         var primary = new StackPanel
