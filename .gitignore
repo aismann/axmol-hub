@@ -21,6 +21,8 @@ Thumbs.db
 
 .build
 
+build
+
 # 凭据与签名材料
 .env
 .env.*
