@@ -183,7 +183,13 @@ public static class ChatUndoStore
         if (WorkspaceTools.ReadAll(resolved.Full) is not { } current) return UndoVerdict.NotText;
 
         var expected = FileEdit.Apply(original, oldString, newString, replaceAll);
-        if (!expected.Changed || current != expected.Updated) return UndoVerdict.ChangedSince;
+        // Both sides folded to LF before comparing: an edit may have normalized a CRLF file, so replaying a
+        // record whose pre-image is CRLF produces LF while the disk still holds CRLF. The guard therefore
+        // proves "nothing but this write changed the LF text", not "nothing touched the bytes" — and the
+        // revert below still restores the pre-image's own bytes, newline style included.
+        if (!expected.Changed
+            || !string.Equals(TextEol.ToLf(current), TextEol.ToLf(expected.Updated), StringComparison.Ordinal))
+            return UndoVerdict.ChangedSince;
 
         try
         {

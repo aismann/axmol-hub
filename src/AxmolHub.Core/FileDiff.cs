@@ -92,7 +92,7 @@ public static class FileDiff
     public static string[] SplitLines(string text)
     {
         if (text.Length == 0) return [];
-        var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var lines = TextEol.ToLf(text).Split('\n');
         return lines[^1].Length == 0 ? lines[..^1] : lines;
     }
 

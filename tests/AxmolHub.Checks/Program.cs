@@ -3527,8 +3527,10 @@ if (args.Contains("--check-ai-workspace"))
     }
 
     // The anchored edit: every verdict is a different thing the model must do next, so each is asserted.
-    if (FileEdit.Apply(null, "", "hello\n", false) is not { Verdict: FileEditVerdict.Created, Updated: "hello\r\n" or "hello\n" })
-        throw new Exception("Creating a file with an empty anchor did not report Created.");
+    if (FileEdit.Apply(null, "", "hello\n", false) is not { Verdict: FileEditVerdict.Created, Updated: "hello\n" })
+        throw new Exception("Creating a file with an empty anchor did not report Created with LF endings.");
+    if (FileEdit.Apply(null, "", "a\r\nb\r\n", false) is not { Verdict: FileEditVerdict.Created, Updated: "a\nb\n" })
+        throw new Exception("Creating a file from a CRLF body kept the CRLF.");
     if (FileEdit.Apply(null, "anchor", "x", false).Verdict != FileEditVerdict.NotFound)
         throw new Exception("An anchor against a missing file was not NotFound.");
     if (FileEdit.Apply("existing", "", "x", false).Verdict != FileEditVerdict.AlreadyExists)
@@ -3542,14 +3544,27 @@ if (args.Contains("--check-ai-workspace"))
     if (FileEdit.Apply("a\nb\n", "b", "b", false).Verdict != FileEditVerdict.Unchanged)
         throw new Exception("An identical replacement was not Unchanged.");
 
-    // Models emit \n; the file is CRLF. The edit must land anyway and must not convert the rest of the file.
+    // Models emit \n; the file is CRLF. The edit must land, and what it writes must be LF end to end — the
+    // lines the edit never touched are rewritten too, because a file split across two newlines is a file where
+    // every later anchor has to guess.
     const string crlfFile = "int main() {\r\n    return 0;\r\n}\r\n";
     var crlfEdit = FileEdit.Apply(crlfFile, "    return 0;\n", "    return 1;\n", false);
-    if (crlfEdit.Verdict != FileEditVerdict.Applied || crlfEdit.Updated != "int main() {\r\n    return 1;\r\n}\r\n")
-        throw new Exception($"A CRLF file was not edited by an LF anchor ({crlfEdit.Verdict}: {crlfEdit.Updated.Replace("\r", "\\r")}).");
+    if (crlfEdit.Verdict != FileEditVerdict.Applied || crlfEdit.Updated != "int main() {\n    return 1;\n}\n")
+        throw new Exception($"A CRLF file was not edited into LF ({crlfEdit.Verdict}: {crlfEdit.Updated.Replace("\r", "\\r")}).");
+    if (crlfEdit.Updated.Contains('\r'))
+        throw new Exception("An edit left a stray \r outside the replaced span.");
+
+    // A refusal normalizes nothing, since the write tool refuses by handing back the text it was given and the
+    // caller writes no bytes: a no-op edit against a CRLF file must find that file still CRLF.
+    const string crlfBody = "a\r\nb\r\na\r\n";
+    if (FileEdit.Apply(crlfBody, "zzz", "y", false).Updated != crlfBody
+        || FileEdit.Apply(crlfBody, "a", "z", false).Updated != crlfBody
+        || FileEdit.Apply(crlfBody, "b", "b", false).Updated != crlfBody
+        || FileEdit.Apply(crlfBody, "", "y", false).Updated != crlfBody)
+        throw new Exception("A refused or no-op edit rewrote the CRLF file it was not allowed to change.");
     if (!FileEdit.ResultFor(FileEditVerdict.Ambiguous, 3, "src/a.cpp").Contains("3 places"))
         throw new Exception("The ambiguous refusal does not say how many places matched.");
-    Console.WriteLine("PASS: an anchored edit lands once, loudly, and never rewrites the file's line endings.");
+    Console.WriteLine("PASS: an anchored edit lands once, loudly, and what it writes is LF end to end.");
 
     // Shell choice is per host and must be assertable on any host, so it is a pure function of two values.
     var windows = CommandShells.For("windows", pwshAvailable: false);
@@ -3891,6 +3906,22 @@ if (args.Contains("--check-ai-tools"))
     if (File.ReadAllText(Path.Combine(workspace, "src", "twice.txt")) != "dup\ndup\n")
         throw new Exception("A refused edit changed the file anyway.");
 
+    // A CRLF file comes back LF — the whole file, not only the replaced span, since a file holding both newline
+    // styles makes every later anchor guess. A no-op stays a refusal to touch bytes, so the same fixture asked
+    // to change nothing must still be the CRLF it started as.
+    var crlfTarget = Path.Combine(workspace, "src", "crlf.cpp");
+    File.WriteAllText(crlfTarget, "int main() {\r\n    return 0;\r\n}\r\n");
+    if (!tools.FileWrite("src/crlf.cpp", "    return 0;", "    return 2;").Contains("Edited", StringComparison.Ordinal))
+        throw new Exception("An LF anchor did not edit a CRLF file through file_write.");
+    if (File.ReadAllText(crlfTarget).Contains('\r'))
+        throw new Exception("file_write edited a CRLF file and left the rest of it CRLF.");
+    var crlfNoop = Path.Combine(workspace, "src", "noop.cpp");
+    File.WriteAllText(crlfNoop, "a\r\nb\r\n");
+    var noopBefore = File.ReadAllBytes(crlfNoop);
+    if (!tools.FileWrite("src/noop.cpp", "b", "b").Contains("identical", StringComparison.Ordinal)
+        || !File.ReadAllBytes(crlfNoop).SequenceEqual(noopBefore))
+        throw new Exception("A no-op edit normalized a CRLF file it was only supposed to refuse.");
+
     // ── the line tally a write hands back: only for a change that landed, and never capped ──
     // The transcript cannot answer "how far did this move the file" by itself. The only diff a session keeps is the
     // one frozen for a card — which does not exist for a write the mode allowed without asking, and stops at 60
@@ -4063,6 +4094,26 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception("A refused revert still touched the file.");
     if (!File.Exists(Path.Combine(undoRoot, secondCopy)))
         throw new Exception("A revert that refused spent the copy, so the undo is gone with the hand edit kept.");
+
+    // A pre-image whose file was CRLF replays to LF, because that is what a write produces now. So when the disk
+    // holds the assistant's edit in CRLF again — a checkout that re-materialized the newline, or a record made
+    // before this policy — the replay and the file differ in nothing but newline, and that is not "somebody else
+    // changed this file". The bytes handed back are the pre-image's own CRLF, not a normalization of them.
+    var eolTarget = Path.Combine(workspace, "src", "eol.cpp");
+    const string eolBefore = "int main() {\r\n    return 0;\r\n}\r\n";
+    const string eolAfterCrlf = "int main() {\r\n    return 3;\r\n}\r\n";
+    File.WriteAllText(eolTarget, eolBefore);
+    var eolCopy = ChatUndoStore.NameFromResult(tools.FileWrite("src/eol.cpp", "    return 0;", "    return 3;"))
+        ?? throw new Exception("The newline-style undo write kept no pre-image.");
+    if (File.ReadAllText(eolTarget) != "int main() {\n    return 3;\n}\n")
+        throw new Exception("file_write left the edited CRLF file in a newline other than LF.");
+    File.WriteAllText(eolTarget, eolAfterCrlf);
+    var eolArgs = """{"path":"src/eol.cpp","old_string":"    return 0;","new_string":"    return 3;"}""";
+    var eolRevert = ChatUndoStore.Restore(dataRoot, "conversation-1", eolCopy, workspace, guards, eolArgs, out _);
+    if (eolRevert != UndoVerdict.Reverted)
+        throw new Exception($"A revert refused over a file whose newline style, not its text, had moved ({eolRevert}).");
+    if (File.ReadAllText(eolTarget) != eolBefore)
+        throw new Exception("A revert restored LF bytes where its own pre-image was CRLF.");
 
     File.WriteAllBytes(Path.Combine(workspace, "src", "main.cpp"), [0x89, 0x50, 0x4E, 0x47, 0xFF, 0xFE, 0xFF]);
     if (ChatUndoStore.Restore(dataRoot, "conversation-1", secondCopy, workspace, guards, writeArgs, out _)

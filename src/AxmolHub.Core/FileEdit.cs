@@ -33,39 +33,31 @@ public static class FileEdit
         if (original is null)
         {
             return oldString.Length == 0
-                ? new FileEditResult(FileEditVerdict.Created, ToNewLines(newString, Environment.NewLine), 0)
+                ? new FileEditResult(FileEditVerdict.Created, TextEol.ToLf(newString), 0)
                 : new FileEditResult(FileEditVerdict.NotFound, "", 0);
         }
 
         if (oldString.Length == 0) return new FileEditResult(FileEditVerdict.AlreadyExists, original, 0);
 
-        var dominant = DominantNewLine(original);
-        // Models emit \n almost always; the file may be CRLF. The anchor is tried verbatim first so an exact
-        // match never costs a conversion, then re-tried in the file's own newline so the edit still lands.
-        var anchor = original.Contains(oldString, StringComparison.Ordinal) ? oldString : ToNewLines(oldString, dominant);
-        var matches = CountMatches(original, anchor);
+        // The whole file is rewritten to LF, not only the edited span: an edit that leaves the untouched lines
+        // in the file's old newline splits it across two conventions, and the stray \r then travels into every
+        // later anchor. The failures below still hand back <paramref name="original"/> untouched, because the
+        // write tool refuses by returning the text it was given.
+        var baseline = TextEol.ToLf(original);
+        var anchor = TextEol.ToLf(oldString);
+        var matches = CountMatches(baseline, anchor);
         if (matches == 0) return new FileEditResult(FileEditVerdict.NotFound, original, 0);
         if (matches > 1 && !replaceAll) return new FileEditResult(FileEditVerdict.Ambiguous, original, matches);
 
-        var replacement = ToNewLines(newString, dominant);
+        var replacement = TextEol.ToLf(newString);
         if (string.Equals(anchor, replacement, StringComparison.Ordinal))
             return new FileEditResult(FileEditVerdict.Unchanged, original, matches);
 
         var updated = replaceAll
-            ? original.Replace(anchor, replacement, StringComparison.Ordinal)
-            : ReplaceFirst(original, anchor, replacement);
+            ? baseline.Replace(anchor, replacement, StringComparison.Ordinal)
+            : ReplaceFirst(baseline, anchor, replacement);
         return new FileEditResult(FileEditVerdict.Applied, updated, replaceAll ? matches : 1);
     }
-
-    public static string DominantNewLine(string text)
-    {
-        var crlf = CountMatches(text, "\r\n");
-        var lf = CountMatches(text, "\n");
-        return crlf * 2 >= lf ? "\r\n" : "\n";
-    }
-
-    private static string ToNewLines(string text, string newLine)
-        => text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\n", newLine, StringComparison.Ordinal);
 
     private static int CountMatches(string text, string value)
     {

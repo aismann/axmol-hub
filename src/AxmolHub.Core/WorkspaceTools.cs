@@ -1289,8 +1289,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
 
     private static List<string> SplitLines(string text)
     {
-        var normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
-        var lines = normalized.Split('\n').ToList();
+        var lines = TextEol.ToLf(text).Split('\n').ToList();
         // A trailing newline ends the last line rather than starting an empty one; counting it would make every
         // "of N lines" header one too many.
         if (lines.Count > 0 && lines[^1].Length == 0) lines.RemoveAt(lines.Count - 1);
