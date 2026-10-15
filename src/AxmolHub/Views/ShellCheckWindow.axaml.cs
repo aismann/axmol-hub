@@ -518,6 +518,12 @@ public partial class ShellCheckWindow : Window
             "聊天消息中的 fenced code block 交给已完成布局的 Markdown 控件渲染");
         Check(panel.HasScrollableMarkdownTable(),
             "Markdown 表格超出聊天栏时使用独立横向滚动区域，列表仍留在原有自动换行布局");
+        // The indent, read off the grid the renderer actually laid out rather than off the style: a rule that
+        // loses to GithubLike applies nothing at all, and this file's own header says that failure is silent.
+        var listIndent = panel.MarkdownListIndentForCheck();
+        Check(listIndent == 20,
+            "Markdown 列表缩进用的是 Hub 覆盖层的 20，不是主题那份 40——嵌套一层就在窄的计划栏里吃掉三分之一"
+            + "（实际 " + listIndent.ToString(CultureInfo.InvariantCulture) + "）");
         Check(panel.HasThemedMarkdownTable(),
             "Markdown 表格使用 Hub 主题配色（表头/隔行底色与网格线），不是内置主题的浅色白底");
         Check(panel.HasThemedMarkdownDocument(),
@@ -3653,6 +3659,41 @@ public partial class ShellCheckWindow : Window
             Check(codeFont.Contains("Cascadia Mono", StringComparison.Ordinal)
                   && codeFont.Contains("Noto Sans Mono CJK SC", StringComparison.Ordinal),
                 "代码块用的是应用那一份等宽字体栈，而不是主题里另写的一份（实际 " + codeFont + "）");
+
+            // The line pitch, which no size pair can speak for it: a CJK face fills its em box, so leaving the
+            // leading to the font puts about two pixels between two rows of Chinese and the paragraph reads as one
+            // grey block — at any size the checks above would happily accept.
+            var plainPitch = panel.PlainTurnLineHeightForCheck;
+            var markdownPitch = panel.MarkdownBodyLineHeightForCheck;
+            Check(plainPitch >= plain * 1.5 && markdownPitch >= markdown * 1.5,
+                "正文行距不低于字号的 1.5 倍，中文两行之间留得出白（纯文本 "
+                + plainPitch.ToString(CultureInfo.InvariantCulture) + "/" + plain.ToString(CultureInfo.InvariantCulture)
+                + "，markdown " + markdownPitch.ToString(CultureInfo.InvariantCulture) + "/"
+                + markdown.ToString(CultureInfo.InvariantCulture) + "）");
+
+            // The streaming bubble is built on a path of its own, and while it wore no class of its own it answered
+            // at the theme's default size — so an answer changed face in the moment it was written to the
+            // transcript. That is the one boundary the pair above exists to guard and neither of them can see,
+            // because the persisted look is only reached once the live row is already gone. Parked after the first
+            // chunk so the bubble is genuinely on screen while it is read.
+            var park = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var arrived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            chat.ClientOverride = (_, _) => new ScriptedChatClient(
+                ["流式期间停在屏幕上的第一段中文，长度要够把这一行撑到换行，才量得出行距。",
+                 "\n\n第二段收尾，好让这一轮真的答完。"], null, park.Task, arrived);
+            panel.SetInputForCheck("再来一段长的");
+            await panel.SendComposerForCheck();
+            await WaitForSignalAsync(arrived.Task);
+            Dispatcher.UIThread.RunJobs();
+            var liveSize = panel.LivePreviewFontSizeForCheck;
+            var livePitch = panel.LivePreviewLineHeightForCheck;
+            park.SetResult(true);
+            await panel.WaitForRunToFinishForCheck();
+            Check(liveSize == markdown && livePitch == markdownPitch,
+                "流式气泡与落盘后的正文同字号同线距，答案不在写进记录的那一刻换个字（流式 "
+                + liveSize.ToString(CultureInfo.InvariantCulture) + "/" + livePitch.ToString(CultureInfo.InvariantCulture)
+                + "，落盘 " + markdown.ToString(CultureInfo.InvariantCulture) + "/"
+                + markdownPitch.ToString(CultureInfo.InvariantCulture) + "）");
         }
         finally
         {

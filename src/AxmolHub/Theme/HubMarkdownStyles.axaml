@@ -72,6 +72,13 @@
     <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
   </Style>
 
+  <!-- Lists. GithubLike indents every list grid by 40 and a nested list pays it again, which in the narrow
+       inspector column put two levels past a third of the width before any prose started. Half still reads
+       as an indent; the marker column is what carries the level, not this margin. -->
+  <Style Selector=".Markdown_Avalonia_MarkdownViewer Grid.List">
+    <Setter Property="Margin" Value="20,0,0,0" />
+  </Style>
+
   <Style Selector=".Markdown_Avalonia_MarkdownViewer Border.CodeBlock">
     <Setter Property="Background" Value="{DynamicResource Hub.SurfaceSunken}" />
     <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderSubtle}" />

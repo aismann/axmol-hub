@@ -3485,7 +3485,9 @@ public partial class ChatPanel : UserControl
         }
 
         CloseLive();
-        var preview = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        // The same class the persisted turn wears: an answer must not change size, ink or line pitch in the
+        // moment it is written to the transcript. Inline setters here would drift from the style by surprise.
+        var preview = new TextBlock { Classes = { "turn-text" } };
         var body = new StackPanel { Spacing = 8 };
         body.Children.Add(preview);
         var activity = new StackPanel
@@ -4133,6 +4135,14 @@ public partial class ChatPanel : UserControl
             .Any(viewer => viewer.Markdown?.Contains(code, StringComparison.Ordinal) == true
                            && viewer.Bounds.Width > 0
                            && viewer.Bounds.Height > 0);
+
+    /// <summary>The left indent a rendered list actually gets, or -1 when no document on screen held one.
+    /// GithubLike stamps 40 onto every list grid and a nested list pays it again, so this is the only reading
+    /// that tells the winning layer's answer from a style setter that silently did nothing.</summary>
+    internal double MarkdownListIndentForCheck()
+        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+            .SelectMany(viewer => viewer.GetVisualDescendants().OfType<Grid>())
+            .FirstOrDefault(grid => grid.Classes.Contains("List"))?.Margin.Left ?? -1;
 
     /// <summary>Whether any Markdown viewer on screen was handed this text. Read as the negative it is: a leaked
     /// tool call has to reach the reader as plain text, and the one proof of that is that no viewer ever took
@@ -5415,6 +5425,12 @@ public partial class ChatPanel : UserControl
     internal string LivePreviewTextForCheck => _live?.Preview.Text ?? "";
     internal bool LiveRepaintDeferredForCheck => _liveRepaintPending;
 
+    /// <summary>What the streaming bubble actually paints with, read off the control rather than from the style.
+    /// The persisted turn is a different control built later, so a pair of these two is the only way to see the
+    /// answer change face as it lands. Zero means there was no live bubble to read.</summary>
+    internal double LivePreviewFontSizeForCheck => _live?.Preview.FontSize ?? 0;
+    internal double LivePreviewLineHeightForCheck => _live?.Preview.LineHeight ?? 0;
+
     /// <summary>Presses the round button the way a click would, so stopping goes through the view instead of
     /// cancelling a run behind the panel's back.</summary>
     internal void ClickSendButtonForCheck() => SendButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -5499,31 +5515,35 @@ public partial class ChatPanel : UserControl
     /// <summary>The size a turn's plain words are drawn at, and the size a Markdown body is drawn at. Only the
     /// last forty turns go through the Markdown layer, so the two have to agree or a message changes font as it
     /// scrolls away.</summary>
-    internal double PlainTurnFontSizeForCheck
+    /// <summary>The turn the plain path paints — the first body block, whether or not it became Markdown. The
+    /// size, line pitch and ink checks below all read it, so the lookup lives once.</summary>
+    private TextBlock? PlainTurnForCheck()
         => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
-            .FirstOrDefault(block => block.Classes.Contains("turn-text"))?.FontSize ?? 0;
+            .FirstOrDefault(block => block.Classes.Contains("turn-text"));
 
-    internal double MarkdownBodyFontSizeForCheck
+    /// <summary>The paragraph a rendered answer paints its prose with: the body block, not a heading.</summary>
+    private ColorTextBlock.Avalonia.CTextBlock? MarkdownBodyForCheck()
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>().FirstOrDefault() is { } viewer
-           && viewer.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>()
-               .FirstOrDefault(text => !text.Classes.Any(name =>
-                   name.StartsWith("Heading", StringComparison.Ordinal))) is { } body
-            ? body.FontSize
-            : 0;
+            ? viewer.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>()
+                .FirstOrDefault(text => !text.Classes.Any(name =>
+                    name.StartsWith("Heading", StringComparison.Ordinal)))
+            : null;
+
+    internal double PlainTurnFontSizeForCheck => PlainTurnForCheck()?.FontSize ?? 0;
+
+    internal double MarkdownBodyFontSizeForCheck => MarkdownBodyForCheck()?.FontSize ?? 0;
+
+    /// <summary>The line pitch each path arranges its lines at. A class can set the size and still leave the
+    /// leading to the font, which is exactly how Chinese prose ends up touching across two rows.</summary>
+    internal double PlainTurnLineHeightForCheck => PlainTurnForCheck()?.LineHeight ?? 0;
+
+    internal double MarkdownBodyLineHeightForCheck => MarkdownBodyForCheck()?.LineHeight ?? 0;
 
     /// <summary>The ink those two blocks paint with, read off the same elements and for the same reason as the
     /// size pair above: a message that scrolled out of the Markdown window must not change brightness either.</summary>
-    internal IBrush? PlainTurnForegroundForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
-            .FirstOrDefault(block => block.Classes.Contains("turn-text"))?.Foreground;
+    internal IBrush? PlainTurnForegroundForCheck => PlainTurnForCheck()?.Foreground;
 
-    internal IBrush? MarkdownBodyForegroundForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>().FirstOrDefault() is { } viewer
-           && viewer.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>()
-               .FirstOrDefault(text => !text.Classes.Any(name =>
-                   name.StartsWith("Heading", StringComparison.Ordinal))) is { } body
-            ? body.Foreground
-            : null;
+    internal IBrush? MarkdownBodyForegroundForCheck => MarkdownBodyForCheck()?.Foreground;
 
     /// <summary>The font a rendered code block actually draws with — empty when the reply had no code to look at.
     /// The fenced block becomes a text editor rather than a text block, so this is the element that answers the
