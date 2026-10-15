@@ -297,9 +297,9 @@ public partial class App : Application
             window.Opened += (_, _) => window.RunSystemAttentionDiagnostic();
 
         // Silent startup update check. Fire-and-forget: it must never block the window from coming
-        // up, and its only visible effect is the dot the shell raises on the Settings nav item (fed
-        // by UpdateService.Changed) — **no modal prompt**: an available update is a passive badge, and
-        // the actual check / download / apply is a deliberate action taken in the settings page.
+        // up, and its only visible effect is the sidebar's update button (fed by UpdateService.Changed)
+        // — **no modal prompt**: an available update is a passive badge, and the actual fetch / restart
+        // is a deliberate press on that button.
         // Automation / gallery / verification modes never phone home — a self-check binary checking
         // for updates would be a side effect nobody asked for and would fail on offline CI.
         if (!Options.IsAutomation)

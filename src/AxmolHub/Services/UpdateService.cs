@@ -17,17 +17,21 @@ namespace AxmolHub;
 /// own. Checking, downloading, and applying are all explicit calls into <see cref="UpdateManager"/>,
 /// and this type is the single place Hub makes them.
 ///
-/// There is deliberately **no modal update prompt**. An update is surfaced by the same thing that surfaces
-/// every other download: a row in <see cref="TaskQueue"/>, whose slot in the status strip counts it and
-/// whose popover carries the percentage. The settings page keeps what is not progress — the channel, the
-/// auto-download switch, and the version this would move to.
+/// There is deliberately **no modal update prompt**. An update's *progress* is surfaced by the same
+/// thing that surfaces every other download: a row in <see cref="TaskQueue"/>, whose slot in the status
+/// strip counts it and whose popover carries the percentage. Its *decisions* — fetch it, restart to
+/// install it — live on the sidebar's update button (see <c>MainWindow.UpdateActionStateFor</c>), which
+/// is the only control that offers them: a strip line and a rail button asking for the same press would
+/// be one fact told twice. The settings page keeps what is neither — the channel, the auto-download
+/// switch, and the version this would move to.
 ///
 /// Two drivers share this service: the silent startup check (<see cref="CheckAsync"/>) and the settings
 /// page's 「检查更新」 button (also <see cref="CheckAsync"/>). With <see cref="AutoDownload"/> on, finding an
-/// update is enough and the fetch starts by itself; with it off the strip's slot offers the download, which is
-/// the only way to ask for it. Either way the transfer ends in <see cref="DownloadState.Ready"/>: applying is
-/// never automatic, because it replaces the process, so it stays the explicit press
-/// (<see cref="ApplyAndRestart"/>) the slot offers — with a second tap when something is still running.
+/// update is enough and the fetch starts by itself; with it off — or after a cancel, which lands back in
+/// <see cref="DownloadState.None"/> — the sidebar button's press is <see cref="StartPendingDownload"/>,
+/// and it does not care which. Either way the transfer ends in <see cref="DownloadState.Ready"/>: applying is
+/// never automatic, because it replaces the process, so it stays that button's explicit press
+/// (<see cref="ApplyAndRestart"/>) — with a second tap when something is still running.
 ///
 /// Everything is deliberately fire-and-forget friendly: no call blocks <c>Main</c>, and failures are
 /// swallowed into a result so the UI can decide what to say. A broken update check must never take

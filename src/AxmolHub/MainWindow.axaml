@@ -14,8 +14,8 @@
       (⤢ lift the pane over the window, ▯ open or shut the column) / the three caption plates (drawn by
       MainWindow.TitleBar);
       left = collapsible sidebar (brand mark + "Axmol Hub" + version + four nav items + conversation list as a
-      child of the "AI 助手" item + a bottom block whose text part opens the settings/appearance popup menu
-      beside the unchanged gear shortcut), with a 5px drag grip on its right edge;
+      child of the "AI 助手" item + a bottom block whose text part opens the settings/appearance popup menu,
+      with the update's own button and the gear shortcut beside it), with a 5px drag grip on its right edge;
       right = content: page / 28px status strip / log body.
     The sidebar collapses to zero width; the ☰ button in the title bar is then the only way back.
 
@@ -119,7 +119,8 @@
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
     </Style>
 
-    <!-- The settings gear at the bottom of the sidebar (unchanged: a direct shortcut to the page). -->
+    <!-- The settings gear at the bottom of the sidebar: a direct shortcut that lifts the settings overlay.
+         It is not the update button beside it — that one appears only while there is an update to act on. -->
     <Style Selector="Button.gear">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
@@ -137,6 +138,67 @@
     </Style>
     <Style Selector="Button.gear Path.icon">
       <Setter Property="Fill" Value="{DynamicResource Hub.TextTertiary}" />
+    </Style>
+
+    <!-- The update's button in the bottom row: one control, three shapes, decided by class
+         (`icon` = found, `quiet` = downloading, `pill` = ready). The accent plate is the same accent every
+         other primary action wears (Button.send, the strip's old accent slot) — this is not a new colour,
+         it is the existing one given a permanent address. The pill exists because words are the only honest
+         shape for "this replaces the process"; the circle is enough while the press just fetches bytes.
+         The glyph is stroked, not filled: Hub.Icon.Send and Hub.Icon.Refresh are open paths, and a filled
+         open path in Avalonia paints nothing — a silent way for the button to arrive invisible. -->
+    <Style Selector="Button.update-action">
+      <Setter Property="Background" Value="{DynamicResource Hub.Accent}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="CornerRadius" Value="16" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextOnAccent}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <!-- Found and ready: the circle that a red dot has something to sit on. -->
+    <Style Selector="Button.update-action.icon">
+      <Setter Property="Width" Value="32" />
+      <Setter Property="Height" Value="32" />
+    </Style>
+    <Style Selector="Button.update-action:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.AccentBorder}" />
+    </Style>
+    <!-- Downloading: the number belongs to the strip's queue slot, so this state only says "something is
+         moving" and stays off the accent while it says it — an accent plate here would compete with the
+         ready-pill for the meaning "press me now". -->
+    <Style Selector="Button.update-action.quiet">
+      <Setter Property="Width" Value="32" />
+      <Setter Property="Height" Value="32" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+    </Style>
+    <Style Selector="Button.update-action.quiet:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
+    <!-- Ready: the pill. One word-cluster at a fixed 28 height so the row's other two controls, which are
+         31-32 tall, never jump when the state changes under them. -->
+    <Style Selector="Button.update-action.pill">
+      <Setter Property="Height" Value="28" />
+      <Setter Property="MinWidth" Value="28" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="Padding" Value="11,0" />
+    </Style>
+    <Style Selector="Button.update-action Path.icon">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextOnAccent}" />
+      <Setter Property="StrokeThickness" Value="1.8" />
+      <Setter Property="StrokeLineCap" Value="Round" />
+      <Setter Property="StrokeJoin" Value="Round" />
+    </Style>
+    <Style Selector="Button.update-action.quiet Path.icon">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextSecondary}" />
+    </Style>
+    <Style Selector="Button.update-action.quiet:pointerover Path.icon">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
 
     <!-- Ghost icon buttons: the status-strip log chevron and (with Button.titlebar's tighter plate) the two
@@ -213,22 +275,9 @@
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
     </Style>
 
-    <!-- The download slot when it is asking for a press rather than reporting one. It takes the accent plate
-         because what it offers is the app's own primary action; the queue's reading stays in the quiet strip
-         ink above. Declared after Button.strip:pointerover on purpose — Avalonia resolves the later rule, so
-         hovering an accent slot must not fall back to the transparent plate. -->
-    <Style Selector="Button.strip.accent">
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextOnAccent}" />
-      <Setter Property="Background" Value="{DynamicResource Hub.Accent}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.AccentBorder}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="5" />
-      <Setter Property="FontWeight" Value="SemiBold" />
-    </Style>
-    <Style Selector="Button.strip.accent:pointerover">
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextOnAccent}" />
-      <Setter Property="Background" Value="{DynamicResource Hub.AccentBorder}" />
-    </Style>
+    <!-- (The strip's accent plate is gone with the slot's action modes: the queue's line never asks for a
+         press any more, and the accent that used to mark 「下载更新」/「重启完成更新」 now belongs to the
+         sidebar's update button — see Button.update-action.) -->
 
     <!-- The queue's popover: same furniture as the assistant's context popover (it hangs off a strip slot and
          holds a list), on the popup surface rather than the alt surface, because it floats over the page. -->
@@ -591,25 +640,69 @@
         <DockPanel>
 
           <!-- Bottom: the brand/host text block opens the settings/appearance popup menu; the gear beside it
-               is unchanged — an independent shortcut straight to the settings page. It used to carry a red
-               update dot, and the dot is gone: an update now announces itself where every other download
-               does, in the strip's queue slot, and a dot that only said "go look in Settings" was the same
-               fact told twice, worse. -->
+               is unchanged — an independent shortcut straight to the settings page. Between them sits the
+               update's own button, and it is the update's **only** home: it appears while there is an update
+               to act on and carries the red dot the gear used to carry. The dot says the same thing the
+               button says, so it reads as "this press is waiting", not as "go look somewhere else" — and the
+               strip's slot went back to being the queue's own line (counts, progress, failures) so the two
+               never say one fact twice. -->
           <StackPanel DockPanel.Dock="Bottom">
             <Border BorderBrush="{DynamicResource Hub.Border}"
                     BorderThickness="0,1,0,0"
                     Padding="6,12,0,0">
-              <Grid ColumnDefinitions="*,Auto">
+              <Grid ColumnDefinitions="*,Auto,Auto">
                 <Button x:Name="BottomMenuButton" Grid.Column="0" Classes="host"
                         VerticalAlignment="Center">
                   <StackPanel>
+                    <!-- Trimming, because the update button in the middle column takes width from this
+                         `*` column when its label is long: a two-line host block that pushed past its
+                         cell would paint over the button instead of shortening. -->
                     <TextBlock x:Name="BrandLine" Text="AXMOL" Foreground="{DynamicResource Hub.TextSecondary}"
-                               FontSize="11" FontWeight="SemiBold" />
+                               FontSize="11" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                     <TextBlock x:Name="HostLine" Foreground="{DynamicResource Hub.TextTertiary}"
-                               FontSize="11" Margin="0,5,0,0" />
+                               FontSize="11" Margin="0,5,0,0" TextTrimming="CharacterEllipsis" />
                   </StackPanel>
                 </Button>
-                <Button x:Name="SettingsButton" Grid.Column="1" Classes="gear"
+
+                <!-- The update button's host. Hidden (not merely dimmed) while there is nothing to act on,
+                     so an idle sidebar keeps exactly the chrome it had. ClipToBounds stays off: the dot
+                     deliberately overhangs the button's top-right corner, and the only clip that matters is
+                     the sidebar's own — the overhang is nowhere near its edge. -->
+                <Grid x:Name="UpdateActionHost" Grid.Column="1"
+                      IsVisible="False" Margin="0,0,4,0"
+                      VerticalAlignment="Center" ClipToBounds="False">
+                  <Button x:Name="UpdateActionButton" Classes="update-action icon"
+                          VerticalAlignment="Center">
+                    <!-- One content grid for both shapes: the glyph shows in the circle states, the label
+                         takes over in the pill. Swapping content rather than swapping controls keeps one
+                         button (and one click seam) across all three states. -->
+                    <Grid>
+                      <Path x:Name="UpdateActionGlyph" Classes="icon"
+                            Data="{StaticResource Hub.Icon.Send}"
+                            Width="16" Height="16" Stretch="Uniform" />
+                      <Path x:Name="UpdateActionGlyphBusy" Classes="icon" IsVisible="False"
+                            Data="{StaticResource Hub.Icon.Refresh}"
+                            Width="16" Height="16" Stretch="Uniform" />
+                      <TextBlock x:Name="UpdateActionText" IsVisible="False"
+                                 TextTrimming="CharacterEllipsis" MaxWidth="150"
+                                 VerticalAlignment="Center" />
+                    </Grid>
+                  </Button>
+                  <!-- The attention dot: Hub.AlertDot is the same pure red the sidebar's approval dot uses —
+                       one red means "something is waiting for you" across the shell. The 1.5px ring in the
+                       sidebar's own chrome colour is what keeps the dot legible where it overlaps the
+                       accent-filled button underneath it. It is declared **after** the button rather than
+                       lifted with a ZIndex: child order is the only stacking rule here, so the z-order check
+                       in the shell suite and the pixels it cannot see agree about what decides the paint. -->
+                  <Ellipse x:Name="UpdateActionDot" Width="8" Height="8"
+                           Fill="{DynamicResource Hub.AlertDot}"
+                           Stroke="{DynamicResource Hub.SurfaceChrome}" StrokeThickness="1.5"
+                           HorizontalAlignment="Right" VerticalAlignment="Top"
+                           Margin="0,-3,-3,0"
+                           IsVisible="False" />
+                </Grid>
+
+                <Button x:Name="SettingsButton" Grid.Column="2" Classes="gear"
                         VerticalAlignment="Center">
                   <Path Classes="icon" Data="{StaticResource Hub.Icon.Settings}"
                         Width="17" Height="17" Stretch="Uniform" />

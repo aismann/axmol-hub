@@ -1067,10 +1067,12 @@ public partial class SettingsPage : UserControl
     /// the line re-localizes on a language switch.
     ///
     /// <para>What is deliberately <b>not</b> on this card any more: the download's progress, its cancel, and
-    /// the restart. Those live on one surface now — the strip's queue slot and its popover — because this page
-    /// can be navigated away from while the bytes are moving, and an update whose end nobody can see is an
-    /// update nobody can restart. The result line keeps naming the version for that same reason: it is the one
-    /// thing this page owns, and it stays true while the transfer runs somewhere else.</para>
+    /// the restart. Those live on two surfaces that are always on screen — the sidebar's update button (the
+    /// fetch and the restart) and the strip's queue slot with its popover (the count, the percentage, the
+    /// row's cancel) — because this page can be navigated away from while the bytes are moving, and an
+    /// update whose end nobody can see is an update nobody can restart. The result line keeps naming the
+    /// version for that same reason: it is the one thing this page owns, and it stays true while the
+    /// transfer runs somewhere else.</para>
     /// </summary>
     private void RenderUpdateState()
     {
@@ -1094,7 +1096,7 @@ public partial class SettingsPage : UserControl
 
         // The check button steps aside when there is already something to act on: offering another 检查更新
         // under the line that says what the last check found would repeat the question it answered. Fetching
-        // that version is the strip's press, reachable from whatever page is on screen.
+        // that version is the update button's press in the rail, reachable from whatever page is on screen.
         CheckForUpdatesButton.IsVisible = last?.Result is not UpdateService.CheckResult.UpdateAvailable;
     }
 

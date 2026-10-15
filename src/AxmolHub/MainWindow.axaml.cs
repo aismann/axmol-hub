@@ -200,6 +200,11 @@ public partial class MainWindow : Window
         // screen whatever the card is doing, and a button that can never undo itself invites a second way out.
         SettingsButton.Click += (_, _) => ToggleSettings();
 
+        // The update's own button, between the host block and the gear — the update's only home. The press
+        // means one of three things and the state decides which (see OnUpdateActionClicked): fetch it, open
+        // the queue it is downloading in, or arm/apply the restart.
+        UpdateActionButton.Click += (_, _) => OnUpdateActionClicked();
+
         // The brand/host text block beside the gear opens the popup menu (Settings + Appearance + language).
         // The menu is rebuilt on every open, so its labels and ticks are always current without any sync
         // machinery.
@@ -690,19 +695,6 @@ public partial class MainWindow : Window
     // ───────────────────────── The task queue's slot ─────────────────────────
 
     /// <summary>
-    /// Whether the strip may offer a download: the user turned auto-download off, so nothing is coming by
-    /// itself, and a newer version is known and not already on disk. With the setting on the transfer has
-    /// already started, and the queue mode is what the slot has to say instead.
-    /// </summary>
-    private static bool CanStartDownload()
-    {
-        var service = UpdateService.Instance;
-        return !service.AutoDownload
-               && service.Download == UpdateService.DownloadState.None
-               && service.Last is { Result: UpdateService.CheckResult.UpdateAvailable };
-    }
-
-    /// <summary>
     /// Repaints the strip's task slot, and the popover's rows while that popover is open.
     ///
     /// The rows are only rebuilt when the *set* of transfers changes; a progress tick repainting the handful
@@ -726,30 +718,13 @@ public partial class MainWindow : Window
         // ended up disabled for every operation when the busy flag was raised before the task existed.
         CancelButton.IsEnabled = _workspace.CanCancel;
 
-        var service = UpdateService.Instance;
-        var (visible, label, action) = TaskSlotStateFor(
-            TaskQueue.Instance.Items, service.Download, CanStartDownload(), _restartArmed);
-        if (action != TaskSlotAction.Restart)
-        {
-            // Whatever the second press was standing by for is gone, so the word goes back before the next
-            // click can find it still armed on a different state.
-            _restartArmed = false;
-        }
-
+        var (visible, label, action) = TaskSlotStateFor(TaskQueue.Instance.Items);
         TaskSlot.IsVisible = visible;
         TaskSlotText.Text = visible ? label : "";
-        // Emphasis belongs to a slot that *is* a decision, not to one that only shows a list.
-        TaskSlot.Classes.Set("accent", action is TaskSlotAction.Restart or TaskSlotAction.Download);
-        _taskSlotTip.Text = action switch
-        {
-            TaskSlotAction.Restart => service.PendingVersion is { } readyVersion
-                ? string.Format(HubStrings.Get("UpdateRestartActionTip"), readyVersion)
-                : HubStrings.Get("TaskRestartAction"),
-            TaskSlotAction.Download => service.PendingVersion is { } newVersion
-                ? string.Format(HubStrings.Get("TaskDownloadSlotTip"), newVersion)
-                : HubStrings.Get("TaskSlotTip"),
-            _ => HubStrings.Get("TaskSlotTip"),
-        };
+        // The slot speaks for the queue and nothing else: the update's decisions (fetch, restart) live on
+        // the sidebar's update button, so the slot's tooltip is the queue's own sentence in every state it
+        // can still show — it no longer holds a version, which is what the button's tip carries instead.
+        _taskSlotTip.Text = HubStrings.Get("TaskSlotTip");
         if (!visible)
         {
             // Nothing left to act on and nothing left to read: the popover goes with its own anchor rather
@@ -766,8 +741,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// What a press on the slot does. Named rather than flagged because the slot answers more than one kind
-    /// of question, and a bool could only ever tell "show me the list" apart from everything else.
+    /// What a press on the slot does. The slot is the queue's own line now: the update's fetch/restart
+    /// decisions live on the sidebar's update button, so one action is all that is left besides silence.
     /// </summary>
     internal enum TaskSlotAction
     {
@@ -775,29 +750,24 @@ public partial class MainWindow : Window
         None,
         /// <summary>Transfers are moving, or one failed and still unread: lift the popover.</summary>
         OpenQueue,
-        /// <summary>The update is on disk: apply it and restart.</summary>
-        Restart,
-        /// <summary>An update waits and nobody has asked for it yet: start the download.</summary>
-        Download,
     }
 
     /// <summary>
-    /// What the slot says, as a function of the queue and the update's own phase — the shape a check
-    /// asserts on, because every one of these branches otherwise needs a real download to reach.
+    /// What the slot says, as a function of the queue — the shape a check asserts on, because every one of
+    /// these branches otherwise needs a real download to reach.
     ///
-    /// <para>Two modes, one slot. While transfers are moving (or one failed and went unread) the slot is
-    /// the <b>queue</b>: a count, and a press that lifts the popover. When nothing is moving, the slot is
-    /// the <b>decision itself</b> — the update on disk waits for a restart, or the update nobody has
-    /// fetched yet waits for a download, and either takes one press rather than a trip through Settings.
-    /// Which is the whole point of downloading in the background: the user should never have to go looking
-    /// for the thing that finished.</para>
+    /// <para>Two lights, one slot. While transfers are moving the slot is the <b>queue</b>: a count, a press
+    /// that lifts the popover, and the one moving transfer's own percentage. A failure that went unread
+    /// keeps the slot lit for the same reason — the row it belongs to is still reachable and still wants an
+    /// answer.</para>
     ///
-    /// <para>Silence is the answer while nothing is moving, nothing failed and nothing waits: a strip that
-    /// lit for work already finished would be reporting the past. A failure keeps the slot lit because it
-    /// is still a thing to act on.</para>
+    /// <para>The update's decisions are deliberately <b>not</b> here any more (the sidebar's update button
+    /// holds them): a 「重启完成更新」 in the strip beside a 「重启完成更新」 in the rail would be one fact
+    /// told twice on one screen. Silence is what is left when nothing is moving and nothing failed — a strip
+    /// that lit for work already finished would be reporting the past.</para>
     /// </summary>
     internal static (bool Visible, string Label, TaskSlotAction Action) TaskSlotStateFor(
-        IReadOnlyList<TaskQueue.Item> items, UpdateService.DownloadState download, bool canStartDownload, bool armed)
+        IReadOnlyList<TaskQueue.Item> items)
     {
         var active = items.Where(item => item.IsActive).ToList();
         if (active.Count > 0)
@@ -814,13 +784,6 @@ public partial class MainWindow : Window
                     HubStrings.Get("TaskSlotFormat"), moving, active.Count), TaskSlotAction.OpenQueue);
         }
 
-        // The restart waits on the user, not the other way round: this is the state where the bytes have
-        // landed and only a process swap is missing.
-        if (download == UpdateService.DownloadState.Ready)
-        {
-            return (true, HubStrings.Get(armed ? "TaskRestartArmed" : "TaskRestartAction"), TaskSlotAction.Restart);
-        }
-
         var failed = items.Count(item => item.State == TaskQueue.Phase.Failed);
         if (failed > 0)
         {
@@ -828,42 +791,162 @@ public partial class MainWindow : Window
                 HubStrings.Get("TaskSlotFailed"), failed), TaskSlotAction.OpenQueue);
         }
 
-        // Nothing is moving and nothing waits on a decision, but an update is sitting there unread. With
-        // auto-download off nobody would ever fetch it, and the only place to ask was inside the settings
-        // page — so the slot asks, in the one sentence the strip is allowed to spend.
-        if (canStartDownload)
-        {
-            return (true, HubStrings.Get("TaskDownloadAction"), TaskSlotAction.Download);
-        }
-
         return (false, "", TaskSlotAction.None);
     }
 
-    /// <summary>
-    /// The slot's one press. The queue lifts the popover; a download or a restart is what the slot itself
-    /// does — unless a restart interrupts work still running, in which case the first press only arms the
-    /// button and says so on its own label.
-    ///
-    /// <para>Restarting is the one thing in this app that cannot be undone from the inside: it replaces the
-    /// process, so a reply mid-stream and a build mid-compile both stop, and the second tap is what stands
-    /// between an accidental click and that. Same shape as a steer waiting for its second tap, for the same
-    /// reason — the consequence is read once, on the button that carries it, not in a dialog.</para>
-    /// </summary>
+    /// <summary>The slot's one press: lift the popover that holds the rows, the measurements and the
+    /// per-item cancel. Every other press the strip used to carry moved to the update button
+    /// (see <see cref="OnUpdateActionClicked"/>).</summary>
     private void OnTaskSlotClicked()
     {
-        var (_, _, action) = TaskSlotStateFor(
-            TaskQueue.Instance.Items, UpdateService.Instance.Download, CanStartDownload(), _restartArmed);
-        switch (action)
+        var (_, _, action) = TaskSlotStateFor(TaskQueue.Instance.Items);
+        if (action == TaskSlotAction.OpenQueue)
         {
-            case TaskSlotAction.None:
+            ToggleTaskPopup();
+        }
+    }
+
+    // ───────────────────── The sidebar's update button ─────────────────────
+
+    /// <summary>The update button's own states, named because the shape, the dot and the press all move
+    /// together: an unnamed condition would only ever tell "is it visible" apart from the rest.</summary>
+    internal enum UpdateActionKind
+    {
+        /// <summary>No update (or no usable check result): the button is not on screen.</summary>
+        Hidden,
+        /// <summary>An update is known and not on disk: accent circle + dot, press fetches it.</summary>
+        Found,
+        /// <summary>The transfer is moving: quiet circle, no dot — the number lives in the strip.</summary>
+        Downloading,
+        /// <summary>The bytes have landed: accent pill + dot, press arms (or applies when armed).</summary>
+        Ready,
+    }
+
+    /// <summary>
+    /// What the sidebar's update button is, as a function of the update's own state — the shape a check
+    /// asserts on, because every one of these branches otherwise needs a real download to reach.
+    ///
+    /// <para>The keys are keys rather than sentences so the caller re-resolves them on every language
+    /// switch; a label captured once would keep the language it was built in.</para>
+    ///
+    /// <para>The dot rides both states that wait for a person (<see cref="UpdateActionKind.Found"/> after a
+    /// check — or after a cancel, which is exactly when auto-download will not fetch again by itself — and
+    /// <see cref="UpdateActionKind.Ready"/> when the process swap is owed) and stands down while the
+    /// transfer reports for itself.</para>
+    /// </summary>
+    internal static (UpdateActionKind Kind, string? LabelKey, string? TipKey) UpdateActionStateFor(
+        UpdateService.CheckOutcome? last, UpdateService.DownloadState download, bool armed)
+    {
+        if (last is not { Result: UpdateService.CheckResult.UpdateAvailable })
+        {
+            return (UpdateActionKind.Hidden, null, null);
+        }
+
+        return download switch
+        {
+            UpdateService.DownloadState.Ready =>
+                (UpdateActionKind.Ready, armed ? "TaskRestartArmed" : "TaskRestartAction", "UpdateRestartActionTip"),
+            UpdateService.DownloadState.Downloading =>
+                (UpdateActionKind.Downloading, null, "TaskSlotTip"),
+            _ =>
+                (UpdateActionKind.Found, null, "TaskDownloadSlotTip"),
+        };
+    }
+
+    /// <summary>
+    /// Renders <see cref="UpdateActionStateFor"/> onto the button: one of the three shape classes, which
+    /// glyph (or label) shows, whether the dot is up, and the state's tooltip with the pending version
+    /// spelled out. Called from the update's own <see cref="UpdateService.Changed"/> hop, from the press
+    /// itself (the arm flips the label), and from <see cref="InitializeChrome"/> (a language switch has to
+    /// re-resolve the keys, and a tip captured once keeps its old language forever).
+    /// </summary>
+    private void SyncUpdateAction()
+    {
+        // Same construction-window guard as UpdateTaskSlot: the update can report before the XAML exists.
+        if (UpdateActionHost is null) return;
+
+        var service = UpdateService.Instance;
+        var (kind, labelKey, tipKey) = UpdateActionStateFor(service.Last, service.Download, _restartArmed);
+        if (kind != UpdateActionKind.Ready && _restartArmed)
+        {
+            // Whatever the second press was standing by for is gone (the download was cancelled, a new check
+            // found nothing): the arm goes back before the next click can find it still spent on a state
+            // that no longer exists.
+            _restartArmed = false;
+            (kind, labelKey, tipKey) = UpdateActionStateFor(service.Last, service.Download, false);
+        }
+
+        UpdateActionHost.IsVisible = kind != UpdateActionKind.Hidden;
+        if (kind == UpdateActionKind.Hidden)
+        {
+            // The host's own hiding takes the dot off the screen, but the dot's flag has to follow: a check
+            // (and any future code) reads IsVisible on the dot directly, and a hidden host is not something
+            // that resets its children's state.
+            UpdateActionDot.IsVisible = false;
+            return;
+        }
+
+        // Exactly one shape class decides the plate; Classes.Set keeps the others off without a rebuild.
+        UpdateActionButton.Classes.Set("icon", kind == UpdateActionKind.Found);
+        UpdateActionButton.Classes.Set("quiet", kind == UpdateActionKind.Downloading);
+        UpdateActionButton.Classes.Set("pill", kind == UpdateActionKind.Ready);
+
+        // Both glyphs stay in the content grid as static resources — swapping Data at runtime would have to
+        // re-resolve the geometry through a resource lookup that can silently miss after a theme switch.
+        UpdateActionGlyph.IsVisible = kind == UpdateActionKind.Found;
+        UpdateActionGlyphBusy.IsVisible = kind == UpdateActionKind.Downloading;
+        UpdateActionText.IsVisible = kind == UpdateActionKind.Ready;
+        UpdateActionText.Text = labelKey is null ? "" : HubStrings.Get(labelKey);
+        UpdateActionDot.IsVisible = kind is UpdateActionKind.Found or UpdateActionKind.Ready;
+
+        // The tip names the version, which is the one thing the button cannot show while it is a circle:
+        // "↑" says an update waits, only the sentence says which. TaskDownloadAction / TaskRestartAction are
+        // the fallbacks for the shape of the sentence when no version is known (no check yet can't reach
+        // here — Hidden covers that — but a version the feed refused to name still gets a usable tip).
+        var version = service.PendingVersion;
+        var tip = (kind, version) switch
+        {
+            (UpdateActionKind.Ready, not null) =>
+                string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get(tipKey!), version),
+            (UpdateActionKind.Found, not null) =>
+                string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get(tipKey!), version),
+            (UpdateActionKind.Ready, null) => HubStrings.Get("TaskRestartAction"),
+            (UpdateActionKind.Found, null) => HubStrings.Get("TaskDownloadAction"),
+            _ => HubStrings.Get(tipKey!),
+        };
+        ToolTip.SetTip(UpdateActionButton, tip);
+    }
+
+    /// <summary>
+    /// The button's one press, decided by the state it was showing: fetch it (which is also the retry after
+    /// a cancelled download — the reason <see cref="UpdateService.StartPendingDownload"/> does not care
+    /// about auto-download), lift the queue popover while it downloads, or arm/apply the restart.
+    ///
+    /// <para>The restart keeps the strip's old two-tap rule verbatim: replacing the process is the one thing
+    /// this app cannot undo from the inside, so while other work runs the first press only arms the button
+    /// and says so on its own label, and the arm decays on its own — a button left armed is a button that
+    /// restarts on the next stray click, minutes later, when whatever made it busy has long since
+    /// finished.</para>
+    /// </summary>
+    private void OnUpdateActionClicked()
+    {
+        var service = UpdateService.Instance;
+        var (kind, _, _) = UpdateActionStateFor(service.Last, service.Download, _restartArmed);
+        switch (kind)
+        {
+            case UpdateActionKind.Hidden:
                 return;
-            case TaskSlotAction.OpenQueue:
+            case UpdateActionKind.Found:
+                // Fetch it, and stop there. The transfer ends in Ready and the button then becomes the
+                // pill, so the process swap stays behind a press the user meant.
+                service.StartPendingDownload();
+                return;
+            case UpdateActionKind.Downloading:
+                // The number belongs to the strip and the row's cancel to the popover; this press only
+                // lifts the surface that holds them.
                 ToggleTaskPopup();
-                return;
-            case TaskSlotAction.Download:
-                // Fetch it, and stop there. The transfer ends in Ready and the slot then becomes the
-                // restart, so the process swap stays behind a press the user meant.
-                UpdateService.Instance.StartPendingDownload();
                 return;
         }
 
@@ -871,14 +954,12 @@ public partial class MainWindow : Window
         if (busy && !_restartArmed)
         {
             _restartArmed = true;
-            UpdateTaskSlot();
-            // A button left armed is a button that restarts on the next stray click, minutes later, when
-            // whatever made it busy has long since finished. The word goes away on its own.
+            SyncUpdateAction();
             DispatcherTimer.RunOnce(() =>
             {
                 if (!_restartArmed) return;
                 _restartArmed = false;
-                UpdateTaskSlot();
+                SyncUpdateAction();
             }, TimeSpan.FromSeconds(10));
             return;
         }
@@ -886,16 +967,16 @@ public partial class MainWindow : Window
         // The arm is spent by the press that used it, even though in the real case the process ends here:
         // a button left armed is a button that restarts on the next stray click.
         _restartArmed = false;
-        UpdateService.Instance.ApplyAndRestart();
+        service.ApplyAndRestart();
     }
 
-    /// <summary>Set while the restart slot is waiting for its confirming second press.</summary>
+    /// <summary>Set while the update button is waiting for its confirming second press.</summary>
     private bool _restartArmed;
 
     /// <summary>
     /// What a restart would interrupt. A probe rather than an inline read because the armed second tap is
     /// a rule worth asserting on its own, and parking a live stream behind it to reach one branch is not a
-    /// fixture anyone could read. The window installs the real answer where it wires the slot.
+    /// fixture anyone could read. The window installs the real answer where it wires the button.
     /// </summary>
     internal Func<bool> RestartInterruptsWork { get; set; } = () => false;
 
@@ -1095,7 +1176,6 @@ public partial class MainWindow : Window
 
     internal bool TaskSlotVisibleForCheck => TaskSlot.IsVisible;
     internal string TaskSlotTextForCheck => TaskSlotText.Text ?? "";
-
     /// <summary>The two surfaces the busy gate used to switch off. A change running now has to leave both of
     /// them pressable — the page it was started from and the settings card — and answer the press that cannot
     /// go through with a sentence instead. Reading IsEnabled here is the only way to tell "the gate is gone"
@@ -1115,10 +1195,10 @@ public partial class MainWindow : Window
     /// workspace method the button happens to call.</summary>
     internal void ClickCancelButtonForCheck() => CancelButton.RaiseEvent(
         new RoutedEventArgs(Button.ClickEvent));
-    internal bool TaskSlotAccentForCheck => TaskSlot.Classes.Contains("accent");
 
-    /// <summary>What the slot's tooltip says. The version number lives here, not in the label, so a check on
-    /// "the user can still tell which update this is" has to read the tip rather than the words on the strip.</summary>
+    /// <summary>What the slot's tooltip says — the queue's own sentence, in every state the slot can show.
+    /// The update's version lives on the update button's tip now, so a check on "which update is this"
+    /// reads that button rather than the strip.</summary>
     internal string TaskSlotTipForCheck => _taskSlotTip.Text ?? "";
     internal bool TaskPopupOpenForCheck => TaskPopup.IsOpen;
     internal int TaskRowCountForCheck => TaskRows.Children.Count;
@@ -1169,21 +1249,86 @@ public partial class MainWindow : Window
     internal void OpenTaskPopupForCheck() => ToggleTaskPopup();
     internal void CloseTaskPopupForCheck() => TaskPopup.IsOpen = false;
 
-    /// <summary>The restart slot's armed state. Setting it repaints, so a check reads what the user would
-    /// see rather than what the field happens to hold. A test reaches the busy half through
-    /// <see cref="RestartInterruptsWork"/>, not through this.</summary>
+    /// <summary>The update button's armed state (the second tap of the restart). Setting it repaints, so a
+    /// check reads what the user would see rather than what the field happens to hold. A test reaches the
+    /// busy half through <see cref="RestartInterruptsWork"/>, not through this.</summary>
     internal bool RestartArmedForCheck
     {
         get => _restartArmed;
         set
         {
             _restartArmed = value;
-            UpdateTaskSlot();
+            SyncUpdateAction();
         }
     }
 
     /// <summary>Presses the slot the way the user does, so a check walks the same routing.</summary>
     internal void ClickTaskSlotForCheck() => TaskSlot.RaiseEvent(
+        new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+
+    // ── The sidebar's update button, for the shell self-check ──
+    // The button is icon-only in two of its three states, so every readable fact about it has to be a
+    // dedicated reading: what shape it took, what the dot is doing, what the tip says, and where the two
+    // sit next to the gear. None of these infer from UpdateService — they read the rendered control.
+
+    /// <summary>Whether the button is on screen at all (the idle sidebar must not carry it).</summary>
+    internal bool UpdateActionVisibleForCheck => UpdateActionHost.IsVisible;
+
+    /// <summary>The pill's word — empty in the circle states, where the glyph speaks instead.</summary>
+    internal string UpdateActionLabelForCheck => UpdateActionText.Text ?? "";
+
+    /// <summary>Which of the three shapes is on the button right now, read off the classes the style
+    /// selector actually matches.</summary>
+    internal string UpdateActionShapeForCheck
+        => UpdateActionButton.Classes.Contains("pill") ? "pill"
+            : UpdateActionButton.Classes.Contains("quiet") ? "quiet"
+            : UpdateActionButton.Classes.Contains("icon") ? "icon"
+            : "?";
+
+    /// <summary>Whether the red dot is up. A check reads this and then the dot's pixels — IsVisible alone
+    /// proves the decision, not the paint.</summary>
+    internal bool UpdateActionDotVisibleForCheck => UpdateActionDot.IsVisible;
+
+    /// <summary>The button's tooltip, where the pending version is spelled out in every state that owes one.</summary>
+    internal string UpdateActionTipForCheck => ToolTip.GetTip(UpdateActionButton) as string ?? "";
+
+    /// <summary>Which glyph is in the content grid: "send" (found), "busy" (downloading), "label" (pill) —
+    /// the shape a frame capture cannot name for itself.</summary>
+    internal string UpdateActionGlyphForCheck
+        => UpdateActionText.IsVisible ? "label"
+            : UpdateActionGlyphBusy.IsVisible ? "busy"
+            : UpdateActionGlyph.IsVisible ? "send"
+            : "none";
+
+    /// <summary>The three pieces of the bottom row in the <b>window's own</b> coordinates — the space a
+    /// frame capture reads pixels in, so "the button sits left of the gear" and "the dot paints red at the
+    /// button's top-right" are decided in one coordinate system instead of two. Raw <c>Bounds</c> would be
+    /// three different parent spaces (the dot is a child of the host, the host and the gear are siblings).</summary>
+    internal (Rect Button, Rect Dot, Rect Gear) UpdateActionGeometryForCheck()
+        => (InWindow(UpdateActionButton), InWindow(UpdateActionDot), InWindow(SettingsButton));
+
+    private Rect InWindow(Visual target)
+        => target.TranslatePoint(new Point(0, 0), this) is { } origin
+            ? new Rect(origin, target.Bounds.Size)
+            : default;
+
+    /// <summary>The dot paints above the button rather than under it: a child index is the only thing that
+    /// decides that — two elements sharing a grid pass every bounds check in either order.</summary>
+    internal bool UpdateActionDotAboveButtonForCheck
+        => UpdateActionHost.Children.IndexOf(UpdateActionDot)
+           > UpdateActionHost.Children.IndexOf(UpdateActionButton);
+
+    /// <summary>The update button as a visual, for a frame capture (the pill's plate, the circle, the dot).</summary>
+    internal Visual UpdateActionHostForCheck => UpdateActionHost;
+
+    /// <summary>The dot itself as a visual. Capturing the dot rather than a window region is deliberate:
+    /// a region read off a window capture has to agree with the capture's pixel origin, and a mismatch
+    /// reads as "no red" no matter what the screen shows — the dot's own frame has no coordinates to get
+    /// wrong, and a dot whose Fill went blank comes back IsBlank, which is exactly the failure to catch.</summary>
+    internal Visual UpdateActionDotForCheck => UpdateActionDot;
+
+    /// <summary>Presses the update button the way the user does, so a check walks the same routing.</summary>
+    internal void ClickUpdateActionForCheck() => UpdateActionButton.RaiseEvent(
         new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
 
 
@@ -1943,9 +2088,14 @@ public partial class MainWindow : Window
         // its transport reports on, and the strip is owned by this one. Subscribed once — WireChrome only
         // runs from the constructor.
         TaskQueue.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTaskSlot);
-        // The update's own phase is part of what the slot says — "ready" is the restart — and it moves
-        // without the queue moving: a check that finds nothing new, a cancel, a channel switch.
-        UpdateService.Instance.Changed += () => Dispatcher.UIThread.Post(UpdateTaskSlot);
+        // The update's own phase is both surfaces' business — the slot counts the transfer, the sidebar
+        // button is the fetch/restart — and it moves without the queue moving: a check that finds nothing
+        // new, a cancel, a channel switch. One hop repaints both, so they can never disagree by a frame.
+        UpdateService.Instance.Changed += () => Dispatcher.UIThread.Post(() =>
+        {
+            UpdateTaskSlot();
+            SyncUpdateAction();
+        });
         TaskPopup.PlacementTarget = TaskSlot;
         TaskPopup.Placement = PlacementMode.TopEdgeAlignedLeft;
         // The holder is installed once, for the reason recorded on _taskSlotTip: only its text moves.
@@ -2505,6 +2655,10 @@ public partial class MainWindow : Window
         // The settings gear is icon-only, so its tooltip is the only place the name "Settings" appears for it.
         // Set here rather than in ApplyLanguage so it is also in place at construction time.
         ToolTip.SetTip(SettingsButton, HubStrings.Get("Settings"));
+        // The update button's tip and pill label are state-dependent, so re-resolving the current state is the
+        // whole language switch for them: SyncUpdateAction reads HubStrings fresh on every call, and a label
+        // assigned once at construction would keep saying last language's sentence forever.
+        SyncUpdateAction();
         // Same rule for the two buttons at the title bar's right end, and this one is in InitializeChrome rather
         // than InitializeInspector because ApplyLanguage calls this: an icon-only control whose name lives only in
         // a tooltip has to be rewritten when the language changes. The drawer's sentence depends on which surface

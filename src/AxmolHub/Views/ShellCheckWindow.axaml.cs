@@ -12347,18 +12347,23 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(settings.UpdateStatusText == foundLine
-              && shell.TaskSlotTipForCheck.Contains("9.9.9", StringComparison.Ordinal),
-            "更新就绪后版本号仍在卡片上，并且进了槽位的重启提示（提示 " + shell.TaskSlotTipForCheck + "）");
+              && shell.UpdateActionTipForCheck.Contains("9.9.9", StringComparison.Ordinal)
+              && shell.UpdateActionVisibleForCheck
+              && shell.UpdateActionShapeForCheck == "pill"
+              && shell.UpdateActionLabelForCheck == HubTexts.Get("TaskRestartAction", HubStrings.Language),
+            "更新就绪后版本号仍在卡片上，并且进了侧栏更新按钮的重启提示（提示 " + shell.UpdateActionTipForCheck
+            + "，形态 " + shell.UpdateActionShapeForCheck + "）");
 
         // And the card must come back down: a scripted update left behind would leak into every render
-        // check that follows (the shell's download slot included).
+        // check that follows (the shell's update button included).
         UpdateService.Instance.ClearForCheck();
         settings.UpdateLayout();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(settings.UpdateStatusText == HubTexts.Get("UpdateCheckHint", HubStrings.Language)
-              && shell.TaskSlotTipForCheck == HubTexts.Get("TaskSlotTip", HubStrings.Language),
-            "清掉脚本更新后卡片与槽位都回到未检查的初始态（状态行 " + settings.UpdateStatusText + "）");
+              && shell.TaskSlotTipForCheck == HubTexts.Get("TaskSlotTip", HubStrings.Language)
+              && !shell.UpdateActionVisibleForCheck,
+            "清掉脚本更新后卡片、槽位提示与侧栏更新按钮都回到未检查的初始态（状态行 " + settings.UpdateStatusText + "）");
 
         // --- 5.1b The task queue's own surface ---
         // The queue's contract with the shell, read off the shell. The label matrix goes through the pure
@@ -12381,8 +12386,7 @@ public partial class ShellCheckWindow : Window
             => new($"engine:install:{version}", "TaskEnginePackage", version);
 
         var twoMoving = new[] { Moving("9.9.9"), Moving("9.9.8"), Waiting("9.9.7") };
-        var twoMovingState = MainWindow.TaskSlotStateFor(
-            twoMoving, UpdateService.DownloadState.None, canStartDownload: false, armed: false);
+        var twoMovingState = MainWindow.TaskSlotStateFor(twoMoving);
         Check(twoMovingState.Visible && twoMovingState.Action == MainWindow.TaskSlotAction.OpenQueue
               && twoMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubTexts.Get("TaskSlotFormat", HubStrings.Language), 2, 3),
@@ -12391,8 +12395,7 @@ public partial class ShellCheckWindow : Window
         // One number per download, never an average of two: with a single transfer moving its own
         // percentage is the honest aggregate, and with two the count stands alone.
         var oneMoving = new[] { Moving("9.9.9", percent: 37) };
-        var oneMovingState = MainWindow.TaskSlotStateFor(
-            oneMoving, UpdateService.DownloadState.None, canStartDownload: false, armed: false);
+        var oneMovingState = MainWindow.TaskSlotStateFor(oneMoving);
         Check(oneMovingState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubTexts.Get("TaskSlotPercentFormat", HubStrings.Language), 1, 1, 37),
             "只有一路在跑时槽带上它自己的百分比（实际 " + oneMovingState.Label + "）");
@@ -12401,31 +12404,54 @@ public partial class ShellCheckWindow : Window
         // and the failed row is inside the popover where it can be read next to the one still running.
         var failedWhileMoving = new[] { Waiting("9.9.9"), Moving("9.9.8") };
         failedWhileMoving[0].Fail("fixture: the mirror answered 503");
-        var mixedState = MainWindow.TaskSlotStateFor(
-            failedWhileMoving, UpdateService.DownloadState.None, canStartDownload: false, armed: false);
-        Check(mixedState.Visible && mixedState.Action != MainWindow.TaskSlotAction.Restart
+        var mixedState = MainWindow.TaskSlotStateFor(failedWhileMoving);
+        Check(mixedState.Visible && mixedState.Action == MainWindow.TaskSlotAction.OpenQueue
               && mixedState.Label == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubTexts.Get("TaskSlotFormat", HubStrings.Language), 1, 1),
             "还有路在跑时，失败的那条不抢标签（实际 " + mixedState.Label + "）");
 
         var allFailed = new[] { Waiting("9.9.9") };
         allFailed[0].Fail("fixture: digest mismatch");
-        Check(MainWindow.TaskSlotStateFor(allFailed, UpdateService.DownloadState.None, canStartDownload: false, armed: false).Visible,
+        Check(MainWindow.TaskSlotStateFor(allFailed).Visible,
             "没有任何任务在跑、只留下一次失败时槽仍然亮着");
-        Check(!MainWindow.TaskSlotStateFor(
-                  Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.None, canStartDownload: false, armed: false).Visible,
-            "队列空且没有待更新时槽保持沉默");
+        Check(!MainWindow.TaskSlotStateFor(Array.Empty<TaskQueue.Item>()).Visible,
+            "队列空时槽保持沉默——更新的判定已经搬去侧栏按钮，槽不再替它发言");
 
-        // The action mode: the bytes have landed and only a process swap is missing.
-        var restartState = MainWindow.TaskSlotStateFor(
-            Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.Ready, canStartDownload: false, armed: false);
-        var armedState = MainWindow.TaskSlotStateFor(
-            Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.Ready, canStartDownload: false, armed: true);
-        Check(restartState.Visible && restartState.Action == MainWindow.TaskSlotAction.Restart
-              && restartState.Label == HubTexts.Get("TaskRestartAction", HubStrings.Language)
-              && armedState.Label == HubTexts.Get("TaskRestartArmed", HubStrings.Language)
-              && armedState.Label != restartState.Label,
-            "下载就绪时槽就是重启动作，忙时第一下只把它变成再点一次（" + restartState.Label + " / " + armedState.Label + "）");
+        // The update's decision table, on the pure function that now owns it: found (the press fetches —
+        // including after a cancel, which is exactly when auto-download will not fetch again by itself),
+        // downloading (the press lifts the queue; the dot stands down because the percentage reports),
+        // ready (the pill; the dot is back because the restart is owed), and silence with no update. The
+        // arm is a label change on the pill, not a state of its own.
+        var outcomeAvailable = new UpdateService.CheckOutcome(
+            UpdateService.CheckResult.UpdateAvailable, new UpdateInfo(new VelopackAsset
+            {
+                FileName = "Axmol.Hub-9.9.9-win-x64-full.nupkg",
+                Size = 1_000_000,
+                Version = SemanticVersion.Parse("9.9.9"),
+            }, false));
+        var foundState = MainWindow.UpdateActionStateFor(outcomeAvailable, UpdateService.DownloadState.None, false);
+        var downloadingState = MainWindow.UpdateActionStateFor(outcomeAvailable, UpdateService.DownloadState.Downloading, false);
+        var readyState = MainWindow.UpdateActionStateFor(outcomeAvailable, UpdateService.DownloadState.Ready, false);
+        var armedState = MainWindow.UpdateActionStateFor(outcomeAvailable, UpdateService.DownloadState.Ready, true);
+        var silentState = MainWindow.UpdateActionStateFor(null, UpdateService.DownloadState.None, false);
+        var upToDateState = MainWindow.UpdateActionStateFor(
+            new UpdateService.CheckOutcome(UpdateService.CheckResult.UpToDate, null),
+            UpdateService.DownloadState.None, false);
+        Check(foundState.Kind == MainWindow.UpdateActionKind.Found
+              && foundState.LabelKey is null && foundState.TipKey == "TaskDownloadSlotTip",
+            "待下载状态 = 圆形 + 红点（无标签，提示带版本）：" + foundState.Kind + "/" + foundState.TipKey);
+        Check(downloadingState.Kind == MainWindow.UpdateActionKind.Downloading
+              && downloadingState.LabelKey is null && downloadingState.TipKey == "TaskSlotTip",
+            "下载中状态 = 安静圆形、无红点，进度归状态条：" + downloadingState.Kind);
+        Check(readyState.Kind == MainWindow.UpdateActionKind.Ready
+              && readyState.LabelKey == "TaskRestartAction" && readyState.TipKey == "UpdateRestartActionTip",
+            "就绪状态 = 胶囊「重启完成更新」：" + readyState.Kind + "/" + readyState.LabelKey);
+        Check(armedState.LabelKey == "TaskRestartArmed" && armedState.LabelKey != readyState.LabelKey,
+            "忙时第一下只把胶囊换成再点一次（" + readyState.LabelKey + " / " + armedState.LabelKey + "）");
+        Check(silentState.Kind == MainWindow.UpdateActionKind.Hidden
+              && upToDateState.Kind == MainWindow.UpdateActionKind.Hidden
+              && silentState.LabelKey is null && silentState.TipKey is null,
+            "没有更新（未检查 / 已是最新）时按钮整个不在屏上");
 
         // And live, on the real strip: one scripted transfer that never ends.
         TaskQueue.Instance.EnqueueForCheck("engine:install:9.9.6", "TaskEnginePackage", "9.9.6");
@@ -12437,7 +12463,9 @@ public partial class ShellCheckWindow : Window
                   HubTexts.Get("TaskSlotFormat", HubStrings.Language), 1, 1),
             "脚本下载在跑时状态条真的亮着并写着 任务 1/1（实际 " + shell.TaskSlotTextForCheck + "）");
 
-        shell.OpenTaskPopupForCheck();
+        // Through the button, not the method behind it: the assertion says 点任务槽, so the routing is what
+        // has to be proven — a slot wired to nothing would pass a direct ToggleTaskPopupForCheck.
+        shell.ClickTaskSlotForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(shell.TaskPopupOpenForCheck && shell.TaskRowCountForCheck == 1,
@@ -12450,8 +12478,6 @@ public partial class ShellCheckWindow : Window
         Check(System.IO.File.Exists(popoverShot) && !popoverStats.IsBlank(),
             "队列面板真的画出了内容（" + popoverStats.Width + "x" + popoverStats.Height
             + "，distinct=" + popoverStats.DistinctColors + "）");
-        Check(!shell.TaskSlotAccentForCheck,
-            "队列模式的槽不加强调底板，强调留给只剩一个动作的时候");
         Check(shell.StatusStripHeightForCheck <= 28.5
               && SameRect(shell.WindowControlsBoundsForCheck, platesBefore),
             "面板展开时状态条仍是那 28 高，三枚窗口按钮一格没动");
@@ -12494,44 +12520,113 @@ public partial class ShellCheckWindow : Window
         UpdateService.Instance.SetPendingForCheck(pendingUpdate, UpdateService.DownloadState.Ready);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.TaskSlotVisibleForCheck && shell.TaskSlotAccentForCheck
-              && shell.TaskSlotTextForCheck == HubTexts.Get("TaskRestartAction", HubStrings.Language),
-            "更新就绪且没有在跑时，槽真的变成了重启动作（实际 " + shell.TaskSlotTextForCheck + "）");
-        // More than a flat plate: the accent rectangle alone is one or two colours, so the count is what
-        // says the word is on it. This is the one press the whole queue exists to hand the user, and a
-        // strip that painted it invisible would look finished.
-        var slotShot = System.IO.Path.Combine(ScratchDirectory.Resolve("queue-slot"), "restart.png");
-        var slotStats = SmokeCapture.Capture(shell.TaskSlotForCheck, slotShot);
-        Check(!slotStats.IsBlank() && slotStats.DistinctColors > 2,
-            "重启槽画得出来：强调底板与文字都在帧里（" + slotStats.Width + "x" + slotStats.Height
-            + "，distinct=" + slotStats.DistinctColors + "）");
+        Check(shell.UpdateActionVisibleForCheck
+              && shell.UpdateActionShapeForCheck == "pill"
+              && shell.UpdateActionLabelForCheck == HubTexts.Get("TaskRestartAction", HubStrings.Language)
+              && shell.UpdateActionDotVisibleForCheck
+              && !shell.TaskSlotVisibleForCheck,
+            "更新就绪且队列空时：侧栏按钮是带红点的重启胶囊，状态条的槽不再跟着说一遍（胶囊「"
+            + shell.UpdateActionLabelForCheck + "」，槽亮着 " + shell.TaskSlotVisibleForCheck + "）");
 
-        // Busy: the first press arms, and nothing is applied yet.
+        // The geometry that makes it findable, decided in window space so the pixel read below measures
+        // exactly the rectangle this asserts on: the button left of the gear, the dot overhanging the
+        // button's top-right corner (by a few pixels — it must sit on the corner, not float off it).
+        var (readyButton, readyDot, readyGear) = shell.UpdateActionGeometryForCheck();
+        Check(readyButton.Right <= readyGear.X + 0.5
+              && readyButton.Width > 0 && readyGear.Width > 0
+              && readyDot.Right - readyButton.Right is > 0 and < 6
+              && readyButton.Top - readyDot.Top is > 0 and < 6,
+            "重启按钮长在齿轮左侧，红点压着它的右上角（按钮右缘 " + Fmt(readyButton.Right)
+            + " ≤ 齿轮左缘 " + Fmt(readyGear.X) + "，红点外探 横 "
+            + Fmt(readyDot.Right - readyButton.Right) + " / 纵 " + Fmt(readyButton.Top - readyDot.Top) + "）");
+        Check(shell.UpdateActionDotAboveButtonForCheck,
+            "红点画在按钮之上——同一张 Grid 里子序决定叠放，两个矩形断言看不出先后");
+
+        // The frame, not the tree. Two captures: the dot has to be real red ink (a dot whose Fill went null
+        // keeps every bounds assertion above green while the screen shows nothing), and the pill has to be
+        // more than a flat plate — the word is on it. The dot is captured as its own visual: its frame has
+        // no pixel-origin to disagree with, and a blank frame *is* the defect.
+        var updateDir = ScratchDirectory.Resolve("update-button");
+        var dotShot = System.IO.Path.Combine(updateDir, "dot.png");
+        var dotStats = SmokeCapture.Capture(shell.UpdateActionDotForCheck, dotShot);
+        var dotPixels = RegionPixels(dotShot, new Rect(0, 0, dotStats.Width, dotStats.Height),
+            new Size(dotStats.Width, dotStats.Height));
+        var redPixels = 0;
+        for (var i = 0; i + 3 < dotPixels.Length; i += 4)
+        {
+            // BGRA. #FF0000 is the dot, and nothing else in this row can produce a saturated red pixel —
+            // the accent plate is blue, the ring and the sidebar are grays.
+            if (dotPixels[i + 3] > 0xF0 && dotPixels[i + 2] > 0xC0 && dotPixels[i + 1] < 0x60 && dotPixels[i] < 0x60)
+            {
+                redPixels++;
+            }
+        }
+        Check(redPixels > 0,
+            "红点真的画出了红色像素（" + dotStats.Width + "x" + dotStats.Height + " 的帧里命中 "
+            + redPixels + " 个）");
+        var pillShot = System.IO.Path.Combine(updateDir, "pill.png");
+        var pillStats = SmokeCapture.Capture(shell.UpdateActionHostForCheck, pillShot);
+        Check(!pillStats.IsBlank() && pillStats.DistinctColors > 2,
+            "胶囊画得出来：强调底板与文字都在帧里（" + pillStats.Width + "x" + pillStats.Height
+            + "，distinct=" + pillStats.DistinctColors + "）");
+
+        // The pill's label and tip are key lookups rendered once per state — a language switch has to
+        // re-resolve them or the button keeps last language's sentence forever. Round-tripped the way the
+        // menu's own rows are: to English, read the button, back to Chinese, read it again.
+        shell.ClickBottomMenuForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+            .Single(item => item.Tag as string == HubTexts.EnglishLanguage)
+            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.UpdateActionLabelForCheck == HubTexts.Get("TaskRestartAction", HubTexts.EnglishLanguage)
+              && shell.UpdateActionTipForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                  HubTexts.Get("UpdateRestartActionTip", HubTexts.EnglishLanguage), "9.9.9")
+              && shell.UpdateActionShapeForCheck == "pill",
+            "切到英文后胶囊与提示都跟着换（label「" + shell.UpdateActionLabelForCheck + "」，tip「"
+            + shell.UpdateActionTipForCheck + "」）");
+        shell.ClickBottomMenuForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        shell.BottomMenuForCheck!.Items.OfType<MenuItem>()
+            .Single(item => item.Tag as string == HubTexts.ChineseLanguage)
+            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.UpdateActionLabelForCheck == HubTexts.Get("TaskRestartAction", HubTexts.ChineseLanguage),
+            "切回中文按钮也回来（实际「" + shell.UpdateActionLabelForCheck + "」）");
+
+        // Busy: the first press arms, and nothing is applied yet. The two-tap rule moved here from the
+        // strip verbatim — it is the rule, not the surface, that was being asserted.
         shell.RestartInterruptsWork = () => true;
-        shell.ClickTaskSlotForCheck();
+        shell.ClickUpdateActionForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(shell.RestartArmedForCheck && applied.Length == 0
-              && shell.TaskSlotTextForCheck == HubTexts.Get("TaskRestartArmed", HubStrings.Language),
-            "有活在跑时第一下只把槽变成再点一次，不重启（实际 " + shell.TaskSlotTextForCheck + "）");
-        shell.ClickTaskSlotForCheck();
+              && shell.UpdateActionLabelForCheck == HubTexts.Get("TaskRestartArmed", HubStrings.Language),
+            "有活在跑时第一下只把胶囊换成再点一次，不重启（实际 " + shell.UpdateActionLabelForCheck + "）");
+        shell.ClickUpdateActionForCheck();
         Check(applied == "9.9.9", "第二下才真的走重启，并且带上那个版本（实际 " + applied + "）");
 
         // Idle: one press is the whole action, no confirmation in the way.
         shell.RestartInterruptsWork = () => false;
         applied = "";
-        shell.ClickTaskSlotForCheck();
+        shell.ClickUpdateActionForCheck();
         Check(applied == "9.9.9" && !shell.RestartArmedForCheck,
             "没有在跑的东西时重启一下就走，不要求第二下（实际 " + applied + "）");
         UpdateService.Instance.ApplyOverrideForCheck = null;
 
-        // Everything scripted goes back down, or every render check after this inherits a lit strip.
+        // Everything scripted goes back down, or every render check after this inherits a lit strip — and a
+        // lit rail: the update button is chrome that must not survive its own update.
         TaskQueue.Instance.ClearForCheck();
         UpdateService.Instance.ClearForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(!shell.TaskSlotVisibleForCheck && !shell.TaskPopupOpenForCheck,
-            "清掉脚本队列与脚本更新后任务槽熄灭、面板收起");
+        Check(!shell.TaskSlotVisibleForCheck && !shell.TaskPopupOpenForCheck
+              && !shell.UpdateActionVisibleForCheck && !shell.UpdateActionDotVisibleForCheck,
+            "清掉脚本队列与脚本更新后任务槽熄灭、面板收起、更新按钮连同红点消失");
 
         // --- 5.1c Retry, dismiss, and the download the settings card used to own ---
         // The three things this round added, asserted where they are decided: the pure function for which
@@ -12540,45 +12635,56 @@ public partial class ShellCheckWindow : Window
         var dismissWord = HubTexts.Get("TaskDismiss", HubStrings.Language);
         var cancelWord = HubTexts.Get("Cancel", HubStrings.Language);
 
-        // A failure outranks an offer: the strip that lights 「下载更新」 over a download that just died
-        // would be asking for more work while hiding the work that failed.
+        // A failure and a pending update are two different facts, so both surfaces may be lit at once: the
+        // slot for the failed row (the queue's line), the button for the update (the app's). What may never
+        // come back is a 「下载更新」 *in the strip* — that sentence moved with the action.
         var outrank = new[] { Waiting("9.9.9") };
         outrank[0].Fail("fixture: digest mismatch");
-        Check(MainWindow.TaskSlotStateFor(outrank, UpdateService.DownloadState.None,
-                    canStartDownload: true, armed: false).Action == MainWindow.TaskSlotAction.OpenQueue,
-            "有失败行时下载动作不抢槽，失败先要被人看见");
+        Check(MainWindow.TaskSlotStateFor(outrank).Action == MainWindow.TaskSlotAction.OpenQueue
+              && MainWindow.TaskSlotStateFor(outrank).Label != HubTexts.Get("TaskDownloadAction", HubStrings.Language),
+            "有失败行时槽是队列的失败计数，下载动作不进这句话（实际 " + MainWindow.TaskSlotStateFor(outrank).Label + "）");
 
-        var downloadOffer = MainWindow.TaskSlotStateFor(
-            Array.Empty<TaskQueue.Item>(), UpdateService.DownloadState.None, canStartDownload: true, armed: false);
-        Check(downloadOffer.Visible && downloadOffer.Action == MainWindow.TaskSlotAction.Download
-              && downloadOffer.Label == HubTexts.Get("TaskDownloadAction", HubStrings.Language),
-            "发现新版本且没开自动下载时，槽就是下载动作（实际 " + downloadOffer.Label + "）");
-
-        // Live, and with the real fetch refused: asking Velopack here would reach GitHub.
+        // The offer itself, live, and with the real fetch refused: asking Velopack here would reach GitHub.
         var autoDownloadWas = UpdateService.Instance.AutoDownload;
         var downloaded = "";
         UpdateService.Instance.DownloadOverrideForCheck = update => downloaded = update.TargetFullRelease.Version.ToString();
-        UpdateService.Instance.AutoDownload = false;
         UpdateService.Instance.SetPendingForCheck(pendingUpdate);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.TaskSlotVisibleForCheck && shell.TaskSlotAccentForCheck
-              && shell.TaskSlotTextForCheck == HubTexts.Get("TaskDownloadAction", HubStrings.Language),
-            "自动下载关着时状态条真的亮成下载动作（实际 " + shell.TaskSlotTextForCheck + "）");
+        Check(shell.UpdateActionVisibleForCheck
+              && shell.UpdateActionShapeForCheck == "icon"
+              && shell.UpdateActionGlyphForCheck == "send"
+              && shell.UpdateActionDotVisibleForCheck
+              && shell.UpdateActionTipForCheck.Contains("9.9.9", StringComparison.Ordinal)
+              && !shell.TaskSlotVisibleForCheck,
+            "有待下载的更新时侧栏出现上箭头圆形 + 红点（提示 " + shell.UpdateActionTipForCheck
+            + "），状态条不替它发言（槽亮着 " + shell.TaskSlotVisibleForCheck + "）");
 
-        shell.ClickTaskSlotForCheck();
+        shell.ClickUpdateActionForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(downloaded == "9.9.9" && TaskQueue.Instance.Items.Count == 0 && !shell.RestartArmedForCheck,
-            "点下载动作只发起那一次下载，不入队也不武装重启（实际版本 " + downloaded + "）");
+            "点下载只发起那一次下载，不入队也不武装重启（实际版本 " + downloaded + "）");
 
-        // With auto-download back on nobody needs to be asked: the transfer starts by itself, so the offer
-        // would be a second button for the same act.
+        // The hole this button exists to close: auto-download **on** is the default, and a cancelled
+        // transfer puts Download back to None — before this button that state had no entry point anywhere
+        // in the app (the strip only offered with auto-download off, and the settings card hides its check
+        // button while an update is known). The button's condition is the phase's, not the setting's:
+        // cancelled or never-started, the press fetches.
         UpdateService.Instance.AutoDownload = true;
+        downloaded = "";
+        UpdateService.Instance.SetPendingForCheck(pendingUpdate); // Download back to None, as a cancel leaves it
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(!shell.TaskSlotVisibleForCheck,
-            "自动下载开着时槽不亮下载，因为那件事已经在跑");
+        Check(shell.UpdateActionVisibleForCheck && shell.UpdateActionDotVisibleForCheck
+              && !shell.TaskSlotVisibleForCheck,
+            "自动下载开着、下载没在跑（刚被取消过的样子）时按钮照样带红点提供重试，槽保持安静");
+        shell.ClickUpdateActionForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(downloaded == "9.9.9",
+            "这次点击同样真的发起下载——取消后的重试入口找到了（实际版本 " + downloaded + "）");
+
         UpdateService.Instance.AutoDownload = autoDownloadWas;
         UpdateService.Instance.DownloadOverrideForCheck = null;
         UpdateService.Instance.ClearForCheck();
@@ -12689,13 +12795,14 @@ public partial class ShellCheckWindow : Window
             "更新行只报百分比，估算的体积与速率留在 tooltip（实际 " + rowReading + "）");
 
         // And the round's original defect, closed: no control on the settings page may hand out a restart,
-        // because that press bypasses the armed second tap the strip does the deciding for.
+        // because that press bypasses the armed second tap the sidebar's update button does the deciding
+        // for.
         var restartWords = settings.GetVisualDescendants().OfType<Button>()
             .Select(button => button.Content as string ?? "")
             .Where(text => text.Contains("重启", StringComparison.Ordinal))
             .ToList();
         Check(restartWords.Count == 0,
-            "设置页上没有任何会重启的按钮，两下闸门只长在槽位上（实际 " + string.Join("/", restartWords) + "）");
+            "设置页上没有任何会重启的按钮，两下闸门只长在侧栏更新按钮上（实际 " + string.Join("/", restartWords) + "）");
 
         // --- 5.1d The change on this surface, and the page it no longer freezes ---
         // A build is now a task row, so the gate that used to grey everything has to answer a refused press
