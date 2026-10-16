@@ -5948,6 +5948,22 @@ public partial class ChatPanel : UserControl
     /// how the fold assertion below kept passing and failing at random.</summary>
     internal string LivePaintedTextForCheck => _live?.PaintedText ?? "";
 
+    /// <summary>The live thinking body's own reading position. "It is open" and "it is looking at the newest
+    /// line" are different claims, and only this can tell them apart.</summary>
+    internal (double Offset, double Extent, double Viewport) LiveThoughtScrollForCheck
+        => _live is not { } live
+            ? (0, 0, 0)
+            : (live.Thought.Scroll.Offset.Y, live.Thought.Scroll.Extent.Height, live.Thought.Scroll.Viewport.Height);
+
+    /// <summary>Moves the live thinking body's reading position, so a check can be a hand rather than a reader.
+    /// Setting it is enough — the scroll event that follows is the same one a wheel produces, which is what the
+    /// stick rule is actually keyed on.</summary>
+    internal void ScrollLiveThoughtForCheck(double offset)
+    {
+        if (_live is not { } live) return;
+        live.Thought.Scroll.Offset = new Point(0, offset);
+    }
+
     /// <summary>Presses the live thinking row the way a hand does. A check that set <c>IsChecked</c> through a
     /// property would still prove the fold, but this is the half that broke before — the wiring between the
     /// checkbox and the row — so it is exercised through the checkbox.</summary>

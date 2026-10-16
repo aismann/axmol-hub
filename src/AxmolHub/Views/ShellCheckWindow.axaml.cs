@@ -3987,36 +3987,81 @@ public partial class ShellCheckWindow : Window
         chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
         try
         {
+            static string F(double value) => value.ToString("0.#", CultureInfo.InvariantCulture);
+
             // ── While it is arriving ──
             // A reasoning gateway thinks first and switches to prose mid-stream, so this is the real ordering and
-            // not a shape invented for the check. The thinking is deliberately long enough to overflow the bounded
-            // body, because the thing worth asserting is where that box is <i>looking</i> once its content passes
-            // two hundred pixels — and the silence before the answer is long so that a duration read at filing
-            // rather than at the thinking→answer boundary cannot hide inside the margin.
-            var hold = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            // The silence is short on purpose: what keeps the answer from ending the run before the fold is read
-            // is <c>hold</c>, not a delay. A long gap here was long enough to shift the schedule of the checks
-            // after this one and put the suite's own 120s ceiling under load.
-            // Few, long deltas — and this shape is deliberate twice over. The answer only arrives after the last
-            // delta, so the group's whole wall clock is delta count times gap, and this suite has a 120s ceiling
-            // shared by fourteen hundred checks. Short deltas also lose the race against the polling granularity:
-            // WaitUntilAsync sleeps in 5ms steps that Windows rounds up to ~15ms, so each wait overshoots by a
-            // delta or two, and with a fine-grained stream the two waits below were eating the same 300ms.
+            // not a shape invented for the check.
+            //
+            // The stream is driven one chunk at a time rather than left to a clock. Task.Delay in 5ms steps rounds
+            // up to ~15ms on Windows, so a check polling for "the next chunk landed" overshoots into the one after
+            // it — which is how the assertions below first passed, then failed, then passed again on nothing but
+            // scheduler luck. With the gate the check asks for a chunk, waits for its paint, then looks.
             var thoughtUnit = "这一段思考要长到能把那个二百像素的身体撑出滚动条，而且还得继续往下长，"
                 + "才看得出它到底跟不跟得上最新一行，上滑之后又是不是真的停住了不拽。";
+            var step = new StepGate();
+            var hold = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             chat.ClientOverride = (_, _) => new ReasoningTrickleChatClient(
-                14, TimeSpan.FromMilliseconds(15), TimeSpan.FromMilliseconds(120), "答案到了",
-                thoughtUnit, hold.Task);
+                30, TimeSpan.Zero, TimeSpan.Zero, "答案到了", thoughtUnit, hold.Task, step.Wait);
             panel.SetInputForCheck("先想清楚再答");
             await panel.SendComposerForCheck();
-            await WaitUntilAsync(() => panel.LiveThoughtExpandedForCheck);
+
+            // Releases a batch of chunks and then waits for the one condition the next assertion actually needs.
+            // Waiting once per chunk was the mistake: each wait can burn its whole tick budget, and sixteen of
+            // them in a row is what put this group back under the suite's 120s ceiling. The gate still decides
+            // when anything arrives — batching the release just means the check asks once instead of sixteen
+            // times, and the condition below is the thing under test's own precondition.
+            async Task ReleaseAndAwaitAsync(int chunks, Func<bool> settled)
+            {
+                for (var round = 0; round < chunks; round++) step.Release();
+                // Tight on purpose. The gate means the chunk is already on its way, so anything this long to
+                // appear is the stream being stuck rather than the scheduler being slow — and a wide bound here
+                // is paid for out of the suite's shared 120s ceiling, where it reads as an unrelated check
+                // timing out three groups later.
+                await WaitUntilAsync(settled, maxTicks: 60);
+                shell.UpdateLayout();
+                Dispatcher.UIThread.RunJobs();
+            }
+
+            await ReleaseAndAwaitAsync(14, () =>
+            {
+                var (_, at, seen) = panel.LiveThoughtScrollForCheck;
+                return at > seen + 40;
+            });
+            var (offset, extent, viewport) = panel.LiveThoughtScrollForCheck;
+            Check(panel.LiveThoughtExpandedForCheck && extent > viewport + 40
+                  && offset + viewport >= extent - 6,
+                "思考超过身体高度时读到的是最新一行，不是钉在开头（偏移 " + F(offset) + "，视口 " + F(viewport)
+                + "，内容 " + F(extent) + "）");
+
+            // A box that always follows is a box nobody can read the top of. Scrolling inside it is a position
+            // somebody took, and thinking still arriving underneath must not drag them back down.
+            panel.ScrollLiveThoughtForCheck(0);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            Check(panel.LiveThoughtTextForCheck.Contains("这一段思考", StringComparison.Ordinal),
-                "思考在正文之前就上屏了，不必等落库（读到 " + panel.LiveThoughtTextForCheck.Length + " 字）");
-            // Wait on the painted text, not on the run's buffer: the fold is a consequence of a paint, and the
-            // buffer is ahead of it. Reading the buffer here wins the race roughly as often as it loses it.
-            await WaitUntilAsync(() => panel.LivePaintedTextForCheck.Contains("答案到了", StringComparison.Ordinal));
+            var parkedAt = panel.LiveThoughtScrollForCheck.Extent;
+            await ReleaseAndAwaitAsync(3, () => panel.LiveThoughtScrollForCheck.Extent > parkedAt);
+            var (heldOffset, grownExtent, _) = panel.LiveThoughtScrollForCheck;
+            Check(heldOffset <= 6 && grownExtent > parkedAt,
+                "思考框内上滑之后，新到的思考不再把读数位置拽回底部（滑到顶后偏移停在 " + F(heldOffset)
+                + "，内容已从 " + F(parkedAt) + " 长到 " + F(grownExtent) + "）");
+
+            // And it picks the follow back up the moment the reader goes back down. The lock is a position they
+            // are standing in, not a mode the box is caught in for the rest of the answer.
+            panel.ScrollLiveThoughtForCheck(grownExtent);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var beforeResumed = panel.LiveThoughtScrollForCheck.Extent;
+            await ReleaseAndAwaitAsync(1, () => panel.LiveThoughtScrollForCheck.Extent > beforeResumed);
+            var (resumedOffset, resumedExtent, resumedViewport) = panel.LiveThoughtScrollForCheck;
+            Check(resumedExtent > beforeResumed && resumedOffset + resumedViewport >= resumedExtent - 6,
+                "滑回底部之后跟随自己重新上弦，不必重开这一行（内容 " + F(beforeResumed) + " → "
+                + F(resumedExtent) + "）");
+
+            // Let the rest through, then read the fold off the painted text rather than off the run's buffer: the
+            // fold is a consequence of a paint, and the buffer is ahead of it.
+            await ReleaseAndAwaitAsync(20,
+                () => panel.LivePaintedTextForCheck.Contains("答案到了", StringComparison.Ordinal));
             // Read at the boundary: this is the last thing the live row will say, and the stored row has to say
             // the same number.
             var labelAtBoundary = panel.LiveThoughtLabelForCheck;
@@ -10115,9 +10160,31 @@ public partial class ShellCheckWindow : Window
     ///
     /// <para>Keep the total inside the pump's ceiling (a few hundred milliseconds): a stream that outlives
     /// <see cref="WaitForRunAsync"/> does not fail loudly, it fails as a missing notice.</para></summary>
+    /// <summary>A hand on the stream's throttle. Every <see cref="Wait"/> holds the fixture until the check calls
+    /// <see cref="Release"/>, so the check decides when the next chunk of thinking arrives and asserts on a state
+    /// it chose rather than on a moment it happened to catch. <c>Task.Delay</c> in 5ms steps rounds up to ~15ms on
+    /// Windows, which is how a check polling for "the next chunk landed" overshoots into the one after it and
+    /// starts passing or failing on scheduler luck rather than on the behaviour.
+    ///
+    /// <para>Counting permits rather than handing over a completion source is the whole point. A check releases a
+    /// batch and only then does the stream's next iteration come looking for it, so a release that arrives before
+    /// anyone is waiting must not evaporate — and it does evaporate when the waiter reads the task at call time:
+    /// fourteen releases bought fourteen swaps and one blocked stream.</para>
+    /// </summary>
+    private sealed class StepGate : IDisposable
+    {
+        private readonly SemaphoreSlim _gate = new(initialCount: 0);
+
+        internal Task Wait(CancellationToken cancellationToken = default) => _gate.WaitAsync(cancellationToken);
+
+        internal void Release() => _gate.Release();
+
+        public void Dispose() => _gate.Dispose();
+    }
+
     private sealed class ReasoningTrickleChatClient(
         int deltas, TimeSpan gap, TimeSpan silence, string? text = null, string? unit = null,
-        Task? afterTextGate = null)
+        Task? afterTextGate = null, Func<CancellationToken, Task>? pace = null)
         : Microsoft.Extensions.AI.IChatClient
     {
         public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
@@ -10136,7 +10203,10 @@ public partial class ShellCheckWindow : Window
             var piece = unit is { Length: > 0 } ? unit : "思考片段";
             for (var index = 0; index < deltas; index++)
             {
-                await Task.Delay(gap, cancellationToken);
+                // A pace the caller drives replaces the delay outright: the check decides when the next chunk of
+                // thinking arrives, so it can assert on a state it chose rather than on a moment it caught.
+                if (pace is { }) await pace(cancellationToken);
+                else await Task.Delay(gap, cancellationToken);
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant,
                     [new Microsoft.Extensions.AI.TextReasoningContent($"{piece}{index + 1}，")]);
