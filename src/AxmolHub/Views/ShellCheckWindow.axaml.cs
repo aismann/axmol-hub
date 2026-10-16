@@ -2005,6 +2005,8 @@ public partial class ShellCheckWindow : Window
         await CheckEmphasisAsync(shell, panel);
         await CheckThinkingAsync(shell, panel);
         await CheckRunElapsedAsync(shell, panel);
+        await CheckNarratedCallHandoffAsync(shell, panel);
+        await CheckThoughtDurationAsync(shell, panel);
         await CheckScrollAsync(shell, panel);
         await CheckThumbDragAsync(shell, panel);
         await CheckActivityOrchestrationAsync(shell, panel);
@@ -4315,6 +4317,98 @@ public partial class ShellCheckWindow : Window
                 "没记总耗时的轮次（老会话就是这种）不画那一行，也不谎报成本次共 0s（屏上 "
                 + panel.RunElapsedLinesForCheck().Count + " 行）");
             chat.DeleteConversation(oldSession.Id);
+        }
+        finally
+        {
+            chat.ClientOverride = savedOverride;
+            if (chat.Conversations.Any(summary => summary.Id == session.Id)) chat.DeleteConversation(session.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+        }
+    }
+
+    /// <summary>The sentence a call rode in on reaches the screen once, not twice.
+    ///
+    /// <para>A narrated call hands its prose to the transcript and clears the run's buffer in the same hop, so the
+    /// bubble repaints with an empty remainder. The throttle on the block still being typed used to swallow that
+    /// repaint as well, and the sentence stayed in the bubble beside the row that had just taken it over. Nothing
+    /// came after to correct it either: the next round says nothing until the tool returns, so no further delta
+    /// scheduled a paint, and the duplicate stood there for the whole length of the command. That is why the
+    /// fixture parks its second round — a client that answered at once would heal the very thing this reads.</para>
+    /// </summary>
+    private async Task CheckNarratedCallHandoffAsync(MainWindow shell, ChatPanel panel)
+    {
+        var chat = shell.Chat;
+        var savedOverride = chat.ClientOverride;
+        var session = chat.StartConversation();
+        chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
+        const string narration = "构建并跑修复后的完整自检：";
+        try
+        {
+            var secondRound = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            chat.ClientOverride = (_, _) => new NarratedCallChatClient(secondRound.Task, narration);
+            panel.SetInputForCheck("跑一下自检");
+            await panel.SendComposerForCheck();
+
+            // Waiting on the transcript row rather than on a delay: the row appears in the same hop that gave the
+            // bubble its chance to let go, so by the time this settles the repaint under test has already run.
+            await WaitUntilAsync(() => panel.PaintedRowsForCheck.Any(
+                row => row.Contains(narration, StringComparison.Ordinal)), maxTicks: 120);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var painted = panel.PaintedRowsForCheck.Count(
+                row => row.Contains(narration, StringComparison.Ordinal));
+            Check(painted == 1 && panel.LiveBlockCountForCheck == 0,
+                "带旁白的调用落盘后，这句旁白在屏上只有一份——实时气泡把它交棒给转录里那一行，而不是并排各留一份"
+                + "（屏上 " + painted + " 行，气泡里还留着 " + panel.LiveBlockCountForCheck + " 块）");
+
+            secondRound.SetResult(true);
+            await panel.WaitForRunToFinishForCheck();
+        }
+        finally
+        {
+            chat.ClientOverride = savedOverride;
+            if (chat.Conversations.Any(summary => summary.Id == session.Id)) chat.DeleteConversation(session.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+        }
+    }
+
+    /// <summary>The duration stored for a round's thinking is that round's, not the run's.
+    ///
+    /// <para>A tool loop thinks once per round, and the run's clock has been running since the first one. Read off
+    /// the run alone, the later rounds inherit everything before them: on a real session a few seconds of thinking
+    /// filed itself as <c>已思考 51m</c>. The fixture therefore parks the second round for a stretch the assertion
+    /// can point at — and reads that stretch back off the same turn, so a run that merely finished fast cannot
+    /// pass the check by being short.</para>
+    /// </summary>
+    private async Task CheckThoughtDurationAsync(MainWindow shell, ChatPanel panel)
+    {
+        var chat = shell.Chat;
+        var savedOverride = chat.ClientOverride;
+        var session = chat.StartConversation();
+        chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
+        try
+        {
+            var secondRound = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            chat.ClientOverride = (_, _) => new TwoRoundThinkingChatClient(secondRound.Task);
+            panel.SetInputForCheck("想两轮再答");
+            await panel.SendComposerForCheck();
+            await WaitUntilAsync(() => session.Messages.Any(turn => turn.ReasoningElapsed is not null),
+                maxTicks: 120);
+            // The gap between the rounds is the whole test, so it is real time rather than a poll: while this
+            // waits, the run is alive, the tool has come back, and the second round has thought nothing yet.
+            await Task.Delay(1200);
+            secondRound.SetResult(true);
+            await panel.WaitForRunToFinishForCheck();
+
+            var thought = session.Messages.Last(turn => turn.ReasoningElapsed is not null);
+            var took = thought.RunElapsed ?? TimeSpan.Zero;
+            Check(thought.ReasoningElapsed < TimeSpan.FromMilliseconds(600) && took > TimeSpan.FromSeconds(1),
+                "后一轮的「已思考」只算它自己那一段，不把前面几轮的工具时间也记在自己头上（这段思考 "
+                + thought.ReasoningElapsed?.TotalSeconds.ToString("0.00", CultureInfo.InvariantCulture)
+                + "s，整个运行 "
+                + took.TotalSeconds.ToString("0.00", CultureInfo.InvariantCulture) + "s）");
         }
         finally
         {
@@ -10517,6 +10611,98 @@ public partial class ShellCheckWindow : Window
             {
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant, "后说的话");
+            }
+
+            await Task.Yield();
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    /// <summary>One sentence, then a call that carries it, then a second round that stays silent until the check
+    /// lets it speak.
+    ///
+    /// <para>The pause is the fixture. Filing the call empties the run's buffer, and what the bubble keeps after
+    /// that is only wrong until something repaints it — so a model that answered its next round immediately would
+    /// hide the leftover rather than show it. Holding the second response open is the shape of a real run, where
+    /// the command takes a minute and the transcript sits there meanwhile.</para></summary>
+    private sealed class NarratedCallChatClient(Task secondRound, string narration) : Microsoft.Extensions.AI.IChatClient
+    {
+        private int _calls;
+
+        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
+            System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("The handoff check only uses the streaming path.");
+
+        public async System.Collections.Generic.IAsyncEnumerable<Microsoft.Extensions.AI.ChatResponseUpdate> GetStreamingResponseAsync(
+            System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            _calls++;
+            if (_calls == 1)
+            {
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant, narration);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant,
+                    [new Microsoft.Extensions.AI.FunctionCallContent(
+                        NextCallId("call-handoff"), "get_projects", new Dictionary<string, object?>())]);
+            }
+            else
+            {
+                await secondRound.ConfigureAwait(false);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant, "第二轮才开口");
+            }
+
+            await Task.Yield();
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    /// <summary>Two rounds, each thinking for as long as it takes to say one clause, with the second round held
+    /// back until the check opens it. The hold is what separates the two clocks: everything the run spends between
+    /// the rounds belongs to the run, and none of it belongs to the thinking that comes after.</summary>
+    private sealed class TwoRoundThinkingChatClient(Task secondRound) : Microsoft.Extensions.AI.IChatClient
+    {
+        private int _calls;
+
+        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
+            System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("The duration check only uses the streaming path.");
+
+        public async System.Collections.Generic.IAsyncEnumerable<Microsoft.Extensions.AI.ChatResponseUpdate> GetStreamingResponseAsync(
+            System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            _calls++;
+            if (_calls == 1)
+            {
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant,
+                    [new Microsoft.Extensions.AI.TextReasoningContent("第一轮想了一下。")]);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant, "先查一下工程列表");
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant,
+                    [new Microsoft.Extensions.AI.FunctionCallContent(
+                        NextCallId("call-duration"), "get_projects", new Dictionary<string, object?>())]);
+            }
+            else
+            {
+                await secondRound.ConfigureAwait(false);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant,
+                    [new Microsoft.Extensions.AI.TextReasoningContent("第二轮又想了一下。")]);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant, "两轮都想完了");
             }
 
             await Task.Yield();
