@@ -295,7 +295,40 @@ public partial class ShellCheckWindow : Window
         // Avalonia's TextBox carries no context menu of its own, so the box a person writes in had none while the
         // transcript beside it did. The three rows are the whole of what is expected there.
         Check(panel.ComposerMenuForCheck(),
-            "输入框的右键菜单给出常规的剪切/复制/粘贴三行");
+            "输入框的右键菜单给出常规的剪切/复制/粘贴三行，并挂在输入框自己的 ContextFlyout 上");
+        // Why the second half of that matters, driven end to end: the menu's popup takes the keyboard focus, and
+        // Avalonia clears a TextBox's selection on lost focus unless its own ContextFlyout/ContextMenu is the open
+        // one. A menu opened by hand from an event handler therefore wiped the selection, and 复制 acted on
+        // nothing. Select, ask for the menu the way a right-click does, press 复制, read the clipboard back — the
+        // earlier version of this check pressed the row without ever opening the menu, which is why it missed it.
+        panel.SetInputForCheck("copy me please");
+        // Where the composer is left at the end matters: the menu's popup takes the keyboard, so this excursion has
+        // to put the box back the way it found it or the group's own focus-highlight cell goes red for a reason
+        // that has nothing to do with the border it is testing.
+        var composerHadFocus = panel.ComposerHasKeyboardFocusForCheck;
+        panel.SelectComposerForCheck(0, 7);
+        var composerMenuUp = panel.OpenComposerContextMenuForCheck();
+        var keptSelection = panel.ComposerSelectionForCheck;
+        var pressedCopy = panel.PressComposerMenuRowForCheck(HubStrings.Get("CopyMessage"));
+        var copiedText = await panel.ClipboardTextForCheckAsync();
+        panel.HideComposerContextMenuForCheck();
+        Check(composerMenuUp && pressedCopy && keptSelection == (0, 7) && copiedText == "copy me",
+            "输入框菜单弹出后选区还在，点「复制」拿到剪贴板里的选中文本（菜单打开=" + composerMenuUp
+            + "，选区 " + keptSelection.Start + "–" + keptSelection.End + "，剪贴板「" + copiedText + "」）");
+
+        panel.SelectComposerForCheck(0, 7);
+        panel.OpenComposerContextMenuForCheck();
+        var pressedCut = panel.PressComposerMenuRowForCheck(HubStrings.Get("CutText"));
+        var cutText = await panel.ClipboardTextForCheckAsync();
+        var composerAfterCut = panel.InputTextForCheck;
+        panel.HideComposerContextMenuForCheck();
+        panel.SetInputForCheck("");
+        if (composerHadFocus) panel.FocusComposerForCheck();
+        else panel.MoveFocusOffComposerForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        Check(pressedCut && cutText == "copy me" && composerAfterCut == " please",
+            "点「剪切」把选中的那截从输入框里拿走并送进剪贴板（剪贴板「" + cutText + "」，输入框「" + composerAfterCut + "」）");
         panel.OpenContextPopoverForCheck();
         Dispatcher.UIThread.RunJobs();
         Check(panel.ContextPopoverOpenForCheck
@@ -552,8 +585,10 @@ public partial class ShellCheckWindow : Window
             + "，未标=" + chipProbe.ClickUnmarked + "）");
         Check(chipProbe.Found && chipProbe.DraggedCopied,
             "跨行内代码块的选区把它自己的代码也算进要复制的文本（读到「" + chipProbe.DraggedText + "」）");
-        Check(panel.MarkdownSelectionMenuForCheck() && panel.UserTurnSelectionMenuForCheck(),
-            "正文与自己发的消息都带选区右键菜单（复制/引用）");
+        Check(panel.MarkdownSelectionMenuForCheck(),
+            "正文的选区右键菜单给出「复制」「引用」（实际 " + panel.MarkdownSelectionMenuRowsForCheck + "）");
+        Check(panel.UserTurnSelectionMenuForCheck(),
+            "自己发的消息挂着同一份选区右键菜单（实际 " + panel.UserTurnSelectionMenuRowsForCheck + "）");
         panel.SetInputForCheck("");
         var quotedDraft = panel.QuoteSelectionForCheck();
         Check(quotedDraft.StartsWith("> ", StringComparison.Ordinal)

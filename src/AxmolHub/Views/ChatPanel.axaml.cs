@@ -4879,10 +4879,30 @@ public partial class ChatPanel : UserControl
                          && SelectionMenu.HeadersForCheck(text).SequenceEqual(expected));
     }
 
-    /// <summary>Whether the composer's right-click menu offers the three clipboard verbs.</summary>
+    /// <summary>The rows the reply on screen would offer, as text — the diagnosis half of the check above, so a
+    /// red cell says which surface lost its menu rather than only that one of them did.</summary>
+    internal string MarkdownSelectionMenuRowsForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+            .Select(SelectionMenu.DescribeForCheck)
+            .FirstOrDefault(rows => rows.Length > 0) ?? "";
+
+    /// <summary>The same for the person's own message.</summary>
+    internal string UserTurnSelectionMenuRowsForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+            .Where(border => border.Classes.Contains("user-pill"))
+            .SelectMany(pill => pill.GetLogicalDescendants().OfType<SelectableTextBlock>())
+            .Where(text => text.Classes.Contains("turn-text"))
+            .Select(SelectionMenu.DescribeForCheck)
+            .FirstOrDefault(rows => rows.Length > 0) ?? "";
+
+    /// <summary>Whether the composer's menu offers the three clipboard verbs — and whether it is the box's own
+    /// <c>ContextFlyout</c>. The second half is not decoration: Avalonia clears a TextBox's selection when it
+    /// loses focus unless its <c>ContextFlyout</c> or <c>ContextMenu</c> is the open one, and the menu's popup is
+    /// what takes that focus — a menu opened by hand from an event handler made 复制/剪切 act on nothing.</summary>
     internal bool ComposerMenuForCheck()
-        => SelectionMenu.HeadersForCheck(InputBox)
-            .SequenceEqual([HubStrings.Get("CutText"), HubStrings.Get("CopyMessage"), HubStrings.Get("PasteText")]);
+        => InputBox.ContextFlyout is MenuFlyout
+           && SelectionMenu.HeadersForCheck(InputBox)
+               .SequenceEqual([HubStrings.Get("CutText"), HubStrings.Get("CopyMessage"), HubStrings.Get("PasteText")]);
 
     /// <summary>Selects across the reply's inline code chip the way a drag does, presses the menu's 引用 row the
     /// way a click does, and hands back what the composer holds afterwards — the whole path from a selection to a
@@ -6255,6 +6275,68 @@ public partial class ChatPanel : UserControl
 
     /// <summary>Moves focus out of an open inline editor, the way clicking anywhere else in the window would.</summary>
     internal void FocusComposerForCheck() => InputBox.Focus();
+
+    // ── the composer's clipboard menu (used by --verify-shell) ──
+    // Read end to end, because the failure this covers lived in a step the object graph cannot see: the menu's
+    // popup takes the keyboard focus, and the box's own lost-focus path is what threw the selection away.
+
+    /// <summary>Selects a range in the composer, focused, the way a drag across it would.</summary>
+    internal void SelectComposerForCheck(int start, int length)
+    {
+        InputBox.Focus();
+        InputBox.SelectionStart = start;
+        InputBox.SelectionEnd = start + length;
+    }
+
+    /// <summary>The composer's selection, read by the check that a menu did not eat it.</summary>
+    internal (int Start, int End) ComposerSelectionForCheck => (InputBox.SelectionStart, InputBox.SelectionEnd);
+
+    /// <summary>Asks for the composer's right-click menu the way a right-click does — the request the framework
+    /// raises is raised here too, rather than the menu being opened by hand — so the flyout opens and takes the
+    /// focus the box reacts to. Named apart from <see cref="OpenComposerMenuForCheck"/>, which opens the ＋ menu.
+    /// Reports whether the menu is up.</summary>
+    internal bool OpenComposerContextMenuForCheck()
+    {
+        InputBox.RaiseEvent(new ContextRequestedEventArgs());
+        Dispatcher.UIThread.RunJobs();
+        return InputBox.ContextFlyout is { IsOpen: true };
+    }
+
+    internal void HideComposerContextMenuForCheck() => InputBox.ContextFlyout?.Hide();
+
+    /// <summary>Presses one row of the composer's menu the way a click does.</summary>
+    internal bool PressComposerMenuRowForCheck(string header)
+    {
+        if (SelectionMenu.ItemForCheck(InputBox, header) is not { } item) return false;
+        item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        return true;
+    }
+
+    /// <summary>What the clipboard holds as text — the read-back half of the menu check. Empty when the clipboard
+    /// is unavailable or carries no text, read the way <c>TryPastePictureAsync</c> reads it, because the platform
+    /// having no clipboard must not look like a failed copy.</summary>
+    internal async Task<string> ClipboardTextForCheckAsync()
+    {
+        if (TopLevel.GetTopLevel(this)?.Clipboard is not { } clipboard) return "";
+        try
+        {
+            if (await clipboard.TryGetDataAsync() is not { } transfer) return "";
+            foreach (var item in transfer.Items)
+            {
+                if (item.Formats.Contains(DataFormat.Text)
+                    && await item.TryGetRawAsync(DataFormat.Text) is string text)
+                {
+                    return text;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return "";
+        }
+
+        return "";
+    }
 
     // ── Empty state ──
     // The chips are asserted through the object graph and through a real ClickEvent, never by reading the text

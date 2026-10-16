@@ -15,11 +15,12 @@ namespace AxmolHub;
 /// button and Ctrl+C, and Ctrl+C copies whatever the library can extract (see
 /// <see cref="MarkdownMessageRenderer.SelectionText"/> for what its extractor leaves out).</para>
 ///
-/// <para>Opening is driven by <see cref="InputElement.ContextRequestedEvent"/> rather than by the
-/// <c>ContextFlyout</c> property, because a menu on a message is earned by a selection: with nothing selected the
-/// event is left unhandled and no menu appears. That is also why the menu is kept in the table below — a control
-/// asked for a menu it owns through <c>ContextFlyout</c> can answer, and one that opens on request cannot, so the
-/// answer a check needs lives here next to the attachment.</para>
+/// <para>Two routes on purpose, because the two surfaces want opposite things from a right-click. A menu on a
+/// message is <i>earned by a selection</i>: it is opened from a context-requested handler and appears only when
+/// there is something to act on. The composer's is assigned to <see cref="Control.ContextFlyout"/>, which the
+/// framework opens itself — and that route is not cosmetic: it is what keeps the box's selection alive while the
+/// menu is up (see <see cref="AttachTextBox"/>). Because the table below cannot answer for a menu the framework
+/// owns, the lookups read <see cref="Control.ContextFlyout"/> first and fall back to it.</para>
 /// </summary>
 internal static class SelectionMenu
 {
@@ -59,8 +60,20 @@ internal static class SelectionMenu
         }, RoutingStrategies.Bubble, handledEventsToo: true);
     }
 
-    /// <summary>The composer's menu. Unlike a message, a text box always has something a right-click can offer,
-    /// so this one opens unconditionally and disables the rows the box cannot act on.</summary>
+    /// <summary>The composer's menu: the three clipboard verbs, each enabled by what the box can actually do
+    /// with it right now.
+    ///
+    /// <para>Assigned to <see cref="Control.ContextFlyout"/> rather than opened from a context-requested handler,
+    /// and that is not a style choice — it is the one thing that keeps the selection alive. A popup takes keyboard
+    /// focus, and Avalonia's <c>TextBox.OnLostFocus</c> clears the selection unless its own
+    /// <c>ContextFlyout</c>/<c>ContextMenu</c> is the open one (measured: the guard is
+    /// <c>ContextFlyout is { IsOpen: true } || ContextMenu is { IsOpen: true }</c>, and
+    /// <c>ClearSelectionOnLostFocus</c> defaults to true). A menu opened by hand from an event handler leaves both
+    /// properties null, so the box wiped the selection the moment the menu appeared and 复制/剪切 acted on
+    /// nothing. The framework's own path also positions the flyout from the request position, so the menu still
+    /// appears at the pointer. And unlike a message's menu this one always opens: a text box with nothing selected
+    /// still has 粘贴 to offer, and the two verbs that cannot act are greyed instead of absent.</para>
+    /// </summary>
     internal static void AttachTextBox(TextBox box)
     {
         var menu = new MenuFlyout();
@@ -77,31 +90,46 @@ internal static class SelectionMenu
         paste.Click += (_, _) => box.Paste();
         menu.Items.Add(paste);
 
-        Attached.AddOrUpdate(box, menu);
-        box.AddHandler(InputElement.ContextRequestedEvent, (_, e) =>
+        // Enabled as the menu opens, per box state: rows that come and go under the pointer are worse than rows
+        // that are greyed, and an empty selection leaves 复制 as the answer to "why is this dead".
+        menu.Opened += (_, _) =>
         {
-            // Enabled per box state rather than hidden: rows that come and go under the pointer are worse than
-            // rows that are greyed, and an empty clipboard still leaves 粘贴 as the answer to "why is this dead".
             cut.IsEnabled = box.CanCut;
             copy.IsEnabled = box.CanCopy;
             paste.IsEnabled = box.CanPaste;
-            e.Handled = true;
-            menu.ShowAt(box, showAtPointer: true);
-        }, RoutingStrategies.Bubble, handledEventsToo: true);
+        };
+        box.ContextFlyout = menu;
+        Attached.AddOrUpdate(box, menu);
     }
 
     /// <summary>The rows a surface's menu offers, by their localized headers — empty when it has no menu. Read
-    /// from the checks, which is the only reason the table above is kept.</summary>
+    /// from the checks, which is the only reason the table above is kept; the composer's menu is found through
+    /// <see cref="Control.ContextFlyout"/> instead, because that is where it lives, and reading it from there is
+    /// part of what a check asserts about it.</summary>
     internal static IReadOnlyList<string> HeadersForCheck(Control target)
-        => Attached.TryGetValue(target, out var menu)
+        => MenuOf(target) is { } menu
             ? menu.Items.OfType<MenuItem>().Select(item => item.Header?.ToString() ?? "").ToArray()
             : [];
 
     /// <summary>The row itself, for a check that presses it the way a hand does.</summary>
     internal static MenuItem? ItemForCheck(Control target, string header)
-        => Attached.TryGetValue(target, out var menu)
-            ? menu.Items.OfType<MenuItem>().FirstOrDefault(item => item.Header?.ToString() == header)
-            : null;
+        => MenuOf(target)?.Items.OfType<MenuItem>()
+            .FirstOrDefault(item => item.Header?.ToString() == header);
+
+    /// <summary>The rows as one line, for the message of a check that failed: "复制|引用", or empty when the
+    /// surface carries no menu. A boolean that cannot say which half of it was false costs a second run to
+    /// diagnose.</summary>
+    internal static string DescribeForCheck(Control target) => string.Join("|", HeadersForCheck(target));
+
+    /// <summary>The menu a surface was given, wherever it was given: the table this file keeps first, because a
+    /// menu this file attached is the one a check is asking about, then <see cref="Control.ContextFlyout"/> — which
+    /// is where the composer's lives, and where a control may also carry a menu of somebody else's (the rendered
+    /// Markdown ships controls with context properties of their own, and asking the control first made this answer
+    /// about those instead).</summary>
+    private static MenuFlyout? MenuOf(Control target)
+        => Attached.TryGetValue(target, out var attached)
+            ? attached
+            : target.ContextFlyout as MenuFlyout;
 
     private static async Task CopyAsync(Control source, string text)
     {
