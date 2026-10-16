@@ -8,7 +8,7 @@ The AI assistant is a general-purpose programming and debugging agent. It can ma
 
 [![Powered by OrcaRouter](https://img.shields.io/badge/Powered_by-OrcaRouter-2563eb)](https://www.orcarouter.ai/ref/ref_e3b6a1445aa97ab3c359)
 
-See [Releases](https://github.com/axmolengine/axmol-hub/releases) for published builds. The GUI is C# / .NET 8 / **Avalonia** (`net8.0`); Windows is validated, while macOS and Linux GUIs are not yet verified.
+See [Releases](https://github.com/axmolengine/axmol-hub/releases) for published builds. The GUI is C# / .NET 8 / **Avalonia** (`net8.0`); Windows and Linux are validated, while macOS GUIs are not yet verified.
 
 ![Axmol Hub main window](docs/images/hub.png)
 
