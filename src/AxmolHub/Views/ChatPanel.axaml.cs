@@ -4087,7 +4087,12 @@ public partial class ChatPanel : UserControl
 
         var open = text[bubble.Settled..];
         if (open == bubble.OpenBlockSource) return;
-        if (!force && bubble.OpenBlockSource.Length > 0
+        // The throttle bounds how often a block that is <i>still growing</i> gets rebuilt. An empty remainder is a
+        // removal, and a removal builds nothing, so it never waits: holding it back for one window left the last
+        // segment's sentence painted in the bubble beside the transcript row that had just taken it over, which
+        // read as the model saying the same thing twice — and since a parked tool emits no further delta, nothing
+        // came after to correct it until the next round spoke.
+        if (open.Length > 0 && !force && bubble.OpenBlockSource.Length > 0
             && Environment.TickCount64 - bubble.OpenBlockPaintedAt < OpenBlockMilliseconds) return;
 
         DropOpenBlock(bubble);
