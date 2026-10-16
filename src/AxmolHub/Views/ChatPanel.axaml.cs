@@ -2192,7 +2192,11 @@ public partial class ChatPanel : UserControl
         // thinking itself is what belongs there, and it is added below once the answer has been rendered.
         if (turn.Role == ChatRoles.Tool) body.Children.Add(ToolResultLine(toolName, turn));
         else if (!isPlanTurn && turn.Text.Length > 0)
-            body.Children.Add(new TextBlock { Classes = { "turn-text" }, Text = turn.Text });
+            // Selectable, not a bare TextBlock: this is the person's own words, and words somebody wrote are words
+            // they copy — a TextBlock cannot be selected at all, which made the one message they certainly care
+            // about the only one on screen that could not be. It carries the same `turn-text` class, so its size,
+            // ink and leading stay the ones the style already states for this row.
+            body.Children.Add(new SelectableTextBlock { Classes = { "turn-text" }, Text = turn.Text });
 
         // What the person attached is shown from the file Hub kept, not from anything this view remembers: the
         // transcript is the only copy of "this message had a picture in it", and a row rebuilt after a restart
@@ -4646,6 +4650,16 @@ public partial class ChatPanel : UserControl
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
             .Select(MarkdownMessageRenderer.ProbeChipSelectionForCheck)
             .FirstOrDefault(probe => probe.Found);
+
+    /// <summary>Whether the person's own message is drawn with text that can be selected at all, and paints the
+    /// band from the same token as everything else. A bare <see cref="TextBlock"/> answers false to both, which
+    /// is what the row used to be.</summary>
+    internal bool UserTurnTextIsSelectableForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+            .Where(border => border.Classes.Contains("user-pill"))
+            .SelectMany(pill => pill.GetLogicalDescendants().OfType<SelectableTextBlock>())
+            .Any(text => text.Classes.Contains("turn-text")
+                         && MarkdownMessageRenderer.MatchesToken(text.SelectionBrush, "Hub.Selection"));
 
     internal void ApplyMarkdownSyntaxHighlightingForCheck()
     {

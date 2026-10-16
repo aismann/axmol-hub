@@ -1105,12 +1105,24 @@
     <!-- A turn's own words, whether or not they are Markdown. The rendered-Markdown layer is 12 (declared in
          HubMarkdownStyles, which is the winning style set for that subtree), and only the last 40 turns go
          through it — so anything but 12 here would make the same message change size as it scrolled away. The ink
-         follows the same argument: Hub.TextBody, or a message would also brighten at that boundary. -->
-    <Style Selector="TextBlock.turn-text">
+         follows the same argument: Hub.TextBody, or a message would also brighten at that boundary.
+         The selector names the class rather than the control on purpose. A type selector matches that exact type,
+         so `TextBlock.turn-text` stopped reaching the user's own row the moment it became a SelectableTextBlock,
+         and the row fell back to the control default 14 in the primary ink — which the typography checks caught.
+         Writing the class instead means the size, ink and leading are stated once for a row that can be either
+         kind of block; the directive names the type the setters resolve against, since a class-only selector has
+         no type of its own to resolve them on. SelectionBrush stays in its own rule below: it is the one property
+         only the selectable half has. -->
+    <Style Selector=".turn-text" x:SetterTargetType="TextBlock">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
       <Setter Property="TextWrapping" Value="Wrap" />
       <Setter Property="LineHeight" Value="20" />
+    </Style>
+    <!-- Selecting the person's own words paints the same band the rendered answers do, so the row does not change
+         colour depending on which side of the transcript it sits on. -->
+    <Style Selector="SelectableTextBlock.turn-text">
+      <Setter Property="SelectionBrush" Value="{DynamicResource Hub.Selection}" />
     </Style>
     <!-- What the model thought before it answered. Deliberately not Markdown: a chain of thought is a draft, not
          a document the model was asking to have formatted, and rendering it as one would spend a viewer and a

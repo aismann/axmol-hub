@@ -1313,6 +1313,11 @@ public partial class ShellCheckWindow : Window
 
         Check(opsConversation.Messages.Count == 2 && opsConversation.Messages[0].Role == ChatRoles.User,
             "会话记录了用户与助手两轮（实际 " + opsConversation.Messages.Count + "）");
+        // The person's own words are the message they are most likely to copy, and a bare TextBlock cannot be
+        // selected at all. Read as the shape it is: a selectable block, carrying the row's own class, painting the
+        // same band the rendered answers paint.
+        Check(panel.UserTurnTextIsSelectableForCheck,
+            "自己发的消息画成可选文本（SelectableTextBlock）并沿用 Hub 选取底色");
         Check(panel.BubbleHasAction(0, "CopyMessage") && panel.BubbleHasAction(0, "EditMessage")
               && panel.BubbleHasIconAction(0, "CopyMessage") && panel.BubbleHasIconAction(0, "EditMessage"),
             "用户消息悬停操作栏提供复制图标与编辑图标");
