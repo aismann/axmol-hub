@@ -160,6 +160,23 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// </summary>
     public TimeSpan? ReasoningElapsed { get; init; }
 
+    /// <summary>How long the whole run took to produce this answer — thinking, every tool round, and the prose —
+    /// on the run's own banked clock, so a stretch spent parked on an approval card is not charged to the work.
+    ///
+    /// <para>Filed on the turn rather than re-derived from the turns' <see cref="At"/> spans because those two
+    /// measurements already disagree on purpose (see <c>FormatDuration</c>), and a total that changed depending on
+    /// which one a surface happened to reach for would be worse than no total. It is also the only way to keep it
+    /// at all: the run is removed and disposed the moment it ends, and the live bubble that displayed the number is
+    /// thrown away in the same repaint.</para>
+    ///
+    /// <para>Only the last prose answer of a run carries it. A tool loop files a prose turn per round, and
+    /// stamping each with the run's cumulative clock would print one reply visibly growing.</para>
+    ///
+    /// <para>Null means it was never recorded — every turn written before this field, and every ending that was
+    /// not a completion. Not zero: 本次共 0s would be a claim, and usually a false one.</para>
+    /// </summary>
+    public TimeSpan? RunElapsed { get; init; }
+
     /// <summary>Permission state of a tool call that needed one; <c>null</c> means there was nothing to decide.
     /// Values come from <see cref="ChatApprovalStates"/>.</summary>
     public string? ApprovalState { get; init; }

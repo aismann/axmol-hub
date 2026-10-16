@@ -1135,6 +1135,14 @@
       <Setter Property="TextWrapping" Value="Wrap" />
       <Setter Property="LineHeight" Value="20" />
     </Style>
+    <!-- How long a run took, said once at the end of the answer it belongs to. Quieter than the body, and
+         deliberately not hover-revealed: the reader watched this number climb, so the moment it stops working is
+         the worst possible moment to hide it behind a pointer. -->
+    <Style Selector="TextBlock.run-elapsed">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
     <!-- The empty state's suggestion chips: the greeting's promise stated as things the assistant can actually
          do. Quiet by default — secondary text on a hairline pill — so the centred column still reads as a greeting
          first and a starting point second, and wraps inside a bounded row instead of widening the column. -->

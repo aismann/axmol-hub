@@ -5453,6 +5453,13 @@ public sealed class ChatWorkspace : IDisposable
                 opened.LastNotice = noticeKey is { Length: > 0 } key
                     ? new SessionNotice(key, detail, danger, userTurns, DateTimeOffset.Now)
                     : null;
+                // The run's total, filed while the clock it belongs to is still readable. <see
+                // cref="ConversationRun.Finish"/> froze it one line above this hop, so this is the number the
+                // reader watched climb — and after <c>_runs.Remove</c> and <c>run.Dispose()</c> below it is the
+                // only place the number can still be got at. A stopped or failed round is left without one: that
+                // ending already has its own notice line, and a duration beside it would be the same sentence
+                // twice with two different clocks.
+                if (result == RunResult.Completed) StampRunElapsed(opened, run.Elapsed);
             });
             Changed?.Invoke();
             RunsChanged?.Invoke(run.ConversationId);
@@ -5464,6 +5471,31 @@ public sealed class ChatWorkspace : IDisposable
             // the registry, or the fleet would be one session over its own cap.
             StartNextQueuedWake();
         });
+    }
+
+    /// <summary>
+    /// Files the run's total on the answer it produced, so the number outlives the run.
+    ///
+    /// <para>Only the newest prose answer is stamped. A tool loop files a prose turn per round, and writing the
+    /// run's cumulative clock onto each would print one reply visibly growing as the reader scrolled back through
+    /// it.</para>
+    ///
+    /// <para>A turn that already carries one is left alone: a session steered mid-answer completes more than once,
+    /// and the later round would otherwise overwrite the total the first one earned.</para>
+    /// </summary>
+    private static void StampRunElapsed(Conversation opened, TimeSpan elapsed)
+    {
+        for (var index = opened.Messages.Count - 1; index >= 0; index--)
+        {
+            var turn = opened.Messages[index];
+            if (turn.Role != ChatRoles.Assistant || turn.ToolCallId is { Length: > 0 }) continue;
+            // A filed plan has no text left on its own turn, and the plan finishing IS the run finishing — so it
+            // counts as an answer here rather than being stepped over on an empty-text test.
+            if (turn.Text.Length == 0 && turn.PlanApprovalState is not { Length: > 0 }) continue;
+            if (turn.RunElapsed is not null) return;
+            opened.Messages[index] = turn with { RunElapsed = elapsed };
+            return;
+        }
     }
 
     /// <summary>

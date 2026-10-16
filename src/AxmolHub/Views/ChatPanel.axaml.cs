@@ -2247,6 +2247,17 @@ public partial class ChatPanel : UserControl
             && BuildThoughtRowForTurn(conversationId, turn, inGroup) is { } reasoning)
             body.Children.Insert(0, reasoning);
 
+        // The run's total, said once on the answer it belongs to. Always visible rather than hover-revealed: the
+        // reader watched this number climb while the reply arrived, and making it hard to reach the moment it
+        // stops would be exactly backwards. A plan's turn gets it too — the plan finishing IS the run finishing.
+        if (!fromUser && turn.Role != ChatRoles.Tool && turn.RunElapsed is { } took)
+            body.Children.Add(new TextBlock
+            {
+                Classes = { "run-elapsed" },
+                Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("ChatRunElapsedFormat"), FormatDuration(took)),
+            });
+
         // Added after the Markdown pass rather than before it, because <see cref="MarkdownMessageRenderer.RenderInto"/>
         // clears the panel it renders into: a line laid down first is not underneath the answer, it is gone. This is
         // also the order the person reads — the reply, then where it came from, then any record of a decision.
@@ -2963,7 +2974,7 @@ public partial class ChatPanel : UserControl
     /// which banks and stops while a person is deciding on an approval card, and the group title spans the stored
     /// turns, so it counts that decision too. A group that agreed to the second with the bubble it replaced would
     /// mean the reply suddenly got shorter the moment it finished.</summary>
-    private static string FormatDuration(TimeSpan span)
+    internal static string FormatDuration(TimeSpan span)
         => span.TotalMinutes >= 1
             ? $"{(int)span.TotalMinutes}m {span.Seconds:D2}s"
             : $"{Math.Max(0, (int)span.TotalSeconds)}s";
@@ -5196,6 +5207,14 @@ public partial class ChatPanel : UserControl
     internal bool PermissionChipEnabledForCheck => PermissionChip.IsEnabled;
     internal bool ChatActivityVisibleForCheck => _live is { Timer: not null };
     internal string ChatActivityTextForCheck => _live?.Status.Text ?? "";
+    /// <summary>The elapsed lines the transcript is drawing, in document order. Empty is the pass condition for a
+    /// turn that recorded no total: an older session has to show nothing, not a confident 本次共 0s.</summary>
+    internal IReadOnlyList<string> RunElapsedLinesForCheck()
+        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+            .Where(block => block.Classes.Contains("run-elapsed"))
+            .Select(block => block.Text ?? "")
+            .ToArray();
+
     internal string ChatActivityElapsedForCheck => _live?.Elapsed.Text ?? "";
     internal double MessageFlowWidthForCheck => MessageFlow.Bounds.Width;
     internal double MessageRowWidthForCheck(int visibleIndex)

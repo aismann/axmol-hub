@@ -908,6 +908,10 @@ public static class HubTexts
         // surface that has just covered the window, and a keyboard exit nobody announces is not a keyboard exit.
         ["InspectorExpand"] = ("撑开面板到整个窗口", "Expand the panel to the whole window"),
         ["InspectorRestore"] = ("还原成右边那一列（Esc）", "Back to the right-hand column (Esc)"),
+        // Said once, at the end of the answer. The live bubble counts this number while the reply arrives and is
+        // thrown away with it, so without this line the total exists only at the moment nobody is reading the
+        // result — and the one surface that keeps anything afterwards is a hover-revealed action bar.
+        ["ChatRunElapsedFormat"] = ("本次共 {0}", "Took {0}"),
         // ── A run's activity, folded into one collapsible group ──
         // The head counts once there is more than one action to summarise. Naming the first of a long run reads
         // as a claim about what the run was for, and it is not — it is whichever call happened to come first. A

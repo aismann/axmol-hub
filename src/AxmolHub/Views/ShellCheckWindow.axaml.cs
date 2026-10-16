@@ -1958,6 +1958,7 @@ public partial class ShellCheckWindow : Window
         await CheckTypographyAsync(shell, panel);
         await CheckEmphasisAsync(shell, panel);
         await CheckThinkingAsync(shell, panel);
+        await CheckRunElapsedAsync(shell, panel);
         await CheckScrollAsync(shell, panel);
         await CheckActivityOrchestrationAsync(shell, panel);
         await CheckToolFloodAsync(shell, panel);
@@ -4184,6 +4185,88 @@ public partial class ShellCheckWindow : Window
                 "不弹审批卡也不留撤销副本的静默调用，它那一轮的思考也有落点（屏上思考块 "
                 + panel.ReasoningTextsForCheck().Count + " 个）");
             chat.DeleteConversation(silentSession.Id);
+        }
+        finally
+        {
+            chat.ClientOverride = savedOverride;
+            if (chat.Conversations.Any(summary => summary.Id == session.Id)) chat.DeleteConversation(session.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+        }
+    }
+
+    /// <summary>
+    /// The run's total, on the answer it produced.
+    ///
+    /// Three things have to hold at once, and each one fails differently. The number has to survive being read
+    /// back — by then the run is disposed and the bubble that displayed it is gone, so anything not filed on the
+    /// turn is simply lost. Exactly one turn of a multi-round run has to carry it, or a reply prints its own
+    /// growing total as the reader scrolls. And a turn that never recorded one has to say nothing, because
+    /// 本次共 0s is a claim about a run nobody timed.
+    /// </summary>
+    private async Task CheckRunElapsedAsync(MainWindow shell, ChatPanel panel)
+    {
+        var chat = shell.Chat;
+        var savedOverride = chat.ClientOverride;
+        var session = chat.StartConversation();
+        chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
+        try
+        {
+            // ── one answer, one line ──
+            chat.ClientOverride = (_, _) => new ScriptedChatClient(["这一轮回答完了。"]);
+            panel.SetInputForCheck("答一次就好");
+            await panel.SendComposerForCheck();
+            await panel.WaitForRunToFinishForCheck();
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var answer = session.Messages.Last(turn => turn.Role == ChatRoles.Assistant);
+            var wanted = answer.RunElapsed is { } one
+                ? string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatRunElapsedFormat"),
+                    ChatPanel.FormatDuration(one))
+                : "";
+            var lines = panel.RunElapsedLinesForCheck();
+            Check(answer.RunElapsed is not null && lines.Contains(wanted),
+                "回答落盘时带上本次总耗时，切回来看还是同一个数（屏上 [" + string.Join(" | ", lines)
+                + "]，期望「" + wanted + "」）");
+
+            // ── a tool loop is one run, so it is one number on one turn ──
+            var loopSession = chat.StartConversation();
+            chat.SetApprovalMode(loopSession.Id, ToolApprovalModes.Full);
+            chat.OpenConversation(loopSession.Id);
+            var loop = new ApprovalChatClient
+            {
+                CallsRemaining = 2,
+                ToolName = "list_directory",
+                Arguments = new Dictionary<string, object?> { ["path"] = "." },
+            };
+            chat.ClientOverride = (_, _) => loop;
+            panel.SetInputForCheck("列两次目录再回答");
+            await panel.SendComposerForCheck();
+            await panel.WaitForRunToFinishForCheck();
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var stamped = loopSession.Messages.Count(turn => turn.RunElapsed is not null);
+            Check(stamped == 1 && panel.RunElapsedLinesForCheck().Count == 1,
+                "跑了几轮工具的回答只盖一个总耗时，不会每轮都写、也不会滚回去看见同一个回答在变大（盖了 "
+                + stamped + " 个轮次，屏上 " + panel.RunElapsedLinesForCheck().Count + " 行）");
+            chat.DeleteConversation(loopSession.Id);
+
+            // ── nothing recorded is nothing said ──
+            // An older session loads its turns with no such field. The honest rendering of that is no line at
+            // all, and this is the reason the field is nullable rather than a TimeSpan defaulting to zero.
+            var oldSession = chat.StartConversation();
+            chat.OpenConversation(oldSession.Id);
+            oldSession.Append(ChatTurn.User("老问题"));
+            oldSession.Append(ChatTurn.Assistant("老回答"));
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(oldSession.Messages.Last().RunElapsed is null && panel.RunElapsedLinesForCheck().Count == 0,
+                "没记总耗时的轮次（老会话就是这种）不画那一行，也不谎报成本次共 0s（屏上 "
+                + panel.RunElapsedLinesForCheck().Count + " 行）");
+            chat.DeleteConversation(oldSession.Id);
         }
         finally
         {
