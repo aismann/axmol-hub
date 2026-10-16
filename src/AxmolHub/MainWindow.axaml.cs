@@ -479,6 +479,11 @@ public partial class MainWindow : Window
     {
         _chat.RunsChanged += _ => UpdateChatRunsStatus();
         _chat.Changed += SyncApprovalBadge;
+        // The top-bar page title is the active conversation's title, and opening another session or renaming the
+        // open one raises nothing but Changed - so the refresh belongs here too. Same contract as
+        // UpdateRepoIndicator: repaint from state already in memory (no reads hung off the event), and see
+        // SyncPageTitle for the hop and the null test this needs on the way in.
+        _chat.Changed += SyncPageTitle;
         _chat.AttentionRequired += OnChatAttentionRequired;
         _chat.RunCompleted += OnChatRunCompleted;
         // The strip's repository slot is a render of what has already been read, so it follows the reads other
@@ -565,6 +570,24 @@ public partial class MainWindow : Window
             _attention.SetApprovalBadge(this, _attentionDiagnosticBadge == true
                 ? 1
                 : _chat.PendingApprovalConversationCount());
+    }
+
+    /// <summary>
+    /// Repaints the top-bar page title after any <see cref="ChatWorkspace.Changed"/> raise. Switching to another
+    /// session and renaming the open one are visible only through that event, and a title left on the previous
+    /// session is a title that lies - so this is where the refresh hangs. The hop and the null test are
+    /// <see cref="SyncApprovalBadge"/>'s, for the same reasons: not every raise site is provably on the UI thread,
+    /// and <c>WireChatRuns</c> subscribes before <c>InitializeComponent</c> has built <c>PageTitle</c>.
+    /// </summary>
+    private void SyncPageTitle()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(SyncPageTitle);
+            return;
+        }
+        if (PageTitle is null) return;
+        UpdatePageTitle();
     }
 
     private void NotificationActivated(string conversationId)

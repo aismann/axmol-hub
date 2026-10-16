@@ -762,6 +762,32 @@ public partial class ShellCheckWindow : Window
         Check(shell.PageTitleText == saved.Title,
             "会话首条消息完成后顶栏标题更新（实际「" + shell.PageTitleText + "」）");
 
+        // The page title is state, not a label repainted whenever somebody remembered to: opening another session
+        // repaints it at once, renaming the open session repaints it too, and renaming a session that is not open
+        // leaves it alone. All three paths raise nothing but ChatWorkspace.Changed, so they are asserted together.
+        // The fixtures leave nothing behind: the count checks below measure the same list they were written against.
+        var titleSwitch = shell.Chat.StartConversation();
+        shell.Chat.SeedTurnForCheck(titleSwitch.Id, "顶栏跟随甲");
+        var titleStay = shell.Chat.StartConversation();
+        shell.Chat.SeedTurnForCheck(titleStay.Id, "顶栏跟随乙");
+        shell.Chat.OpenConversation(titleSwitch.Id);
+        var titleSawSwitch = shell.PageTitleText;
+        shell.Chat.OpenConversation(titleStay.Id);
+        var titleSawStay = shell.PageTitleText;
+        Check(titleSawSwitch == titleSwitch.Title && titleSawStay == titleStay.Title,
+            "切换会话后顶栏标题立即跟随当前会话（甲「" + titleSawSwitch + "」应为「" + titleSwitch.Title
+            + "」，乙「" + titleSawStay + "」应为「" + titleStay.Title + "」）");
+        var titleRenamed = shell.Chat.RenameConversation(titleStay.Id, "顶栏跟随改名");
+        Check(titleRenamed && shell.PageTitleText == "顶栏跟随改名",
+            "重命名当前会话后顶栏标题立即更新（实际「" + shell.PageTitleText + "」）");
+        var titleRenamedOther = shell.Chat.RenameConversation(titleSwitch.Id, "顶栏不动的改名");
+        Check(titleRenamedOther && shell.PageTitleText == "顶栏跟随改名",
+            "改的是非当前会话时顶栏标题不动（实际「" + shell.PageTitleText + "」）");
+        shell.Chat.DeleteConversation(titleSwitch.Id);
+        shell.Chat.DeleteConversation(titleStay.Id);
+        shell.Chat.OpenConversation(saved!.Id);
+        sidebar.Reload();
+
         // A chat that holds nothing is the composer's blank state rather than a conversation, so it earns its
         // row with its first message.
         var second = shell.Chat.StartConversation();
