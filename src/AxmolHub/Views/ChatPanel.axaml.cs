@@ -121,8 +121,15 @@ public partial class ChatPanel : UserControl
         /// arrived while the repaint was held back.</summary>
         public string PaintedText { get; set; } = "";
 
-        public required TextBlock Thought { get; init; }
-        public required Control ThoughtHost { get; init; }
+        /// <summary>The thinking, as the very same row the stored turn will use. Drawn while reasoning is the only
+        /// thing arriving and folded when the answer starts — never hidden, because a reader who watched forty
+        /// seconds of it did not ask for it to vanish the moment the result turned up.</summary>
+        public required ThoughtRowView Thought { get; init; }
+
+        /// <summary>Whether the thinking body is following the newest line. Its own copy of the transcript's
+        /// stick-to-bottom rule, because a box that always follows is a box nobody can read the top of.</summary>
+        public bool ThoughtStick { get; set; } = true;
+
         public required TextBlock Status { get; init; }
         public required TextBlock Elapsed { get; init; }
         public required ActivityGlyph Glyph { get; init; }
@@ -2117,7 +2124,7 @@ public partial class ChatPanel : UserControl
             _openGroup = null;
             var (index, turn, toolName) = visible[i];
             AppendRenderedTurn(conversation.Id, index, turn, toolName, isLast: index == lastIndex,
-                markdown: i >= visible.Count - EagerMarkdownLimit, target: MessageFlow);
+                markdown: i >= visible.Count - EagerMarkdownLimit, target: MessageFlow, inGroup: false);
             _renderedCount = i + 1;
             i++;
         }
@@ -2147,7 +2154,7 @@ public partial class ChatPanel : UserControl
 
     private void AppendRenderedTurn(
         string conversationId, int index, ChatTurn turn, string? toolName, bool isLast, bool markdown,
-        Panel target)
+        Panel target, bool inGroup)
     {
         var fromUser = turn.Role == ChatRoles.User;
         var body = new StackPanel { Spacing = 8 };
@@ -2233,7 +2240,7 @@ public partial class ChatPanel : UserControl
         // the panel it renders into. Laid down before that call it would not sit under the answer, it would be
         // gone with everything else the panel held.
         if (!fromUser && !isPlanTurn && turn.Role != ChatRoles.Tool
-            && BuildReasoningBlock(conversationId, turn) is { } reasoning)
+            && BuildThoughtRowForTurn(conversationId, turn, inGroup) is { } reasoning)
             body.Children.Insert(0, reasoning);
 
         // Added after the Markdown pass rather than before it, because <see cref="MarkdownMessageRenderer.RenderInto"/>
@@ -2415,9 +2422,13 @@ public partial class ChatPanel : UserControl
             {
                 if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 } || IsNarratedCall(turn))
                     AppendRenderedTurn(conversationId, index, turn, toolName, isLast: index == lastIndex,
-                        markdown: index >= visibleCount - EagerMarkdownLimit, target: inner);
-                // A silent call renders no row of its own: its action row is drawn from the result below, so
-                // emitting a row here would only add a gap.
+                        markdown: index >= visibleCount - EagerMarkdownLimit, target: inner, inGroup: true);
+                else if (BuildThoughtRowForTurn(conversationId, turn, inGroup: true) is { } silentThought)
+                    // A silent call renders no row of its own: its action row is drawn from the result below, so
+                    // emitting one here would only be a gap. Thinking is the exception — it is content, and until
+                    // now it was filed on a turn that painted nothing at all, which left a whole round of
+                    // reasoning on the record and nowhere on screen.
+                    inner.Children.Add(silentThought);
                 continue;
             }
 
@@ -2431,9 +2442,11 @@ public partial class ChatPanel : UserControl
                 continue;
             }
 
-            // A thinking-only turn (or anything else machine-shaped) renders as before.
-            AppendRenderedTurn(conversationId, index, turn, toolName, isLast: index == lastIndex,
-                markdown: false, target: inner);
+            // A thinking-only turn <i>is</i> the row, not a row holding a fold. Routing it through the ordinary
+            // turn renderer painted an empty prose block and then tucked the thinking inside a second collapsed
+            // toggle — two clicks to reach one thing, beneath a group head that had already said 已思考 once.
+            if (BuildThoughtRowForTurn(conversationId, turn, inGroup: true) is { } thoughtRow)
+                inner.Children.Add(thoughtRow);
         }
 
         // A flat piece has no head to caption: its sentence is the prose row already painted above it.
@@ -2491,11 +2504,15 @@ public partial class ChatPanel : UserControl
         var calls = turns
             .Where(t => t.Turn.Role == ChatRoles.Assistant && t.Turn.ToolCallId is { Length: > 0 })
             .ToList();
-        var head = DescribeToolCall(calls[0].Turn);
+        // One action gets named, because with one action the name is the whole answer and a count would hide it
+        // behind a click. Two or more get counted, because the first of a hundred and twenty-seven is a sample
+        // rather than a summary — naming it tells the reader this run was about <c>workspace_map</c> when it was
+        // about something else entirely. The names are not lost: they are the rows, and the row order is the
+        // order the model asked for them.
         var text = calls.Count > 1
             ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ActivityGroupToolSummaryFormat"), head, calls.Count - 1)
-            : head;
+                HubStrings.Get("ActivityGroupToolCountFormat"), calls.Count)
+            : DescribeToolCall(calls[0].Turn);
         var (added, removed) = AggregateDiff(calls);
         return (text, added, removed);
     }
@@ -2559,60 +2576,132 @@ public partial class ChatPanel : UserControl
         return chip;
     }
 
+    /// <summary>How tall a thinking body may get before it scrolls. The bound is the existing detail panel's, not
+    /// a new number: nothing in the pipeline caps a chain of thought, and an activity group re-derives every row
+    /// of itself on each arriving turn, so an unbounded block would be re-measured once per tool call for the
+    /// length of a run.</summary>
+    private const double ThoughtBodyMaxHeight = 200;
+
     /// <summary>
-    /// What the model thought before this turn, behind one quiet line.
+    /// The model's thinking as one row: a head naming it, a bounded body holding the words.
     ///
-    /// <para>The thinking has been on the record all along — stored, priced against the context budget, and
-    /// replayed to the gateway on every later request that carries tools — and it had exactly one reader: the
-    /// fold decision in <see cref="IsActivityTurn"/>. This is the surface for the other question, what the model
-    /// actually reasoned, and it is what the two unreferenced strings in the copy table were written for.</para>
+    /// <para>One builder serves the streaming bubble and the stored turn, because they are the same thing seen at
+    /// two moments. Two controls is what let a reader watch forty seconds of reasoning and then land on a
+    /// different widget that had forgotten it — and a card that hides when the answer starts is not the same thing
+    /// as a row that folds.</para>
     ///
-    /// <para>It folds by default and remembers the fold per turn, because a chain of thought is long and the
-    /// answer is what was asked for: left open on every turn it would push the reply off the screen the reader
-    /// came for. The bound is not decoration either — nothing in the pipeline caps reasoning, and an activity
-    /// group re-derives all of its rows on every arriving turn, so an unbounded block here would be re-measured
-    /// once per tool call for the length of a run.</para>
+    /// <para>It is a row rather than a card because the transcript already has a vocabulary for machine work you
+    /// can peek at: the same chevron, the same hover, the same remembered fold. Inventing a second idiom for the
+    /// second kind of machine work is how you end up with a fold inside a fold.</para>
     /// </summary>
-    private Control? BuildReasoningBlock(string conversationId, ChatTurn turn)
+    private sealed class ThoughtRowView
+    {
+        internal required Border Shell { get; init; }
+        internal required ToggleButton Head { get; init; }
+        internal required Border Body { get; init; }
+        internal required TextBlock Text { get; init; }
+        internal required ScrollViewer Scroll { get; init; }
+        internal required TextBlock Label { get; init; }
+
+        /// <summary>Open or closed. The head's checkbox mirrors this rather than owning it, because a press and
+        /// the answer's arrival both arrive as the same property change on that checkbox.</summary>
+        internal bool Expanded { get; set; }
+
+        /// <summary>Set only around a fold the code performs. From the first press onward nothing automatic
+        /// touches the row: a reader who chose a position was using it, and the answer turning up is not a reason
+        /// to take it back.</summary>
+        internal bool TouchedByUser { get; set; }
+
+        internal bool Syncing { get; set; }
+
+        internal void SetExpanded(bool expanded)
+        {
+            if (Expanded == expanded) return;
+            Expanded = expanded;
+            Body.IsVisible = expanded;
+            Syncing = true;
+            try { Head.IsChecked = expanded; }
+            finally { Syncing = false; }
+        }
+    }
+
+    /// <summary>Lays one thinking row out. <paramref name="onUserToggle"/> fires only for a fold the reader made,
+    /// which is what lets a stored row remember its fold across the group's rebuilds while the live row — which
+    /// has nothing to remember it — stays out of that memory entirely.</summary>
+    private ThoughtRowView BuildThoughtRow(string label, Action<bool>? onUserToggle)
+    {
+        var text = new TextBlock { Classes = { "turn-reasoning" } };
+        var scroll = BoundedDetailScroll(text, ThoughtBodyMaxHeight);
+        var body = new Border { Classes = { "activity-detail" }, IsVisible = false, Child = scroll };
+
+        var grid = new Grid
+        {
+            Classes = { "activity-row", "thought" },
+            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+        };
+        grid.Children.Add(new Avalonia.Controls.Shapes.Path
+        {
+            Classes = { "activity-status" },
+            Data = ThemeGeometry("Hub.Icon.Assistant"),
+        });
+        // The same cell as the mark, so the hover swap never slides the label sideways. The tool rows are built
+        // this way; matching them is the point of the exercise, or the column reads as two different lists.
+        grid.Children.Add(new Avalonia.Controls.Shapes.Path
+        {
+            Classes = { "activity-row-chevron" },
+            Data = ThemeGeometry("Hub.Icon.ChevronRight"),
+        });
+        var labelText = new TextBlock { Classes = { "activity-row-text" }, Text = label };
+        Grid.SetColumn(labelText, 1);
+        grid.Children.Add(labelText);
+
+        var head = new ToggleButton { Classes = { "activity-row-toggle" }, Content = grid };
+        var shell = new Border { Classes = { "activity-row-shell" } };
+        var row = new ThoughtRowView
+        {
+            Text = text, Scroll = scroll, Body = body, Head = head, Label = labelText, Shell = shell,
+        };
+        shell.Child = new StackPanel { Spacing = 0, Children = { head, body } };
+
+        // IsChecked, never Click — a raised Click does not flip a ToggleButton, so wiring it would leave the fold
+        // both half-broken and unreadable to a check. Same reason the row shell and the group head are wired so.
+        head.IsCheckedChanged += (_, _) =>
+        {
+            if (row.Syncing) return;
+            row.TouchedByUser = true;
+            var want = head.IsChecked == true;
+            if (want == row.Expanded) return;
+            row.Expanded = want;
+            body.IsVisible = want;
+            onUserToggle?.Invoke(want);
+        };
+        return row;
+    }
+
+    /// <summary>The head's sentence. The duration is said only when nothing above the row has already said it:
+    /// inside an activity group whose own head reads 已思考 3s, a row repeating the number is one fact told twice.
+    /// Out of a group — and in the live bubble, where there is no group yet — this row is the only place the
+    /// number exists, so it carries it.</summary>
+    private static string ThoughtLabel(TimeSpan? elapsed, bool inGroup)
+        => !inGroup && elapsed is { } span
+            ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ActivityGroupThoughtFormat"), FormatDuration(span))
+            : HubStrings.Get("ActivityRowThought");
+
+    /// <summary>The stored form of the row: this turn's thinking, folded as the reader left it.</summary>
+    private Control? BuildThoughtRowForTurn(string conversationId, ChatTurn turn, bool inGroup)
     {
         if (!_chat.ShowThinking || turn.Reasoning is not { Length: > 0 } thought) return null;
 
-        var toggle = new ToggleButton
-        {
-            Classes = { "activity-row-toggle" },
-            Content = new TextBlock
-            {
-                Classes = { "activity-detail-label" },
-                Text = HubStrings.Get("ActivityRowExpandThought"),
-            },
-        };
-        var detail = new Border
-        {
-            Classes = { "activity-detail" },
-            IsVisible = false,
-            Child = BoundedDetailScroll(
-                new TextBlock { Classes = { "turn-reasoning" }, Text = thought }, 200),
-        };
-        // The turn's slot plus a word no other row can claim: the group rebuilds its rows from the transcript
-        // while a run is going, and a block somebody opened must not collapse under the next tool call.
-        var foldKey = SlotKey(turn) + ":thought";
-
-        // IsChecked, not Click — the same reason the row shell and the group head are wired this way: a raised
-        // Click does not flip a ToggleButton, so wiring it would leave the fold both half-broken and unreadable
-        // to a check.
-        toggle.IsCheckedChanged += (_, _) =>
-        {
-            var expanded = toggle.IsChecked == true;
-            detail.IsVisible = expanded;
-            RememberFold(_expandedRows, conversationId, foldKey, expanded);
-        };
-        toggle.IsChecked = IsFoldOpen(_expandedRows, conversationId, foldKey);
-        detail.IsVisible = toggle.IsChecked == true;
-
-        var shell = new StackPanel { Spacing = 2 };
-        shell.Children.Add(toggle);
-        shell.Children.Add(detail);
-        return shell;
+        // The turn's own slot is stable across the group's rebuilds, so a row somebody opened does not collapse
+        // under the next tool call. No suffix any more: one row per turn, so nothing else can claim this key.
+        var foldKey = SlotKey(turn);
+        var row = BuildThoughtRow(
+            ThoughtLabel(turn.ReasoningElapsed, inGroup),
+            expanded => RememberFold(_expandedRows, conversationId, foldKey, expanded));
+        row.Text.Text = thought;
+        row.SetExpanded(IsFoldOpen(_expandedRows, conversationId, foldKey));
+        return row.Shell;
     }
 
     /// <summary>One folded tool exchange wrapped in its own expander. The collapsed line names the action; clicking
@@ -3683,20 +3772,16 @@ public partial class ChatPanel : UserControl
         }
 
         CloseLive();
-        // The thinking first, so it reads above the answer the way it arrived. It starts hidden because most
-        // replies have none, and an empty detail box would be chrome describing nothing.
-        var thought = new TextBlock { Classes = { "turn-reasoning" } };
-        var thoughtHost = new Border
-        {
-            Classes = { "activity-detail" },
-            IsVisible = false,
-            Child = BoundedDetailScroll(thought, 200),
-        };
+        // The thinking first, so it reads above the answer the way it arrived. It starts collapsed because most
+        // replies never think at all, and an empty row would be chrome describing nothing. No fold memory is
+        // passed: this row belongs to one answer in flight, and the stored turn's row takes over from it.
+        var thought = BuildThoughtRow(ThoughtLabel(null, inGroup: false), onUserToggle: null);
+        thought.Shell.IsVisible = false;
         // The answer's own slot is a panel rather than a run of text: every finished Markdown block is built once
         // and then left alone, and only the one still being typed is replaced, at the bottom of the stack.
         var prose = new StackPanel { Spacing = 8 };
         var body = new StackPanel { Spacing = 8 };
-        body.Children.Add(thoughtHost);
+        body.Children.Add(thought.Shell);
         body.Children.Add(prose);
         var activity = new StackPanel
         {
@@ -3734,12 +3819,17 @@ public partial class ChatPanel : UserControl
             Row = BuildMessageRow(false, body, null, ChatRoles.Assistant, "", isLast: true),
             Prose = prose,
             Thought = thought,
-            ThoughtHost = thoughtHost,
             Status = status,
             Elapsed = elapsed,
             Glyph = glyph,
             ToolRunning = run.IsToolRunning,
         };
+        // The thinking body follows its newest line only while the reader has left it at the bottom — the same
+        // rule the transcript applies to the whole column, and for the same reason. A box that always follows is a
+        // box nobody can read the top of, and a position somebody took is not ours to take back.
+        bubble.Thought.Scroll.ScrollChanged += (_, _) => bubble.ThoughtStick =
+            bubble.Thought.Scroll.Offset.Y + bubble.Thought.Scroll.Viewport.Height
+            >= bubble.Thought.Scroll.Extent.Height - StickEpsilon;
         // A wait already in progress is the reason this reply is late, and the event that said so fired while the
         // session was out of sight: read the fact off the run rather than wait for it to happen again.
         if (run.RetryWaiting) status.Text = RetryActivityText(run.RetryWaitNotice());
@@ -3789,7 +3879,7 @@ public partial class ChatPanel : UserControl
         // accrues server-side, so nothing is lost — focus loss flushes the held-back paint.
         if (DeferringLiveRepaint)
         {
-            if (bubble.PaintedText != text || (bubble.Thought.Text ?? "") != thought) _liveRepaintPending = true;
+            if (bubble.PaintedText != text || (bubble.Thought.Text.Text ?? "") != thought) _liveRepaintPending = true;
             RefreshGlyphPhase(bubble);
             return;
         }
@@ -3804,12 +3894,31 @@ public partial class ChatPanel : UserControl
             bubble.Status.Text = HubStrings.Get("ChatGenerating");
         }
 
-        // The thinking is on screen while it is the only thing arriving and folds the moment the answer starts —
-        // the same boundary the status line and the glyph already turn on, so the three cannot disagree about
-        // which phase the run is in. This decides what is *drawn*, not what is kept: the reasoning is still
-        // buffered, stored, priced and replayed, and the Settings switch is read here as well as per turn.
-        bubble.Thought.Text = thought;
-        bubble.ThoughtHost.IsVisible = _chat.ShowThinking && thought.Length > 0 && !bubble.ShowedText;
+        // The row appears the first time a run thinks and does not leave again while the answer is on screen: it
+        // folds when the prose starts rather than vanishing, because nobody who watched forty seconds of reasoning
+        // asked for it to be taken away the moment the result turned up.
+        //
+        // A tool loop thinks before every round, though, and showing it each time would flash the card above the
+        // group a hundred and twenty-seven times in a run that made that many calls. So one run gets one live
+        // view — unless a hand has opened the row, which is a standing request to keep seeing it. The later rounds
+        // are not a dead screen either: the glyph and the elapsed line keep moving, and their words go straight to
+        // the row inside the group.
+        var showRow = _chat.ShowThinking && thought.Length > 0
+                      && (!bubble.Run.ThoughtFiledBefore || bubble.Thought.TouchedByUser);
+        bubble.Thought.Shell.IsVisible = showRow;
+        if (showRow)
+        {
+            bubble.Thought.Text.Text = thought;
+            // The same sentence the stored row will carry, and off the same clock — which is the point of
+            // recording the duration at all: the number the reader watched must still be there when the bubble is
+            // thrown away and the real turn takes its place.
+            bubble.Thought.Label.Text = ThoughtLabel(bubble.Run.ReasoningElapsed, inGroup: false);
+            // Open while it is the only thing arriving, folded once the answer speaks — and never folded against
+            // a reader who moved it. This is the same boundary the status line and the glyph turn on, so the
+            // three cannot disagree about which phase the run is in.
+            if (!bubble.Thought.TouchedByUser) bubble.Thought.SetExpanded(!bubble.ShowedText);
+            if (bubble.Thought.Expanded && bubble.ThoughtStick) FollowNewestLine(bubble.Thought.Scroll);
+        }
 
         RefreshGlyphPhase(bubble);
         ScrollToEndIfSticky();
@@ -3885,6 +3994,15 @@ public partial class ChatPanel : UserControl
         bubble.Prose.Children.RemoveAt(bubble.Prose.Children.Count - 1);
         bubble.OpenBlockSource = "";
     }
+
+    /// <summary>Takes a thinking body to its newest line, after this frame has measured it. Posted rather than
+    /// done inline because the text was assigned a moment ago and the extent is not known until layout runs — the
+    /// same reason the transcript's own follow is posted at the same priority. The two then land in one pass
+    /// instead of racing over it, and neither one re-measures anything the frame has not measured already.</summary>
+    private static void FollowNewestLine(ScrollViewer scroll)
+        => Dispatcher.UIThread.Post(
+            () => scroll.Offset = new Point(0, Math.Max(0, scroll.Extent.Height - scroll.Viewport.Height)),
+            DispatcherPriority.Background);
 
     /// <summary>Paints the reply the deferred ticks were holding back, once it is safe to re-arrange the column:
     /// the composer just lost focus (so no composition is open) or the live row is being torn down.</summary>
@@ -5738,8 +5856,6 @@ public partial class ChatPanel : UserControl
 
     internal bool IsStreamingForCheck => IsViewedStreaming;
 
-    /// <summary>What the live bubble on screen says. It is read off the run, so this is also the proof that a
-    /// reply kept arriving while its session was out of sight.</summary>
     /// <summary>Everything that has arrived for this answer. Read off the run rather than off a control: the
     /// bubble now lays its text down as Markdown blocks, so no single control holds the whole of it any more.</summary>
     internal string LivePreviewTextForCheck => _live?.Run.LiveText ?? "";
@@ -5762,11 +5878,54 @@ public partial class ChatPanel : UserControl
             .OfType<ColorTextBlock.Avalonia.CTextBlock>()
             .Any(block => block.Classes.Contains("Heading1"));
 
-    /// <summary>Whether the live bubble is showing its thinking right now. Read together with
-    /// <see cref="LivePreviewTextForCheck"/> this is the fold itself: reasoning alone is on screen, and the
-    /// first prose chunk arriving takes it off without the run ending.</summary>
-    internal bool LiveThoughtVisibleForCheck => _live?.ThoughtHost.IsVisible ?? false;
-    internal string LiveThoughtTextForCheck => _live?.Thought.Text ?? "";
+    /// <summary>Whether the live thinking row is on screen at all, and whether it is open. The two together are
+    /// the difference between the old behaviour — a card that hid itself when the answer started — and a row that
+    /// folds and stays reachable.</summary>
+    internal bool LiveThoughtVisibleForCheck => _live?.Thought.Shell.IsVisible ?? false;
+    internal bool LiveThoughtExpandedForCheck => _live?.Thought.Expanded ?? false;
+    internal string LiveThoughtTextForCheck => _live?.Thought.Text.Text ?? "";
+    internal string LiveThoughtLabelForCheck => _live?.Thought.Label.Text ?? "";
+
+    /// <summary>The head text of every thinking row the transcript is drawing. Compared against what the live row
+    /// said, this is the whole handoff in one assertion.</summary>
+    internal IReadOnlyList<string> ThoughtRowLabelsForCheck()
+        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+            .Where(grid => grid.Classes.Contains("thought"))
+            .Select(grid => grid.Children.OfType<TextBlock>()
+                .FirstOrDefault(block => block.Classes.Contains("activity-row-text"))?.Text ?? "")
+            .ToArray();
+
+    /// <summary>How deep the row-level folds go beneath a thinking row on screen. One is the design. Two means the
+    /// old shape came back — a collapsed row tucked inside a collapsed group, so reading the thinking cost two
+    /// clicks and the group head had already said 已思考 once before either of them.</summary>
+    internal int GroupThoughtRowNestingForCheck()
+    {
+        var deepest = 0;
+        foreach (var shell in MessageFlow.GetLogicalDescendants().OfType<Border>()
+                     .Where(shell => shell.Classes.Contains("activity-row-shell")
+                                     && shell.GetLogicalDescendants().OfType<Grid>()
+                                         .Any(grid => grid.Classes.Contains("thought"))))
+        {
+            deepest = Math.Max(deepest, shell.GetLogicalDescendants().OfType<ToggleButton>()
+                .Count(toggle => toggle.Classes.Contains("activity-row-toggle")));
+        }
+
+        return deepest;
+    }
+
+    /// <summary>The text the bubble has actually <i>painted</i>, as opposed to what has arrived on the run. A check
+    /// that waits on the run can win a race against the frame that was supposed to react to it — which is exactly
+    /// how the fold assertion below kept passing and failing at random.</summary>
+    internal string LivePaintedTextForCheck => _live?.PaintedText ?? "";
+
+    /// <summary>Presses the live thinking row the way a hand does. A check that set <c>IsChecked</c> through a
+    /// property would still prove the fold, but this is the half that broke before — the wiring between the
+    /// checkbox and the row — so it is exercised through the checkbox.</summary>
+    internal void ToggleLiveThoughtForCheck()
+    {
+        if (_live is not { } live) return;
+        live.Thought.Head.IsChecked = !live.Thought.Expanded;
+    }
 
     /// <summary>Every thinking block the transcript is painting, as its own text. Empty is the pass condition
     /// for "off means off"; a count is what says a fold hid the words without removing the turn.</summary>

@@ -4871,6 +4871,9 @@ public sealed class ChatWorkspace : IDisposable
         {
             var reply = run.LiveText;
             var thought = run.LiveReasoning;
+            // Read alongside the text rather than inside the update: this is the segment's own thinking clock, and
+            // the row that displays it has to carry the number the reader watched, not one taken later.
+            var thoughtFor = run.ReasoningElapsed;
             if (!replyRecorded && (reply.Length > 0 || thought.Length > 0))
             {
                 // A reply with thinking but no text is a real thing a reasoning model produces, and the thinking
@@ -4881,6 +4884,7 @@ public sealed class ChatWorkspace : IDisposable
                     opened.Append(new ChatTurn(ChatRoles.Assistant, reply, DateTimeOffset.Now)
                     {
                         Reasoning = thought.Length > 0 ? thought : null,
+                        ReasoningElapsed = thought.Length > 0 ? thoughtFor : null,
                         // What the endpoint searched for this answer, on the answer itself: the reply's text is
                         // what it produced, and the searches are where it came from. Kept off the wire on purpose
                         // (measured — replaying it empties the message on one bridge and drops it on the other).
@@ -5298,8 +5302,12 @@ public sealed class ChatWorkspace : IDisposable
                 // the same reasoning — a gateway that wants the thinking back wants it on each of them, not on
                 // whichever call happened to be streamed first.
                 var said = run.LiveText;
+                // The duration comes off the run, not off <paramref name="info"/>: the pipeline's block is the
+                // text one response produced for several calls, while the clock is what this round actually spent
+                // thinking before it asked. Every call in the batch can therefore say the same honest number.
+                var thoughtFor = run.ReasoningElapsed;
                 var call = ChatTurn.FunctionCall(info.CallId, info.Name, info.ArgumentsJson,
-                    said.Length > 0 ? said : null, info.Reasoning, info.BatchId);
+                    said.Length > 0 ? said : null, info.Reasoning, info.BatchId, thoughtFor);
                 await ApplyOnUiAsync(() =>
                 {
                     run.BeginSegment();

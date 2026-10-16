@@ -136,13 +136,29 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// part of the conversation rather than a display nicety: DeepSeek answers 400 on any request whose history
     /// came from a thinking model that was also offered tools, unless each assistant message carries its own
     /// <c>reasoning_content</c> back. Nullable for the usual reason — a session written before this existed has
-    /// no such property and still has to load — and it is deliberately <b>not</b> rendered as prose under the
-    /// reply: the answer is what the person asked for, and a wall of chain-of-thought beneath every message is a
-    /// different product decision than a wire field a gateway requires. A turn that <i>only</i> thought (reasoning
-    /// present, <see cref="Text"/> empty) is still an activity turn, so the transcript folds it into the collapsed
-    /// "Thought for Ns" group with the tool calls around it rather than printing it inline — reachable on purpose, never
-    /// in the way by default.</summary>
+    /// no such property and still has to load.
+    ///
+    /// <para>It is drawn, but as one collapsible row rather than as prose under the reply: the answer is what the
+    /// person asked for, and a wall of chain-of-thought beneath every message is a different product than a wire
+    /// field a gateway requires. A turn that <i>only</i> thought (reasoning present, <see cref="Text"/> empty) is
+    /// an activity turn, so that row is the activity group's row for it — one fold, not a fold inside a fold.</para>
+    /// </summary>
     public string? Reasoning { get; init; }
+
+    /// <summary>How long the thinking behind <see cref="Reasoning"/> took, measured on the run's own clock — the
+    /// one that does not charge a wait for an approval card to the model's reasoning — and frozen where the
+    /// thinking stopped rather than where the turn was filed.
+    ///
+    /// <para>It exists so the live row and the stored row can say the same thing. Without it the label the reader
+    /// watched climb for forty seconds becomes a bare 已思考 the moment the answer lands, which is a small lie
+    /// told at exactly the moment they are deciding whether to expand it.</para>
+    ///
+    /// <para>Null means it was never recorded — every session stored before this field, and any turn whose
+    /// thinking arrived without the run ever being timed. Not zero: 已思考 0s would be a claim, and a false one.
+    /// Nothing on the wire reads this; the request is assembled from <see cref="Reasoning"/> itself, so the field
+    /// is display-only and costs no tokens.</para>
+    /// </summary>
+    public TimeSpan? ReasoningElapsed { get; init; }
 
     /// <summary>Permission state of a tool call that needed one; <c>null</c> means there was nothing to decide.
     /// Values come from <see cref="ChatApprovalStates"/>.</summary>
@@ -222,8 +238,9 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
             Images = images ?? [],
             InjectedFrom = injectedFrom,
         };
-    public static ChatTurn Assistant(string text, string? reasoning = null) =>
-        new(ChatRoles.Assistant, text, DateTimeOffset.Now) { Reasoning = reasoning };
+    public static ChatTurn Assistant(string text, string? reasoning = null, TimeSpan? reasoningElapsed = null) =>
+        new(ChatRoles.Assistant, text, DateTimeOffset.Now)
+        { Reasoning = reasoning, ReasoningElapsed = reasoningElapsed };
     public static ChatTurn System(string text) => new(ChatRoles.System, text, DateTimeOffset.Now);
 
     /// <summary>The text the model streamed <b>before</b> asking for this call rides on the call turn instead of
@@ -232,13 +249,14 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// turn for the same reason — it belongs to that one assistant message, and a gateway that wants it back
     /// wants it on the message that earned it.</summary>
     public static ChatTurn FunctionCall(string callId, string name, string arguments, string? text = null,
-        string? reasoning = null, string? batchId = null) =>
+        string? reasoning = null, string? batchId = null, TimeSpan? reasoningElapsed = null) =>
         new(ChatRoles.Assistant, text ?? "", DateTimeOffset.Now)
         {
             ToolCallId = callId,
             ToolName = name,
             ToolArguments = arguments,
             Reasoning = reasoning,
+            ReasoningElapsed = reasoningElapsed,
             ApprovalBatchId = batchId,
         };
 

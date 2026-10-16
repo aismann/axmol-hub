@@ -636,6 +636,12 @@
     <Style Selector="Grid.activity-row.failed Path.activity-status">
       <Setter Property="Stroke" Value="{DynamicResource Hub.DangerText}" />
     </Style>
+    <!-- The thinking row's mark. Every other row's status is a verdict — green for a call that came back, red for
+         one that did not — and a thought is neither. Same 10×10 slot so its text column lines up with the rows
+         around it, quieter ink because it reports that something happened rather than that it worked. -->
+    <Style Selector="Grid.activity-row.thought Path.activity-status">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextTertiary}" />
+    </Style>
     <Style Selector="Grid.activity-row TextBlock.activity-row-text">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />

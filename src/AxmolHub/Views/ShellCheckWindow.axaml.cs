@@ -3970,24 +3970,57 @@ public partial class ShellCheckWindow : Window
         try
         {
             // ── While it is arriving ──
-            // A reasoning gateway sends thinking first and switches to prose mid-stream, so this is the real
-            // ordering rather than a shape invented for the check — and the fold has to ride the same boundary
-            // the status line already turns on, or the two disagree about which phase the run is in.
+            // A reasoning gateway thinks first and switches to prose mid-stream, so this is the real ordering and
+            // not a shape invented for the check. The thinking is deliberately long enough to overflow the bounded
+            // body, because the thing worth asserting is where that box is <i>looking</i> once its content passes
+            // two hundred pixels — and the silence before the answer is long so that a duration read at filing
+            // rather than at the thinking→answer boundary cannot hide inside the margin.
+            var hold = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            // The silence is short on purpose: what keeps the answer from ending the run before the fold is read
+            // is <c>hold</c>, not a delay. A long gap here was long enough to shift the schedule of the checks
+            // after this one and put the suite's own 120s ceiling under load.
+            // Few, long deltas — and this shape is deliberate twice over. The answer only arrives after the last
+            // delta, so the group's whole wall clock is delta count times gap, and this suite has a 120s ceiling
+            // shared by fourteen hundred checks. Short deltas also lose the race against the polling granularity:
+            // WaitUntilAsync sleeps in 5ms steps that Windows rounds up to ~15ms, so each wait overshoots by a
+            // delta or two, and with a fine-grained stream the two waits below were eating the same 300ms.
+            var thoughtUnit = "这一段思考要长到能把那个二百像素的身体撑出滚动条，而且还得继续往下长，"
+                + "才看得出它到底跟不跟得上最新一行，上滑之后又是不是真的停住了不拽。";
             chat.ClientOverride = (_, _) => new ReasoningTrickleChatClient(
-                2, TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(400), "答案到了");
+                14, TimeSpan.FromMilliseconds(15), TimeSpan.FromMilliseconds(120), "答案到了",
+                thoughtUnit, hold.Task);
             panel.SetInputForCheck("先想清楚再答");
             await panel.SendComposerForCheck();
-            await WaitUntilAsync(() => panel.LiveThoughtVisibleForCheck);
-            var thoughtText = panel.LiveThoughtTextForCheck;
-            await WaitUntilAsync(() => panel.LivePreviewTextForCheck.Contains("答案到了", StringComparison.Ordinal));
-            Check(thoughtText.Contains("思考片段", StringComparison.Ordinal) && !panel.LiveThoughtVisibleForCheck,
-                "思考在正文之前实时上屏，正文一到就自己收起（思考中读到「" + thoughtText + "」，正文之后已折："
-                + (!panel.LiveThoughtVisibleForCheck ? "是" : "否") + "）");
+            await WaitUntilAsync(() => panel.LiveThoughtExpandedForCheck);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.LiveThoughtTextForCheck.Contains("这一段思考", StringComparison.Ordinal),
+                "思考在正文之前就上屏了，不必等落库（读到 " + panel.LiveThoughtTextForCheck.Length + " 字）");
+            // Wait on the painted text, not on the run's buffer: the fold is a consequence of a paint, and the
+            // buffer is ahead of it. Reading the buffer here wins the race roughly as often as it loses it.
+            await WaitUntilAsync(() => panel.LivePaintedTextForCheck.Contains("答案到了", StringComparison.Ordinal));
+            // Read at the boundary: this is the last thing the live row will say, and the stored row has to say
+            // the same number.
+            var labelAtBoundary = panel.LiveThoughtLabelForCheck;
+            // The row folds when the answer starts and stays folded — it does not leave. A card that hid itself
+            // took the reasoning off screen at exactly the moment a reader might want to go back over it.
+            Check(panel.LiveThoughtVisibleForCheck && !panel.LiveThoughtExpandedForCheck,
+                "正文一到思考行折成一行但仍留在原处，不再整块消失（可见=" + panel.LiveThoughtVisibleForCheck
+                + "，展开=" + panel.LiveThoughtExpandedForCheck + "）");
+            hold.SetResult(true);
             await panel.WaitForRunToFinishForCheck();
 
+            // The handoff is the whole reason the duration is stored: the number the reader watched has to still be
+            // on the row once the bubble is thrown away and the real turn takes its place.
+            var labels = panel.ThoughtRowLabelsForCheck();
+            Check(labels.Contains(labelAtBoundary),
+                "落盘之后同一行的头写着同一个数，交接看不出来（边界上「" + labelAtBoundary
+                + "」，落盘读到 [" + string.Join(" | ", labels) + "]）。注意这条只证明两个面读的是同一个值，"
+                + "不证明该值排除了正文打字时间——那需要一段跨过整秒的等待，自检的 120 秒预算换不起");
+
             // ── Once it is on the record ──
-            // Two shapes, because they reach the screen by different routes: prose with thinking behind an
-            // expander of its own, and a thinking-only turn that lives inside the collapsed activity group.
+            // Two shapes, because they reach the screen by different routes: prose with thinking behind a row of
+            // its own, and a thinking-only turn that <i>is</i> the group's row rather than a fold inside it.
             var proseThought = "先想清楚要动哪几个文件";
             var onlyThought = "这一段只有思考，没有正文";
             session.Append(ChatTurn.Assistant("这是答案正文。", proseThought));
@@ -3997,8 +4030,13 @@ public partial class ShellCheckWindow : Window
             Dispatcher.UIThread.RunJobs();
             var painted = panel.ReasoningTextsForCheck();
             Check(painted.Contains(proseThought) && painted.Contains(onlyThought),
-                "落库之后的思考真的被画出来：带正文的挂在「看思考全文」下，只有思考的填掉了那个空行（实际 "
-                + painted.Count + " 块：" + string.Join(" ∣ ", painted) + "）");
+                "落库之后的思考真的被画出来：带正文的挂在它自己那一行下，只有思考的填掉了原来那个空行（实际 "
+                + painted.Count + " 行：" + string.Join(" ∣ ", painted) + "）");
+            // One fold, not two. The thinking-only turn used to be a collapsed row inside a collapsed group, so
+            // reading it cost two clicks and the group head had already said 已思考 once by then.
+            Check(panel.GroupThoughtRowNestingForCheck() == 1,
+                "只有思考的轮次展开组后一次点击就读到，组里不再套第二层折叠（实际折叠层数 "
+                + panel.GroupThoughtRowNestingForCheck() + "）");
 
             // ── And the switch reaches what is already painted ──
             // Pressed through the checkbox rather than written to the preference: the link between the two is the
@@ -4165,6 +4203,8 @@ public partial class ShellCheckWindow : Window
         // way out whatever an assertion did, because a closed gate parks the suite, not just the cell.
         var livePark = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var liveArrived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var answerPark = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var answerReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         chat.SetWorkspaceRoot(session.Id, workspace);
         chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
         chat.OpenConversation(session.Id);
@@ -4407,6 +4447,8 @@ public partial class ShellCheckWindow : Window
                 Arguments = new Dictionary<string, object?> { ["path"] = "." },
                 ParkBeforeFollowUp = livePark.Task,
                 FollowUpReached = liveArrived,
+                ParkBeforeAnswer = answerPark.Task,
+                AnswerReached = answerReached,
             };
             chat.ClientOverride = (_, _) => live;
             panel.SetInputForCheck("接着列两次目录");
@@ -4428,13 +4470,23 @@ public partial class ShellCheckWindow : Window
                 + panel.ActivityGroupCountForCheck + "，行 " + panel.ActivityRowsForCheck.Length + "）");
 
             livePark.SetResult(true);
-            await WaitUntilAsync(() => panel.ActivityRowsForCheck.Length == 2);
+            // Signalled from the fixture rather than polled off a row count. Counting rows stopped meaning "the
+            // second call landed" once a thinking row was one of them, and polling for the second verb row raced
+            // the answer: by the time it came true the run had finished, and a finished run scrolling to the newest
+            // line is correct behaviour that would have read here as the bug this check exists to catch.
+            await WaitForSignalAsync(answerReached.Task);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             Check(panel.ActivityGroupCountForCheck == 1,
                 "第二个工具折进同一个组里，而不是又开一折（实际 " + panel.ActivityGroupCountForCheck + " 组：["
                 + string.Join(" | ", Enumerable.Range(0, panel.ActivityGroupCountForCheck)
                     .Select(g => panel.ActivityGroupTitleForCheck(g))) + "]）");
+            // The count side of the head's rule, on a run with two actions: naming whichever one happened to come
+            // first reads as a claim about what the whole run was for. The single-call group further up still
+            // names its verb, and that half of the boundary is what the assertion there guards.
+            Check(panel.ActivityGroupTitleForCheck(0) == string.Format(CultureInfo.CurrentCulture,
+                    HubStrings.Get("ActivityGroupToolCountFormat"), 2),
+                "两个以上调用的组头只报数，不再点名第一个动作（实际「" + panel.ActivityGroupTitleForCheck(0) + "」）");
             Check(panel.ActivityGroupExpandedForCheck(0),
                 "模型又调了一个工具，用户展开的根节点不会当场折叠回去");
             Check(panel.ActivityGroupInstanceTokenForCheck(0) == openedToken,
@@ -4447,7 +4499,10 @@ public partial class ShellCheckWindow : Window
                   && Math.Abs(panel.FlowOffsetForCheck - 40) < 1,
                 "跑着的工具调用不再把读数位置拽回底部，也没有因为整段清空而被夹到 0（offset 现在是 "
                 + panel.FlowOffsetForCheck + "，在底部 " + panel.ViewAtBottomForCheck + "，回底板 "
-                + panel.ScrollToBottomVisible + "）");
+                + panel.ScrollToBottomVisible + "；此刻仍在运行 "
+                + (chat.IsRunning(liveSession.Id) ? "是" : "否") + "，流式气泡 "
+                + (panel.IsStreamingForCheck ? "在" : "没") + "，行 ["
+                + string.Join(" / ", panel.ActivityRowsForCheck) + "]）");
             // The group re-derives its rows off the transcript as each call lands, so a row the person opened only
             // stays open if that choice was remembered by the call it reports rather than left on a control that
             // is being replaced.
@@ -4456,6 +4511,7 @@ public partial class ShellCheckWindow : Window
                 + panel.ActivityRowDetailTextForCheck(0) + "」）");
             Check(!panel.ActivityRowExpandedForCheck(1),
                 "新长出来的那条工具行默认收起：记住人开过的折叠，不等于替他每一个都打开");
+            answerPark.SetResult(true);
             await panel.WaitForRunToFinishForCheck();
 
             // The same page then gets a second run, which has to open its own fold and default it to collapsed:
@@ -4875,6 +4931,7 @@ public partial class ShellCheckWindow : Window
         finally
         {
             livePark.TrySetResult(true);
+            answerPark.TrySetResult(true);
             chat.ClientOverride = savedOverride;
             if (chat.Conversations.Any(summary => summary.Id == session.Id)) chat.DeleteConversation(session.Id);
             panel.Reload();
@@ -9853,6 +9910,15 @@ public partial class ShellCheckWindow : Window
         /// than guessing at a delay.</summary>
         public System.Threading.Tasks.TaskCompletionSource<bool>? FollowUpReached { get; set; }
 
+        /// <summary>A second park, before the <b>answer</b> rather than before the next call. The window some
+        /// checks have to stand in — the last call's row is on screen and the run is still going — closes the
+        /// moment this fixture answers, so a check racing it passes or fails on scheduler luck. Both are optional
+        /// and unset for every other caller, which is why adding them changes nothing else.</summary>
+        public Task? ParkBeforeAnswer { get; set; }
+
+        /// <summary>Signalled once the stream has reached that second park.</summary>
+        public System.Threading.Tasks.TaskCompletionSource<bool>? AnswerReached { get; set; }
+
         public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
             System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
             Microsoft.Extensions.AI.ChatOptions? options = null,
@@ -9870,6 +9936,11 @@ public partial class ShellCheckWindow : Window
             {
                 FollowUpReached?.TrySetResult(true);
                 if (ParkBeforeFollowUp is { } park) await park.WaitAsync(cancellationToken);
+            }
+            if (Requests >= 3)
+            {
+                AnswerReached?.TrySetResult(true);
+                if (ParkBeforeAnswer is { } park) await park.WaitAsync(cancellationToken);
             }
             if (Thinking.Count > 0)
             {
@@ -10025,7 +10096,9 @@ public partial class ShellCheckWindow : Window
     /// <para>Keep the total inside the pump's ceiling (a few hundred milliseconds): a stream that outlives
     /// <see cref="WaitForRunAsync"/> does not fail loudly, it fails as a missing notice.</para></summary>
     private sealed class ReasoningTrickleChatClient(
-        int deltas, TimeSpan gap, TimeSpan silence, string? text = null) : Microsoft.Extensions.AI.IChatClient
+        int deltas, TimeSpan gap, TimeSpan silence, string? text = null, string? unit = null,
+        Task? afterTextGate = null)
+        : Microsoft.Extensions.AI.IChatClient
     {
         public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
             System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
@@ -10038,18 +10111,25 @@ public partial class ShellCheckWindow : Window
             Microsoft.Extensions.AI.ChatOptions? options = null,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            // A check that wants the reasoning to overflow its bounded box needs more than a label per delta, and
+            // the length is the thing under test rather than the wording — so the caller chooses it.
+            var piece = unit is { Length: > 0 } ? unit : "思考片段";
             for (var index = 0; index < deltas; index++)
             {
                 await Task.Delay(gap, cancellationToken);
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant,
-                    [new Microsoft.Extensions.AI.TextReasoningContent($"思考片段 {index + 1}")]);
+                    [new Microsoft.Extensions.AI.TextReasoningContent($"{piece}{index + 1}，")]);
             }
 
             await Task.Delay(silence, cancellationToken);
             if (text is { Length: > 0 })
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant, text);
+            // Held open past the first prose on purpose. A check that wants the state of the bubble <i>while</i>
+            // the answer is arriving cannot get it from a stream that ends in the same tick: by the time it looks,
+            // the run is over and the live row it meant to read has been thrown away with the bubble.
+            if (afterTextGate is not null) await afterTextGate.WaitAsync(cancellationToken);
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;

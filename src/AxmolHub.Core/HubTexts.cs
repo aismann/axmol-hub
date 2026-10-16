@@ -909,10 +909,11 @@ public static class HubTexts
         ["InspectorExpand"] = ("撑开面板到整个窗口", "Expand the panel to the whole window"),
         ["InspectorRestore"] = ("还原成右边那一列（Esc）", "Back to the right-hand column (Esc)"),
         // ── A run's activity, folded into one collapsible group ──
+        // The head counts once there is more than one action to summarise. Naming the first of a long run reads
+        // as a claim about what the run was for, and it is not — it is whichever call happened to come first. A
+        // single call is still named, because then the name is the whole answer and a count would hide it behind
+        // a click. See GroupSummary for where that line is drawn.
         ["ActivityGroupToolCountFormat"] = ("执行工具 {0} 次", "{0} tool call(s)"),
-        // The collapsed head reads as a full-width sentence naming the first action, so a tools-only turn is a
-        // line of content rather than a lonely pill stranded at the left edge with an empty middle.
-        ["ActivityGroupToolSummaryFormat"] = ("{0} 以及另外 {1} 个工具调用", "{0} and {1} other tool calls"),
         ["ActivityGroupRunningFormat"] = ("正在执行中 · {0}", "Running · {0}"),
         ["ActivityGroupThoughtFormat"] = ("已思考 {0}", "Thought for {0}"),
         ["ActivityRowThought"] = ("已思考", "Thought"),
@@ -934,7 +935,6 @@ public static class HubTexts
         // and cited nothing has to read as unread, and a softer word would let that pass for an answer.
         ["MessageSources"] = ("来源", "Sources"),
         ["MessageSearchedFor"] = ("它自己查了：{0}", "it searched for: {0}"),
-        ["ActivityRowExpandThought"] = ("看思考全文", "Show the full thinking"),
         // Under a folded action row, one expandable panel lays the exchange out in full: the arguments the call
         // was made with and the payload that came back. The collapsed row only names the action; this is where the
         // concrete operation becomes readable rather than one hover away.

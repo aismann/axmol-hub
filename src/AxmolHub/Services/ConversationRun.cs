@@ -71,6 +71,10 @@ internal sealed class ConversationRun : IDisposable
     private readonly object _gate = new();
     private readonly StringBuilder _text = new();
     private readonly StringBuilder _reasoning = new();
+    // Where this segment's thinking stopped, on the run's clock, and whether that moment has been taken yet.
+    // See <see cref="ReasoningElapsed"/> for why the freeze belongs at the thinking→answer boundary.
+    private long _reasoningTicks;
+    private bool _reasoningClosed;
     private readonly CancellationTokenSource _stop = new();
     private readonly TimeSpan _idleTimeout;
     private readonly TimeSpan _firstFrameTimeout;
@@ -130,14 +134,16 @@ internal sealed class ConversationRun : IDisposable
     /// really taken and not the time since the bubble happened to be rebuilt.</summary>
     public TimeSpan Elapsed
     {
-        get
-        {
-            lock (_gate)
-            {
-                var running = _stretchRunning ? Stopwatch.GetElapsedTime(_stretchStart).Ticks : 0L;
-                return TimeSpan.FromTicks(_bankedTicks + running);
-            }
-        }
+        get { lock (_gate) return ElapsedLocked(); }
+    }
+
+    /// <summary>The same reading without the lock, for callers already inside the gate. Monitor is reentrant on
+    /// one thread so this is a courtesy rather than a deadlock fix, but the reasoning clock below reads it from
+    /// inside <see cref="AppendText"/> and a helper that says which contract it keeps is worth the extra line.</summary>
+    private TimeSpan ElapsedLocked()
+    {
+        var running = _stretchRunning ? Stopwatch.GetElapsedTime(_stretchStart).Ticks : 0L;
+        return TimeSpan.FromTicks(_bankedTicks + running);
     }
 
     /// <summary>The silence this run was owed when its deadline fired — the round's first frame or the next chunk
@@ -207,7 +213,56 @@ internal sealed class ConversationRun : IDisposable
 
     internal void AppendText(string chunk)
     {
-        lock (_gate) _text.Append(chunk);
+        lock (_gate)
+        {
+            // The first prose of a segment that had been thinking is exactly where the thinking ended. Frozen
+            // here rather than when the turn is filed, because by then the answer has typed for however long it
+            // typed, and a clause thought for twelve seconds would be reported as forty-five. Frozen on the run
+            // rather than read off the bubble's phase flag because a view is not a source of truth — and this one
+            // is thrown away every time the user looks at another session.
+            if (!_reasoningClosed && _reasoning.Length > 0 && _text.Length == 0)
+            {
+                _reasoningTicks = ElapsedLocked().Ticks;
+                _reasoningClosed = true;
+            }
+
+            _text.Append(chunk);
+        }
+    }
+
+    /// <summary>How long this segment thought, on the same clock that gives the bubble its elapsed label — which
+    /// is the clock that does <i>not</i> charge a wait for an approval card to the model's reasoning.
+    ///
+    /// <para>A segment that said something is frozen at the thinking→answer boundary; one that never spoke has no
+    /// such boundary, so it keeps accruing until it is filed, which is the right end for thinking that ran to the
+    /// last token. Both readings come out of this one property so neither of the two write sites has to know
+    /// which shape it is filing.</para>
+    ///
+    /// <para>Null means this segment never thought. That is a different answer from zero, and the copy depends on
+    /// the difference: a session stored before this was recorded has to read 已思考, not 已思考 0s.</para></summary>
+    public TimeSpan? ReasoningElapsed
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (_reasoningClosed) return TimeSpan.FromTicks(_reasoningTicks);
+                return _reasoning.Length > 0 ? ElapsedLocked() : null;
+            }
+        }
+    }
+
+    /// <summary>Whether some <i>earlier</i> segment of this run already handed thinking to the transcript. That is
+    /// the question the live bubble asks before drawing a thinking row: a tool loop thinks once per round, and
+    /// showing the card every round would flash it above the group a hundred and twenty-seven times in a run that
+    /// made that many calls.
+    ///
+    /// <para>Derived from the filed-reasoning tally rather than from a flag set at paint time, because "first
+    /// round" and "first frame" are not the same question — a flag armed on the first paint would hide the row
+    /// from the second paint of the very round it was meant to show.</para></summary>
+    internal bool ThoughtFiledBefore
+    {
+        get { lock (_gate) return _filedReasoning > 0; }
     }
 
     internal void AppendReasoning(string chunk)
@@ -232,6 +287,11 @@ internal sealed class ConversationRun : IDisposable
             _filedReasoning += _reasoning.Length;
             _text.Clear();
             _reasoning.Clear();
+            // The next segment thinks again, so the clock re-arms with it. <see cref="ThoughtShownLive"/> is
+            // deliberately not reset here — it answers "has this run ever shown thinking", and a run is one
+            // answer however many rounds of tool calls it took to get there.
+            _reasoningClosed = false;
+            _reasoningTicks = 0L;
             _spinStopped = false;
             // Each segment is answered by its own response, so the reason belongs to the one now starting.
             _finishReason = null;
