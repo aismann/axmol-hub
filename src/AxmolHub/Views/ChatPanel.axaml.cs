@@ -65,6 +65,10 @@ public partial class ChatPanel : UserControl
     private const int MaxRecalledTexts = 20;
 
     private bool _stickToBottom = true;
+    // True while a hand holds the scrollbar's thumb: the window in which automatic scrolling and streamed
+    // re-measuring both stand down. Wired in the constructor off Thumb.DragStarted/DragCompleted; see ScrollToEnd
+    // for what it guards and RefreshLive for what it holds back.
+    private bool _thumbDragging;
     private Task? _contextCompressionTask;
 
     /// <summary>
@@ -340,6 +344,14 @@ public partial class ChatPanel : UserControl
             UpdateMessageColumnWidth();
             UpdateScrollAffordance();
         };
+        // A hand on the thumb owns the reading position. While it is held, no automatic scroll may move what it
+        // holds and the streamed reply must not re-measure the column under it; the moment it lets go, the
+        // held-back paint flushes. Both drag events bubble out of the ScrollBar's template (Thumb's drag events
+        // are Bubble routed events), so the wiring survives a template re-apply and stays out of the template.
+        MessageScroller.AddHandler(Thumb.DragStartedEvent,
+            (_, _) => { _thumbDragging = true; _stickToBottom = false; });
+        MessageScroller.AddHandler(Thumb.DragCompletedEvent,
+            (_, _) => { _thumbDragging = false; FlushLiveRepaintIfPending(); });
         InputBox.PropertyChanged += (_, e) =>
         {
             if (e.Property == TextBox.TextProperty)
@@ -3927,7 +3939,11 @@ public partial class ChatPanel : UserControl
         // interrupt an open Linux composition, so the caret jumps. Defer just those two while the user composes;
         // the thinking glyph keeps running (cheap, and the suite guards against freezing it), and run.LiveText
         // accrues server-side, so nothing is lost — focus loss flushes the held-back paint.
-        if (DeferringLiveRepaint)
+        // A held thumb needs the same protection an open composition gets: a repaint re-measures the message
+        // column (see PaintStreamingMarkdown), and a column that changes height under the hand moves the Track's
+        // mapping mid-drag, which is a thumb that shrinks back from one hand and drifts off the other. Held back
+        // the same way, flushed the same way, when the hand lets go.
+        if (DeferringLiveRepaint || _thumbDragging)
         {
             if (bubble.PaintedText != text || (bubble.Thought.Text.Text ?? "") != thought) _liveRepaintPending = true;
             RefreshGlyphPhase(bubble);
@@ -4113,14 +4129,32 @@ public partial class ChatPanel : UserControl
     {
         _stickToBottom = true;
         Dispatcher.UIThread.Post(
-            () => { MessageScroller.ScrollToEnd(); UpdateScrollAffordance(); },
+            () =>
+            {
+                // Tested here as well as at the call sites: the post runs after a hand may already be on the
+                // thumb, and a queued jump is exactly the scroll that used to pull the thumb out from under the
+                // mouse mid-drag.
+                if (_thumbDragging) return;
+                MessageScroller.ScrollToEnd();
+                UpdateScrollAffordance();
+            },
             DispatcherPriority.Background);
     }
 
     private void ScrollToEndIfSticky()
     {
-        if (!_stickToBottom) return;
-        Dispatcher.UIThread.Post(() => MessageScroller.ScrollToEnd(), DispatcherPriority.Background);
+        if (!_stickToBottom || _thumbDragging) return;
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                // Only the hand may veto a queued landing. The stick flag itself is recomputed from the view's
+                // position on every ScrollChanged, so testing it here would cancel the very "land on the newest
+                // line" this posts: the switch that queued it has already moved the view, and the flag reads
+                // false until the landing lands.
+                if (_thumbDragging) return;
+                MessageScroller.ScrollToEnd();
+            },
+            DispatcherPriority.Background);
     }
 
     private void UpdateScrollAffordance()
@@ -4287,6 +4321,16 @@ public partial class ChatPanel : UserControl
     /// never does.</summary>
     internal double TranscriptScrollRangeForCheck
         => Math.Max(0, MessageScroller.Extent.Height - MessageScroller.Viewport.Height);
+
+    /// <summary>The transcript's own scroller, for the thumb-drag checks. The drag is asserted on the real
+    /// Track/Thumb the ScrollBar template builds — a stand-in would measure its own arithmetic instead of the
+    /// scrollbar a hand actually touches.</summary>
+    internal ScrollViewer TranscriptScrollerForCheck => MessageScroller;
+
+    /// <summary>Whether the framework still considers the scrollbar's thumb held. The drag checks read it into
+    /// their per-step record because "the thumb did not move" and "the thumb moved and something pulled it back"
+    /// are different bugs, and this is the line that tells them apart.</summary>
+    internal bool TranscriptThumbDraggingForCheck => _thumbDragging;
 
     /// <summary>How tall the band's row actually is. Zero is the claim that an empty thing does not take a row;
     /// the plate's own height is the claim that a reserved row is what stopped the composer from jumping.</summary>

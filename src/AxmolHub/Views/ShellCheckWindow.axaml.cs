@@ -1986,6 +1986,7 @@ public partial class ShellCheckWindow : Window
         await CheckThinkingAsync(shell, panel);
         await CheckRunElapsedAsync(shell, panel);
         await CheckScrollAsync(shell, panel);
+        await CheckThumbDragAsync(shell, panel);
         await CheckActivityOrchestrationAsync(shell, panel);
         await CheckToolFloodAsync(shell, panel);
         await CheckInspectorAndSteerAsync(shell, panel);

@@ -457,11 +457,16 @@
   </ControlTheme>
 
   <!-- ==================== ScrollBar thumb ====================
-       Same reasoning as the Expander header: a separate ControlTheme lets the hover state be expressed with a single-level selector. -->
+       Same reasoning as the Expander header: a separate ControlTheme lets the hover state be expressed with a single-level selector.
+       The 2 DIP inset lives on this template's Border and never on the Thumb itself. Track.CalculateThumbAdjustment compares the
+       outer arrange rect against Thumb.Bounds, which a Thumb.Margin insets, so a margined thumb is handed an adjustment that is
+       wrong by the margin on every arrange, and its drag anchor walks off the hand at that rate (measured on the transcript: the
+       thumb gained 2 DIP per move and never quite caught up with the mouse). Keep Thumb.Margin at zero; the inset this Border
+       carries is what the eye reads as breathing room around the bar. -->
   <ControlTheme x:Key="HubScrollThumb" TargetType="Thumb">
     <Setter Property="Template">
       <ControlTemplate>
-        <Border Name="Bar" Background="{DynamicResource Hub.ScrollThumb}" CornerRadius="4" />
+        <Border Name="Bar" Background="{DynamicResource Hub.ScrollThumb}" CornerRadius="4" Margin="2" />
       </ControlTemplate>
     </Setter>
     <Style Selector="^:pointerover /template/ Border#Bar">
@@ -500,8 +505,7 @@
               <Track.Thumb>
                 <Thumb Name="PART_Thumb"
                        Theme="{StaticResource HubScrollThumb}"
-                       HorizontalAlignment="Stretch"
-                       Margin="2" />
+                       HorizontalAlignment="Stretch" />
               </Track.Thumb>
             </Track>
           </Border>
@@ -524,8 +528,7 @@
               <Track.Thumb>
                 <Thumb Name="PART_Thumb"
                        Theme="{StaticResource HubScrollThumb}"
-                       VerticalAlignment="Stretch"
-                       Margin="2" />
+                       VerticalAlignment="Stretch" />
               </Track.Thumb>
             </Track>
           </Border>
