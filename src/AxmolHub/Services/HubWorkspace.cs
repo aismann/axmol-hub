@@ -102,13 +102,14 @@ public sealed class HubWorkspace : IDisposable
         State = Store.Load();
 
         Log = new HubLog(Path.Combine(Store.Root, "logs"));
-        // HubLog's callbacks come from a **worker thread** (ProcessRunner's output pump). The WPF
-        // version switches back to the UI thread with Dispatcher.BeginInvoke; here is the same.
-        // Without this step, appending text to a TextBox throws a cross-thread exception.
-        // The drawer is the one surface that shows every line; a task's own row is fed by that task's
-        // process (see OwnLines), because a row that moved on somebody else's output was reporting a
-        // stage the build never printed.
-        Log.Written += line => Dispatcher.UIThread.Post(() => Logged?.Invoke(line));
+        // HubLog raises this from a **worker thread** (ProcessRunner's output pump), and it stays there. The one
+        // subscriber keeps a retained tail and repaints the drawer on its own clock, so a build printing a hundred
+        // lines a second costs the UI thread five paints a second instead of a hundred — marshalling every line
+        // here is what once held the dispatcher for 216 seconds with the drawer closed and nobody looking at it.
+        // The drawer is the one surface that shows every line; a task's own row is fed by that task's process (see
+        // OwnLines), because a row that moved on somebody else's output was reporting a stage the build never
+        // printed.
+        Log.Written += line => Logged?.Invoke(line);
 
         _runner = new ProcessRunner(Log.Write);
         _commandLine = new EngineCommandLine(_runner, Path.Combine(AppContext.BaseDirectory, "Invoke-Axmol.ps1"));

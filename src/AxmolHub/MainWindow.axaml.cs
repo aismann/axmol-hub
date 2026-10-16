@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -1465,7 +1466,7 @@ public partial class MainWindow : Window
 
         // The log panel holds the previous root's content; leaving it would point people at a
         // directory no one is looking at anymore.
-        ActivityLog.Text = "";
+        ClearActivityLog();
         ShowLog(false);
 
         InitializeChrome();
@@ -1794,20 +1795,45 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>Guards the retained log tail: the output pump writes it from a worker thread while the drain reads
+    /// it from the UI thread.</summary>
+    private readonly object _logGate = new();
+    private readonly StringBuilder _logText = new();
+    private bool _logDirty;
+
+    /// <summary>How often the box is repainted while the drawer is open. A per-line drain is the bug this timer
+    /// exists to stop, so the interval is the cost: five writes a second whatever the line rate.</summary>
+    private readonly DispatcherTimer _logDrain = new() { Interval = TimeSpan.FromMilliseconds(200) };
+
+    /// <summary>How many times the retained tail has been painted into the box. The suite reads it to prove a
+    /// flood was coalesced — the honest figure is one per drain, not one per line.</summary>
+    internal int ActivityLogWritesForCheck { get; private set; }
+
+    /// <summary>The retained tail — what the drawer shows, whether or not it is open. The box itself lags one
+    /// drain behind and holds nothing while the drawer is closed, so anything that reads the log reads this.</summary>
+    private string ReadRetainedLog()
+    {
+        lock (_logGate) return _logText.ToString();
+    }
+
+    internal string ActivityLogTextForCheck => ReadRetainedLog();
+
     private void WireWorkspace()
     {
+        // The log's retained tail, kept off the UI thread. A build has been measured at 111 lines a second, and
+        // appending each one to TextBox.Text copies the whole retained string and re-measures the box: a flood of
+        // those held the dispatcher for 216 seconds, which is a frozen shell with no message beside it. The pump
+        // appends here; DrainActivityLog is the only writer of the box.
         _workspace.Logged += line =>
         {
-            ActivityLog.Text += line + '\n';
-            if (ActivityLog.Text is { Length: > 120000 } text)
+            lock (_logGate)
             {
-                ActivityLog.Text = text[^80000..];
+                _logText.Append(line).Append('\n');
+                if (_logText.Length > 120000) _logText.Remove(0, _logText.Length - 80000);
+                _logDirty = true;
             }
-
-            // Moving the caret to the end is how we "scroll to bottom". Avalonia's TextBox has no
-            // ScrollToEnd.
-            ActivityLog.CaretIndex = ActivityLog.Text?.Length ?? 0;
         };
+        _logDrain.Tick += (_, _) => DrainActivityLog();
 
         _workspace.StatusChanged += text => Status.Text = text;
 
@@ -2206,7 +2232,7 @@ public partial class MainWindow : Window
 
         CopyErrorButton.Click += async (_, _) =>
         {
-            var text = _workspace.LastError.Length == 0 ? ActivityLog.Text ?? "" : _workspace.LastError;
+            var text = _workspace.LastError.Length == 0 ? ReadRetainedLog() : _workspace.LastError;
             var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
             if (clipboard is not null)
             {
@@ -2817,11 +2843,51 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Shows/hides the log body and flips the strip chevron.</summary>
+    /// <summary>Shows/hides the log body and flips the strip chevron. The drain belongs to the body: while nobody
+    /// is looking at the drawer a flood costs the UI thread nothing at all, and the retained tail is painted the
+    /// moment it opens.</summary>
     internal void ShowLog(bool show)
     {
         LogBody.IsVisible = show;
         LogToggleChevron.RenderTransform = new RotateTransform(show ? 180 : 0);
+        if (!show)
+        {
+            _logDrain.Stop();
+            return;
+        }
+
+        DrainActivityLog();
+        _logDrain.Start();
+    }
+
+    /// <summary>Paints everything the pump appended since the last pass, in one write.</summary>
+    private void DrainActivityLog()
+    {
+        string text;
+        lock (_logGate)
+        {
+            if (!_logDirty) return;
+            text = _logText.ToString();
+            _logDirty = false;
+        }
+
+        ActivityLog.Text = text;
+        // Moving the caret to the end is how we "scroll to bottom". Avalonia's TextBox has no ScrollToEnd.
+        ActivityLog.CaretIndex = text.Length;
+        ActivityLogWritesForCheck++;
+    }
+
+    /// <summary>Drops the retained tail and the painted box together. Only a data-root switch does this: the old
+    /// root's lines point at a directory nobody is looking at anymore.</summary>
+    private void ClearActivityLog()
+    {
+        lock (_logGate)
+        {
+            _logText.Clear();
+            _logDirty = false;
+        }
+
+        ActivityLog.Text = "";
     }
 
     /// <summary>Updates the top-bar title for the current page.</summary>

@@ -1942,6 +1942,7 @@ public partial class ShellCheckWindow : Window
         await CheckThinkingAsync(shell, panel);
         await CheckScrollAsync(shell, panel);
         await CheckActivityOrchestrationAsync(shell, panel);
+        await CheckToolFloodAsync(shell, panel);
         await CheckInspectorAndSteerAsync(shell, panel);
 
         shell.Chat.DeleteConversation(opsConversation.Id);
@@ -3820,6 +3821,88 @@ public partial class ShellCheckWindow : Window
         }
         finally
         {
+            chat.ClientOverride = savedOverride;
+            if (chat.Conversations.Any(summary => summary.Id == session.Id)) chat.DeleteConversation(session.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+        }
+    }
+
+    /// <summary>
+    /// What one command's output costs the UI thread.
+    ///
+    /// The shell once froze for 216 seconds during an engine build — with the log drawer closed and nobody looking
+    /// at it. Every line the process printed had been copied into the box one at a time, on the UI thread, so the
+    /// flood outran the pump that was supposed to drain it. This cell prints 1,200 lines from one tool call and
+    /// asserts both halves of the repair: the flood is retained without being painted while the drawer is shut,
+    /// and the row above the composer keeps ticking across the whole of it. The bubble's own frame counter is the
+    /// probe, so no machine-dependent millisecond budget enters the assertion.
+    /// </summary>
+    private async Task CheckToolFloodAsync(MainWindow shell, ChatPanel panel)
+    {
+        const string firstLine = "flood-0-1";
+        const string lastLine = "flood-39-30";
+        // Forty blocks of thirty lines with a pause between them: the pause is what makes the window measurable.
+        // A flood that lands in one scheduler tick would prove nothing about the frames inside it, and the whole
+        // command still has to stay well inside the suite's own ceiling.
+        var flood = CommandShells.ForCurrent().IsPowerShell
+            ? "for($b=0;$b -lt 40;$b++){ 1..30 | ForEach-Object { \"flood-$b-$_\" }; Start-Sleep -Milliseconds 80 }"
+            : "for b in $(seq 0 39); do for i in $(seq 1 30); do echo \"flood-$b-$i\"; done; sleep 0.08; done";
+
+        var chat = shell.Chat;
+        var savedOverride = chat.ClientOverride;
+        var session = chat.StartConversation();
+        var workspace = ScratchDirectory.Resolve("flood-workspace");
+        System.IO.Directory.CreateDirectory(workspace);
+        chat.SetWorkspaceRoot(session.Id, workspace);
+        chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
+        chat.OpenConversation(session.Id);
+        panel.Reload();
+        Dispatcher.UIThread.RunJobs();
+        var floodClient = new ApprovalChatClient
+        {
+            ToolName = "run_command",
+            Arguments = new Dictionary<string, object?> { ["command"] = flood },
+        };
+        chat.ClientOverride = (_, _) => floodClient;
+        shell.ShowLog(false);
+        var writesBefore = shell.ActivityLogWritesForCheck;
+        try
+        {
+            panel.SetInputForCheck("刷一轮输出，看看界面还动不动");
+            _ = panel.SendComposerForCheck();
+            await WaitUntilAsync(() => panel.LiveGlyphPhaseForCheck == ActivityPhase.RunningTool);
+            Check(panel.LiveGlyphTickingForCheck,
+                "命令在跑的时候思考指示器走针，不再是一排静止的节点（相位 " + panel.LiveGlyphPhaseForCheck
+                + "，走针 " + panel.LiveGlyphTickingForCheck + "）");
+
+            await WaitUntilAsync(() => shell.ActivityLogTextForCheck.Contains(firstLine, StringComparison.Ordinal));
+            var framesBefore = panel.LiveFrameForCheck;
+            await WaitUntilAsync(() => shell.ActivityLogTextForCheck.Contains(lastLine, StringComparison.Ordinal),
+                1200);
+            var frames = panel.LiveFrameForCheck - framesBefore;
+            Check(frames >= 3,
+                "输出刷屏的这几秒里界面照常走表（气泡跳了 " + frames + " 帧，1,200 行全部读完）");
+
+            await panel.WaitForRunToFinishForCheck();
+            var retained = shell.ActivityLogTextForCheck;
+            Check(retained.Contains(firstLine, StringComparison.Ordinal)
+                  && retained.Contains(lastLine, StringComparison.Ordinal),
+                "刷屏的首尾两行都留在抽屉的保留尾部（长度 " + retained.Length + " 字符）");
+            Check(shell.ActivityLogWritesForCheck == writesBefore,
+                "抽屉关着时一次都没往文本框里写（写入 " + (shell.ActivityLogWritesForCheck - writesBefore)
+                + " 次，而命令打了 1,200 行）");
+
+            shell.ShowLog(true);
+            var box = NamedDescendant<TextBox>(shell, "ActivityLog")?.Text ?? "";
+            Check(shell.ActivityLogWritesForCheck > writesBefore
+                  && box.Contains(lastLine, StringComparison.Ordinal),
+                "打开抽屉才把保留尾部铺上屏，一次写完（写入 "
+                + (shell.ActivityLogWritesForCheck - writesBefore) + " 次）");
+        }
+        finally
+        {
+            shell.ShowLog(false);
             chat.ClientOverride = savedOverride;
             if (chat.Conversations.Any(summary => summary.Id == session.Id)) chat.DeleteConversation(session.Id);
             panel.Reload();
@@ -12335,8 +12418,9 @@ public partial class ShellCheckWindow : Window
         // Captured before the switch. The point is that the *previous* root's log leaves the screen, not that
         // the box ends up empty: building the new root's chrome can legitimately write a first line while the
         // switch settles, and demanding an empty box turns that into a failure roughly one run in ten. Lines
-        // carry an ISO timestamp, so a surviving one cannot be a coincidence of wording.
-        var previousLogLines = (NamedDescendant<TextBox>(shell, "ActivityLog")?.Text ?? "")
+        // carry an ISO timestamp, so a surviving one cannot be a coincidence of wording. The retained tail is
+        // read rather than the box, because the box is only painted while the drawer is open.
+        var previousLogLines = shell.ActivityLogTextForCheck
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var changed = shell.SwitchDataRoot(next);
@@ -12377,7 +12461,7 @@ public partial class ShellCheckWindow : Window
             "重建出的设置页显示新数据根（实际 "
             + (NamedDescendant<TextBox>(rebuilt, "DataLocation")?.Text ?? "页面为空") + "）");
 
-        var logAfterSwitch = NamedDescendant<TextBox>(shell, "ActivityLog")?.Text ?? "";
+        var logAfterSwitch = shell.ActivityLogTextForCheck;
         var survived = previousLogLines.Where(line => logAfterSwitch.Contains(line, StringComparison.Ordinal)).ToArray();
         Check(previousLogLines.Length > 0 && survived.Length == 0,
             "切换后上一个根的日志行都不再摆在界面上（切换前 " + previousLogLines.Length
