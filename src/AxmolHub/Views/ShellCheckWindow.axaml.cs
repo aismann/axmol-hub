@@ -528,6 +528,19 @@ public partial class ShellCheckWindow : Window
             "Markdown 表格使用 Hub 主题配色（表头/隔行底色与网格线），不是内置主题的浅色白底");
         Check(panel.HasThemedMarkdownDocument(),
             "标题/正文/行内代码/代码块/链接都解析为 Hub 令牌，内置主题写死的黑色与浅灰没有漏出来");
+        // The selection band is drawn by the block itself, and the library fills it with Brushes.Cyan when no
+        // brush is set — which is what a reader saw before HubMarkdownStyles named one. Read off the resolved
+        // brush rather than off the style, for the same reason as the list indent above: a rule that loses to
+        // GithubLike applies nothing at all.
+        Check(panel.HasThemedMarkdownSelection(),
+            "Markdown 正文的选取底色取自 Hub 令牌，不是 CTextBlock 兜底的 Brushes.Cyan");
+        var chipProbe = panel.ProbeMarkdownChipSelection();
+        Check(chipProbe.Found && chipProbe.RangeAgrees,
+            "行内代码块的字符区间与库自己的选区索引一致（选区读到「" + chipProbe.Selected + "」，代码是「"
+            + chipProbe.Code + "」）");
+        Check(chipProbe.Found && chipProbe.Tinted && chipProbe.Restored,
+            "选区覆盖的行内代码块自己显示选取状态：选中时换成 Hub.SelectionChip，清除后回到 Hub.SurfaceRaised（实际 "
+            + chipProbe.Code + " 选中=" + chipProbe.Tinted + " 复原=" + chipProbe.Restored + "）");
         panel.ApplyMarkdownSyntaxHighlightingForCheck();
         Check(panel.HasSyntaxHighlightedCode("cpp"),
             "C++ fenced code block 使用可用的语法定义高亮");
@@ -5077,6 +5090,8 @@ public partial class ShellCheckWindow : Window
         Dispatcher.UIThread.RunJobs();
         Check(iconPane is { } paintedPlan && paintedPlan.PlanCopyIconForCheck,
             "计划页代码块的复制按钮画出图标：复制图标跟渲染器走，不是只写在聊天面板作用域里的样式");
+        Check(iconPane is { } selectingPlan && selectingPlan.PlanHasThemedSelectionForCheck,
+            "计划页正文的选取底色同样取自 Hub 令牌：渲染器的两个受众都要对，不是只有聊天那一半");
         shell.CloseInspector();
         chat.DeleteConversation(tabSession.Id);
         panel.Reload();

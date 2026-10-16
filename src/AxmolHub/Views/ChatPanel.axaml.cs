@@ -4631,6 +4631,22 @@ public partial class ChatPanel : UserControl
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasThemedDocument);
 
+    /// <summary>Whether a rendered answer paints its selection band from the Hub token. Read per block, because
+    /// that is where the band is drawn (inside <c>CTextBlock.Render</c>), and the library's fallback there is a
+    /// hardcoded <c>Brushes.Cyan</c> — the colour this reading exists to rule out.</summary>
+    internal bool HasThemedMarkdownSelection()
+        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+            .Any(MarkdownMessageRenderer.HasThemedSelection);
+
+    /// <summary>Drives a real code chip through the selection pass — the one the pointer hook runs — and reports
+    /// what the chip painted. The first viewer on screen that draws an inline code chip answers, so this reads a
+    /// document the transcript really built rather than a fixture made for the check.</summary>
+    internal (bool Found, bool RangeAgrees, bool Tinted, bool Restored, string Code, string Selected)
+        ProbeMarkdownChipSelection()
+        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+            .Select(MarkdownMessageRenderer.ProbeChipSelectionForCheck)
+            .FirstOrDefault(probe => probe.Found);
+
     internal void ApplyMarkdownSyntaxHighlightingForCheck()
     {
         foreach (var viewer in MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>())

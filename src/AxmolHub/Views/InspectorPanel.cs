@@ -659,6 +659,13 @@ internal sealed class InspectorPanel : UserControl
         => _planHost.Content is MarkdownScrollViewer viewer
            && MarkdownMessageRenderer.HasCopyToolbar(viewer);
 
+    /// <summary>Whether the plan tab's own document paints its selection from the Hub token. The pane is the
+    /// renderer's other audience, and the colour of a selection is exactly the kind of thing a rule written for
+    /// the chat half alone does not reach: asked of the plan's viewer, not of the chat's.</summary>
+    internal bool PlanHasThemedSelectionForCheck
+        => _planHost.Content is MarkdownScrollViewer viewer
+           && MarkdownMessageRenderer.HasThemedSelection(viewer);
+
     /// <summary>How many buttons the header holds. Exactly three, the three tabs: the pane's other two controls
     /// moved to the title bar, and a check that only ever pressed those would stay green while a second, dead pair
     /// was still painted in here. Counted off the header itself rather than off the pane, because the body has

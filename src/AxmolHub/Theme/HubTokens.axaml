@@ -58,6 +58,18 @@
       <SolidColorBrush x:Key="Hub.Link" Color="#70B8F2" />
       <SolidColorBrush x:Key="Hub.LinkHover" Color="#9BCBFA" />
 
+      <!-- Text selection on the reading surfaces (chat Markdown and the inspector's plan tab). A translucent
+           accent rather than an opaque plate, so the ink under it keeps its own colour and a bold or code run
+           stays legible the way it does in the reference shells: 45% of Hub.Accent over Hub.Background lands on
+           #1F4E6E. Two tokens because the inline code chip paints an opaque surface of its own — a translucent
+           brush set on the chip would composite against the selection band already beneath it and come out
+           darker than the band around it, so Hub.SelectionChip is that same mix over Hub.SurfaceRaised, worked
+           out here once instead of at paint time. The band itself is drawn by the library inside
+           CTextBlock.Render, which fills it with SelectionBrush and falls back to Brushes.Cyan when no brush is
+           set — that cyan is what the setter in HubMarkdownStyles replaces. -->
+      <SolidColorBrush x:Key="Hub.Selection" Color="#732188CF" />
+      <SolidColorBrush x:Key="Hub.SelectionChip" Color="#2C5A7A" />
+
       <SolidColorBrush x:Key="Hub.Success" Color="#70D7AF" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeBackground" Color="#594313" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeForeground" Color="#FFE08A" />
@@ -169,6 +181,11 @@
       <SolidColorBrush x:Key="Hub.AccentSoftBorder" Color="#3D93D6" />
       <SolidColorBrush x:Key="Hub.Link" Color="#1769AA" />
       <SolidColorBrush x:Key="Hub.LinkHover" Color="#0E4F88" />
+
+      <!-- Light counterparts; see the Dark dictionary's note for what the pair is for. Same 45% of Hub.Accent,
+           which over this page's #F4F5F7 lands on #92BBDD, and the chip's opaque mix over #F8F9FB. -->
+      <SolidColorBrush x:Key="Hub.Selection" Color="#731A73BE" />
+      <SolidColorBrush x:Key="Hub.SelectionChip" Color="#94BDE0" />
 
       <SolidColorBrush x:Key="Hub.Success" Color="#1E9E76" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeBackground" Color="#FFF1BF" />

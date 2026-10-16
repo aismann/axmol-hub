@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using Avalonia.VisualTree;
 using Avalonia.Media;
@@ -56,6 +57,9 @@ internal static class MarkdownMessageRenderer
         EventHandler? layoutUpdated = null;
         layoutUpdated = (_, _) =>
         {
+            // The chip hook goes in before the syntax pass can unsubscribe: it is one subscription per viewer,
+            // idempotent, and it has to exist before the first pointer gesture rather than before the first frame.
+            InstallChipSelection(viewer);
             if (ApplySyntaxHighlighting(viewer)) viewer.LayoutUpdated -= layoutUpdated;
         };
         viewer.LayoutUpdated += layoutUpdated;
@@ -82,6 +86,133 @@ internal static class MarkdownMessageRenderer
         if (Application.Current?.FindResource("Hub.Font.Mono") is not FontFamily mono) return;
         foreach (var code in viewer.GetLogicalDescendants().OfType<CCode>())
             code.FontFamily = mono;
+    }
+
+    /// <summary>
+    /// Keeps the marks on the code chips in step with the selection the library keeps on the document.
+    ///
+    /// <para>A block publishes no selection event — its <c>Selection</c> is a plain property over two text
+    /// pointers, not an AvaloniaProperty, so there is nothing to subscribe to — but the input that changes one is
+    /// published, so this hangs on that. The read is deferred to the dispatcher because the library's own pointer
+    /// handler must have run before the new range can be read back, and handled events are read too: the press
+    /// the library consumes is exactly the one that clears the previous selection.</para>
+    ///
+    /// <para>Installed on the viewer rather than on each block, which is what makes a gesture that clears a
+    /// selection living in another block come out right — the range is read from every block in the document, not
+    /// only from the one the pointer happened to land on.</para>
+    /// </summary>
+    internal static void InstallChipSelection(MarkdownScrollViewer viewer)
+    {
+        if (viewer.Classes.Contains("hub-chip-selection")) return;
+        viewer.Classes.Add("hub-chip-selection");
+
+        // One gesture, one deferred read: the deferral is what makes the order irrelevant, so every input event
+        // that can move a selection is wired to the same handler instead of each one growing its own.
+        void OnGesture(object? sender, RoutedEventArgs _)
+            => Dispatcher.UIThread.Post(() => SyncChipSelection(viewer));
+
+        foreach (var gesture in new RoutedEvent[]
+                 {
+                     InputElement.PointerPressedEvent, InputElement.PointerMovedEvent,
+                     InputElement.PointerReleasedEvent, InputElement.KeyDownEvent, InputElement.KeyUpEvent,
+                 })
+        {
+            viewer.AddHandler(gesture, OnGesture, RoutingStrategies.Bubble, handledEventsToo: true);
+        }
+    }
+
+    /// <summary>Marks every code chip the document's current selection covers, and unmarks the rest.</summary>
+    internal static void SyncChipSelection(MarkdownScrollViewer viewer)
+    {
+        foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
+            SyncChipSelection(block);
+    }
+
+    private static void SyncChipSelection(CTextBlock block)
+    {
+        var selection = block.Selection;
+        var from = Math.Min(selection?.From ?? 0, selection?.To ?? 0);
+        var to = Math.Max(selection?.From ?? 0, selection?.To ?? 0);
+        foreach (var (chip, start, length) in ChipsOf(block))
+            chip.Classes.Set("hub-chip-selected", start < to && start + length > from);
+    }
+
+    /// <summary>Every code chip a block draws, in document order, with the character range each one covers.
+    ///
+    /// <para>The range is what a selection's offsets are measured in, and it is reconstructed from the document's
+    /// own text here rather than asked of the library: every inline contributes its own text and a span
+    /// contributes its children's, which is the same arithmetic the library's own <c>Text</c> is built from.
+    /// <see cref="ProbeChipSelectionForCheck"/> is what keeps that a claim instead of a belief — it compares the
+    /// reconstruction against the library's answer for the same range.</para>
+    /// </summary>
+    private static List<(CCode Chip, int Start, int Length)> ChipsOf(CTextBlock block)
+    {
+        var chips = new List<(CCode Chip, int Start, int Length)>();
+        var cursor = 0;
+        foreach (var inline in block.Content) CollectChips(inline, ref cursor, chips);
+        return chips;
+    }
+
+    private static void CollectChips(CInline inline, ref int cursor, List<(CCode Chip, int Start, int Length)> chips)
+    {
+        if (inline is CCode chip)
+        {
+            var length = inline.AsString()?.Length ?? 0;
+            chips.Add((chip, cursor, length));
+            // The chip's children are inside the range just recorded, not past it: walking into them would
+            // measure the same text a second time and push every chip after this one off by its length.
+            cursor += length;
+            return;
+        }
+
+        if (inline is CSpan span)
+        {
+            foreach (var child in span.Content ?? []) CollectChips(child, ref cursor, chips);
+            return;
+        }
+
+        cursor += inline.AsString()?.Length ?? 0;
+    }
+
+    /// <summary>Verification hook: selects the first code chip in the document, runs the pass the pointer runs,
+    /// and reports what the chip painted. Readings rather than throws, so a failure prints with numbers in it.
+    /// <c>RangeAgrees</c> is the library's own answer to the range this file reconstructed —
+    /// <c>GetSelectedText</c> over that range has to come back as the chip's own code.</summary>
+    internal static (bool Found, bool RangeAgrees, bool Tinted, bool Restored, string Code, string Selected)
+        ProbeChipSelectionForCheck(MarkdownScrollViewer viewer)
+    {
+        foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
+        {
+            var chips = ChipsOf(block);
+            if (chips.Count == 0) continue;
+
+            var probe = chips[0];
+            block.Select(probe.Start, probe.Start + probe.Length);
+            var selected = block.GetSelectedText() ?? "";
+            SyncChipSelection(block);
+            var code = probe.Chip.AsString() ?? "";
+            var tinted = probe.Chip.Classes.Contains("hub-chip-selected")
+                         && MatchesToken(probe.Chip.Background, "Hub.SelectionChip");
+
+            block.ClearSelection();
+            SyncChipSelection(block);
+            var restored = !probe.Chip.Classes.Contains("hub-chip-selected")
+                           && MatchesToken(probe.Chip.Background, "Hub.SurfaceRaised");
+
+            return (true, selected == code, tinted, restored, code, selected);
+        }
+
+        return (false, false, false, false, "", "");
+    }
+
+    /// <summary>Whether every block in the document paints its selection band from the Hub token instead of the
+    /// library's own fallback. <see cref="Brushes.Cyan"/> is the specific thing being ruled out: it is what
+    /// <c>CTextBlock.Render</c> fills the band with when no brush is set, and it was the colour on screen before
+    /// <see cref="HubMarkdownStyles"/> named one.</summary>
+    internal static bool HasThemedSelection(MarkdownScrollViewer viewer)
+    {
+        var blocks = viewer.GetVisualDescendants().OfType<CTextBlock>().ToArray();
+        return blocks.Length > 0 && blocks.All(block => MatchesToken(block.SelectionBrush, "Hub.Selection"));
     }
 
     internal static void RenderInto(StackPanel content, string markdown)
@@ -351,8 +482,9 @@ internal static class MarkdownMessageRenderer
 
     /// <summary>Compares resolved colors, not brush instances: a style setter and a resource token are
     /// never the same object. The theme variant has to be named explicitly, because the Hub color
-    /// tokens live in ThemeDictionaries and a null variant skips them.</summary>
-    private static bool MatchesToken(IBrush? brush, string tokenKey)
+    /// tokens live in ThemeDictionaries and a null variant skips them. Read from the checks as well as
+    /// from the assertions below, so a check never re-implements the comparison.</summary>
+    internal static bool MatchesToken(IBrush? brush, string tokenKey)
         => brush is ISolidColorBrush solid
            && Application.Current is { } app
            && app.TryGetResource(tokenKey, app.ActualThemeVariant, out var value)

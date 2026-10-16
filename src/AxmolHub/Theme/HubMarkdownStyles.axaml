@@ -29,6 +29,12 @@
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
     <Setter Property="FontSize" Value="12" />
     <Setter Property="LineHeight" Value="20" />
+    <!-- The selection band. CTextBlock.Render fills its selection rectangles with this brush and falls back to
+         Brushes.Cyan when it is null, which is the bright cyan a reader used to see over the dark page;
+         GithubLike declares no brush of its own (it is the style that would have had to, and it does not), so
+         this setter is the only thing standing between the fallback and the screen. Set here rather than in code
+         so it keeps following the theme variant. -->
+    <Setter Property="SelectionBrush" Value="{DynamicResource Hub.Selection}" />
   </Style>
 
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CHyperlink">
@@ -70,6 +76,20 @@
   <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CCode">
     <Setter Property="Foreground" Value="{DynamicResource Hub.TextBody}" />
     <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
+  </Style>
+
+  <!-- A code chip inside the selection. The band is painted before the inlines are drawn, and a chip paints its
+       own opaque surface on top of it — so a selected chip used to look exactly like an unselected one, which is
+       the one place in a reply where the reader cannot see what is about to be copied. The class is applied by
+       MarkdownMessageRenderer from the selection's own offsets; the colour is painted from here so the chip goes
+       back to the paragraph's own chip surface the moment the class is gone, and so the mix keeps following the
+       theme variant. It is an opaque mix rather than Hub.Selection itself: a translucent brush over the band
+       already beneath the chip would composite twice and read darker than the band around it.
+       It sits *after* the rule above for the reason this file already states for the headings: Avalonia ranks
+       matching styles by position, not by specificity, so a two-selector rule written earlier still loses to the
+       plain one that follows it — which is exactly how this rule first failed to paint anything. -->
+  <Style Selector=".Markdown_Avalonia_MarkdownViewer ctxt|CCode.hub-chip-selected">
+    <Setter Property="Background" Value="{DynamicResource Hub.SelectionChip}" />
   </Style>
 
   <!-- Lists. GithubLike indents every list grid by 40 and a nested list pays it again, which in the narrow
