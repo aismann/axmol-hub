@@ -4154,6 +4154,36 @@ public partial class ShellCheckWindow : Window
             Check(new PreferencesStore(offPath).Load().ShowThinking
                   && back.Contains(proseThought) && back.Contains(onlyThought),
                 "再开回来，两块都回到原处（实际 " + back.Count + " 块）");
+
+            // ── A silent call's thinking ──
+            // A read-only call asks for no card and leaves no undo copy, so the group rendered no row for it at
+            // all and the thinking filed on that turn had nowhere on screen — filed, priced, replayed, and
+            // invisible. It is content rather than a gap, and it is the one shape the two checks above cannot
+            // catch, because they both go through a turn that draws a row anyway.
+            var silentSession = chat.StartConversation();
+            chat.SetApprovalMode(silentSession.Id, ToolApprovalModes.Full);
+            chat.OpenConversation(silentSession.Id);
+            const string silentThought = "先列一下目录，再决定读哪个文件";
+            var silent = new ApprovalChatClient
+            {
+                CallsRemaining = 1,
+                ToolName = "list_directory",
+                Arguments = new Dictionary<string, object?> { ["path"] = "." },
+            };
+            silent.Thinking = [silentThought];
+            chat.ClientOverride = (_, _) => silent;
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            panel.SetInputForCheck("默默列一次目录，不用说为什么");
+            await panel.SendComposerForCheck();
+            await panel.WaitForRunToFinishForCheck();
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.ReasoningTextsForCheck().Contains(silentThought),
+                "不弹审批卡也不留撤销副本的静默调用，它那一轮的思考也有落点（屏上思考块 "
+                + panel.ReasoningTextsForCheck().Count + " 个）");
+            chat.DeleteConversation(silentSession.Id);
         }
         finally
         {
