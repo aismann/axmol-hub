@@ -4786,7 +4786,7 @@ public partial class ChatPanel : UserControl
     /// draws an inline code chip answers, so this reads a document the transcript really built rather than a
     /// fixture built for the check.</summary>
     internal (bool Found, bool RangeAgrees, bool DraggedTinted, bool DraggedCopied, bool DraggedRestored,
-        string Code, string LibraryText, string DraggedText)
+        bool ClickDropped, bool ClickUnmarked, string Code, string LibraryText, string DraggedText)
         ProbeMarkdownChipSelection()
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
             .Select(MarkdownMessageRenderer.ProbeChipSelectionForCheck)

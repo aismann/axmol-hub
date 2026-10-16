@@ -144,7 +144,21 @@ internal static class MarkdownMessageRenderer
         var selection = block.Selection;
         var from = Math.Min(selection?.From ?? 0, selection?.To ?? 0);
         var to = Math.Max(selection?.From ?? 0, selection?.To ?? 0);
-        foreach (var (chip, start, length) in ChipsOf(block))
+        var chips = ChipsOf(block);
+
+        // A gesture that lands on an inline code chip — a click, or a click with a pixel of travel — is handed
+        // the chip's own characters, because the library's caret model treats a chip as one unit and a chip is
+        // where the press was. The reader asked for the opposite, twice over: a chip must not be picked up by
+        // clicking it, and the only selection a chip may wear is the one a drag across it produces. So a range
+        // that begins and ends inside one chip is dropped rather than merely left unmarked — what stays in the
+        // block is then only ever a selection somebody can act on.
+        if (to > from && chips.Any(chip => from >= chip.Start && to <= chip.Start + chip.Length))
+        {
+            block.ClearSelection();
+            from = to = 0;
+        }
+
+        foreach (var (chip, start, length) in chips)
             chip.Classes.Set("hub-chip-selected", start < to && start + length > from);
     }
 
@@ -231,16 +245,16 @@ internal static class MarkdownMessageRenderer
         return "";
     }
 
-    /// <summary>Verification hook: walks the first code chip in the document through the gestures that decide what
-    /// a chip may show, and reports what each one left behind. Readings rather than throws, so a failure prints
-    /// with numbers in it.
+    /// <summary>Verification hook: walks the first code chip in the document through the three gestures that
+    /// decide what a chip may show, and reports what each one left behind. Readings rather than throws, so a
+    /// failure prints with numbers in it.
     ///
     /// <para><c>RangeAgrees</c> is the library's own answer to the range this file reconstructed: that range
     /// selected through the library's index overload has to read back as the chip's own code, or every mark this
     /// file computes is measured against the wrong coordinate space.</para>
     /// </summary>
     internal static (bool Found, bool RangeAgrees, bool DraggedTinted, bool DraggedCopied, bool DraggedRestored,
-        string Code, string LibraryText, string DraggedText)
+        bool ClickDropped, bool ClickUnmarked, string Code, string LibraryText, string DraggedText)
         ProbeChipSelectionForCheck(MarkdownScrollViewer viewer)
     {
         foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
@@ -267,11 +281,20 @@ internal static class MarkdownMessageRenderer
             SyncChipSelection(block);
             var draggedRestored = !Marked(probe.Chip);
 
+            // A click on the chip, i.e. a range that begins and ends inside it: nothing selected, nothing marked.
+            block.Select(probe.Start + 1, probe.Start + probe.Length);
+            SyncChipSelection(block);
+            var clickDropped = block.Selection is null;
+            var clickUnmarked = !Marked(probe.Chip);
+
+            block.ClearSelection();
+            SyncChipSelection(block);
+
             return (true, libraryText == code, draggedTinted, draggedCopied, draggedRestored,
-                code, libraryText, draggedText);
+                clickDropped, clickUnmarked, code, libraryText, draggedText);
         }
 
-        return (false, false, false, false, false, "", "", "");
+        return (false, false, false, false, false, false, false, "", "", "");
     }
 
     /// <summary>Whether a chip is wearing the selected look — the class *and* the brush it resolves to, because
