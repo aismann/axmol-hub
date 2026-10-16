@@ -4081,6 +4081,34 @@ public partial class ShellCheckWindow : Window
                 + "」，落盘读到 [" + string.Join(" | ", labels) + "]）。注意这条只证明两个面读的是同一个值，"
                 + "不证明该值排除了正文打字时间——那需要一段跨过整秒的等待，自检的 120 秒预算换不起");
 
+            // ── A hand that moved the row outranks both automatic changes to it ──
+            // Its own send, because the two rules cannot share one run: collapsing the row by hand also suppresses
+            // the auto-fold, so a single stream could show one rule working and hide the other failing.
+            var step2 = new StepGate();
+            var hold2 = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            chat.ClientOverride = (_, _) => new ReasoningTrickleChatClient(
+                8, TimeSpan.Zero, TimeSpan.Zero, "第二段答案", thoughtUnit, hold2.Task, step2.Wait);
+            panel.SetInputForCheck("再想一次，这次我自己收起来");
+            await panel.SendComposerForCheck();
+            for (var round = 0; round < 3; round++) step2.Release();
+            await WaitUntilAsync(() => panel.LiveThoughtExpandedForCheck, maxTicks: 60);
+            panel.ToggleLiveThoughtForCheck();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            // Two things have to survive this: more thinking arriving must not spring the row back open, and the
+            // answer arriving must not fold it shut again. Without the "a hand moved this" rule the first of those
+            // fails on every paint while the answer is absent, and the box reopens under whoever just shut it.
+            for (var round = 0; round < 5; round++) step2.Release();
+            await WaitUntilAsync(() => panel.LivePaintedTextForCheck.Contains("第二段答案", StringComparison.Ordinal));
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.LiveThoughtExpandedForCheck && panel.LiveThoughtVisibleForCheck,
+                "人手动收起思考行之后，后续到达的思考和正文都不再改它的开合，行也仍在屏上（仍收起="
+                + (!panel.LiveThoughtExpandedForCheck ? "是" : "否") + "，仍在屏上="
+                + (panel.LiveThoughtVisibleForCheck ? "是" : "否") + "）");
+            hold2.SetResult(true);
+            await panel.WaitForRunToFinishForCheck();
+
             // ── Once it is on the record ──
             // Two shapes, because they reach the screen by different routes: prose with thinking behind a row of
             // its own, and a thinking-only turn that <i>is</i> the group's row rather than a fold inside it.
@@ -4100,6 +4128,13 @@ public partial class ShellCheckWindow : Window
             Check(panel.GroupThoughtRowNestingForCheck() == 1,
                 "只有思考的轮次展开组后一次点击就读到，组里不再套第二层折叠（实际折叠层数 "
                 + panel.GroupThoughtRowNestingForCheck() + "）");
+            // The two turns just appended were built by the factory with no duration, which is the same shape an
+            // older session file loads into. A missing number has to read as no number: writing 已思考 0s would be
+            // a claim about a session that never recorded one, and null versus zero is the only thing separating
+            // them.
+            Check(panel.ThoughtRowLabelsForCheck().Contains(HubStrings.Get("ActivityRowThought")),
+                "没记时长的轮次（老会话就是这种）头上只写「已思考」，不谎报成 0s（实际 ["
+                + string.Join(" | ", panel.ThoughtRowLabelsForCheck()) + "]）");
 
             // ── And the switch reaches what is already painted ──
             // Pressed through the checkbox rather than written to the preference: the link between the two is the
