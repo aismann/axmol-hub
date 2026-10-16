@@ -129,11 +129,9 @@ public partial class ChatPanel : UserControl
         public DispatcherTimer? Timer { get; set; }
         public int Frame { get; set; }
 
-        /// <summary>How many tool calls this reply has finished, and whether one is in flight right now. Both come
-        /// off the run this bubble is attached to — seeded when a switch rebuilds it, and advanced by
-        /// <see cref="ChatWorkspace.ToolActivityChanged"/>, which is the only place the view learns that a call
-        /// started or came back. The glyph's node count is exactly this number.</summary>
-        public int ToolCount { get; set; }
+        /// <summary>Whether a tool owns the run right now. Seeded off the run when a switch rebuilds the bubble
+        /// and moved by <see cref="ChatWorkspace.ToolActivityChanged"/>, the only place the view learns that a
+        /// call started or came back; it is what tells the two waiting shapes apart.</summary>
         public bool ToolRunning { get; set; }
 
         /// <summary>Whether this segment has produced any text yet — the status line says "preparing" until it
@@ -259,14 +257,9 @@ public partial class ChatPanel : UserControl
         {
             if (_live is not { } live || live.Run.ConversationId != conversationId) return;
             live.Status.Text = ToolActivityText(name, completed);
-            // The glyph's node count is the number of calls this reply has finished; a call in flight is what
-            // moves the phase off "waiting for a first token".
-            if (completed)
-            {
-                live.ToolCount++;
-                live.ToolRunning = false;
-            }
-            else live.ToolRunning = true;
+            // Which of the two waiting shapes to wear is the whole thing this event decides; how many calls have
+            // come back is counted in the group row the transcript already draws, not on the glyph.
+            live.ToolRunning = !completed;
             RefreshGlyphPhase(live);
         };
         _chat.RunTextChanged += conversationId =>
@@ -3745,7 +3738,6 @@ public partial class ChatPanel : UserControl
             Status = status,
             Elapsed = elapsed,
             Glyph = glyph,
-            ToolCount = run.CompletedToolCalls,
             ToolRunning = run.IsToolRunning,
         };
         // A wait already in progress is the reason this reply is late, and the event that said so fired while the
@@ -3916,9 +3908,9 @@ public partial class ChatPanel : UserControl
                 ? ActivityPhase.RunningTool
                 : ActivityPhase.WaitingFirstToken;
 
-        // One call sets the phase, the count and the visibility and re-arms the clock together, so a refresh that
-        // only confirms "still waiting" cannot leave the glyph visible but frozen (see ActivityGlyph.ApplyPhase).
-        bubble.Glyph.ApplyPhase(phase, Math.Max(1, bubble.ToolCount));
+        // One call sets the phase and the visibility and re-arms the clock together, so a refresh that only
+        // confirms "still waiting" cannot leave the glyph visible but frozen (see ActivityGlyph.ApplyPhase).
+        bubble.Glyph.ApplyPhase(phase);
     }
 
     /// <summary>Says how a run ended, on the transcript of the session that ended — not on whichever one happens
@@ -4427,11 +4419,10 @@ public partial class ChatPanel : UserControl
         => ActivityGroupAt(index)?.GetLogicalDescendants().OfType<StackPanel>()
             .FirstOrDefault(panel => panel.Name == "ActivityGroupBody");
 
-    /// <summary>The live bubble's glyph: which phase it is morphing through, whether its clock is running, and how
-    /// many tools the run has touched. A glyph stuck in one shape while a tool runs is the bug these read.</summary>
+    /// <summary>The live bubble's glyph: which phase it is morphing through and whether its clock is running.
+    /// A glyph stuck in one shape while a tool runs is the bug these read.</summary>
     internal ActivityPhase LiveGlyphPhaseForCheck => _live?.Glyph.Phase ?? ActivityPhase.ShowingText;
     internal bool LiveGlyphTickingForCheck => _live?.Glyph.IsTickingForCheck ?? false;
-    internal int LiveGlyphToolCountForCheck => _live?.Glyph.ToolCount ?? 0;
 
     /// <summary>How many times the live bubble's 350ms tick has run. A check waits on this to prove the tick that
     /// drives both the elapsed label and the glyph's phase has actually fired, rather than reading the chrome the

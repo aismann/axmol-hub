@@ -202,7 +202,7 @@ public partial class ChatSidebar : UserControl
         // ticking behind it, and a control that left the tree cannot be found through the tree again.
         var dropped = ConversationList.GetLogicalDescendants().OfType<ActivityGlyph>().ToList();
         _droppedGlyphs.AddRange(dropped);
-        foreach (var glyph in dropped) glyph.ApplyPhase(ActivityPhase.ShowingText, 0);
+        foreach (var glyph in dropped) glyph.ApplyPhase(ActivityPhase.ShowingText);
         _droppedGlyphs.RemoveAll(glyph => !glyph.IsTickingForCheck);
 
         ConversationList.Children.Clear();
@@ -863,7 +863,7 @@ public partial class ChatSidebar : UserControl
         var glyph = new ActivityGlyph { Width = 16, Height = 12 };
         glyph.Bind(ActivityGlyph.TrackBrushProperty, new DynamicResourceExtension("Hub.Border"));
         glyph.Bind(ActivityGlyph.DotBrushProperty, new DynamicResourceExtension("Hub.Accent"));
-        glyph.ApplyPhase(ActivityPhase.WaitingFirstToken, 1);
+        glyph.ApplyPhase(ActivityPhase.WaitingFirstToken);
         Grid.SetColumn(glyph, 1);
         return glyph;
     }

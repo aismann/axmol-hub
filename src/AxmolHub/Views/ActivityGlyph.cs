@@ -11,12 +11,15 @@ namespace AxmolHub;
 /// four is a status line wearing a costume.</summary>
 public enum ActivityPhase
 {
-    /// <summary>Streaming, no text yet, no tool running. The only genuinely unbounded wait, and therefore the
-    /// only phase allowed an indeterminate shape.</summary>
+    /// <summary>Streaming, no text yet, no tool running. Nothing on screen says how long this takes, so this is
+    /// the phase that wears the indeterminate shape.</summary>
     WaitingFirstToken,
 
-    /// <summary>Inside <c>BeginTool</c>/<c>EndTool</c>. The node count is the number of calls this reply has
-    /// run, so the shape counts something real.</summary>
+    /// <summary>Inside <c>BeginTool</c>/<c>EndTool</c>. Turns a ring segment rather than holding a row of static
+    /// nodes, because a command the assistant started has no knowable length either — a build has been seen to sit
+    /// in this phase for twenty-three minutes, and a row of dots that only moved when a call came back read as a
+    /// frozen screen during all of them. Which tool it is stays in the sentence beside the glyph, the one place
+    /// that knows its name.</summary>
     RunningTool,
 
     /// <summary>Text is arriving. The prose is the status; a glyph beside it would be chrome repeating a fact
@@ -51,9 +54,6 @@ public sealed class ActivityGlyph : Control
     public static readonly StyledProperty<ActivityPhase> PhaseProperty =
         AvaloniaProperty.Register<ActivityGlyph, ActivityPhase>(nameof(Phase));
 
-    public static readonly StyledProperty<int> ToolCountProperty =
-        AvaloniaProperty.Register<ActivityGlyph, int>(nameof(ToolCount));
-
     public static readonly StyledProperty<IBrush?> TrackBrushProperty =
         AvaloniaProperty.Register<ActivityGlyph, IBrush?>(nameof(TrackBrush));
 
@@ -64,12 +64,6 @@ public sealed class ActivityGlyph : Control
     {
         get => GetValue(PhaseProperty);
         set => SetValue(PhaseProperty, value);
-    }
-
-    public int ToolCount
-    {
-        get => GetValue(ToolCountProperty);
-        set => SetValue(ToolCountProperty, value);
     }
 
     public IBrush? TrackBrush
@@ -91,9 +85,14 @@ public sealed class ActivityGlyph : Control
     private readonly DispatcherTimer _timer;
     private double _clock;
 
-    /// <summary>Nodes drawn for a tool run before the row collapses to "and more". Six reads as a sequence;
-    /// seven reads as a wall.</summary>
-    private const int MaxNodes = 6;
+    /// <summary>How long one breath of the arc takes, in seconds. The sweep opens to nearly a full ring and
+    /// closes back to a stub over this window while the whole thing turns, which is what makes the shape read as
+    /// motion rather than as a segment painted on a wheel.</summary>
+    private const double SweepPeriod = 1.6;
+
+    /// <summary>Constant turn rate, in degrees per second. Kept away from the breath period so the two never
+    /// fall into a step that repeats every frame.</summary>
+    private const double SpinDegreesPerSecond = 200;
 
     public ActivityGlyph()
     {
@@ -109,7 +108,7 @@ public sealed class ActivityGlyph : Control
 
     static ActivityGlyph()
     {
-        AffectsRender<ActivityGlyph>(PhaseProperty, ToolCountProperty, TrackBrushProperty, DotBrushProperty);
+        AffectsRender<ActivityGlyph>(PhaseProperty, TrackBrushProperty, DotBrushProperty);
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
@@ -126,15 +125,14 @@ public sealed class ActivityGlyph : Control
         else if (!wants && _timer.IsEnabled) _timer.Stop();
     }
 
-    /// <summary>Sets the phase, the tool count and the visibility together and re-arms the clock in one step.
-    /// Driven explicitly rather than left to the property-changed callbacks: assigning <see cref="Phase"/> the
-    /// value it already holds fires no change, so a refresh that merely confirms "still waiting" would never
-    /// re-run <see cref="SyncClock"/>, and a glyph attached while its run was briefly unfindable would sit
-    /// visible but frozen. One call, one clock decision.</summary>
-    public void ApplyPhase(ActivityPhase phase, int toolCount)
+    /// <summary>Sets the phase and the visibility together and re-arms the clock in one step. Driven explicitly
+    /// rather than left to the property-changed callbacks: assigning <see cref="Phase"/> the value it already
+    /// holds fires no change, so a refresh that merely confirms "still waiting" would never re-run
+    /// <see cref="SyncClock"/>, and a glyph attached while its run was briefly unfindable would sit visible but
+    /// frozen. One call, one clock decision.</summary>
+    public void ApplyPhase(ActivityPhase phase)
     {
         Phase = phase;
-        ToolCount = toolCount;
         IsVisible = phase is ActivityPhase.WaitingFirstToken or ActivityPhase.RunningTool;
         SyncClock();
     }
@@ -150,7 +148,7 @@ public sealed class ActivityGlyph : Control
                 DrawWaitingArc(context);
                 break;
             case ActivityPhase.RunningTool:
-                DrawToolNodes(context);
+                DrawSpinner(context);
                 break;
             default:
                 // ShowingText and Parked draw nothing: the prose and the decision host are already saying it.
@@ -187,31 +185,35 @@ public sealed class ActivityGlyph : Control
         context.DrawEllipse(dot, null, position, 2.2, 2.2);
     }
 
-    /// <summary>One node per tool call this reply has run, joined by a line, the current one lit. More than
-    /// <see cref="MaxNodes"/> collapses to six plus an ellipsis dot: the count stays honest in the label
-    /// beside the glyph, the shape stays readable.</summary>
-    private void DrawToolNodes(DrawingContext context)
+    /// <summary>A ring segment that turns while it breathes — the shape for "a command of mine is running and it
+    /// may take twenty minutes". It fills the same box as the waiting arc and is drawn from the same brushes, so
+    /// the sentence beside it never shifts sideways when one phase hands over to the other.</summary>
+    private void DrawSpinner(DrawingContext context)
     {
-        var count = Math.Clamp(ToolCount, 1, MaxNodes);
-        var overflow = ToolCount > MaxNodes;
-        var midY = Bounds.Height / 2;
-        var step = Bounds.Width / (count + (overflow ? 0.75 : 0.25));
-        var pen = TrackBrush is { } track ? new Pen(track, 1.2) : null;
+        var radius = Math.Min(Bounds.Width, Bounds.Height) / 2 - 1;
+        if (radius <= 0 || TrackBrush is not { } track) return;
+        var center = new Point(Bounds.Width / 2, Bounds.Height / 2);
 
-        for (var index = 0; index < count; index++)
+        // One cosine carries the sweep from a stub to nearly a full ring and back, so the two ends of the
+        // segment never both sit still: the closing end races the opening one around the circle.
+        var breath = 0.5 - 0.5 * Math.Cos(_clock / SweepPeriod % 1.0 * Math.PI * 2);
+        var sweep = 30 + 270 * breath;
+        var start = _clock * SpinDegreesPerSecond % 360;
+
+        var geometry = new StreamGeometry();
+        using (var path = geometry.Open())
         {
-            var x = step * (index + 0.5);
-            if (pen is not null && index > 0)
-                context.DrawLine(pen, new Point(step * (index - 0.5), midY), new Point(x, midY));
-
-            var isCurrent = index == count - 1;
-            var brush = isCurrent ? DotBrush : TrackBrush;
-            if (brush is null) continue;
-            var r = isCurrent ? 2.6 : 1.8;
-            context.DrawEllipse(isCurrent ? brush : null, new Pen(brush, 1.2), new Point(x, midY), r, r);
+            path.BeginFigure(PointOnCircle(center, radius, start), false);
+            path.ArcTo(PointOnCircle(center, radius, start + sweep), new Size(radius, radius), 0,
+                sweep > 180, SweepDirection.Clockwise, true);
         }
 
-        if (overflow && DotBrush is { } dot)
-            context.DrawEllipse(dot, null, new Point(Bounds.Width - 1.5, midY), 1.2, 1.2);
+        context.DrawGeometry(null, new Pen(track, 1.6) { LineCap = PenLineCap.Round }, geometry);
+    }
+
+    private static Point PointOnCircle(Point center, double radius, double degrees)
+    {
+        var radians = degrees * Math.PI / 180;
+        return new Point(center.X + radius * Math.Cos(radians), center.Y + radius * Math.Sin(radians));
     }
 }
