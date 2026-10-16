@@ -131,12 +131,25 @@ public sealed class ReasoningTable
 /// why the manifest's <c>thinking</c> flag gets through and why this policy exists.
 ///
 /// The body is rewritten rather than rebuilt: every field the connector produced survives untouched, and this
-/// adds one key per assistant message. A message the model never thought before is left exactly as it is —
-/// inventing an empty chain of thought for it would be claiming something the model did not say.
+/// adds one key per assistant message. On the messages it has thinking for, that thinking, verbatim. On the ones
+/// it has none for, nothing — unless <paramref name="everyAssistantMessage"/>, which is the endpoint's own
+/// thinking mode (<c>ModelCatalog.IsThinkingMode</c>), where the field is mandatory and such a message says in as
+/// many words that no thinking was recorded. What this still refuses to do is invent a chain of thought for a
+/// turn that had none.
 /// </summary>
-public sealed class ReasoningReplayPolicy(ReasoningTable table) : PipelinePolicy
+/// <param name="everyAssistantMessage">True for a request the endpoint was asked to think on. One assistant
+/// message arriving without the field makes such an endpoint refuse the whole request, and a conversation that
+/// changed models midway is how that happens — its earlier turns were produced by a model whose thinking Hub
+/// never recorded — so the placeholder goes on those messages instead of leaving them bare.</param>
+public sealed class ReasoningReplayPolicy(ReasoningTable table, bool everyAssistantMessage) : PipelinePolicy
 {
     private const string FieldName = "reasoning_content";
+
+    /// <summary>What goes in the field on an assistant message whose thinking was never recorded, in a request
+    /// whose endpoint requires one. It is the only true thing available: an empty string is a value the wire log
+    /// counts as drift, and reusing another turn's thinking would claim something the model never said. Short by
+    /// design — it rides every later request that carries that turn.</summary>
+    public const string MissingReasoning = "[no thinking was recorded for this reply]";
 
     public override void Process(PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
     {
@@ -151,10 +164,11 @@ public sealed class ReasoningReplayPolicy(ReasoningTable table) : PipelinePolicy
     }
 
     /// <summary>Rewrites the request content in place. Leaves the message alone when there is nothing to replay,
-    /// so a conversation that never thought costs one boolean check rather than a JSON round trip.</summary>
+    /// so a conversation that never thought costs one boolean check rather than a JSON round trip — unless the
+    /// endpoint requires the field, where there is always something to write.</summary>
     private void Rewrite(PipelineMessage message)
     {
-        if (table.IsEmpty || message.Request.Content is not { } content) return;
+        if ((table.IsEmpty && !everyAssistantMessage) || message.Request.Content is not { } content) return;
 
         try
         {
@@ -166,7 +180,7 @@ public sealed class ReasoningReplayPolicy(ReasoningTable table) : PipelinePolicy
             // A body this large is not a chat completion this build should be re-encoding, and "assistant"
             // appearing somewhere is the cheapest possible filter in front of the parse.
             if (json.Length == 0 || json.Length > 32 * 1024 * 1024 || !json.Contains("\"assistant\"")) return;
-            if (!TryInject(json, table, out var rewritten)) return;
+            if (!TryInject(json, table, everyAssistantMessage, out var rewritten)) return;
             message.Request.Content = BinaryContent.Create(BinaryData.FromString(rewritten));
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException or ObjectDisposedException
@@ -182,14 +196,21 @@ public sealed class ReasoningReplayPolicy(ReasoningTable table) : PipelinePolicy
     /// changed. Public and pure on purpose: this is the whole mechanism, and it is assertable on a string rather
     /// than only by watching a network call.
     ///
-    /// A message the table has nothing for is left exactly as it is. Inventing an empty chain of thought for a
-    /// turn the model did not think on would be claiming something that was not said, and every client that
-    /// solved this by padding a space is guessing at a rule the provider never wrote down.
+    /// <para>A message the table has nothing for is left exactly as it is, and that is the whole of the rule for a
+    /// request the endpoint was not asked to think on. Inventing a chain of thought for a turn that had none is
+    /// claiming something that was not said, and a client that pads a space to get past the check leaves the next
+    /// reader of the wire with nothing to read.</para>
+    ///
+    /// <para>With <paramref name="everyAssistantMessage"/> — an endpoint in thinking mode, which refuses the whole
+    /// request when one assistant message arrives without the field — such a message carries
+    /// <see cref="MissingReasoning"/> instead. That is a statement about Hub's own records rather than about what
+    /// the model thought, and it is what a conversation whose earlier turns came from another model can honestly
+    /// send.</para>
     /// </summary>
-    public static bool TryInject(string json, ReasoningTable table, out string rewritten)
+    public static bool TryInject(string json, ReasoningTable table, bool everyAssistantMessage, out string rewritten)
     {
         rewritten = json;
-        if (table.IsEmpty) return false;
+        if (table.IsEmpty && !everyAssistantMessage) return false;
         if (JsonNode.Parse(json) is not JsonObject root
             || root["messages"] is not JsonArray messages) return false;
 
@@ -204,7 +225,12 @@ public sealed class ReasoningReplayPolicy(ReasoningTable table) : PipelinePolicy
             var text = message["content"]?.GetValueKind() == JsonValueKind.String
                 ? message["content"]?.GetValue<string>()
                 : null;
-            if (table.TakeFor(callId, text) is not { Length: > 0 } reasoning) continue;
+            var reasoning = table.TakeFor(callId, text);
+            if (reasoning is not { Length: > 0 })
+            {
+                if (!everyAssistantMessage) continue;
+                reasoning = MissingReasoning;
+            }
 
             message[FieldName] = reasoning;
             changed = true;

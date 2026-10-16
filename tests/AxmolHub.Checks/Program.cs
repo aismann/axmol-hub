@@ -3009,6 +3009,13 @@ if (args.Contains("--check-ai-context"))
     // produced, or the whole request gets a 400. The connector has no such field on the chat/completions write
     // path (measured: TextReasoningContent is dropped silently, no throw), so Hub carries it itself — and what is
     // verified here is that carry-back path.
+    //
+    // A request whose endpoint was asked to think is the strict half of that rule: every assistant message owes
+    // the field, including the ones whose thinking Hub never recorded — the turns of a conversation that changed
+    // models midway. One of those left bare is what the provider answers 400 to ("The reasoning_content in the
+    // thinking mode must be passed back to the API"), on every later request, because the turn stays in the
+    // history. There the field says that no thinking was recorded instead of borrowing another turn's; the two
+    // runs below are the two halves of the rule, and ModelCatalog.IsThinkingMode is what tells them apart.
     var thoughtBody = """
         {"messages":[{"role":"user","content":"问题"},{"role":"assistant","content":"我先看下。",
         "tool_calls":[{"id":"call_00_a","type":"function","function":{"name":"run_command","arguments":"{}"}}]},
@@ -3016,21 +3023,23 @@ if (args.Contains("--check-ai-context"))
         {"role":"assistant","tool_calls":[{"id":"call_01_b","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
         {"role":"tool","tool_call_id":"call_01_b","content":"file"},{"role":"user","content":"继续"}],"model":"m"}
         """;
-    var thoughts = new ReasoningTable();
-    thoughts.Observe(ChatPipeline.ToChatMessages(
+    List<ChatTurn> thoughtTurns =
     [
         ChatTurn.User("问题"),
         ChatTurn.FunctionCall("call_00_a", "run_command", "{}", "我先看下。", "需要先确认工具链在不在。"),
         ChatTurn.FunctionResult("call_00_a", "ok"),
         ChatTurn.Assistant("看过了", "这一轮不用再查了。"),
         // A thinking model answers with no chain of thought plenty of often. This is the turn a client is tempted
-        // to pad, and the one that must come back exactly as it went in.
+        // to pad; on an endpoint that does not require the field it comes back exactly as it went in, and on one
+        // that does it carries the placeholder — asserted both ways below.
         ChatTurn.FunctionCall("call_01_b", "read_file", "{}"),
         ChatTurn.FunctionResult("call_01_b", "file"),
         ChatTurn.User("继续"),
-    ]));
+    ];
+    var thoughts = new ReasoningTable();
+    thoughts.Observe(ChatPipeline.ToChatMessages(thoughtTurns));
     if (thoughts.IsEmpty) throw new Exception("The harvest saw no reasoning, so nothing would go back out.");
-    if (!ReasoningReplayPolicy.TryInject(thoughtBody, thoughts, out var replayed))
+    if (!ReasoningReplayPolicy.TryInject(thoughtBody, thoughts, everyAssistantMessage: false, out var replayed))
         throw new Exception("Nothing was replayed — the gateway would reject the request again.");
 
     var replayedMessages = JsonDocument.Parse(replayed).RootElement.GetProperty("messages").EnumerateArray().ToList();
@@ -3042,7 +3051,7 @@ if (args.Contains("--check-ai-context"))
     if (replayedMessages[3].GetProperty("reasoning_content").GetString() != "这一轮不用再查了。")
         throw new Exception("A plain answer lost its thinking on the way back out.");
     if (replayedMessages[4].TryGetProperty("reasoning_content", out _))
-        throw new Exception("A turn the model never thought on was handed an invented chain of thought.");
+        throw new Exception("A request that does not demand the field invented a chain of thought for a turn that had none.");
     if (replayedMessages[0].TryGetProperty("reasoning_content", out _)
         || replayedMessages[2].TryGetProperty("reasoning_content", out _)
         || replayedMessages[5].TryGetProperty("reasoning_content", out _)
@@ -3055,12 +3064,83 @@ if (args.Contains("--check-ai-context"))
     if (!replayed.Contains("tool_calls") || !replayed.Contains("call_00_a"))
         throw new Exception("The rewrite dropped the tool call it was only supposed to annotate.");
 
-    // A conversation that never reasoned must not gain a single field: not every compatible gateway allows unknown
-    // fields, and inventing reasoning for a turn that did none is a fabrication.
+    // The same body on a request whose endpoint was asked to think, where the field is mandatory on every
+    // assistant message. The bare turn below is the reported bug in miniature: a conversation that changed models
+    // midway holds turns whose thinking was never recorded, and one of them left empty is a 400 on every later
+    // request until each of them carries something — so the ones with thinking go back verbatim, and the one
+    // without says so itself. The harvest is consumed by the request it was read for (that is what makes two
+    // identical answers get their own thinking), so the strict half is given a fresh read of the same transcript.
+    thoughts.Observe(ChatPipeline.ToChatMessages(thoughtTurns));
+    if (!ReasoningReplayPolicy.TryInject(thoughtBody, thoughts, everyAssistantMessage: true, out var filled))
+        throw new Exception("A thinking-mode request was left without the field it requires.");
+    var filledMessages = JsonDocument.Parse(filled).RootElement.GetProperty("messages").EnumerateArray().ToList();
+    if (filledMessages[1].TryGetProperty("reasoning_content", out var onMandatoryCall) is false
+        || onMandatoryCall.GetString() != "需要先确认工具链在不在。"
+        || filledMessages[3].TryGetProperty("reasoning_content", out var onMandatoryAnswer) is false
+        || onMandatoryAnswer.GetString() != "这一轮不用再查了。")
+        throw new Exception("A turn with recorded thinking was not carried back verbatim on a mandatory request.");
+    if (filledMessages[4].TryGetProperty("reasoning_content", out var onBareCall) is false
+        || onBareCall.GetString() != ReasoningReplayPolicy.MissingReasoning)
+        throw new Exception("A turn whose thinking was never recorded did not say so on a mandatory request.");
+    if (filledMessages[0].TryGetProperty("reasoning_content", out _)
+        || filledMessages[2].TryGetProperty("reasoning_content", out _)
+        || filledMessages[5].TryGetProperty("reasoning_content", out _)
+        || filledMessages[6].TryGetProperty("reasoning_content", out _))
+        throw new Exception("A user or tool message was handed the placeholder on a mandatory request.");
+    if (!filled.Contains("tool_calls") || !filled.Contains("call_00_a"))
+        throw new Exception("The mandatory rewrite dropped the tool call it was only supposed to annotate.");
+    if (filled.Contains("\\u"))
+        throw new Exception("The placeholder was escaped, inflating every later request that carries it.");
+    Console.WriteLine("PASS: a request whose endpoint thinks carries the field on every assistant message, and says so where no thinking was recorded.");
+
+    // Harvesting nothing at all is the same bug in its smallest form: every earlier reply was produced without a
+    // recorded thought, and the request still owes the field on each of them.
+    var nothing = new ReasoningTable();
+    nothing.Observe(ChatPipeline.ToChatMessages([ChatTurn.User("问题"), ChatTurn.Assistant("答")]));
+    if (!nothing.IsEmpty
+        || !ReasoningReplayPolicy.TryInject(thoughtBody, nothing, everyAssistantMessage: true, out var bare))
+        throw new Exception("A thinking-mode request with nothing harvested went out without the field.");
+    var bareAssistant = JsonDocument.Parse(bare).RootElement.GetProperty("messages").EnumerateArray()
+        .Where(message => message.GetProperty("role").GetString() == "assistant").ToList();
+    if (bareAssistant.Count != 3)
+        throw new Exception($"The fixture no longer holds three assistant messages ({bareAssistant.Count}).");
+    if (bareAssistant.Any(message => !message.TryGetProperty("reasoning_content", out var carriedBack)
+                                     || carriedBack.GetString() != ReasoningReplayPolicy.MissingReasoning))
+        throw new Exception("An assistant message on a mandatory request was left without the placeholder.");
+
+    // Which requests the strict half applies to is a declaration rather than a model name: the manifest's request
+    // options say whether the endpoint is being asked to think. An undeclared or unrecognised shape fails closed —
+    // a field invented for an endpoint that never asked for one is a field that endpoint may reject.
+    static ModelProvider ThinkingDeclared(object? thinking)
+    {
+        var provider = new ModelProvider { Id = "thinking", BaseUrl = "https://thinking.test/v1" };
+        var options = new Dictionary<string, JsonElement>();
+        if (thinking is not null) options["thinking"] = JsonSerializer.SerializeToElement(thinking);
+        provider.ReasoningModels["m"] = new AiModelReasoning { RequestOptions = options };
+        return provider;
+    }
+
+    if (!ModelCatalog.IsThinkingMode(ThinkingDeclared(new { type = "enabled" }), "m")
+        || !ModelCatalog.IsThinkingMode(ThinkingDeclared("enabled"), "m")
+        || !ModelCatalog.IsThinkingMode(ThinkingDeclared(true), "m"))
+        throw new Exception("A model that declared thinking was not read as one.");
+    if (ModelCatalog.IsThinkingMode(ThinkingDeclared(new { type = "disabled" }), "m")
+        || ModelCatalog.IsThinkingMode(ThinkingDeclared(new { budget_tokens = 4096 }), "m")
+        || ModelCatalog.IsThinkingMode(ThinkingDeclared(new { type = 1 }), "m")
+        || ModelCatalog.IsThinkingMode(ThinkingDeclared(null), "m")
+        || ModelCatalog.IsThinkingMode(ThinkingDeclared(new { type = "enabled" }), "unknown")
+        || ModelCatalog.IsThinkingMode(null, "m"))
+        throw new Exception("A model that did not declare thinking was read as one, so its request would carry the field.");
+    Console.WriteLine("PASS: the mandatory-field rule is read off the model's own declaration, and a model that declared nothing never gets the field.");
+
+    // A request whose endpoint was not asked to think keeps its bytes exactly: not every compatible gateway allows
+    // unknown fields, and inventing reasoning for a turn that did none is a fabrication.
     var silent = new ReasoningTable();
     silent.Observe(ChatPipeline.ToChatMessages([ChatTurn.User("问题"), ChatTurn.Assistant("答")]));
-    if (!silent.IsEmpty || ReasoningReplayPolicy.TryInject(thoughtBody, silent, out _))
-        throw new Exception("A conversation that never thought still had a chain of thought invented for it.");
+    if (!silent.IsEmpty
+        || ReasoningReplayPolicy.TryInject(thoughtBody, silent, everyAssistantMessage: false, out var untouched)
+        || untouched != thoughtBody)
+        throw new Exception("A request that does not demand the field was touched at all.");
 
     // Two identical answers in the same session each get their own reasoning back — consumed in order, not looked
     // up by text against one standing value.
@@ -3121,7 +3201,7 @@ if (args.Contains("--check-ai-context"))
         ChatTurn.FunctionResult("call_01_y", "file"),
         ChatTurn.User("继续"),
     ]));
-    if (!ReasoningReplayPolicy.TryInject(batchBody, batchTable, out var batchReplayed))
+    if (!ReasoningReplayPolicy.TryInject(batchBody, batchTable, everyAssistantMessage: true, out var batchReplayed))
         throw new Exception("A second call of one response had nothing to replay, so the body went out unchanged.");
     var batchMessages = JsonDocument.Parse(batchReplayed).RootElement.GetProperty("messages")
         .EnumerateArray().ToList();

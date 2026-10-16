@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 
 namespace AxmolHub.Core;
 
@@ -17,6 +18,42 @@ public static class ModelCatalog
         if (provider is null || string.IsNullOrWhiteSpace(modelName)) return null;
         return provider.ReasoningModels.TryGetValue(modelName.Trim(), out var reasoning) ? reasoning : null;
     }
+
+    /// <summary>
+    /// Whether this (provider, model) pair asks the endpoint to think — read off what the model declared under
+    /// <c>requestOptions</c>, the fields its own manifest says are "required to enable reasoning for this model"
+    /// (DeepSeek's two models declare <c>{"thinking":{"type":"enabled"}}</c>).
+    ///
+    /// <para>Read here rather than inferred from a model's name, because what it decides is a rule about the
+    /// <i>request</i>: an endpoint in thinking mode refuses the whole thing when an assistant message arrives
+    /// without its <c>reasoning_content</c>, and Hub has to fill that field even for a turn whose thinking it
+    /// never recorded — which is what a conversation that changed models midway looks like.
+    /// <c>ReasoningReplayPolicy</c> honours it. The three shapes below are the ones that mean "thinking
+    /// on"; every other declaration fails closed, because a field invented for an endpoint that never asked for
+    /// one is a field that endpoint may reject.</para>
+    /// </summary>
+    public static bool IsThinkingMode(ModelProvider? provider, string? modelName)
+    {
+        if (ReasoningFor(provider, modelName)?.RequestOptions is not { Count: > 0 } options) return false;
+        if (!options.TryGetValue(ThinkingField, out var declared)) return false;
+        return declared.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.String => IsEnabled(declared.GetString()),
+            JsonValueKind.Object => declared.TryGetProperty(ThinkingTypeField, out var type)
+                                    && type.ValueKind == JsonValueKind.String
+                                    && IsEnabled(type.GetString()),
+            _ => false,
+        };
+    }
+
+    /// <summary>The declared field and value <see cref="IsThinkingMode"/> recognises: the name a manifest writes
+    /// to turn thinking on, and the word it writes there.</summary>
+    private const string ThinkingField = "thinking";
+    private const string ThinkingTypeField = "type";
+
+    private static bool IsEnabled(string? declared)
+        => string.Equals(declared, "enabled", StringComparison.OrdinalIgnoreCase);
 
     public static bool SupportsReasoningEffort(ModelProvider? provider, string? modelName)
         => EffortsFor(provider, modelName).Count > 0 || MayTryUnreportedEfforts(provider, modelName);

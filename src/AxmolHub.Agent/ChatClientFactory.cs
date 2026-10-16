@@ -164,8 +164,13 @@ public static class ChatClientFactory
         if (reasoning is not null)
             // BeforeTransport: the last thing the pipeline does, so the connector has already built the body and
             // the transport has not yet sent it — the one moment the serialized messages exist and can still be
-            // edited. (There is no per-apply position in this version of the client model.)
-            chatOptions.AddPolicy(new ReasoningReplayPolicy(reasoning), PipelinePosition.BeforeTransport);
+            // edited. (There is no per-apply position in this version of the client model.) The second argument is
+            // what this endpoint demands of the history: a model whose own declaration puts the request in
+            // thinking mode refuses the whole thing when an assistant message arrives without its
+            // reasoning_content, and a conversation that changed models midway is exactly that shape.
+            chatOptions.AddPolicy(
+                new ReasoningReplayPolicy(reasoning, Core.ModelCatalog.IsThinkingMode(provider, model)),
+                PipelinePosition.BeforeTransport);
         // Added after the reasoning rewrite, though nothing depends on that: the header policy reads roles and
         // image parts, which the rewrite does not touch.
         if (headers is not null)
