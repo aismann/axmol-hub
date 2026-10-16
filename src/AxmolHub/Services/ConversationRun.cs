@@ -75,6 +75,10 @@ internal sealed class ConversationRun : IDisposable
     // See <see cref="ReasoningElapsed"/> for why the freeze belongs at the thinking→answer boundary.
     private long _reasoningTicks;
     private bool _reasoningClosed;
+    // Where the segment now in flight started, on the same clock. A tool loop thinks once per round, and the run
+    // has been working since the first one: read without this zero point, the twelfth round's thinking would be
+    // charged with the eleven before it — measured on a real session, a few seconds of thinking stored as 51m.
+    private long _segmentTicks;
     private readonly CancellationTokenSource _stop = new();
     private readonly TimeSpan _idleTimeout;
     private readonly TimeSpan _firstFrameTimeout;
@@ -222,7 +226,7 @@ internal sealed class ConversationRun : IDisposable
             // is thrown away every time the user looks at another session.
             if (!_reasoningClosed && _reasoning.Length > 0 && _text.Length == 0)
             {
-                _reasoningTicks = ElapsedLocked().Ticks;
+                _reasoningTicks = ElapsedLocked().Ticks - _segmentTicks;
                 _reasoningClosed = true;
             }
 
@@ -230,8 +234,9 @@ internal sealed class ConversationRun : IDisposable
         }
     }
 
-    /// <summary>How long this segment thought, on the same clock that gives the bubble its elapsed label — which
-    /// is the clock that does <i>not</i> charge a wait for an approval card to the model's reasoning.
+    /// <summary>How long this segment thought, measured from where the segment began on the same clock that gives
+    /// the bubble its elapsed label — which is the clock that does <i>not</i> charge a wait for an approval card to
+    /// the model's reasoning.
     ///
     /// <para>A segment that said something is frozen at the thinking→answer boundary; one that never spoke has no
     /// such boundary, so it keeps accruing until it is filed, which is the right end for thinking that ran to the
@@ -247,7 +252,9 @@ internal sealed class ConversationRun : IDisposable
             lock (_gate)
             {
                 if (_reasoningClosed) return TimeSpan.FromTicks(_reasoningTicks);
-                return _reasoning.Length > 0 ? ElapsedLocked() : null;
+                return _reasoning.Length > 0
+                    ? TimeSpan.FromTicks(ElapsedLocked().Ticks - _segmentTicks)
+                    : null;
             }
         }
     }
@@ -287,9 +294,11 @@ internal sealed class ConversationRun : IDisposable
             _filedReasoning += _reasoning.Length;
             _text.Clear();
             _reasoning.Clear();
-            // The next segment thinks again, so the clock re-arms with it. <see cref="ThoughtShownLive"/> is
-            // deliberately not reset here — it answers "has this run ever shown thinking", and a run is one
-            // answer however many rounds of tool calls it took to get there.
+            // The next segment thinks again, so its thinking is measured from here and not from the run's start.
+            // <see cref="ThoughtFiledBefore"/> is deliberately not re-armed by this line — it answers "has this run
+            // already filed thinking", and a run is one answer however many rounds of tool calls it took to get
+            // there, which is why it reads off the tally above rather than off a per-segment flag.
+            _segmentTicks = ElapsedLocked().Ticks;
             _reasoningClosed = false;
             _reasoningTicks = 0L;
             _spinStopped = false;
