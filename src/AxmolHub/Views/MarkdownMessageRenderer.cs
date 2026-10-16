@@ -37,7 +37,14 @@ internal static class MarkdownMessageRenderer
     private static readonly Regex ChipTokenPattern = new("\u0001(\\d+)\u0002", RegexOptions.Compiled);
     private static readonly Lazy<(SyntaxHighlight Plugin, SyntaxHighlightProvider Provider)> Syntax = new(CreateSyntax);
 
-    internal static MarkdownScrollViewer Render(string markdown)
+    /// <summary>Renders a Markdown document.
+    ///
+    /// <para><paramref name="quote"/> is where a 引用 from the document's right-click menu goes — the composer, for
+    /// every caller in the shell, which is why it arrives as a delegate rather than as a reference to the chat: the
+    /// renderer's two audiences (the transcript and the inspector's plan tab) both need it, and the inspector lives
+    /// outside the panel that owns the composer.</para>
+    /// </summary>
+    internal static MarkdownScrollViewer Render(string markdown, Action<string>? quote = null)
     {
         var viewer = new MarkdownScrollViewer
         {
@@ -68,6 +75,10 @@ internal static class MarkdownMessageRenderer
         viewer.Engine = engine;
         viewer.Markdown = RejoinBoldAcrossCode(LinkifyBareUrls(markdown));
         ApplyCodeFont(viewer);
+        // The menu a selection earns. Attached here rather than by each caller, so a document is never rendered
+        // into a surface where a selection cannot be copied or quoted — the inspector being the surface that would
+        // have been forgotten.
+        SelectionMenu.Attach(viewer, () => SelectionText(viewer), quote);
         return viewer;
     }
 
@@ -174,11 +185,62 @@ internal static class MarkdownMessageRenderer
         cursor += inline.AsString()?.Length ?? 0;
     }
 
-    /// <summary>Verification hook: selects the first code chip in the document, runs the pass the pointer runs,
-    /// and reports what the chip painted. Readings rather than throws, so a failure prints with numbers in it.
-    /// <c>RangeAgrees</c> is the library's own answer to the range this file reconstructed —
-    /// <c>GetSelectedText</c> over that range has to come back as the chip's own code.</summary>
-    internal static (bool Found, bool RangeAgrees, bool Tinted, bool Restored, string Code, string Selected)
+    /// <summary>The document's selected text, read from the blocks' own text rather than from the library's
+    /// extractor.
+    ///
+    /// <para>That extractor walks the geometries between the two selection pointers and reads only text runs, so a
+    /// selection covering an inline code chip comes back with the chip's code missing — the one thing in a
+    /// sentence somebody most likely copied it for. A block's own <c>Text</c> is the whole of what it draws, chip
+    /// contents included, and a selection inside the block is a plain character range over that same text, so this
+    /// is the answer the reader sees on screen rather than the answer the library can reconstruct.</para>
+    /// </summary>
+    internal static string SelectionText(MarkdownScrollViewer viewer)
+    {
+        var parts = new List<string>();
+        foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
+        {
+            if (block.Selection is not { } selection) continue;
+            var from = Math.Min(selection.From, selection.To);
+            var to = Math.Max(selection.From, selection.To);
+            var text = block.Text ?? "";
+            if (to <= from || from >= text.Length) continue;
+            parts.Add(text[from..Math.Min(to, text.Length)]);
+        }
+
+        return string.Join("\n", parts);
+    }
+
+    /// <summary>Verification hook: selects what a drag across the document's first inline code chip produces — a
+    /// range that begins in the text before it and ends inside it — runs the pass the pointer runs, and returns
+    /// the chip's own code (empty when the document draws no chip). Deliberately a range that *spans* the chip's
+    /// edge: that is the selection the reader asked to keep, and the one a chip-internal one has to be told apart
+    /// from.</summary>
+    internal static string SelectAcrossChip(MarkdownScrollViewer viewer)
+    {
+        foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
+        {
+            var chips = ChipsOf(block);
+            if (chips.Count == 0) continue;
+
+            var chip = chips[0];
+            block.Select(Math.Max(0, chip.Start - 1), chip.Start + chip.Length);
+            SyncChipSelection(block);
+            return chip.Chip.AsString() ?? "";
+        }
+
+        return "";
+    }
+
+    /// <summary>Verification hook: walks the first code chip in the document through the gestures that decide what
+    /// a chip may show, and reports what each one left behind. Readings rather than throws, so a failure prints
+    /// with numbers in it.
+    ///
+    /// <para><c>RangeAgrees</c> is the library's own answer to the range this file reconstructed: that range
+    /// selected through the library's index overload has to read back as the chip's own code, or every mark this
+    /// file computes is measured against the wrong coordinate space.</para>
+    /// </summary>
+    internal static (bool Found, bool RangeAgrees, bool DraggedTinted, bool DraggedCopied, bool DraggedRestored,
+        string Code, string LibraryText, string DraggedText)
         ProbeChipSelectionForCheck(MarkdownScrollViewer viewer)
     {
         foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
@@ -187,23 +249,35 @@ internal static class MarkdownMessageRenderer
             if (chips.Count == 0) continue;
 
             var probe = chips[0];
-            block.Select(probe.Start, probe.Start + probe.Length);
-            var selected = block.GetSelectedText() ?? "";
-            SyncChipSelection(block);
             var code = probe.Chip.AsString() ?? "";
-            var tinted = probe.Chip.Classes.Contains("hub-chip-selected")
-                         && MatchesToken(probe.Chip.Background, "Hub.SelectionChip");
 
+            // The range the mark is computed from, answered by the library itself.
+            block.Select(probe.Start, probe.Start + probe.Length);
+            var libraryText = block.GetSelectedText() ?? "";
+
+            // A drag across the chip: marked, and included in the text this file hands to the clipboard.
+            block.Select(Math.Max(0, probe.Start - 1), probe.Start + probe.Length);
+            SyncChipSelection(block);
+            var draggedTinted = Marked(probe.Chip);
+            var draggedText = SelectionText(viewer);
+            var draggedCopied = draggedText.Contains(code, StringComparison.Ordinal);
+
+            // Cleared again: back to the paragraph's own chip surface.
             block.ClearSelection();
             SyncChipSelection(block);
-            var restored = !probe.Chip.Classes.Contains("hub-chip-selected")
-                           && MatchesToken(probe.Chip.Background, "Hub.SurfaceRaised");
+            var draggedRestored = !Marked(probe.Chip);
 
-            return (true, selected == code, tinted, restored, code, selected);
+            return (true, libraryText == code, draggedTinted, draggedCopied, draggedRestored,
+                code, libraryText, draggedText);
         }
 
-        return (false, false, false, false, "", "");
+        return (false, false, false, false, false, "", "", "");
     }
+
+    /// <summary>Whether a chip is wearing the selected look — the class *and* the brush it resolves to, because
+    /// the class alone would also be true of a rule that lost to the base chip style.</summary>
+    private static bool Marked(CCode chip)
+        => chip.Classes.Contains("hub-chip-selected") && MatchesToken(chip.Background, "Hub.SelectionChip");
 
     /// <summary>Whether every block in the document paints its selection band from the Hub token instead of the
     /// library's own fallback. <see cref="Brushes.Cyan"/> is the specific thing being ruled out: it is what
@@ -215,10 +289,13 @@ internal static class MarkdownMessageRenderer
         return blocks.Length > 0 && blocks.All(block => MatchesToken(block.SelectionBrush, "Hub.Selection"));
     }
 
-    internal static void RenderInto(StackPanel content, string markdown)
+    /// <summary>The same document, laid into a panel a turn already owns — clearing it first, which is what the
+    /// caller's ordering comments depend on. <paramref name="quote"/> travels straight through to
+    /// <see cref="Render"/>.</summary>
+    internal static void RenderInto(StackPanel content, string markdown, Action<string>? quote = null)
     {
         content.Children.Clear();
-        content.Children.Add(Render(markdown));
+        content.Children.Add(Render(markdown, quote));
     }
 
     /// <summary>

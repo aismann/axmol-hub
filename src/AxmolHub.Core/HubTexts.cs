@@ -1019,6 +1019,14 @@ public static class HubTexts
         ["You"] = ("你", "You"),
         // Message-level actions (the action bar that appears when a bubble is hovered).
         ["CopyMessage"] = ("复制", "Copy"),
+        // The same verb where a *selection* is the thing being acted on: the menu a right-click puts on a
+        // selection inside a message. 引用 hands that selection to the composer as a Markdown quote, which is the
+        // one thing a reader wants to do with a paragraph worth answering.
+        ["QuoteSelection"] = ("引用", "Quote"),
+        // The composer's own clipboard verbs. Its menu is the only place these exist: Avalonia's TextBox ships no
+        // context menu at all, so without them the input box has no right-click behaviour to speak of.
+        ["CutText"] = ("剪切", "Cut"),
+        ["PasteText"] = ("粘贴", "Paste"),
         // The tooltip is now the only place that warns editing drops the rest of the conversation: the
         // confirm dialog it used to precede went away when editing moved inline.
         ["EditMessage"] = ("编辑并重发（丢弃其后对话）", "Edit and resend (drops everything after)"),

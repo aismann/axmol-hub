@@ -137,7 +137,8 @@ public partial class ChatPanel
                 ? (null, UndoCopyState.Unreadable)
                 : (_chat.DiffForChange(change, conversationId, out var state), state),
             repository?.State,
-            tab);
+            tab,
+            QuoteIntoComposer);
         // Painting by any route leaves the pane in step with the transcript, so the repaint that follows a
         // click would be a second rebuild of the same thing.
         _inspectorSignature = conversation is null ? "" : conversation.Id + ":" + conversation.Messages.Count;

@@ -365,6 +365,10 @@ public partial class ChatPanel : UserControl
         };
         InputBox.GotFocus += (_, _) => SetComposerFocus(true);
         InputBox.LostFocus += (_, _) => SetComposerFocus(false);
+        // The clipboard verbs a text box is expected to have on right-click. Avalonia's TextBox has none of its
+        // own, so without this the box a person writes in has no right-click at all — while the transcript beside
+        // it does.
+        SelectionMenu.AttachTextBox(InputBox);
 
         // KeyDown is registered for both tunnel and bubble. Subscribe on the tunnel: it runs before the
         // TextBox's own Enter handling, which (with AcceptsReturn=true) inserts a newline and marks the
@@ -2219,8 +2223,10 @@ public partial class ChatPanel : UserControl
             // Selectable, not a bare TextBlock: this is the person's own words, and words somebody wrote are words
             // they copy — a TextBlock cannot be selected at all, which made the one message they certainly care
             // about the only one on screen that could not be. It carries the same `turn-text` class, so its size,
-            // ink and leading stay the ones the style already states for this row.
-            body.Children.Add(new SelectableTextBlock { Classes = { "turn-text" }, Text = turn.Text });
+            // ink and leading stay the ones the style already states for this row, and it is given the same
+            // right-click menu a rendered answer carries, so selecting one's own message is as useful as
+            // selecting the reply to it.
+            body.Children.Add(OwnWordsBlock(turn.Text));
 
         // What the person attached is shown from the file Hub kept, not from anything this view remembers: the
         // transcript is the only copy of "this message had a picture in it", and a row rebuilt after a restart
@@ -2261,7 +2267,7 @@ public partial class ChatPanel : UserControl
         // User text is plain by nature, and a tool payload is now a quiet line rather than a bubble; only the
         // assistant's own words carry Markdown worth rendering — and a plan's words do not render here at all.
         if (!fromUser && markdown && !isPlanTurn && turn.Role != ChatRoles.Tool && turn.Text.Length > 0)
-            MarkdownMessageRenderer.RenderInto(body, turn.Text);
+            MarkdownMessageRenderer.RenderInto(body, turn.Text, QuoteIntoComposer);
 
         // The thinking sits above the answer, which is the order it happened in and the order every client of
         // this shape puts it — but it has to be <i>inserted</i>, not added, because the pass just above clears
@@ -2289,6 +2295,44 @@ public partial class ChatPanel : UserControl
             body.Children.Add(BuildSearchSources(searches));
 
         if (approvalSurface is not null) body.Children.Add(approvalSurface);
+    }
+
+    /// <summary>The person's own words, as something they can select, copy and quote.</summary>
+    private SelectableTextBlock OwnWordsBlock(string text)
+    {
+        var block = new SelectableTextBlock { Classes = { "turn-text" }, Text = text };
+        // The same menu a rendered answer carries, read off the block instead of off a document: a plain turn is
+        // one string, so its selection needs no extractor.
+        SelectionMenu.Attach(block, () => block.SelectedText ?? "", QuoteIntoComposer);
+        return block;
+    }
+
+    /// <summary>Puts a quoted block in the composer — where the right-click menu's 引用 hands a selection.
+    ///
+    /// <para>The quote is Markdown, one <c>&gt; </c> per line, because that is what the box is for: what arrives is
+    /// something the person can answer underneath, and the fence is what tells the model those words are a quote
+    /// rather than the start of their own sentence. It is inserted at the caret and takes nothing over — the draft
+    /// around it stays where it was, and the caret lands after the quote, which is where the reply goes.</para>
+    /// </summary>
+    internal void QuoteIntoComposer(string text)
+    {
+        if (text.Length == 0) return;
+
+        var quoted = string.Join("\n", text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n')
+            .Select(line => "> " + line));
+        var draft = InputBox.Text ?? "";
+        var caret = Math.Clamp(InputBox.CaretIndex, 0, draft.Length);
+        var before = draft[..caret];
+        var after = draft[caret..];
+        // A quote is its own block: it opens on a fresh line, and what follows it gets a line of its own to be
+        // written on rather than continuing the quoted paragraph.
+        var inserted = (before.Length > 0 && !before.EndsWith('\n') ? "\n" : "")
+                       + quoted
+                       + (after.StartsWith('\n') ? "\n" : "\n\n");
+        InputBox.Text = before + inserted + after;
+        InputBox.CaretIndex = before.Length + inserted.Length;
+        InputBox.Focus();
     }
 
     /// <summary>Whether a turn is machine work rather than something said: a tool result, a call, or a
@@ -3951,7 +3995,7 @@ public partial class ChatPanel : UserControl
         }
 
         _liveRepaintPending = false;
-        PaintStreamingMarkdown(bubble, text);
+        PaintStreamingMarkdown(bubble, text, QuoteIntoComposer);
         bubble.PaintedText = text;
         if (text.Length == 0) bubble.ShowedText = false;
         else if (!bubble.ShowedText)
@@ -4007,8 +4051,12 @@ public partial class ChatPanel : UserControl
     /// <para>The open block is rendered from a repaired copy, so a fence or an emphasis the model has not closed
     /// yet still reads as formatting rather than as markup. The run's own buffer is never touched: what gets
     /// filed in the transcript is what was actually said.</para>
+    ///
+    /// <para>Static because a bubble is painted from the run's own progress, not from the panel's state — so the
+    /// one thing a painted block still needs from the panel, where a 引用 from its right-click menu goes, arrives
+    /// as <paramref name="quote"/> rather than being reached for.</para>
     /// </summary>
-    private static void PaintStreamingMarkdown(LiveBubble bubble, string text)
+    private static void PaintStreamingMarkdown(LiveBubble bubble, string text, Action<string>? quote = null)
     {
         // A run clears its buffer between tool-loop rounds, so a bubble that survives the switch can be handed a
         // shorter string than the one it last drew from — and a longer one that merely starts the same is the
@@ -4030,7 +4078,7 @@ public partial class ChatPanel : UserControl
             // had guessed at is discarded and the real text, closed or not, is laid down once.
             DropOpenBlock(bubble);
             var finished = text[bubble.Settled..settled];
-            bubble.Prose.Children.Add(MarkdownMessageRenderer.Render(finished));
+            bubble.Prose.Children.Add(MarkdownMessageRenderer.Render(finished, quote));
             bubble.Builds++;
             bubble.Settled = settled;
             bubble.SettledSource += finished;
@@ -4045,7 +4093,8 @@ public partial class ChatPanel : UserControl
         DropOpenBlock(bubble);
         if (open.Length > 0)
         {
-            bubble.Prose.Children.Add(MarkdownMessageRenderer.Render(MarkdownMessageRenderer.CloseOpenConstructs(open)));
+            bubble.Prose.Children.Add(
+                MarkdownMessageRenderer.Render(MarkdownMessageRenderer.CloseOpenConstructs(open), quote));
             bubble.Builds++;
         }
         bubble.OpenBlockSource = open;
@@ -4732,14 +4781,57 @@ public partial class ChatPanel : UserControl
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasThemedSelection);
 
-    /// <summary>Drives a real code chip through the selection pass — the one the pointer hook runs — and reports
-    /// what the chip painted. The first viewer on screen that draws an inline code chip answers, so this reads a
-    /// document the transcript really built rather than a fixture made for the check.</summary>
-    internal (bool Found, bool RangeAgrees, bool Tinted, bool Restored, string Code, string Selected)
+    /// <summary>Drives a real code chip through the three gestures that decide what it may show — a click on it,
+    /// a drag across it, cleared again — and reports what each one left behind. The first viewer on screen that
+    /// draws an inline code chip answers, so this reads a document the transcript really built rather than a
+    /// fixture built for the check.</summary>
+    internal (bool Found, bool RangeAgrees, bool DraggedTinted, bool DraggedCopied, bool DraggedRestored,
+        string Code, string LibraryText, string DraggedText)
         ProbeMarkdownChipSelection()
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
             .Select(MarkdownMessageRenderer.ProbeChipSelectionForCheck)
             .FirstOrDefault(probe => probe.Found);
+
+    /// <summary>Whether the reply on screen carries the menu a selection earns, with both rows in the order a
+    /// reader meets them.</summary>
+    internal bool MarkdownSelectionMenuForCheck()
+    {
+        var expected = new[] { HubStrings.Get("CopyMessage"), HubStrings.Get("QuoteSelection") };
+        return MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+            .Any(viewer => SelectionMenu.HeadersForCheck(viewer).SequenceEqual(expected));
+    }
+
+    /// <summary>The same question for the person's own message, which carries no document to hang a menu on.</summary>
+    internal bool UserTurnSelectionMenuForCheck()
+    {
+        var expected = new[] { HubStrings.Get("CopyMessage"), HubStrings.Get("QuoteSelection") };
+        return MessageFlow.GetLogicalDescendants().OfType<Border>()
+            .Where(border => border.Classes.Contains("user-pill"))
+            .SelectMany(pill => pill.GetLogicalDescendants().OfType<SelectableTextBlock>())
+            .Any(text => text.Classes.Contains("turn-text")
+                         && SelectionMenu.HeadersForCheck(text).SequenceEqual(expected));
+    }
+
+    /// <summary>Whether the composer's right-click menu offers the three clipboard verbs.</summary>
+    internal bool ComposerMenuForCheck()
+        => SelectionMenu.HeadersForCheck(InputBox)
+            .SequenceEqual([HubStrings.Get("CutText"), HubStrings.Get("CopyMessage"), HubStrings.Get("PasteText")]);
+
+    /// <summary>Selects across the reply's inline code chip the way a drag does, presses the menu's 引用 row the
+    /// way a click does, and hands back what the composer holds afterwards — the whole path from a selection to a
+    /// quoted draft, rather than the quoting rule on its own.</summary>
+    internal string QuoteSelectionForCheck()
+    {
+        foreach (var viewer in MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>())
+        {
+            if (MarkdownMessageRenderer.SelectAcrossChip(viewer).Length == 0) continue;
+            if (SelectionMenu.ItemForCheck(viewer, HubStrings.Get("QuoteSelection")) is not { } quote) return "";
+            quote.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            return InputBox.Text ?? "";
+        }
+
+        return "";
+    }
 
     /// <summary>Whether the person's own message is drawn with text that can be selected at all, and paints the
     /// band from the same token as everything else. A bare <see cref="TextBlock"/> answers false to both, which

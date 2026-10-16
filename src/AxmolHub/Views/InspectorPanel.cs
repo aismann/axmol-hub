@@ -188,7 +188,8 @@ internal sealed class InspectorPanel : UserControl
         IReadOnlyList<ChangedFile> changes,
         Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
         GitRepositoryState? repository,
-        string tab)
+        string tab,
+        Action<string>? quote = null)
     {
         if (string.IsNullOrWhiteSpace(planMarkdown))
         {
@@ -196,7 +197,9 @@ internal sealed class InspectorPanel : UserControl
         }
         else
         {
-            var viewer = MarkdownMessageRenderer.Render(planMarkdown!);
+            // 引用 from the plan's own right-click menu goes wherever the caller says — the composer, for the one
+            // caller there is. The pane has no editor and must not grow one: it is a reading surface.
+            var viewer = MarkdownMessageRenderer.Render(planMarkdown!, quote);
             MarkdownMessageRenderer.HandScrollingToHost(viewer);
             _planHost.Content = viewer;
         }
@@ -665,6 +668,13 @@ internal sealed class InspectorPanel : UserControl
     internal bool PlanHasThemedSelectionForCheck
         => _planHost.Content is MarkdownScrollViewer viewer
            && MarkdownMessageRenderer.HasThemedSelection(viewer);
+
+    /// <summary>Whether the plan's own document carries the menu a selection earns — the pane is the renderer's
+    /// other audience, and a menu attached inside ChatPanel alone would leave selecting the plan useless.</summary>
+    internal bool PlanSelectionMenuForCheck
+        => _planHost.Content is MarkdownScrollViewer viewer
+           && SelectionMenu.HeadersForCheck(viewer)
+               .SequenceEqual([HubStrings.Get("CopyMessage"), HubStrings.Get("QuoteSelection")]);
 
     /// <summary>How many buttons the header holds. Exactly three, the three tabs: the pane's other two controls
     /// moved to the title bar, and a check that only ever pressed those would stay green while a second, dead pair

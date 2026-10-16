@@ -292,6 +292,10 @@ public partial class ShellCheckWindow : Window
             "上下文用量圆环位于模型选择器左侧");
         Check(panel.ComposerPlusCenteredForCheck,
             "添加上下文的圆形加号按钮在水平和垂直方向居中");
+        // Avalonia's TextBox carries no context menu of its own, so the box a person writes in had none while the
+        // transcript beside it did. The three rows are the whole of what is expected there.
+        Check(panel.ComposerMenuForCheck(),
+            "输入框的右键菜单给出常规的剪切/复制/粘贴三行");
         panel.OpenContextPopoverForCheck();
         Dispatcher.UIThread.RunJobs();
         Check(panel.ContextPopoverOpenForCheck
@@ -536,11 +540,22 @@ public partial class ShellCheckWindow : Window
             "Markdown 正文的选取底色取自 Hub 令牌，不是 CTextBlock 兜底的 Brushes.Cyan");
         var chipProbe = panel.ProbeMarkdownChipSelection();
         Check(chipProbe.Found && chipProbe.RangeAgrees,
-            "行内代码块的字符区间与库自己的选区索引一致（选区读到「" + chipProbe.Selected + "」，代码是「"
+            "行内代码块的字符区间与库自己的选区索引一致（库读到「" + chipProbe.LibraryText + "」，代码是「"
             + chipProbe.Code + "」）");
-        Check(chipProbe.Found && chipProbe.Tinted && chipProbe.Restored,
-            "选区覆盖的行内代码块自己显示选取状态：选中时换成 Hub.SelectionChip，清除后回到 Hub.SurfaceRaised（实际 "
-            + chipProbe.Code + " 选中=" + chipProbe.Tinted + " 复原=" + chipProbe.Restored + "）");
+        Check(chipProbe.Found && chipProbe.DraggedTinted && chipProbe.DraggedRestored,
+            "拖选跨过行内代码块时它才显示选取状态：选中换成 Hub.SelectionChip，清除后回到 Hub.SurfaceRaised（实际 "
+            + chipProbe.Code + " 拖选=" + chipProbe.DraggedTinted + " 复原=" + chipProbe.DraggedRestored + "）");
+        Check(chipProbe.Found && chipProbe.DraggedCopied,
+            "跨行内代码块的选区把它自己的代码也算进要复制的文本（读到「" + chipProbe.DraggedText + "」）");
+        Check(panel.MarkdownSelectionMenuForCheck() && panel.UserTurnSelectionMenuForCheck(),
+            "正文与自己发的消息都带选区右键菜单（复制/引用）");
+        panel.SetInputForCheck("");
+        var quotedDraft = panel.QuoteSelectionForCheck();
+        Check(quotedDraft.StartsWith("> ", StringComparison.Ordinal)
+              && quotedDraft.Contains(chipProbe.Code, StringComparison.Ordinal),
+            "点「引用」把选区以 markdown 引用格式送进输入框（实际「"
+            + quotedDraft.Replace("\n", "\\n", StringComparison.Ordinal) + "」）");
+        panel.SetInputForCheck("");
         panel.ApplyMarkdownSyntaxHighlightingForCheck();
         Check(panel.HasSyntaxHighlightedCode("cpp"),
             "C++ fenced code block 使用可用的语法定义高亮");
@@ -5308,7 +5323,11 @@ public partial class ShellCheckWindow : Window
             [],
             static _ => ("", default),
             null,
-            "plan");
+            "plan",
+            // The pane is fed the same 引用 target production feeds it, because what the pane's own right-click
+            // menu offers is decided here rather than inside the pane: a check that left this out would be asking
+            // the pane for a menu it was never given a quote target for.
+            text => panel.QuoteIntoComposer(text));
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         iconPane?.ApplyPlanSyntaxHighlightingForCheck();
@@ -5318,6 +5337,8 @@ public partial class ShellCheckWindow : Window
             "计划页代码块的复制按钮画出图标：复制图标跟渲染器走，不是只写在聊天面板作用域里的样式");
         Check(iconPane is { } selectingPlan && selectingPlan.PlanHasThemedSelectionForCheck,
             "计划页正文的选取底色同样取自 Hub 令牌：渲染器的两个受众都要对，不是只有聊天那一半");
+        Check(iconPane is { } menuPlan && menuPlan.PlanSelectionMenuForCheck,
+            "计划页的选区右键菜单同样可用（复制/引用）：两个受众都要有");
         shell.CloseInspector();
         chat.DeleteConversation(tabSession.Id);
         panel.Reload();
