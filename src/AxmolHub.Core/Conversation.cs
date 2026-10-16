@@ -126,6 +126,24 @@ public sealed record PlanReference(string? File, string Title, int Chars, int To
 public sealed record ChangeLineCounts(int Added, int Removed);
 
 /// <summary>
+/// What one answer <b>cost</b>, as the endpoint itself reported it — the sibling of the context meter, which
+/// says how much of the window a conversation fills and says nothing about what anybody paid.
+///
+/// <para>Input here is the <b>sum over the requests</b> the answer made, not the largest one: a tool loop
+/// re-sends the whole transcript every round, so each round's read is a separate charge. That is a different
+/// claim from the window's, and the two numbers deliberately disagree — see
+/// <see cref="ContextReport.SummedInputTokens"/>.</para>
+///
+/// <para>Counts, never money. Every field comes from the provider's own <c>usage</c> report, which is the same
+/// source its dashboard bills from; a currency figure would need a price list Hub does not have and cannot
+/// verify for a third-party gateway. Reasoning stays a clause inside output rather than an addition to it,
+/// because that is how the wire reports it.</para>
+///
+/// <para>Like <see cref="ChangeLineCounts"/>, all halves travel together or none does.</para>
+/// </summary>
+public sealed record ContextBurn(long Input, long Output, long Reasoning, long CachedInput, int Requests);
+
+/// <summary>
 /// One message in a conversation, in <b>Hub's own</b> persisted shape.
 ///
 /// This is deliberately not <c>Microsoft.Extensions.AI.ChatMessage</c>: that type carries a polymorphic
@@ -186,6 +204,21 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// not a completion. Not zero: 本次共 0s would be a claim, and usually a false one.</para>
     /// </summary>
     public TimeSpan? RunElapsed { get; init; }
+
+    /// <summary>What this answer burned, in the endpoint's own reported tokens. The meter above the composer reads
+    /// it back as 本轮实测, because "how big is this conversation" and "what did this reply cost" are two
+    /// questions and only one of them is answered by a percentage.
+    ///
+    /// <para>Filed the same way <see cref="RunElapsed"/> is — on the newest prose answer of the run, left alone
+    /// once filed — so a tool loop reports one total rather than printing a reply that visibly grows as the
+    /// rounds land.</para>
+    ///
+    /// <para>Null means it was never measured: every turn written before this field, and every answer from a
+    /// gateway that sends no <c>usage</c> at all. Not zero, which would be a reading of nothing. Nothing on the
+    /// wire reads this; the request is assembled field by field by <c>ChatPipeline.ToChatMessage</c>, so the
+    /// record is display-only and costs no tokens.</para>
+    /// </summary>
+    public ContextBurn? Burned { get; init; }
 
     /// <summary>Permission state of a tool call that needed one; <c>null</c> means there was nothing to decide.
     /// Values come from <see cref="ChatApprovalStates"/>.</summary>
@@ -391,6 +424,27 @@ public sealed class Conversation
     /// as 1000 — the property is a plain int so a session file written before it existed loads uncalibrated
     /// rather than needing a default the old file cannot carry.</summary>
     public int ContextEstimateDriftPermille { get; set; }
+
+    /// <summary>
+    /// Everything this session has burned, in the endpoints' own reported tokens, added up across every answer.
+    /// The meter beside the ring is the running total of 本会话累计实测消耗.
+    ///
+    /// <para><b>Why a session field rather than a sum over <see cref="Messages"/>.</b> 重新生成 and the
+    /// edit-restart door delete trailing turns, and a total that shrank when a turn was deleted would be saying
+    /// the tokens came back — they did not go out, they were spent. A conversation field also survives context
+    /// compaction for free, which moves a summary watermark and keeps the transcript.</para>
+    ///
+    /// <para><b>long, not int.</b> One agent round re-sends a transcript that can run to two hundred thousand
+    /// tokens, a dozen rounds deep, over a session of hundreds of answers: an int total is not a hypothetical.
+    /// Zero is the honest default for a <i>sum</i> — a session file written before these fields load uncounted,
+    /// which genuinely is "nothing measured yet", unlike <see cref="LastOutputTokens"/> where zero would be a
+    /// reading.</para>
+    /// </summary>
+    public long BurnedInputTotal { get; set; }
+    public long BurnedOutputTotal { get; set; }
+    public long BurnedReasoningTotal { get; set; }
+    public long BurnedCachedInputTotal { get; set; }
+    public int BurnedRequestCount { get; set; }
 
     /// <summary>
     /// How this session's last run ended, when the ending was something the person had to be told about. Null

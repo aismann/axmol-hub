@@ -4660,7 +4660,14 @@ public sealed class ChatWorkspace : IDisposable
             // A run parked on an approval is superseded rather than resumed: saying something new *is* the
             // answer to the question that was waiting.
             _runs.Remove(conversationId);
+            // This door never reaches CompleteRun, so the reported spend is folded here: the requests the waiting
+            // round already sent went out and were billed, and dropping them would make a superseded answer free.
+            // No turn is stamped — that round never produced an answer to own the number — and the single-shot
+            // gate keeps the other door from filing the same tokens twice.
+            var supersedeBurn = waiting.TryTakeBurnCommit() ? waiting.BurnedSoFar : null;
             waiting.Dispose();
+            if (supersedeBurn is { } burned)
+                _sessions.TryUpdate(conversationId, opened => AddSessionBurn(opened, burned));
         }
 
         var run = new ConversationRun(conversationId, IdleTimeout, FirstFrameTimeout);
@@ -5382,7 +5389,14 @@ public sealed class ChatWorkspace : IDisposable
             },
             // The measurement lands while the reply is still streaming, which is the point: the ring the person
             // is watching has to be reading the model's numbers before they decide whether to keep typing.
-            onUsage: report => NoteContextUsage(run.ConversationId, request.ModelName, report),
+            onUsage: report =>
+            {
+                // Banked on the run first: the run is what outlives this stream call and is the only place the
+                // whole send — every segment, every round of the tool loop — adds up. The session reading below
+                // stays a last-request snapshot on purpose, because the window meter wants exactly that.
+                run.NoteUsage(report);
+                NoteContextUsage(run.ConversationId, request.ModelName, report);
+            },
             onFinishReason: reason => run.NoteFinishReason(reason),
             // A search the endpoint ran for itself. Nothing here is waited on, gated, or answered — the fact is
             // folded into the run so the row under the bubble can show it while the reply streams, and so the
@@ -5474,7 +5488,13 @@ public sealed class ChatWorkspace : IDisposable
                 // only place the number can still be got at. A stopped or failed round is left without one: that
                 // ending already has its own notice line, and a duration beside it would be the same sentence
                 // twice with two different clocks.
-                if (result == RunResult.Completed) StampRunElapsed(opened, run.Elapsed);
+                var stamped = result == RunResult.Completed ? StampRunElapsed(opened, run.Elapsed) : -1;
+                // The burn, unlike the clock above, is folded for <b>every</b> ending. A round the person stopped,
+                // one the provider refused, one that timed out — each really did send its requests and really was
+                // billed for them, and skipping the fold because no answer landed would understate the session by
+                // exactly the runs the reader is most likely to be asking about. The per-answer reading is filed on
+                // <paramref name="stamped"/> alone, so it can never land on an older reply's turn.
+                CommitRunBurn(opened, run, stamped);
             });
             Changed?.Invoke();
             RunsChanged?.Invoke(run.ConversationId);
@@ -5497,8 +5517,11 @@ public sealed class ChatWorkspace : IDisposable
     ///
     /// <para>A turn that already carries one is left alone: a session steered mid-answer completes more than once,
     /// and the later round would otherwise overwrite the total the first one earned.</para>
+    ///
+    /// <para>Returns which turn it filed, or -1 when it filed none, so the reported spend of the same run can be
+    /// written to that turn and to no other — the one way to prove the number belongs to this answer.</para>
     /// </summary>
-    private static void StampRunElapsed(Conversation opened, TimeSpan elapsed)
+    private static int StampRunElapsed(Conversation opened, TimeSpan elapsed)
     {
         for (var index = opened.Messages.Count - 1; index >= 0; index--)
         {
@@ -5507,11 +5530,64 @@ public sealed class ChatWorkspace : IDisposable
             // A filed plan has no text left on its own turn, and the plan finishing IS the run finishing — so it
             // counts as an answer here rather than being stepped over on an empty-text test.
             if (turn.Text.Length == 0 && turn.PlanApprovalState is not { Length: > 0 }) continue;
-            if (turn.RunElapsed is not null) return;
+            if (turn.RunElapsed is not null) return -1;
             opened.Messages[index] = turn with { RunElapsed = elapsed };
-            return;
+            return index;
         }
+
+        return -1;
     }
+
+    /// <summary>
+    /// Folds what the endpoint reported spending into the session, and into the answer that earned it.
+    ///
+    /// <para>The two halves are priced differently on purpose. The conversation total takes the run whatever
+    /// ending it came from — tokens left the machine whether or not an answer arrived — while the per-turn reading
+    /// only lands on the turn this run stamped, because the run's own prose is the only place a number labelled
+    /// 本轮 is true. Filing spend on an older reply's turn would blame that reply for a round it never made.</para>
+    /// </summary>
+    private static void CommitRunBurn(Conversation opened, ConversationRun run, int stamped)
+    {
+        // One fold per run: the pump and the supersede door both close through here, and spend counted twice is
+        // a bill the client invented.
+        if (!run.TryTakeBurnCommit() || run.BurnedSoFar is not { } burned) return;
+        AddSessionBurn(opened, burned);
+        if (stamped < 0 || stamped >= opened.Messages.Count) return;
+        opened.Messages[stamped] = opened.Messages[stamped] with { Burned = burned };
+    }
+
+    private static void AddSessionBurn(Conversation opened, ContextBurn burned)
+    {
+        opened.BurnedInputTotal += burned.Input;
+        opened.BurnedOutputTotal += burned.Output;
+        opened.BurnedReasoningTotal += burned.Reasoning;
+        opened.BurnedCachedInputTotal += burned.CachedInput;
+        opened.BurnedRequestCount += burned.Requests;
+    }
+
+    /// <summary>What the meter may say about spend: the active send's reading, and the session's running total.
+    /// Either half is null when no endpoint ever reported a number, and a surface must then hide the line rather
+    /// than draw a zero — "this gateway stays silent about usage" and "this reply cost nothing" are different facts.
+    ///
+    /// <para>Read off <see cref="_active"/> exactly as the composer's occupancy figure is, so the two readings in
+    /// one popover come from one object and cannot disagree about which session they describe.</para>
+    /// </summary>
+    internal (ContextBurn? Send, ContextBurn? Session) ActiveConversationBurn()
+    {
+        if (_active is not { } conversation) return (null, null);
+        // A reply still streaming answers for itself — that is the number the reader is watching climb. Only
+        // once the run has left the registry does the reading fall back to the turn it was filed on.
+        var send = RunFor(conversation.Id)?.BurnedSoFar;
+        for (var index = conversation.Messages.Count - 1; send is null && index >= 0; index--)
+            send = conversation.Messages[index].Burned;
+        return (send, ToSessionBurn(conversation));
+    }
+
+    private static ContextBurn? ToSessionBurn(Conversation? conversation)
+        => conversation is not { BurnedRequestCount: > 0 } session
+            ? null
+            : new ContextBurn(session.BurnedInputTotal, session.BurnedOutputTotal, session.BurnedReasoningTotal,
+                session.BurnedCachedInputTotal, session.BurnedRequestCount);
 
     /// <summary>
     /// Turns the answer a plan-mode run just finished into a review item, and files its body in

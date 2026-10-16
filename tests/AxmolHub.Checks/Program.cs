@@ -1802,6 +1802,11 @@ if (args.Contains("--check-ai-sessions"))
                             + $"{handed?.OutputTokens ?? -1} out).");
     if (handed.DriftPermille <= ContextReport.UncalibratedPermille)
         throw new Exception("The reading was paired with nothing, so the estimate could not be corrected by it.");
+    // Both readings out of the same two chunks, in one assertion: the window is the larger input, the spend is
+    // their sum. Whichever of the two a surface reaches for, this is the line that says they are not the same claim.
+    if (handed.SummedInputTokens != 2_100 || handed.SummedCachedInputTokens != 3)
+        throw new Exception($"The stream's two reports did not add up to what they cost "
+                            + $"({handed.SummedInputTokens} in, {handed.SummedCachedInputTokens} cached).");
     Console.WriteLine("PASS: the token report on the stream is handed to the caller, largest input and summed output.");
 
     // The negative control: a gateway that never sends the chunk. Silent is not zero — the session keeps
@@ -2698,6 +2703,13 @@ if (args.Contains("--check-ai-context"))
         throw new Exception($"A report did not merge the way a window is read (input {reading.InputTokens}, "
                             + $"output {reading.OutputTokens}, reasoning {reading.ReasoningTokens}, "
                             + $"cached {reading.CachedInputTokens}).");
+    // The other half of the same three requests: what they <i>cost</i>. Every one of them read a transcript, so
+    // the spend is the sum — including the smallest request, which the window rule above throws away. A merge
+    // placed after the window's early return would quietly report 1 200 here, and a bill that only counts the
+    // biggest round is the mistake this pair of fields exists to prevent.
+    if (reading.SummedInputTokens != 2_700 || reading.SummedCachedInputTokens != 3)
+        throw new Exception($"The same three requests did not sum to what they cost "
+                            + $"({reading.SummedInputTokens} in, {reading.SummedCachedInputTokens} cached).");
     if (reading.EstimatedInputTokens != 1_000)
         throw new Exception("The estimate kept with the largest input is not the one the reading must be compared to.");
     // A single reading cannot move the scale more than 4×, and an estimate that turns out to have been generous

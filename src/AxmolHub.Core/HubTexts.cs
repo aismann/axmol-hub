@@ -564,6 +564,20 @@ public static class HubTexts
         ["ChatContextSourceFormat"] = ("窗口 {1} tokens，来源：{0}", "Window of {1} tokens, from {0}"),
         ["ChatContextMeasuredNote"] = ("{0} tokens 是上次请求的实测值，它之后的新增按估算补上。",
             "{0} tokens is what the last request measured; the turns since then are estimated on top."),
+        // What the answer <i>cost</i>, as opposed to how much of the window it fills — the rows above are an
+        // estimate of the latter, and the note above is one request's measured input. These two lines are the
+        // measured spend: every request of the round summed, because a tool loop pays for the transcript again
+        // each time it re-sends it. Wording keeps 占用 and 消耗 apart on purpose; the two numbers disagree and
+        // both are right.
+        ["ChatContextBurnSendLabel"] = ("本轮实测消耗（tokens）：", "This reply measured (tokens): "),
+        ["ChatContextBurnSessionLabel"] = ("本会话累计（tokens）：", "Session total (tokens): "),
+        ["ChatContextBurnInFormat"] = ("输入 {0}", "input {0}"),
+        ["ChatContextBurnOutFormat"] = ("输出 {0}", "output {0}"),
+        // Its own parentheses, because the clause sits inside the output it is a part of and the two languages
+        // bracket it differently.
+        ["ChatContextBurnReasoningFormat"] = ("（含思考 {0}）", " ({0} of them reasoning)"),
+        ["ChatContextBurnCachedFormat"] = ("缓存输入 {0}", "{0} cached"),
+        ["ChatContextBurnRequestsFormat"] = ("{0} 次请求", "{0} requests"),
         // Both numbers, because the two are not the same claim: the provider published one, this session's own
         // response proved the other. A reader who sees only the smaller figure would look for a setting nobody set.
         ["ChatContextDriftNote"] = ("这条会话的实测把窗口从 {0} 收窄到 {1}。",

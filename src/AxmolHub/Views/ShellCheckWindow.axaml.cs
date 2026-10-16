@@ -9825,6 +9825,19 @@ public partial class ShellCheckWindow : Window
                   && quietUsage.Used + quietUsage.Free + quietUsage.OutputReserve == quietUsage.EffectiveWindow,
                 "分类相加就是圆环的读数，窗口也分完给回复预留、空闲和已经用掉的三块（"
                 + string.Join("、", quietUsage.Categories.Select(category => category.Kind)) + "）");
+            // The spend block on a gateway that never reported one: absent. A 0 here would tell the reader this
+            // reply cost nothing, which is the opposite of what silence means — and the ledger stays empty rather
+            // than filling up with estimates dressed as measurements.
+            panel.OpenContextPopoverForCheck();
+            Dispatcher.UIThread.RunJobs();
+            var quietBurn = panel.ContextBurnTextForCheck;
+            var quietRows = panel.ContextCategoryRowsForCheck;
+            panel.CloseContextPopoverForCheck();
+            Check(!panel.ContextBurnVisibleForCheck && quietBurn.Length == 0
+                  && quiet?.BurnedInputTotal == 0 && quiet.BurnedRequestCount == 0
+                  && quiet.Messages.All(turn => turn.Burned is null)
+                  && quietRows.All(row => !row.Contains("消耗", StringComparison.Ordinal)),
+                "没人报数时「实测消耗」整块不出现，账本也是空的——沉默不等于花了 0");
 
             // Phase 2: the same app path with a report on the end of the stream.
             // The reading is stated against the window rather than as a literal: this fixture has to stay the
@@ -9833,10 +9846,18 @@ public partial class ShellCheckWindow : Window
             var (assumedTokens, assumedReserve, _) = chat.ContextWindowFor(provider.Id, model);
             var overfullReading = 2 * (assumedTokens * ContextReport.UncalibratedPermille
                                        / ContextReport.MaximumDriftPermille - assumedReserve);
+            // <b>Two</b> reports on one stream. A single report cannot tell the two readings apart — the window
+            // takes the largest input and the spend takes their sum, and with one number in the fixture both
+            // rules would pass on whichever field the code happened to reach for. The second is half the first,
+            // so the largest stays the first and the sum is a third bigger than either claim.
+            var secondReading = overfullReading / 2;
+            var burnInput = overfullReading + secondReading;
+            const long burnCached = 12_000;
             sent.Clear();
             chat.ClientOverride = (_, _) =>
             {
-                var client = new ScriptedChatClient(["实测回答"], usage: [(overfullReading, 600, 400, 0)]);
+                var client = new ScriptedChatClient(["实测回答"], usage:
+                    [(overfullReading, 600, 400, 0), (secondReading, 200, 0, burnCached)]);
                 sent.Add(client);
                 return client;
             };
@@ -9904,7 +9925,70 @@ public partial class ShellCheckWindow : Window
                   && rows.Any(row => row.StartsWith(HubStrings.Get("ChatContextCatMessages"), StringComparison.Ordinal)),
                 "空闲那一行如实写着 0，而不是把装不下的会话抹成一个满格的圆环；回复预留也占一行（"
                 + string.Join("；", rows) + "）");
+
+            // The spend, as the same two requests are actually billed. The culture-formatted numbers are read off
+            // the strings rather than counted from an object because the claim being tested is the sentence: a
+            // line that summed the wrong field, or printed the window's largest input under a label that says
+            // 消耗, would be a number the reader cannot hold anybody to.
+            var culture = System.Globalization.CultureInfo.CurrentCulture;
+            var burnText = panel.ContextBurnTextForCheck;
+            var summedText = burnInput.ToString("N0", culture);
+            Check(panel.ContextBurnVisibleForCheck
+                  && burnText.StartsWith(HubStrings.Get("ChatContextBurnSendLabel"), StringComparison.Ordinal)
+                  && burnText.Contains(string.Format(culture, HubStrings.Get("ChatContextBurnInFormat"), summedText),
+                      StringComparison.Ordinal)
+                  && burnText.Contains(string.Format(culture, HubStrings.Get("ChatContextBurnOutFormat"),
+                      (600 + 200).ToString("N0", culture)), StringComparison.Ordinal)
+                  && burnText.Contains(string.Format(culture, HubStrings.Get("ChatContextBurnRequestsFormat"),
+                      2.ToString(culture)), StringComparison.Ordinal),
+                "本轮实测把两次请求的输入加总（" + summedText + "）、输出加总，并说清这是几次请求（「" + burnText + "」）");
+            // The two readings side by side on one screen, and deliberately different numbers: the note above the
+            // button still quotes the largest single request, because that one is the window's question.
+            Check(burnInput != overfullReading
+                  && panel.ContextPopoverNoteForCheck.Contains(
+                      overfullReading.ToString("N0", culture), StringComparison.Ordinal)
+                  && !burnText.Contains(overfullReading.ToString("N0", culture), StringComparison.Ordinal),
+                "同一个流上的两个口径各说各话：窗口报最大的一次（"
+                + overfullReading.ToString("N0", culture) + "），消耗报两次之和（" + summedText + "）");
+            // Reasoning stays a clause inside the output, and the cache split appears only because this endpoint
+            // reported one — the first request said nothing about caching and the block does not invent a zero.
+            Check(burnText.Contains(string.Format(culture, HubStrings.Get("ChatContextBurnReasoningFormat"),
+                      400.ToString("N0", culture)), StringComparison.Ordinal)
+                  && burnText.Contains(string.Format(culture, HubStrings.Get("ChatContextBurnCachedFormat"),
+                      burnCached.ToString("N0", culture)), StringComparison.Ordinal),
+                "思考写在输出里面而不是旁边，缓存命中按报出来的那部分列，没有报的那次不补 0");
+            // One answer in the session means one line: the cumulative would repeat the figures above it.
+            Check(!burnText.Contains(HubStrings.Get("ChatContextBurnSessionLabel"), StringComparison.Ordinal)
+                  && report?.BurnedInputTotal == burnInput && report.BurnedRequestCount == 2
+                  && report.Messages.Count(turn => turn.Burned is not null) == 1
+                  && report.Messages.Last(turn => turn.Burned is not null).Burned!.Requests == 2,
+                "只有一轮回答时不重复第二行，账已经记在会话和那一轮上（累计 " + summedText + "）");
+            // And the block is its own: none of these numbers joined the estimate column, whose rows still add up
+            // to the occupancy figure rather than to a bill.
+            Check(rows.All(row => !row.Contains(summedText, StringComparison.Ordinal))
+                  && rows.All(row => !row.Contains("消耗", StringComparison.Ordinal)),
+                "实测消耗没有混进分类明细，那一列仍然只加得出于占用读数");
             panel.CloseContextPopoverForCheck();
+
+            // A second answer in the same session: the cumulative earns its own line by no longer being a copy of
+            // the last one, and each round keeps a reading of its own rather than a running total that grows as
+            // the reader scrolls.
+            chat.TryEnqueueSend(measured.Id, "再问一次，账要累起来", null, out _);
+            await WaitForIdleAsync(chat);
+            var twice = chat.StoredCopyForCheck(measured.Id);
+            panel.OpenContextPopoverForCheck();
+            Dispatcher.UIThread.RunJobs();
+            var sessionText = panel.ContextBurnTextForCheck;
+            panel.CloseContextPopoverForCheck();
+            var sessionInput = 2 * burnInput;
+            Check(twice?.BurnedInputTotal == sessionInput && twice.BurnedRequestCount == 4
+                  && twice.Messages.Count(turn => turn.Burned is not null) == 2
+                  && twice.Messages.Count(turn => turn.Burned?.Input == burnInput) == 2
+                  && sessionText.Contains(HubStrings.Get("ChatContextBurnSessionLabel"), StringComparison.Ordinal)
+                  && sessionText.Contains(sessionInput.ToString("N0", culture), StringComparison.Ordinal)
+                  && sessionText.Split('\n').Length == 2,
+                "第二轮之后累计另起一行写" + sessionInput.ToString("N0", culture)
+                + "，本轮那一行仍然只是这一轮的——账不重复也不合并");
 
             // Phase 3: the refusal that says the field itself is unwelcome. One retry with the ask taken out of
             // the request, and the concession written into that provider's own options in providers.json — the

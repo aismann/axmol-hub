@@ -436,6 +436,72 @@ internal sealed class ConversationRun : IDisposable
     internal (int Waits, TimeSpan Waited) RetryCost()
         => (Volatile.Read(ref _retryWaits), TimeSpan.FromTicks(Interlocked.Read(ref _retryWaitedTicks)));
 
+    private ContextReport? _liveUsage;
+    private long _burnInput, _burnOutput, _burnReasoning, _burnCached;
+    private int _burnRequests, _burnCommitted;
+
+    /// <summary>
+    /// Takes note of what the endpoint reported having spent, on the stream's thread.
+    ///
+    /// <para><b>Identity is the whole mechanism.</b> The pipeline builds one <see cref="ContextReport"/> per
+    /// stream call and hands back <i>the same growing object</i> for every usage chunk of it, so a call that
+    /// arrives with a different reference is the only honest signal that the previous batch of numbers is
+    /// finished and may be banked. Folding a plain <c>+=</c> here would add the same transcript once per chunk.</para>
+    ///
+    /// <para><see cref="BeginSegment"/> looks like the natural hook and is not one: a tool loop starts a segment
+    /// per call <i>inside</i> a single report, so banking there would charge a round twice and then lose the
+    /// report that was still growing. Neither is the report per HTTP request — it is per stream call, and the
+    /// sums inside it already span the requests.</para>
+    /// </summary>
+    internal void NoteUsage(ContextReport report)
+    {
+        lock (_gate)
+        {
+            if (ReferenceEquals(_liveUsage, report)) return;
+            FileUsageLocked(_liveUsage);
+            _liveUsage = report;
+        }
+    }
+
+    private void FileUsageLocked(ContextReport? report)
+    {
+        if (report is null) return;
+        _burnInput += report.SummedInputTokens;
+        _burnOutput += report.OutputTokens;
+        _burnReasoning += report.ReasoningTokens;
+        _burnCached += report.SummedCachedInputTokens;
+        _burnRequests += report.Requests;
+    }
+
+    /// <summary>Everything this answer has burned so far — what is banked, plus the report still growing. Read
+    /// while the stream runs (the meter wants the number the person is watching climb) and once more when the run
+    /// closes. Null while no endpoint has reported anything, which is a different answer from zero.</summary>
+    internal ContextBurn? BurnedSoFar
+    {
+        get
+        {
+            lock (_gate)
+            {
+                var live = _liveUsage;
+                var requests = _burnRequests + (live?.Requests ?? 0);
+                // Requests rather than tokens decides it: a gateway that reports only an output count still
+                // reported something, and a reading is never dropped because it is partial.
+                if (requests == 0) return null;
+                return new ContextBurn(
+                    _burnInput + (live?.SummedInputTokens ?? 0),
+                    _burnOutput + (live?.OutputTokens ?? 0),
+                    _burnReasoning + (live?.ReasoningTokens ?? 0),
+                    _burnCached + (live?.SummedCachedInputTokens ?? 0),
+                    requests);
+            }
+        }
+    }
+
+    /// <summary>Takes the one call that may fold this run's burn into the session. A run can close through more
+    /// than one door — the pump, and the supersede path that disposes a parked run without reaching the pump —
+    /// and spend that counted twice would be a bill invented by the client.</summary>
+    internal bool TryTakeBurnCommit() => Interlocked.Exchange(ref _burnCommitted, 1) == 0;
+
     internal void RequestStop() => _stop.Cancel();
 
     /// <summary>Ends the in-flight request without ending the run. This is the only cancellation a parked

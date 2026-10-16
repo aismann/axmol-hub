@@ -1391,6 +1391,11 @@
              (schemas by mode, attachments by un-adding a folder, messages by compressing) and the two lines that
              say where the denominator came from and how many turns never went out. -->
         <StackPanel x:Name="ContextCategoryList" Spacing="3" />
+        <!-- What the answer cost, in the endpoint's own reported tokens. Its own block rather than rows inside the
+             breakdown above, because those rows are an estimate that adds up to the occupancy figure, and a measured
+             number dropped in among them would read as one more category. -->
+        <TextBlock x:Name="ContextBurnNote" Classes="context-popover-status" TextWrapping="Wrap"
+                   IsVisible="False" />
         <TextBlock x:Name="ContextPopoverSource" Classes="context-popover-status" TextWrapping="Wrap" />
         <TextBlock x:Name="ContextPopoverNote" Classes="context-popover-status" TextWrapping="Wrap"
                    IsVisible="False" />

@@ -13,6 +13,12 @@ namespace AxmolHub.Core;
 /// only the last of them carries the full window. Summing the inputs would report a seventeen-fold window and
 /// push the meter in the wrong direction, while outputs genuinely are separate money and must add up.</para>
 ///
+/// <para>The window is only half of what the turn cost, though, and <see cref="SummedInputTokens"/> is the other
+/// half: those seventeen requests each <i>read</i> the transcript, so the input the endpoint was paid for is the
+/// sum, not the largest one. The two numbers answer different questions — "how much of the window is this
+/// conversation" against "how much did this answer burn" — and both are kept, so no surface has to borrow the
+/// other's meaning and get it wrong.</para>
+///
 /// <para>Written on a thread-pool thread (the stream's), read on the UI thread. It is merged into one value per
 /// request and handed over at the end of the send, so the object never lives long enough for the two threads to
 /// race on it.</para>
@@ -40,6 +46,16 @@ public sealed class ContextReport
     /// <summary>Cached input of the largest request, when the endpoint distinguishes it.</summary>
     public int CachedInputTokens { get; private set; }
 
+    /// <summary>The <b>sum</b> of every request's input — what the turn actually read, and therefore what it was
+    /// billed for. Deliberately not <see cref="InputTokens"/>, which is the largest single request and describes
+    /// the window rather than the spend; a tool loop of seventeen requests over a 40 000-token transcript burns
+    /// roughly 680 000 input tokens and only ever shows 40 000 of them as window.</summary>
+    public long SummedInputTokens { get; private set; }
+
+    /// <summary>Cached input summed over the requests, so a discount the endpoint reported is not read as a
+    /// window-sized number. Zero on a gateway that reports no cache split at all.</summary>
+    public long SummedCachedInputTokens { get; private set; }
+
     /// <summary>Hub's own estimate of the request that produced <see cref="InputTokens"/> — the pair the drift
     /// is computed from. Zero when the report arrived without the pipeline having sized that request.</summary>
     public int EstimatedInputTokens { get; private set; }
@@ -60,6 +76,10 @@ public sealed class ContextReport
         Requests++;
         if (outputTokens > 0) OutputTokens += outputTokens;
         if (reasoningTokens > 0) ReasoningTokens += reasoningTokens;
+        // Both sums happen above the early return below, because that return is the window's rule and the spend
+        // does not obey it: a request smaller than the largest one still cost what it read.
+        if (inputTokens > 0) SummedInputTokens += inputTokens;
+        if (cachedInputTokens > 0) SummedCachedInputTokens += cachedInputTokens;
         if (inputTokens <= InputTokens) return;
         InputTokens = inputTokens;
         CachedInputTokens = cachedInputTokens;

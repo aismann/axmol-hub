@@ -647,6 +647,7 @@ public partial class ChatPanel : UserControl
         UpdateContextProgressFill(usage);
         RefreshContextCompressionButton();
         RenderContextBreakdown(usage);
+        RenderContextBurn();
         // Two different claims, so two different sentences. "预计" over a number the model itself reported is a
         // lie, and the measured reading is the one thing on this screen a person can hold the gateway to.
         ToolTip.SetTip(ContextButton, string.Format(
@@ -658,6 +659,67 @@ public partial class ChatPanel : UserControl
     }
 
     private ContextUsage CurrentContextUsage() => _chat.EstimateContextUsage(InputBox.Text ?? "");
+
+    /// <summary>
+    /// The measured spend, in the endpoint's own tokens: what this reply cost, and what the session has cost.
+    ///
+    /// <para>Its own block rather than more rows in the breakdown above, because those rows are one estimate that
+    /// adds up to the occupancy figure while these are readings of money spent — dropping a measurement into the
+    /// column would stop the column adding up, and the two answers legitimately differ (this session's rows can
+    /// total more than the transcript the model actually read, or less).</para>
+    ///
+    /// <para>Nothing is drawn when the gateway never reported. A zero would read as "this answer cost nothing",
+    /// which is a lie in the direction that makes people keep talking; the estimate-vs-measured distinction the
+    /// button's own tooltip already carries is the only place that story needs telling.</para>
+    /// </summary>
+    private void RenderContextBurn()
+    {
+        if (_chat is null) return;
+        var (send, session) = _chat.ActiveConversationBurn();
+        var lines = new List<string>();
+        if (send is { } thisSend)
+            lines.Add(HubStrings.Get("ChatContextBurnSendLabel") + DescribeBurn(thisSend, countRequests: true));
+        // The second line earns its row only by saying something the first did not: a session with one answer in
+        // it does not need the same figure twice.
+        if (session is { } total && !Equals(total, send))
+            lines.Add(HubStrings.Get("ChatContextBurnSessionLabel") + DescribeBurn(total, countRequests: false));
+        ContextBurnNote.Text = string.Join('\n', lines);
+        ContextBurnNote.IsVisible = lines.Count > 0;
+    }
+
+    /// <summary>One line of the spend, in the order the bill arrives: what was read, what was written, of what the
+    /// thinking was, how much of the read came from cache, and over how many requests.</summary>
+    private static string DescribeBurn(ContextBurn burned, bool countRequests)
+    {
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        var parts = new List<string>
+        {
+            string.Format(culture, HubStrings.Get("ChatContextBurnInFormat"),
+                burned.Input.ToString("N0", culture)),
+        };
+        if (burned.Output > 0)
+        {
+            // Reasoning is a clause inside the output, never a term beside it: the wire bills the chain of thought
+            // as part of the reply, and two numbers side by side invite a reader to add them.
+            parts.Add(string.Format(culture, HubStrings.Get("ChatContextBurnOutFormat"),
+                burned.Output.ToString("N0", culture))
+                + (burned.Reasoning > 0
+                    ? string.Format(culture, HubStrings.Get("ChatContextBurnReasoningFormat"),
+                        burned.Reasoning.ToString("N0", culture))
+                    : ""));
+        }
+        // Left out entirely when the endpoint reports no cache split — silence is not a claim that nothing was
+        // cached, and a 0 here would say it was.
+        if (burned.CachedInput > 0)
+            parts.Add(string.Format(culture, HubStrings.Get("ChatContextBurnCachedFormat"),
+                burned.CachedInput.ToString("N0", culture)));
+        // The request count is what makes a summed input readable against the window's single-request figure:
+        // five requests over the same transcript is five charges, and the line says so.
+        if (countRequests && burned.Requests > 0)
+            parts.Add(string.Format(culture, HubStrings.Get("ChatContextBurnRequestsFormat"),
+                burned.Requests.ToString(culture)));
+        return string.Join(" · ", parts);
+    }
 
     private void UpdateContextProgressFill(ContextUsage? usage = null)
     {
@@ -5517,6 +5579,13 @@ public partial class ChatPanel : UserControl
         .ToArray();
     internal string ContextPopoverSourceForCheck => ContextPopoverSource.Text ?? "";
     internal string ContextPopoverNoteForCheck => ContextPopoverNote.Text ?? "";
+
+    /// <summary>The measured-spend block as drawn. Read as text rather than as rows because its whole claim is the
+    /// wording: 本轮 and 本会话累计 are two different totals and a check that only counted numbers could not tell
+    /// them apart.</summary>
+    internal string ContextBurnTextForCheck => ContextBurnNote.Text ?? "";
+
+    internal bool ContextBurnVisibleForCheck => ContextBurnNote.IsVisible;
     internal string ContextTooltipForCheck => ToolTip.GetTip(ContextButton)?.ToString() ?? "";
     internal string ContextPopoverTitleForCheck => ContextPopoverTitle.Text ?? "";
     internal string ContextPopoverPercentForCheck => ContextPopoverPercent.Text ?? "";
