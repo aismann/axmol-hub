@@ -1989,6 +1989,7 @@ public partial class ShellCheckWindow : Window
         await CheckActivityOrchestrationAsync(shell, panel);
         await CheckToolFloodAsync(shell, panel);
         await CheckInspectorAndSteerAsync(shell, panel);
+        CheckModelSwitchNotice(shell, panel);
 
         shell.Chat.DeleteConversation(opsConversation.Id);
         shell.Chat.ClientOverride = null;

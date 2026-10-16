@@ -2123,6 +2123,18 @@ public partial class ChatPanel : UserControl
             // Prose closes the piece: the next piece of machine work is a different exchange and stands on its own.
             _openGroup = null;
             var (index, turn, toolName) = visible[i];
+            // A notice is a line about the conversation rather than something anybody said, so it gets the notice
+            // row this same flow already uses at its bottom — centered in the column, which is what makes a model
+            // switch read as a divider rather than as a reply that happened to be short. It closes the piece for
+            // the reason prose does.
+            if (turn.Role == ChatRoles.Notice)
+            {
+                MessageFlow.Children.Add(BuildNoticeRow(turn.Text, danger: false, onRetry: null));
+                _renderedCount = i + 1;
+                i++;
+                continue;
+            }
+
             AppendRenderedTurn(conversation.Id, index, turn, toolName, isLast: index == lastIndex,
                 markdown: i >= visible.Count - EagerMarkdownLimit, target: MessageFlow, inGroup: false);
             _renderedCount = i + 1;
@@ -3393,6 +3405,29 @@ public partial class ChatPanel : UserControl
     /// of it, so it is never mistaken for a turn and never shifts an index.</summary>
     private Grid? CurrentNoticeRow
         => NoticeHost.Children.LastOrDefault() is Grid row && row.Classes.Contains("notice") ? row : null;
+
+    /// <summary>The notice rows drawn <i>inside</i> the flow — the ones a model switch leaves behind — for
+    /// whichever check needs to measure one. The turn is what the conversation stores; this is what the flow drew
+    /// from it, which is the thing with a size and a position.</summary>
+    internal IReadOnlyList<Grid> NoticeTurnRowsForCheck
+        => MessageFlow.Children.OfType<Grid>().Where(row => row.Classes.Contains("notice")).ToList();
+
+    /// <summary>Where the newest in-flow notice row sits inside the flow, in the flow's own coordinates —
+    /// (left, width, flow width) — which is what turns "it is centered" into numbers a check can hold.</summary>
+    internal (double Left, double Width, double FlowWidth)? NoticeTurnRowGeometryForCheck
+    {
+        get
+        {
+            if (NoticeTurnRowsForCheck.LastOrDefault() is not { } row) return null;
+            var left = row.TranslatePoint(new Point(0, 0), MessageFlow)?.X ?? double.NaN;
+            return (left, row.Bounds.Width, MessageFlow.Bounds.Width);
+        }
+    }
+
+    /// <summary>Tears the flow down and paints it again, which is the path a conversation switch takes — and the
+    /// cheapest way for a check to ask whether a row is redrawn from the transcript rather than kept alive by the
+    /// view that happened to build it.</summary>
+    internal void RebuildMessagesForCheck() => ForceRebuildMessages();
 
     private static Grid BuildNoticeRow(string text, bool danger, Action? onRetry)
     {

@@ -62,6 +62,10 @@ public static class ContextTrimmer
     /// and pick a window that the request it then builds does not fit.</para></summary>
     public static int EstimateTokens(ChatTurn turn)
     {
+        // A notice is not a message the model ever sees (see ChatRoles.Notice), so it is not a message it pays
+        // for. Zero rather than an overhead constant: nothing on the wire corresponds to it at all.
+        if (turn.Role == ChatRoles.Notice) return 0;
+
         var units = TokenWeighing.Units(turn.Text)
                     + TokenWeighing.Units(turn.AttachedContext)
                     + TokenWeighing.Units(turn.ToolArguments)
@@ -95,7 +99,10 @@ public static class ContextTrimmer
         if (budget < 0) throw new ArgumentOutOfRangeException(nameof(budget), "Token budget must not be negative.");
 
         var systemTurns = history.Where(turn => turn.Role == ChatRoles.System).ToList();
-        var conversational = history.Where(turn => turn.Role != ChatRoles.System).ToList();
+        // A notice is neither context nor conversation: it never goes out (see ChatRoles.Notice), so it is not
+        // selected into the window and not charged against it. Left in this list it would price a line the request
+        // does not carry and make the window look fuller than the wire is.
+        var conversational = history.Where(turn => turn.Role is not (ChatRoles.System or ChatRoles.Notice)).ToList();
 
         var remaining = budget - systemTurns.Sum(EstimateTokens);
         if (!string.IsNullOrEmpty(systemPrompt)) remaining -= EstimateTokens(systemPrompt);

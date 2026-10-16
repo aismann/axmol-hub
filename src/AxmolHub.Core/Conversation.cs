@@ -12,6 +12,16 @@ public static class ChatRoles
     /// declared now so the persisted format and the trimmer already know the role exists — adding tool calls
     /// later then only touches the pipeline, not the storage schema.</summary>
     public const string Tool = "tool";
+
+    /// <summary>A line about the conversation rather than something anybody said — the one that arrives today is
+    /// "the model was switched to …", which is what marks where a history stopped being one model's.
+    ///
+    /// <para><b>Recorded, never sent.</b> It is a turn because a transcript is the record of what happened and
+    /// this happened, and because a row that has to survive a restart belongs in the only thing that is saved —
+    /// but it is not a message, so <c>ChatPipeline.ToChatMessages</c> drops it and <c>ContextTrimmer</c> prices it
+    /// at nothing. The same boundary rule as <c>ChatTurn.InjectedFrom</c> and <c>ChatTurn.WebSearch</c>: what is
+    /// on disk is a fact about the conversation, what goes on the wire is assembled at the last step.</para></summary>
+    public const string Notice = "notice";
 }
 
 public static class ChatModes
@@ -259,6 +269,12 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
         new(ChatRoles.Assistant, text, DateTimeOffset.Now)
         { Reasoning = reasoning, ReasoningElapsed = reasoningElapsed };
     public static ChatTurn System(string text) => new(ChatRoles.System, text, DateTimeOffset.Now);
+
+    /// <summary>A line about the conversation rather than something anybody said — see
+    /// <see cref="ChatRoles.Notice"/>. Its <see cref="Text"/> is what the row prints, already formatted by the
+    /// caller in the person's language, which is the same choice the undo notification makes: the copy a
+    /// transcript keeps is the copy a person read.</summary>
+    public static ChatTurn Notice(string text) => new(ChatRoles.Notice, text, DateTimeOffset.Now);
 
     /// <summary>The text the model streamed <b>before</b> asking for this call rides on the call turn instead of
     /// forming a turn of its own: two assistant messages in a row is what the model actually sent as one, and

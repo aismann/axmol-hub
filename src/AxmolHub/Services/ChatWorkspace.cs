@@ -1006,8 +1006,11 @@ public sealed class ChatWorkspace : IDisposable
         var room = Math.Max(ChatPipeline.MinimumConversationBudgetTokens, window.ConversationRoom - schema);
         var prompt = BuildContextPrompt(conversation);
         var hasDraft = !string.IsNullOrEmpty(draft);
+        // A notice is not a message the model sees, so it is not counted here either: kept, dropped and the meter
+        // all describe the conversation that goes out (see ChatRoles.Notice).
         var history = conversation is not null
-            ? conversation.Messages.Skip(SummaryMessageCount(conversation)).ToList()
+            ? conversation.Messages.Skip(SummaryMessageCount(conversation))
+                .Where(turn => turn.Role != ChatRoles.Notice).ToList()
             : [];
         // The draft is not in the transcript yet, so it arrives as its own turn. A ring that stayed still while a
         // long message was being written has stopped describing anything.
@@ -1358,11 +1361,23 @@ public sealed class ChatWorkspace : IDisposable
         {
             _sessions.TryUpdate(_active.Id, conversation =>
             {
+                // A notice row goes down only for a real change: re-picking the model this session is already on is
+                // not a fact about the transcript, and a session restored to its own model when it opens is not a
+                // switch either. Where it lands is where this history stopped being one model's, which is the
+                // place a reader would otherwise have to guess at — and the answer to why the turns above it
+                // sound like a different assistant.
+                var switched = !string.Equals(conversation.ProviderId, choice.Provider.Id, StringComparison.Ordinal)
+                               || !string.Equals(conversation.ModelName, choice.ModelName,
+                                   StringComparison.OrdinalIgnoreCase);
                 conversation.ProviderId = choice.Provider.Id;
                 conversation.ModelName = choice.ModelName;
                 // A hand pick is the end of routing for this session, not an input to it: a router that quietly
                 // overrode the model someone just chose would make the picker a decoration.
                 conversation.Routing = ChatRouting.Manual;
+                if (switched)
+                    conversation.Append(ChatTurn.Notice(string.Format(
+                        System.Globalization.CultureInfo.CurrentCulture,
+                        HubStrings.Get("ModelChangedFormat"), choice.ToString())));
             });
         }
 

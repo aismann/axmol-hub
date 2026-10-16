@@ -3178,6 +3178,29 @@ if (args.Contains("--check-ai-context"))
         throw new Exception("A turn whose only weight is its thinking counted as free.");
     Console.WriteLine("PASS: a thinking model's reasoning goes back out on the message that produced it, and only there.");
 
+    // ── A notice is a fact about the conversation, not a message ──
+    // The model-switch row is a turn so it can sit where it happened and survive a restart, and it must not ride
+    // the request: nobody said it, it costs nothing, and a line nobody typed is a line the model answers to.
+    var noticeTurns = new List<ChatTurn>
+    {
+        ChatTurn.User("问题"),
+        ChatTurn.Notice("已切换模型：OrcaRouter · deepseek-flash"),
+        ChatTurn.Assistant("答"),
+    };
+    var noticeWire = ChatPipeline.ToChatMessages(noticeTurns);
+    if (noticeWire.Count != 2)
+        throw new Exception($"A notice turn became a message the model would answer ({noticeWire.Count} for 2 said turns).");
+    if (noticeWire[0].Text != "问题" || noticeWire[1].Text != "答")
+        throw new Exception("Dropping the notice changed what the conversation actually said.");
+    var withNotice = ContextTrimmer.Trim(noticeTurns, 10_000, "prompt");
+    var withoutNotice = ContextTrimmer.Trim(
+        [.. noticeTurns.Where(turn => turn.Role != ChatRoles.Notice)], 10_000, "prompt");
+    if (withNotice.Count != withoutNotice.Count || withNotice.Any(turn => turn.Role == ChatRoles.Notice))
+        throw new Exception("A notice was kept inside the window the model pays for.");
+    if (ContextTrimmer.EstimateTokens(ChatTurn.Notice("已切换模型：OrcaRouter · deepseek-flash")) != 0)
+        throw new Exception("A line the request never carries was charged against the window.");
+    Console.WriteLine("PASS: a model-switch notice sits in the transcript and stays off the wire, out of the window and off the bill.");
+
     // ── Several calls in one response: that one reasoning payload must ride with every one of them ──
     // The model can ask for several tools in a single response while thinking only once; that response is split
     // into several assistant messages in the transcript, each one a product of that single thought. On replay the

@@ -611,6 +611,12 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         var messages = new List<ChatMessage>(turns.Count);
         foreach (var turn in turns)
         {
+            // A notice is a fact about the conversation rather than something anybody said, so it has no message
+            // at all — see ChatRoles.Notice. Dropping it here is what keeps it off the wire; ToChatMessage's
+            // fallback turns an unknown role into a user message, which would put a line nobody typed in front of
+            // the model.
+            if (turn.Role == ChatRoles.Notice) continue;
+
             messages.Add(ToChatMessage(turn, images));
 
             // A frame the assistant captured itself is recorded on the tool result's turn, and a `tool` message
@@ -655,6 +661,9 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         => $"\n\n[{unsent} of the {total} images named in this message were not sent: their bytes are not in this "
            + "session's attachment storage. Say you did not receive them instead of describing them.]";
 
+    /// <summary>One turn's message. A <c>notice</c> turn has none at all — <see cref="ToChatMessages"/> drops it —
+    /// so this is never asked for one; the fallback below maps an unknown role onto a user message, and a line
+    /// nobody typed must not reach the model that way.</summary>
     public static ChatMessage ToChatMessage(ChatTurn turn, Func<ChatImage, BinaryData?>? images = null)
     {
         if (turn.ToolCallId is { Length: > 0 } callId && turn.ToolName is { Length: > 0 } name)
