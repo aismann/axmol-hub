@@ -277,6 +277,7 @@ public partial class App : Application
         // language in the settings page must be persisted back to the same store and object,
         // otherwise the preferences cached in the shell would diverge from disk.
         var window = new MainWindow(Options.ResolveDataRoot(preferences), preferencesStore, preferences);
+        UpdateService.Instance.WriteLog = window.WriteLog;
         desktop.MainWindow = window;
 
         if (OperatingSystem.IsWindows() && !Options.IsAutomation)

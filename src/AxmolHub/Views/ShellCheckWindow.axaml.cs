@@ -13985,6 +13985,17 @@ public partial class ShellCheckWindow : Window
     /// </summary>
     private async Task CheckSettingsPageAsync(string scratchRoot, MainWindow shell)
     {
+        await PublicReleaseSourceSelfCheck.Run(Check, Path.Combine(scratchRoot, "public-updates"));
+        var updateLog = new HubLog(Path.Combine(scratchRoot, "update-failure-logs"));
+        var failedUpdates = new UpdateService
+        {
+            WriteLog = updateLog.Write,
+            ManagerOverrideForCheck = () => throw new InvalidOperationException("Update manager fixture failure")
+        };
+        var failedCheck = await failedUpdates.CheckAsync();
+        Check(failedCheck.Result == UpdateService.CheckResult.Failed && !failedUpdates.IsInstalled
+            && File.ReadAllText(updateLog.FilePath).Contains("Update manager fixture failure", StringComparison.Ordinal),
+            "更新管理器和安装识别失败不会抛出，且会写入 Hub 日志");
         var preferencesPath = PreferencesPathFor(scratchRoot);
         var settings = OpenSettingsOn(shell, "appearance");
 

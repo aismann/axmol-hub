@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using AxmolHub.Core;
 using Avalonia.Threading;
 using Velopack;
-using Velopack.Sources;
 
 namespace AxmolHub;
 
@@ -52,17 +51,12 @@ namespace AxmolHub;
 /// </summary>
 internal sealed class UpdateService
 {
-    /// <summary>
-    /// The GitHub repository Hub ships its releases from. Hard-coded on purpose: the release feed
-    /// location is part of the product's identity (same as the engine's official index), not a
-    /// user preference — and it must stay correct even if the user changes the *engine* download
-    /// source in Settings, which is a different host for a different file.
-    /// </summary>
-    private const string RepositoryUrl = "https://github.com/axmolengine/axmol-hub";
-
     private static readonly Lazy<UpdateService> Shared = new(() => new UpdateService());
 
     public static UpdateService Instance => Shared.Value;
+
+    internal Action<string> WriteLog { get; set; } = _ => { };
+    internal Func<UpdateManager>? ManagerOverrideForCheck { get; set; }
 
     /// <summary>The outcome of a check, carried back to the UI so it can choose its copy.</summary>
     public enum CheckResult
@@ -236,14 +230,19 @@ internal sealed class UpdateService
     /// by constructing a manager — that construction itself is side-effect free.
     /// </summary>
     private UpdateManager CreateManager()
-        => new(new GithubSource(
-            RepositoryUrl,
-            null,
-            UpdateChannels.IncludesPrereleases(UpdateChannel, HubReleaseInfo.IsPrereleaseBuild),
-            null), Options, null);
+        => ManagerOverrideForCheck?.Invoke() ?? new(new PublicReleaseSource(
+            UpdateChannels.IncludesPrereleases(UpdateChannel, HubReleaseInfo.IsPrereleaseBuild)), Options, null);
 
     /// <summary>True when the app was installed by Velopack (not run from a dev/portable copy).</summary>
-    private bool CanUpdate() => CreateManager().IsInstalled;
+    private bool CanUpdate()
+    {
+        try { return CreateManager().IsInstalled; }
+        catch (Exception ex)
+        {
+            WriteLog("Update installation detection failed: " + ex);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Silent check. Never throws (a failure becomes <see cref="CheckResult.Failed"/>) and records the
@@ -253,23 +252,25 @@ internal sealed class UpdateService
     public async Task<CheckOutcome> CheckAsync()
     {
         CheckOutcome outcome;
-        if (!CanUpdate())
+        try
         {
-            outcome = new CheckOutcome(CheckResult.NotInstalled, null);
-        }
-        else
-        {
-            try
+            var manager = CreateManager();
+            if (!manager.IsInstalled)
             {
-                var info = await CreateManager().CheckForUpdatesAsync();
+                outcome = new CheckOutcome(CheckResult.NotInstalled, null);
+            }
+            else
+            {
+                var info = await manager.CheckForUpdatesAsync();
                 outcome = info is null
                     ? new CheckOutcome(CheckResult.UpToDate, null)
                     : new CheckOutcome(CheckResult.UpdateAvailable, info);
             }
-            catch
-            {
-                outcome = new CheckOutcome(CheckResult.Failed, null);
-            }
+        }
+        catch (Exception ex)
+        {
+            WriteLog("Update check failed: " + ex);
+            outcome = new CheckOutcome(CheckResult.Failed, null);
         }
 
         Last = outcome;
