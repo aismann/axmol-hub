@@ -1040,6 +1040,19 @@
       <Setter Property="HorizontalAlignment" Value="Right" />
       <Setter Property="TextAlignment" Value="Right" />
     </Style>
+    <!-- The popover's first figure. Larger than any row under it by design: the rows are reference, this is the
+         reading somebody opens the panel for. -->
+    <Style Selector="TextBlock.context-cache-hit-label">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+    </Style>
+    <Style Selector="TextBlock.context-cache-hit-value">
+      <Setter Property="FontSize" Value="22" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="HorizontalAlignment" Value="Right" />
+      <Setter Property="TextAlignment" Value="Right" />
+    </Style>
     <Style Selector="Button.context-compress">
       <Setter Property="MinHeight" Value="40" />
       <Setter Property="CornerRadius" Value="9" />
@@ -1426,6 +1439,20 @@
           <Border Background="{DynamicResource Hub.SurfaceRaised}" CornerRadius="3" />
           <Border x:Name="ContextProgressFill" HorizontalAlignment="Left"
                   Background="{DynamicResource Hub.Success}" CornerRadius="3" />
+        </Grid>
+        <!-- The cache hit rate, above every row of the breakdown and larger than all of them: it is the one figure
+             here that is a ratio over the session's own bill rather than a slice of the window, and the reason
+             somebody opens this panel when a long conversation starts costing more per turn. Its own block and
+             never a row inside the list below — those rows add up to the occupancy reading and this one divides
+             two other numbers — and hidden outright when no endpoint reported a cache split, because silence is
+             not a hit rate of zero. -->
+        <Grid x:Name="CacheHitBlock" ColumnDefinitions="*,Auto" IsVisible="False">
+          <StackPanel Spacing="1" VerticalAlignment="Center">
+            <TextBlock Classes="context-cache-hit-label" Text="{DynamicResource ChatContextCacheHitTitle}" />
+            <TextBlock x:Name="CacheHitDetail" Classes="context-popover-status" TextWrapping="Wrap" />
+          </StackPanel>
+          <TextBlock x:Name="CacheHitValue" Grid.Column="1" Classes="context-cache-hit-value"
+                     VerticalAlignment="Center" />
         </Grid>
         <!-- The breakdown, rebuilt from the same reading as the ring on every refresh: rows a person can act on
              (schemas by mode, attachments by un-adding a folder, messages by compressing) and the two lines that

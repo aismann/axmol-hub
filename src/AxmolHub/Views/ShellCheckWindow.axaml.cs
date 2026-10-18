@@ -10086,10 +10086,11 @@ public partial class ShellCheckWindow : Window
             var quietRows = panel.ContextCategoryRowsForCheck;
             panel.CloseContextPopoverForCheck();
             Check(!panel.ContextBurnVisibleForCheck && quietBurn.Length == 0
+                  && !panel.CacheHitVisibleForCheck && panel.CacheHitValueForCheck.Length == 0
                   && quiet?.BurnedInputTotal == 0 && quiet.BurnedRequestCount == 0
                   && quiet.Messages.All(turn => turn.Burned is null)
                   && quietRows.All(row => !row.Contains("消耗", StringComparison.Ordinal)),
-                "没人报数时「实测消耗」整块不出现，账本也是空的——沉默不等于花了 0");
+                "没人报数时「实测消耗」整块和命中率都不出现，账本也是空的——沉默不等于花了 0");
 
             // Phase 2: the same app path with a report on the end of the stream.
             // The reading is stated against the window rather than as a literal: this fixture has to stay the
@@ -10223,6 +10224,28 @@ public partial class ShellCheckWindow : Window
                   && !ChatPanel.DescribeBurnForCheck(new ContextBurn(2_000, 10, 0, 0, 1)).Contains('%'),
                 "缓存命中率跟在缓存输入后面，保留三位小数（本轮 " + hitRate
                 + "%），网关不报缓存拆分时不出现比例");
+            // The rate is the panel's first figure and it sits above the rows rather than inside them: the column
+            // below adds up to the occupancy reading, a ratio belongs to the bill. Position is read off the
+            // popover's own child list, because "before 系统提示" is a claim about order that no string can carry.
+            var popoverChildren = ((StackPanel)((Border)panel.ContextPopoverContentForCheck).Child!).Children;
+            var hitIndex = popoverChildren.IndexOf(panel.CacheHitBlockForCheck);
+            Check(panel.CacheHitVisibleForCheck
+                  && panel.CacheHitValueForCheck == hitRate + "%"
+                  && panel.CacheHitDetailForCheck.Contains(summedText, StringComparison.Ordinal)
+                  && panel.CacheHitDetailForCheck.Contains(burnCached.ToString("N0", culture), StringComparison.Ordinal)
+                  && hitIndex >= 0
+                  && popoverChildren.IndexOf(panel.ContextCategoryListForCheck) > hitIndex
+                  && panel.ContextCategoryRowsForCheck.All(row => !row.Contains(hitRate, StringComparison.Ordinal)),
+                "缓存命中率是面板里的第一项数据，放大了画在分类明细之前而不是其中（「"
+                + panel.CacheHitValueForCheck + "」，「" + panel.CacheHitDetailForCheck + "」）");
+            // The frame itself, because "放大" is a claim about how it looks and no object graph carries a font
+            // size across to a reader. Same capture helper as the empty-state popover above.
+            var hitRoot = panel.ContextPopoverContentForCheck.GetSelfAndVisualAncestors()
+                .OfType<Avalonia.Controls.TopLevel>().FirstOrDefault();
+            var hitStats = hitRoot is null ? null : SmokeCapture.Capture(hitRoot,
+                System.IO.Path.Combine(ScratchDirectory.Resolve("context-popover"), "context-cache-hit.png"));
+            Check(hitStats is not null && !hitStats.IsBlank(),
+                "命中率那一项的用量面板真实渲染出非空白帧（tmp/context-popover/context-cache-hit.png）");
             // One answer in the session means one line: the cumulative would repeat the figures above it.
             Check(!burnText.Contains(HubStrings.Get("ChatContextBurnSessionLabel"), StringComparison.Ordinal)
                   && report?.BurnedInputTotal == burnInput && report.BurnedRequestCount == 2

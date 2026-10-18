@@ -580,6 +580,12 @@ public static class HubTexts
         // The share of the input the endpoint did not have to re-bill. Its own key rather than a suffix on the
         // cached count: a ratio over summed input is a different claim from that one request's cached figure.
         ["ChatContextBurnCacheHitFormat"] = ("缓存命中率 {0}%", "cache hit {0}%"),
+        // The same ratio as the panel's first figure, where the label and the number are drawn apart: a headline
+        // reading with its own two operands underneath, because a percentage nobody can decompose is a number to
+        // trust rather than to check. Not the burn line's wording — there the ratio trails a sentence, here it is
+        // the sentence.
+        ["ChatContextCacheHitTitle"] = ("缓存命中率", "Cache hit rate"),
+        ["ChatContextCacheHitDetailFormat"] = ("总输入 {0} · 命中 {1}", "{0} input · {1} cached"),
         ["ChatContextBurnRequestsFormat"] = ("{0} 次请求", "{0} requests"),
         // Both numbers, because the two are not the same claim: the provider published one, this session's own
         // response proved the other. A reader who sees only the smaller figure would look for a setting nobody set.

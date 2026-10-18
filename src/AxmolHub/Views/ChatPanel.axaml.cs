@@ -843,6 +843,7 @@ public partial class ChatPanel : UserControl
         ContextPopoverPercent.Text = percent.ToString(System.Globalization.CultureInfo.CurrentCulture) + "%";
         UpdateContextProgressFill(usage);
         RefreshContextCompressionButton();
+        RenderCacheHit();
         RenderContextBreakdown(usage);
         RenderContextBurn();
         // Two different claims, so two different sentences. "预计" over a number the model itself reported is a
@@ -856,6 +857,45 @@ public partial class ChatPanel : UserControl
     }
 
     private ContextUsage CurrentContextUsage() => _chat.EstimateContextUsage(InputBox.Text ?? "");
+
+    /// <summary>
+    /// The session's input cache hit rate, drawn as the panel's first figure and larger than every row under it.
+    ///
+    /// <para>A ratio over the session's own bill, not a slice of the window: the rows below add up to the occupancy
+    /// reading, and this one divides two numbers an endpoint reported. That is why it is a block of its own above
+    /// them rather than one more row — a column that no longer adds up is worse than a figure nobody can find.</para>
+    ///
+    /// <para>The session total, not the last request's: one request's cache count is a sample, and the question this
+    /// figure answers — did this conversation's prefix survive — is about the whole conversation. While a run is
+    /// still streaming the session total does not include it yet, so the live reading stands in; it is the number
+    /// the reader is watching climb.</para>
+    ///
+    /// <para>Hidden when nothing reported a cache split. A gateway that never sends one is not an endpoint with a
+    /// 0.000% hit rate, and a headline is the last place to blur that.</para>
+    /// </summary>
+    private void RenderCacheHit()
+    {
+        if (_chat is null) return;
+        var (send, session) = _chat.ActiveConversationBurn();
+        var burned = session ?? send;
+        if (burned is null || burned.Input <= 0 || burned.CachedInput <= 0)
+        {
+            // Cleared, not just hidden: a hidden block keeping the last session's reading would be one edit away
+            // from being shown again on a gateway that never reported anything.
+            CacheHitValue.Text = "";
+            CacheHitDetail.Text = "";
+            CacheHitBlock.IsVisible = false;
+            return;
+        }
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        // Same three decimals and same clamp as the burn line below, because the two must never disagree about the
+        // same reading — a vendor that reports more cached than input is shown as 100.000%, not as 104%.
+        var ratio = Math.Clamp(burned.CachedInput * 100d / burned.Input, 0d, 100d);
+        CacheHitValue.Text = ratio.ToString("F3", culture) + "%";
+        CacheHitDetail.Text = string.Format(culture, HubStrings.Get("ChatContextCacheHitDetailFormat"),
+            burned.Input.ToString("N0", culture), burned.CachedInput.ToString("N0", culture));
+        CacheHitBlock.IsVisible = true;
+    }
 
     /// <summary>
     /// The measured spend, in the endpoint's own tokens: what this reply cost, and what the session has cost.
@@ -6844,6 +6884,14 @@ public partial class ChatPanel : UserControl
     internal string ContextBurnTextForCheck => ContextBurnNote.Text ?? "";
 
     internal bool ContextBurnVisibleForCheck => ContextBurnNote.IsVisible;
+
+    /// <summary>The cache hit headline as drawn, plus the two containers a check needs to prove the figure comes
+    /// before the breakdown rather than inside it: a claim about position cannot be read off the text.</summary>
+    internal bool CacheHitVisibleForCheck => CacheHitBlock.IsVisible;
+    internal string CacheHitValueForCheck => CacheHitValue.Text ?? "";
+    internal string CacheHitDetailForCheck => CacheHitDetail.Text ?? "";
+    internal Control CacheHitBlockForCheck => CacheHitBlock;
+    internal Control ContextCategoryListForCheck => ContextCategoryList;
 
     /// <summary>One spend line built from a synthetic reading, so a check can pin the wording and the rounding
     /// without a provider, a stream or a session: what these assertions are about is the sentence.</summary>
