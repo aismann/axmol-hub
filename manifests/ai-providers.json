@@ -27,7 +27,7 @@
       "description": "Sign in with ChatGPT to use your Codex plan, or use an API key from platform.openai.com.",
       "descriptionZh": "使用 ChatGPT 登录以调用 Codex 套餐，或使用 platform.openai.com 的 API 密钥。",
       "baseUrl": "https://api.openai.com/v1",
-      "defaultEnabledModels": ["gpt-6.1-sol"],
+      "defaultEnabledModels": ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"],
       "maxContextTokens": 500000,
       "reasoningModels": {
         "gpt-6.1-sol": {
