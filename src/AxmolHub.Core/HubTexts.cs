@@ -577,6 +577,9 @@ public static class HubTexts
         // bracket it differently.
         ["ChatContextBurnReasoningFormat"] = ("（含思考 {0}）", " ({0} of them reasoning)"),
         ["ChatContextBurnCachedFormat"] = ("缓存输入 {0}", "{0} cached"),
+        // The share of the input the endpoint did not have to re-bill. Its own key rather than a suffix on the
+        // cached count: a ratio over summed input is a different claim from that one request's cached figure.
+        ["ChatContextBurnCacheHitFormat"] = ("缓存命中率 {0}%", "cache hit {0}%"),
         ["ChatContextBurnRequestsFormat"] = ("{0} 次请求", "{0} requests"),
         // Both numbers, because the two are not the same claim: the provider published one, this session's own
         // response proved the other. A reader who sees only the smaller figure would look for a setting nobody set.

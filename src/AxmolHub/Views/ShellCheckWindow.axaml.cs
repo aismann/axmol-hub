@@ -10209,6 +10209,20 @@ public partial class ShellCheckWindow : Window
                   && burnText.Contains(string.Format(culture, HubStrings.Get("ChatContextBurnCachedFormat"),
                       burnCached.ToString("N0", culture)), StringComparison.Ordinal),
                 "思考写在输出里面而不是旁边，缓存命中按报出来的那部分列，没有报的那次不补 0");
+            // The ratio, on the live line and on the formatter. The live half proves the note carries the part at
+            // all; the pinned half is what fixes the three decimals and the empty end of the guard, which no
+            // fixture reaches by accident.
+            var hitRate = Math.Clamp(burnCached * 100d / burnInput, 0d, 100d).ToString("F3", culture);
+            var separator = culture.NumberFormat.NumberDecimalSeparator;
+            var pinned = ChatPanel.DescribeBurnForCheck(new ContextBurn(373_084, 415, 0, 320_128, 3))
+                         + ChatPanel.DescribeBurnForCheck(new ContextBurn(5_231_819, 51_841, 35_329, 5_059_456, 0));
+            Check(burnText.Contains(string.Format(culture, HubStrings.Get("ChatContextBurnCacheHitFormat"), hitRate),
+                      StringComparison.Ordinal)
+                  && pinned.Contains("85" + separator + "806", StringComparison.Ordinal)
+                  && pinned.Contains("96" + separator + "705", StringComparison.Ordinal)
+                  && !ChatPanel.DescribeBurnForCheck(new ContextBurn(2_000, 10, 0, 0, 1)).Contains('%'),
+                "缓存命中率跟在缓存输入后面，保留三位小数（本轮 " + hitRate
+                + "%），网关不报缓存拆分时不出现比例");
             // One answer in the session means one line: the cumulative would repeat the figures above it.
             Check(!burnText.Contains(HubStrings.Get("ChatContextBurnSessionLabel"), StringComparison.Ordinal)
                   && report?.BurnedInputTotal == burnInput && report.BurnedRequestCount == 2

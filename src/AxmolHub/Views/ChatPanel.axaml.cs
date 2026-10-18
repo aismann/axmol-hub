@@ -885,7 +885,8 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>One line of the spend, in the order the bill arrives: what was read, what was written, of what the
-    /// thinking was, how much of the read came from cache, and over how many requests.</summary>
+    /// thinking was, how much of the read came from cache, what share of the read that was, and over how many
+    /// requests.</summary>
     private static string DescribeBurn(ContextBurn burned, bool countRequests)
     {
         var culture = System.Globalization.CultureInfo.CurrentCulture;
@@ -910,6 +911,14 @@ public partial class ChatPanel : UserControl
         if (burned.CachedInput > 0)
             parts.Add(string.Format(culture, HubStrings.Get("ChatContextBurnCachedFormat"),
                 burned.CachedInput.ToString("N0", culture)));
+        // The share the two numbers above already carry, said out loud: cached over summed input is the figure a
+        // reader would otherwise do in their head, and it is the one that says whether the prefix survived. Three
+        // decimals because the interesting differences live below one percent. Nothing to divide when either side
+        // is silent, and no ratio at all when the endpoint reported no cache split — for the same reason the
+        // cached figure itself is left out.
+        if (burned.CachedInput > 0 && burned.Input > 0)
+            parts.Add(string.Format(culture, HubStrings.Get("ChatContextBurnCacheHitFormat"),
+                Math.Clamp(burned.CachedInput * 100d / burned.Input, 0d, 100d).ToString("F3", culture)));
         // The request count is what makes a summed input readable against the window's single-request figure:
         // five requests over the same transcript is five charges, and the line says so.
         if (countRequests && burned.Requests > 0)
@@ -6835,6 +6844,12 @@ public partial class ChatPanel : UserControl
     internal string ContextBurnTextForCheck => ContextBurnNote.Text ?? "";
 
     internal bool ContextBurnVisibleForCheck => ContextBurnNote.IsVisible;
+
+    /// <summary>One spend line built from a synthetic reading, so a check can pin the wording and the rounding
+    /// without a provider, a stream or a session: what these assertions are about is the sentence.</summary>
+    internal static string DescribeBurnForCheck(ContextBurn burned, bool countRequests = false)
+        => DescribeBurn(burned, countRequests);
+
     internal string ContextTooltipForCheck => ToolTip.GetTip(ContextButton)?.ToString() ?? "";
     internal string ContextPopoverTitleForCheck => ContextPopoverTitle.Text ?? "";
     internal string ContextPopoverPercentForCheck => ContextPopoverPercent.Text ?? "";
