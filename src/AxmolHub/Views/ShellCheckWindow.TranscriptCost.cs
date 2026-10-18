@@ -85,6 +85,49 @@ public partial class ShellCheckWindow
             + $"{edgePainted} 条");
         chat.DeleteConversation(edgeSession.Id);
 
+        // ── A session carrying a pending decision, longer than one window ──
+        // Opening a session used to write it unconditionally: a `turn with { … }` per pending card to flip
+        // ApprovalSeen, plus a whole-file save whether or not anything needed stamping. That rewrite is also what
+        // stopped the rows being re-attached, because the stamped turn comes back as a different object. This
+        // pins all three halves: the flag is still stamped, a later open with nothing to stamp rewrites no turn,
+        // and the rows come back either way.
+        var decided = chat.StartConversation();
+        for (var i = 0; i < 3; i++)
+            chat.SeedAssistantReplyForCheck(decided.Id, $"待定的回答 {i + 1}");
+        chat.ActiveConversation!.Messages.Add(ChatTurn.FunctionCall("call_wait", "run_command",
+            "{\"command\":\"git status\"}") with { ApprovalState = ChatApprovalStates.Pending });
+        for (var i = 0; i < 36; i++)
+            chat.SeedAssistantReplyForCheck(decided.Id, $"后续回答 {i + 1}");
+        var pendingBefore = chat.ActiveConversation!.Messages.Single(turn => turn.ToolCallId == "call_wait");
+
+        chat.OpenConversation(longSession.Id);
+        chat.OpenConversation(decided.Id);
+        panel.Reload();
+        var stamped = !ReferenceEquals(pendingBefore,
+            chat.ActiveConversation!.Messages.Single(turn => turn.ToolCallId == "call_wait"));
+        var rowBefore = panel.FirstTranscriptRowForCheck;
+        var paintedBefore = panel.PaintedTurnCountForCheck;
+
+        chat.OpenConversation(longSession.Id);
+        Relayout(shell, panel);
+        chat.OpenConversation(decided.Id);
+        Relayout(shell, panel);
+        Check(stamped && ReferenceEquals(panel.FirstTranscriptRowForCheck, rowBefore)
+              && panel.PaintedTurnCountForCheck == paintedBefore,
+            "带待决卡片的会话：首次打开写下 ApprovalSeen（这一条 turn 被换成新对象），"
+            + "离开再回来仍然接回原来的行，窗口位置也一样（写入 " + stamped
+            + "，行复用 " + ReferenceEquals(panel.FirstTranscriptRowForCheck, rowBefore)
+            + "，窗口 " + paintedBefore + "→" + panel.PaintedTurnCountForCheck + "）");
+
+        // Nothing left to stamp, so this open must not rewrite the conversation at all.
+        var quietBefore = chat.ActiveConversation!.Messages.ToArray();
+        chat.OpenConversation(decided.Id);
+        var quietAfter = chat.ActiveConversation!.Messages;
+        Check(quietBefore.Length == quietAfter.Count
+              && quietBefore.Zip(quietAfter).All(pair => ReferenceEquals(pair.First, pair.Second)),
+            "没有待决卡片时再打开一次，一条 turn 都不会被重写（" + quietBefore.Length + " 条）");
+        chat.DeleteConversation(decided.Id);
+
         // ── A session longer than one window ──
         // What the window claims: the first frame costs what a screen costs, not what the session costs. Counted
         // before anything pumps the dispatcher, because afterwards only the line at the top is left as evidence.

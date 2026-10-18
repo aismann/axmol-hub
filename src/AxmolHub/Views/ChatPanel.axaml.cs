@@ -217,10 +217,10 @@ public partial class ChatPanel : UserControl
     /// <see cref="DeriveActivityGroup"/>.</summary>
     private ActivityGroupView? _openGroup;
 
-    /// <summary>The visible turns the flow was laid down from, held <b>by reference</b>. A conversation whose
-    /// turns are all the same objects is a conversation whose rows still mean what they said, which is the whole
-    /// test a parked transcript is taken back on — <see cref="ChatTurn"/> is an immutable record, so a turn that
-    /// was rewritten anywhere (an approval decided, an undo copy spent, an edit made) is a different object.</summary>
+    /// <summary>The visible turns the flow was laid down from. Held so that leaving a session keeps a way to ask
+    /// whether its rows still say what was drawn (see <see cref="RenderedTranscript"/>); the comparison itself
+    /// lives in <see cref="TakeParked"/>, which accepts a turn that came back as an equal object — stamping
+    /// <c>ApprovalSeen</c> at open does exactly that.</summary>
     private List<ChatTurn> _renderedTurns = [];
 
     /// <summary>The rows that were drawn as plain text although their turn holds Markdown, waiting for a reader
@@ -2341,6 +2341,12 @@ public partial class ChatPanel : UserControl
         // A decision changes what an already-rendered turn looks like without changing how many turns there
         // are, which is precisely the case incremental rendering cannot see: the stamp is what lets a card
         // collapse into its one-line record instead of keeping buttons that no longer mean anything.
+        //
+        // Captured before the two stamps move forward: parking the session being left files its rows under *its*
+        // decisions, and reading the fields afterwards filed them under the incoming session's — which is why a
+        // switch between two sessions whose cards differed threw the rows away on the way back.
+        var priorApprovalStamp = _renderedApprovalStamp;
+        var priorShowThinking = _renderedShowThinking;
         var approvalStamp = ApprovalStamp(conversation);
         var approvalChanged = approvalStamp != _renderedApprovalStamp;
         _renderedApprovalStamp = approvalStamp;
@@ -2359,7 +2365,7 @@ public partial class ChatPanel : UserControl
             && !string.Equals(returning.Id, _renderedConversationId, StringComparison.Ordinal)
             && TakeParked(returning.Id, visible, approvalStamp) is { } parked)
         {
-            ParkCurrentTranscript();
+            ParkCurrentTranscript(priorApprovalStamp, priorShowThinking);
             MessageFlow.Children.Clear();
             foreach (var row in parked.Rows) MessageFlow.Children.Add(row);
             _renderedConversationId = returning.Id;
@@ -2389,7 +2395,7 @@ public partial class ChatPanel : UserControl
         {
             // Whatever was on screen is still worth keeping: leaving a session for the empty state is the same
             // errand as leaving it for another one.
-            ParkCurrentTranscript();
+            ParkCurrentTranscript(priorApprovalStamp, priorShowThinking);
             MessageFlow.Children.Clear();
             _renderedConversationId = conversation?.Id;
             _renderedCount = 0;
@@ -2420,7 +2426,7 @@ public partial class ChatPanel : UserControl
             // visit to it is usually the very next thing the person does. Only on a switch — a teardown for a
             // decision or a shrunken history is this same session being redrawn, and its own rows are exactly
             // what is about to be wrong.
-            if (aDifferentSession) ParkCurrentTranscript();
+            if (aDifferentSession) ParkCurrentTranscript(priorApprovalStamp, priorShowThinking);
             _paintFromScratch = false;
             MessageFlow.Children.Clear();
             _renderedConversationId = conversation.Id;
@@ -2637,11 +2643,22 @@ public partial class ChatPanel : UserControl
         // A parked transcript is rows over turns: everything inside it points back into the conversation by
         // index, so it is reusable exactly while it still describes the same turns in the same order, wearing
         // the same decisions, under the same answer to "is the thinking drawn".
+        //
+        // Identity first, value second, and the second half is not politeness: opening a session stamps
+        // `ApprovalSeen` onto every pending card with `turn with { … }`, so a turn whose *content* is unchanged
+        // comes back as a different object. Asking by identity alone threw away the rows of every session that
+        // had ever raised a card — which in practice was every long one — and the log said so plainly: opens of a
+        // 483-turn session read `drawn`, never `re-attached rows`.
         var same = parked.Turns.Count == visible.Count
                    && parked.ApprovalStamp == approvalStamp
                    && parked.ShowThinking == _chat.ShowThinking;
         for (var i = 0; same && i < parked.Turns.Count; i++)
-            same = ReferenceEquals(parked.Turns[i], visible[i].Turn);
+        {
+            var drawn = parked.Turns[i];
+            var now = visible[i].Turn;
+            same = ReferenceEquals(drawn, now) || drawn.Equals(now);
+        }
+
         if (same) return parked;
         _parkedTranscripts.Remove(parked);
         return null;
@@ -2654,8 +2671,13 @@ public partial class ChatPanel : UserControl
     ///
     /// <para>Nothing is parked while the flow holds no turns: rows are the whole of what this saves, and a
     /// transcript with none costs nothing to draw again.</para>
+    ///
+    /// <para>The two stamps arrive as arguments rather than being read here, and that is the whole of a bug this
+    /// had: by the time this runs, <see cref="RenderMessages"/> has already moved both fields forward to the
+    /// <i>incoming</i> session's values, so reading them filed the outgoing rows under the wrong decisions and
+    /// every switch between two sessions whose cards differed lost its rows on the way back.</para>
     /// </summary>
-    private void ParkCurrentTranscript()
+    private void ParkCurrentTranscript(string approvalStamp, bool showThinking)
     {
         if (_renderedConversationId is not { Length: > 0 } id) return;
         if (_renderedTurns.Count == 0 || MessageFlow.Children.Count == 0) return;
@@ -2667,8 +2689,8 @@ public partial class ChatPanel : UserControl
         var parked = new RenderedTranscript
         {
             ConversationId = id,
-            ApprovalStamp = _renderedApprovalStamp,
-            ShowThinking = _renderedShowThinking,
+            ApprovalStamp = approvalStamp,
+            ShowThinking = showThinking,
             OpenGroup = _openGroup,
             PaintedFrom = _paintedFrom,
         };

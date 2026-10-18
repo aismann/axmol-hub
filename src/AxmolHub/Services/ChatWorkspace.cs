@@ -2783,16 +2783,28 @@ public sealed class ChatWorkspace : IDisposable
         _selectedReasoningEffort = ChatReasoningEfforts.Normalize(_active?.ReasoningEffort);
         if (_active is { } opened)
         {
-            _sessions.TryUpdate(opened.Id, conversation =>
+            // Asked before writing, because the write is not free: it replaces the whole session file, and for a
+            // long conversation that file is the largest thing an open touches — larger than the read that just
+            // happened, and entirely inside the open's own path. A card whose flag is already set has nothing to
+            // say, and re-stamping it would also hand every reader a turn that is no longer the object it was.
+            var unseen = opened.Messages.Any(turn =>
+                (turn.ApprovalState == ChatApprovalStates.Pending
+                 || turn.PlanApprovalState == PlanApprovalStates.Pending)
+                && !turn.ApprovalSeen);
+            if (unseen)
             {
-                for (var index = 0; index < conversation.Messages.Count; index++)
+                _sessions.TryUpdate(opened.Id, conversation =>
                 {
-                    var turn = conversation.Messages[index];
-                    if (turn.ApprovalState == ChatApprovalStates.Pending
-                        || turn.PlanApprovalState == PlanApprovalStates.Pending)
-                        conversation.Messages[index] = turn with { ApprovalSeen = true };
-                }
-            });
+                    for (var index = 0; index < conversation.Messages.Count; index++)
+                    {
+                        var turn = conversation.Messages[index];
+                        if (turn.ApprovalSeen) continue;
+                        if (turn.ApprovalState == ChatApprovalStates.Pending
+                            || turn.PlanApprovalState == PlanApprovalStates.Pending)
+                            conversation.Messages[index] = turn with { ApprovalSeen = true };
+                    }
+                });
+            }
         }
         Changed?.Invoke();
         return _active;
