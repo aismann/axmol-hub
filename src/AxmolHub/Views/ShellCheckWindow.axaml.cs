@@ -10236,10 +10236,17 @@ public partial class ShellCheckWindow : Window
                   && hitIndex >= 0
                   && popoverChildren.IndexOf(panel.ContextCategoryListForCheck) > hitIndex
                   && panel.ContextCategoryRowsForCheck.All(row => !row.Contains(hitRate, StringComparison.Ordinal)),
-                "缓存命中率是面板里的第一项数据，放大了画在分类明细之前而不是其中（「"
+                "缓存命中率是面板里的第一项数据，加粗了画在分类明细之前而不是其中（「"
                 + panel.CacheHitValueForCheck + "」，「" + panel.CacheHitDetailForCheck + "」）");
-            // The frame itself, because "放大" is a claim about how it looks and no object graph carries a font
-            // size across to a reader. Same capture helper as the empty-state popover above.
+            // Emphasis is the weight and the ink, not the size: a figure bigger than the title's percentage gives
+            // the card two headlines. The colour is a theme token and is deliberately not asserted here.
+            Check(panel.CacheHitValueBoldForCheck
+                  && panel.CacheHitValueFontSizeForCheck <= panel.ContextPopoverPercentFontSizeForCheck,
+                "命中率只靠加粗和专色强调，字号不超过标题里的已用比例（"
+                + panel.CacheHitValueFontSizeForCheck + " ≤ " + panel.ContextPopoverPercentFontSizeForCheck + "）");
+            // The frame itself, because "加粗 and a colour of its own" is a claim about how it looks and no object
+            // graph carries a font weight or an ink across to a reader. Same capture helper as the empty-state
+            // popover above.
             var hitRoot = panel.ContextPopoverContentForCheck.GetSelfAndVisualAncestors()
                 .OfType<Avalonia.Controls.TopLevel>().FirstOrDefault();
             var hitStats = hitRoot is null ? null : SmokeCapture.Capture(hitRoot,

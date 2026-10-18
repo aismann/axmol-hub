@@ -71,6 +71,10 @@
       <SolidColorBrush x:Key="Hub.SelectionChip" Color="#2C5A7A" />
 
       <SolidColorBrush x:Key="Hub.Success" Color="#70D7AF" />
+      <!-- Success split the way Danger is: Hub.Success is a fill (the context meter's bar), Hub.SuccessText is the
+           same hue used as ink. On dark the fill colour already reads as ink — #70D7AF on Hub.SurfaceAlt is ≈8.9:1
+           — so the pair holds one value here; the Light dictionary is where it has to differ. -->
+      <SolidColorBrush x:Key="Hub.SuccessText" Color="#70D7AF" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeBackground" Color="#594313" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeForeground" Color="#FFE08A" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeBorder" Color="#80611F" />
@@ -188,6 +192,10 @@
       <SolidColorBrush x:Key="Hub.SelectionChip" Color="#94BDE0" />
 
       <SolidColorBrush x:Key="Hub.Success" Color="#1E9E76" />
+      <!-- The ink weight of success, and it has to differ here: #1E9E76 is a fill, and as 14px text on
+           Hub.SurfaceAlt (#EDEEF2) it measures ≈2.9:1 — not readable. This is the same hue taken dark enough to
+           clear AA (≈5.2:1 on SurfaceAlt, ≈5.4:1 on Surface). -->
+      <SolidColorBrush x:Key="Hub.SuccessText" Color="#137054" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeBackground" Color="#FFF1BF" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeForeground" Color="#664D00" />
       <SolidColorBrush x:Key="Hub.PreviewBadgeBorder" Color="#E5C75C" />

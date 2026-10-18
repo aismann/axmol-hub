@@ -308,6 +308,9 @@ public partial class ControlGalleryWindow : Window
 
         // ---- Theme variant switching ----
         var darkBackground = ColorOf(Background);
+        // Read before the switch: the light half of this pair is captured inside the block below.
+        var darkHitInk = TokenColor("Hub.SuccessText");
+        var darkHitSurface = TokenColor("Hub.SurfaceAlt");
         if (Application.Current is not null)
         {
             Application.Current.RequestedThemeVariant = ThemeVariant.Light;
@@ -336,6 +339,21 @@ public partial class ControlGalleryWindow : Window
                 "浅色下输入框与页面底色分得开（" + lightBackground + " vs " + lightComposer + "）");
             check(Separates(lightComposer, lightChip),
                 "浅色下 composer 上的胶囊与框底分得开（" + lightComposer + " vs " + lightChip + "）");
+
+            // The cache hit figure's ink is a token of its own (Hub.SuccessText) exactly because the success fill
+            // is not readable as text on light. Its contrast is measured in both variants here — the only place
+            // the light values are read at all — so a future palette tweak cannot silently make the number faint.
+            var lightHitInk = TokenColor("Hub.SuccessText");
+            var lightHitSurface = TokenColor("Hub.SurfaceAlt");
+            var darkHitContrast = darkHitInk is { } darkInk && darkHitSurface is { } darkGround
+                ? DarkSyntax.Contrast(darkInk, darkGround)
+                : 0d;
+            var lightHitContrast = lightHitInk is { } lightInk && lightHitSurface is { } lightGround
+                ? DarkSyntax.Contrast(lightInk, lightGround)
+                : 0d;
+            check(darkHitContrast >= 4.5 && lightHitContrast >= 4.5,
+                "缓存命中率数字在两套主题下都过 AA（深色 " + darkHitContrast.ToString("0.00", CultureInfo.InvariantCulture)
+                + ":1，浅色 " + lightHitContrast.ToString("0.00", CultureInfo.InvariantCulture) + ":1）");
 
             Application.Current.RequestedThemeVariant = ThemeVariant.Dark;
             UpdateLayout();

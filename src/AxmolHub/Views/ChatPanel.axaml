@@ -1040,16 +1040,20 @@
       <Setter Property="HorizontalAlignment" Value="Right" />
       <Setter Property="TextAlignment" Value="Right" />
     </Style>
-    <!-- The popover's first figure. Larger than any row under it by design: the rows are reference, this is the
-         reading somebody opens the panel for. -->
+    <!-- The popover's first figure, held below the title's own percentage rather than above it: two figures of
+         equal weight in one card read as two headlines, and this one only has to say it is a different kind of
+         number from the rows under it. Emphasis is the weight and the success ink — a cache hit is money the
+         endpoint did not re-bill — not the size. Hub.SuccessText rather than Hub.Accent because blue is this
+         theme's link ink, and rather than Hub.Success because that one is a fill: the light value fails contrast
+         as 14px text on this card. -->
     <Style Selector="TextBlock.context-cache-hit-label">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
     </Style>
     <Style Selector="TextBlock.context-cache-hit-value">
-      <Setter Property="FontSize" Value="22" />
-      <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.SuccessText}" />
       <Setter Property="HorizontalAlignment" Value="Right" />
       <Setter Property="TextAlignment" Value="Right" />
     </Style>
@@ -1440,7 +1444,7 @@
           <Border x:Name="ContextProgressFill" HorizontalAlignment="Left"
                   Background="{DynamicResource Hub.Success}" CornerRadius="3" />
         </Grid>
-        <!-- The cache hit rate, above every row of the breakdown and larger than all of them: it is the one figure
+        <!-- The cache hit rate, above every row of the breakdown and bolder than any of them: it is the one figure
              here that is a ratio over the session's own bill rather than a slice of the window, and the reason
              somebody opens this panel when a long conversation starts costing more per turn. Its own block and
              never a row inside the list below — those rows add up to the occupancy reading and this one divides

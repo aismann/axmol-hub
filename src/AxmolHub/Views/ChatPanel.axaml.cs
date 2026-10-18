@@ -859,7 +859,9 @@ public partial class ChatPanel : UserControl
     private ContextUsage CurrentContextUsage() => _chat.EstimateContextUsage(InputBox.Text ?? "");
 
     /// <summary>
-    /// The session's input cache hit rate, drawn as the panel's first figure and larger than every row under it.
+    /// The session's input cache hit rate, drawn as the panel's first figure: bolder than every row under it, and
+    /// never larger than the title's own percentage, so the card keeps one headline number and this one is a second
+    /// reading rather than a second headline.
     ///
     /// <para>A ratio over the session's own bill, not a slice of the window: the rows below add up to the occupancy
     /// reading, and this one divides two numbers an endpoint reported. That is why it is a block of its own above
@@ -6892,6 +6894,12 @@ public partial class ChatPanel : UserControl
     internal string CacheHitDetailForCheck => CacheHitDetail.Text ?? "";
     internal Control CacheHitBlockForCheck => CacheHitBlock;
     internal Control ContextCategoryListForCheck => ContextCategoryList;
+
+    /// <summary>The emphasis this figure is allowed: bold ink of its own, never a size above the title's percentage
+    /// — two equal headlines in one card was the reason the first version was wrong.</summary>
+    internal double CacheHitValueFontSizeForCheck => CacheHitValue.FontSize;
+    internal bool CacheHitValueBoldForCheck => CacheHitValue.FontWeight == FontWeight.Bold;
+    internal double ContextPopoverPercentFontSizeForCheck => ContextPopoverPercent.FontSize;
 
     /// <summary>One spend line built from a synthetic reading, so a check can pin the wording and the rounding
     /// without a provider, a stream or a session: what these assertions are about is the sentence.</summary>
