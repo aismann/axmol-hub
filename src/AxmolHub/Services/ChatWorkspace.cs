@@ -2771,14 +2771,21 @@ public sealed class ChatWorkspace : IDisposable
     /// </summary>
     internal (double Milliseconds, bool CameFromCache) LastSessionLoad { get; private set; }
 
+    internal SessionOpenMeasurement? CurrentSessionOpen { get; private set; }
+
     public Conversation? OpenConversation(string id)
     {
+        var measurement = new SessionOpenMeasurement(id, "OpenConversation");
+        CurrentSessionOpen = measurement;
         // The registry hands back the one instance, so opening a session that is streaming does not swap in a
         // copy that a later write would silently replace.
         var cachedBefore = _sessions.Peek(id) is not null;
         var readClock = System.Diagnostics.Stopwatch.StartNew();
         _active = _sessions.Load(id);
         LastSessionLoad = (readClock.Elapsed.TotalMilliseconds, cachedBefore);
+        measurement.LoadMs = LastSessionLoad.Milliseconds;
+        measurement.Cached = cachedBefore;
+        var approvalStarted = measurement.ElapsedMs;
         _selectedMode = _active is null ? ChatModes.Agent : NormalizeMode(_active.Mode);
         _selectedReasoningEffort = ChatReasoningEfforts.Normalize(_active?.ReasoningEffort);
         if (_active is { } opened)
@@ -2806,7 +2813,10 @@ public sealed class ChatWorkspace : IDisposable
                 });
             }
         }
+        measurement.ApprovalMs = measurement.ElapsedMs - approvalStarted;
+        var notifyStarted = measurement.ElapsedMs;
         Changed?.Invoke();
+        measurement.NotifyMs = measurement.ElapsedMs - notifyStarted;
         return _active;
     }
 

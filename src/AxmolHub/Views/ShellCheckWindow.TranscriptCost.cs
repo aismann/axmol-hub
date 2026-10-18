@@ -156,6 +156,10 @@ public partial class ShellCheckWindow
             + $"{panel.PaintedTurnCountForCheck} 条，头上那行{(panel.HasLoadEarlierRowForCheck ? "还在" : "没了")}");
 
         chat.DeleteConversation(windowed.Id);
+        CheckSessionOpenMeasurements(shell, panel, longSession.Id, other.Id);
+        // Last, and opt-in: the benchmark switches sessions hundreds of times, and the assertions above read the
+        // view's own position and promotion state.
+        RunTranscriptBenchmark(shell, panel);
         chat.DeleteConversation(other.Id);
         chat.DeleteConversation(longSession.Id);
         if (before is { Length: > 0 } && chat.Conversations.Any(summary => summary.Id == before))

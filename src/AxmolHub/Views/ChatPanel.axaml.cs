@@ -249,12 +249,10 @@ public partial class ChatPanel : UserControl
     /// Ordered most recently left first, bounded by <see cref="ParkedTranscriptDepth"/>.</summary>
     private readonly List<RenderedTranscript> _parkedTranscripts = [];
 
-    /// <summary>How much of a session open this panel measured for itself; see
-    /// <see cref="NoteSessionOpen"/>.</summary>
-    private System.Diagnostics.Stopwatch? _openClock;
-    private double _openBuildMs;
+    /// <summary>The current operation stays alive until its own Loaded observation, even if another session
+    /// replaces it in this panel. Callback closures own their measurements, never the next session's fields.</summary>
+    private SessionOpenMeasurement? _panelOpen;
     private bool _openReusedRows;
-    private int _openReloads;
 
     /// <summary>One transcript's rows, detached but alive, with everything needed to tell whether they still
     /// describe the conversation they were drawn from.</summary>
@@ -607,23 +605,16 @@ public partial class ChatPanel : UserControl
     public void Reload()
     {
         if (_chat is null) return;
-        // A session switch is the one repaint worth timing, because it is the one a person calls "opening it".
-        // Measured around the whole of it rather than inside the store: the stall they feel is the read, the
-        // build and the frame that draws it, and only the first of those three is the store's to own.
-        var opening = _chat.ViewedConversationId is { Length: > 0 } viewed
-                      && !string.Equals(viewed, _renderedConversationId, StringComparison.Ordinal);
-        if (opening)
-        {
-            _openClock = System.Diagnostics.Stopwatch.StartNew();
-            _openReloads = 1;
-        }
-        else if (_openClock is not null)
-        {
-            // Counted, not acted on: whether one open paints the panel once or three times is a question the
-            // cost line answers, and it is the only reason to know.
-            _openReloads++;
-        }
-
+        var viewed = _chat.ViewedConversationId;
+        var requested = _chat.CurrentSessionOpen;
+        if (requested is { Completed: false } && requested.ConversationId == viewed)
+            _panelOpen = requested;
+        else if (viewed is not null && viewed != _renderedConversationId)
+            _panelOpen = new SessionOpenMeasurement(viewed, "panel-switch");
+        var measurement = _panelOpen is { Completed: false } pending && pending.ConversationId == viewed
+            ? pending : null;
+        if (measurement is not null) measurement.Reloads++;
+        var reloadStarted = measurement?.ElapsedMs ?? 0;
         _openReusedRows = false;
 
         InputBox.PlaceholderText = HubStrings.Get("InputPlaceholder");
@@ -635,9 +626,16 @@ public partial class ChatPanel : UserControl
         RefreshModelPicker();
         RefreshComposerChoices();
         UpdateForkNotice();
-        var buildClock = opening ? System.Diagnostics.Stopwatch.StartNew() : null;
-        RenderMessages();
-        if (buildClock is not null) _openBuildMs = buildClock.Elapsed.TotalMilliseconds;
+        var renderStarted = measurement?.ElapsedMs ?? 0;
+        var previousMeasurement = SessionOpenMeasurement.Rendering;
+        SessionOpenMeasurement.Rendering = measurement;
+        try { RenderMessages(); }
+        finally { SessionOpenMeasurement.Rendering = previousMeasurement; }
+        if (measurement is not null)
+        {
+            measurement.RenderMs += measurement.ElapsedMs - renderStarted;
+            measurement.Reused = _openReusedRows;
+        }
         UpdateContextRing();
         // The two composer-anchored surfaces read the transcript, not the run registry, so a repaint is the one
         // place both can be brought in step with whatever just changed.
@@ -650,45 +648,37 @@ public partial class ChatPanel : UserControl
         // The right-hand column is the third surface that reads the transcript rather than the run registry. It
         // repaints only when the transcript grew, so a reply streaming text costs no pane rebuild.
         RefreshInspectorIfTranscriptMoved();
-        if (opening) NoteSessionOpen(_chat.ViewedConversationId);
+        if (measurement is not null)
+        {
+            measurement.ReloadMs += measurement.ElapsedMs - reloadStarted;
+            NoteSessionOpen(measurement);
+        }
         // Rows that came up already in front of the reader are promoted without waiting for a scroll: a session
         // short enough to fit a screen is a session whose whole transcript can be upgraded at once.
         ScheduleMarkdownPromotion();
     }
 
-    /// <summary>
-    /// Writes what opening a session cost to the log, once the frame that draws it is over.
-    ///
-    /// <para>Four numbers, because they answer four questions and only one of them used to be known: how long
-    /// the store took to hand the turns over (and whether it had to go to disk at all), how long the transcript
-    /// took to build, how long the window took to draw it, and how many times one open repainted the panel.
-    /// Without the third, "opening a long session is slow" is a sentence nobody can act on — a build that is
-    /// slow and a layout that is slow fail differently and are fixed differently. Without the fourth, the same
-    /// is true of "it repaints too often": the count is what says whether that claim is true.</para>
-    /// </summary>
-    private void NoteSessionOpen(string? conversationId)
+    /// <summary>Observes dispatcher latency, not presentation. Snapshot counts synchronously so a rapid switch
+    /// cannot attribute the next conversation's controls to this operation. Subsequent reloads update the same
+    /// operation until this callback completes it; superseded opens are labeled, not mistaken for visible frames.</summary>
+    private void NoteSessionOpen(SessionOpenMeasurement measurement)
     {
-        var clock = _openClock;
-        _openClock = null;
-        if (clock is null) return;
-        var chat = _chat!;
-        var turns = _renderedCount;
-        var build = _openBuildMs;
-        var reused = _openReusedRows;
-        var repaints = _openReloads;
-        var culture = System.Globalization.CultureInfo.InvariantCulture;
-        Dispatcher.UIThread.Post(
-            () =>
-            {
-                var load = chat.LastSessionLoad;
-                chat.LogProvider?.Invoke()?.Write(
-                    $"Session open: {conversationId} · {turns} turns"
-                    + $" · read {load.Milliseconds.ToString("0.0", culture)} ms ({(load.CameFromCache ? "cached" : "disk")})"
-                    + $" · build {build.ToString("0.0", culture)} ms ({(reused ? "re-attached rows" : "drawn")})"
-                    + $" · first layout {clock.Elapsed.TotalMilliseconds.ToString("0.0", culture)} ms"
-                    + $" · {repaints} repaint(s)");
-            },
-            DispatcherPriority.Loaded);
+        measurement.TotalTurns = _chat.ActiveConversation?.Messages.Count ?? 0;
+        measurement.PaintedTurns = _renderedCount - _paintedFrom;
+        measurement.Rows = MessageRows.Count();
+        measurement.ActivityRows = MessageFlow.GetLogicalDescendants().OfType<Control>()
+            .Count(control => control.Classes.Contains("activity-row"));
+        measurement.MarkdownDocuments = MarkdownDocumentCountForCheck;
+        measurement.Editors = MessageFlow.GetVisualDescendants().OfType<AvaloniaEdit.TextEditor>().Count();
+        measurement.FlowChildren = MessageFlow.Children.Count;
+        if (measurement.ObservationQueued) return;
+        measurement.ObservationQueued = true;
+        var chat = _chat;
+        Dispatcher.UIThread.Post(() =>
+        {
+            var line = measurement.Complete(chat.ViewedConversationId == measurement.ConversationId);
+            chat.LogProvider?.Invoke()?.Write(line);
+        }, DispatcherPriority.Loaded);
     }
 
     /// <summary>The four starting points the empty state offers, in the order they read best.</summary>
@@ -5390,6 +5380,15 @@ public partial class ChatPanel : UserControl
     /// <summary>How many turns a fresh paint lays down, so a check can assert against the number the renderer uses
     /// rather than against a copy of it that would drift.</summary>
     internal static int FirstPaintTurnsForCheck => FirstPaintTurns;
+
+    /// <summary>Pins the window for a benchmark run, which otherwise inherits whatever width earlier samples or
+    /// checks left behind and makes its own summaries incomparable.</summary>
+    internal void SetPaintWindowForCheck(int turns)
+    {
+        _paintWindow = Math.Max(1, turns);
+        _paintFromScratch = true;
+        RenderMessages();
+    }
 
     /// <summary>How many turns the flow is holding: the whole transcript when nobody is windowed, the newest
     /// stretch of it otherwise.</summary>

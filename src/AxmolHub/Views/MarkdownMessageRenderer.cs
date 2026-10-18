@@ -64,7 +64,10 @@ internal static class MarkdownMessageRenderer
             if (e.Source is CTextBlock block && Equals(block.Cursor, Cursor.Default))
                 block.ClearValue(InputElement.CursorProperty);
         }, RoutingStrategies.Bubble, handledEventsToo: true);
+        var measurement = SessionOpenMeasurement.Rendering;
+        var syntaxStarted = measurement?.ElapsedMs ?? 0;
         var syntax = Syntax.Value;
+        if (measurement is not null) measurement.SyntaxMs += measurement.ElapsedMs - syntaxStarted;
         var plugins = new MdAvPlugins();
         plugins.Plugins.Add(syntax.Plugin);
         viewer.Plugins = plugins;
@@ -73,14 +76,19 @@ internal static class MarkdownMessageRenderer
         {
             // Prepare the text geometry before the syntax pass can unsubscribe this layout hook.
             InstallReadingCode(viewer);
+            var highlightStarted = measurement?.ElapsedMs ?? 0;
             if (ApplySyntaxHighlighting(viewer)) viewer.LayoutUpdated -= layoutUpdated;
+            if (measurement is { Completed: false })
+                measurement.HighlightMs += measurement.ElapsedMs - highlightStarted;
         };
         viewer.LayoutUpdated += layoutUpdated;
         var engine = new MarkdownEngine();
         engine.HyperlinkCommand = new OpenLinkCommand(viewer);
         viewer.Engine = engine;
+        var markdownStarted = measurement?.ElapsedMs ?? 0;
         viewer.Markdown = RejoinBoldAcrossCode(LinkifyBareUrls(markdown));
         ApplyCodeFont(viewer);
+        if (measurement is not null) measurement.MarkdownMs += measurement.ElapsedMs - markdownStarted;
         // The menu a selection earns. Attached here rather than by each caller, so a document is never rendered
         // into a surface where a selection cannot be copied or quoted — the inspector being the surface that would
         // have been forgotten.
