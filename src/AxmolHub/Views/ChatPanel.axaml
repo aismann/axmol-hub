@@ -664,6 +664,19 @@
     <Style Selector="Grid.activity-row.thought Path.activity-status">
       <Setter Property="Stroke" Value="{DynamicResource Hub.TextTertiary}" />
     </Style>
+    <!-- The running row's mark. A call in flight has no verdict, so it wears neither the success tick nor the
+         failure cross — the same quiet ink the thinking row uses, on a circular arrow rather than a check. -->
+    <Style Selector="Grid.activity-row.running Path.activity-status">
+      <Setter Property="Stroke" Value="{DynamicResource Hub.TextTertiary}" />
+    </Style>
+    <!-- What a row says about itself beside its sentence: a command's state while it prints, and how long it ran
+         once it is done. Small and quiet, because both are a footnote to the verb they follow. -->
+    <Style Selector="TextBlock.activity-row-meta">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="8,0,0,0" />
+    </Style>
     <Style Selector="Grid.activity-row TextBlock.activity-row-text">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
@@ -693,6 +706,11 @@
     <Style Selector="Border.file-chip TextBlock.file-chip-add">
       <Setter Property="Foreground" Value="{DynamicResource Hub.Success}" />
       <Setter Property="Margin" Value="5,0,0,0" />
+    </Style>
+    <!-- An exit code that is not zero. The chip keeps its shape and sizes so the row still reads as one line; only
+         the ink changes, which is the same rule the failed row's sentence follows. -->
+    <Style Selector="Border.file-chip.failed TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
     </Style>
     <Style Selector="Border.file-chip TextBlock.file-chip-del">
       <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />

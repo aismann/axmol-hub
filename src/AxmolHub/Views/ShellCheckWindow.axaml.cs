@@ -4781,6 +4781,128 @@ public partial class ShellCheckWindow : Window
                 "执行状态的对勾/八叉缩到 10，安静地待在箭头旁边（实际 " + panel.ActivityRowStatusSizeForCheck + "）");
             chat.DeleteConversation(detailSession.Id);
 
+            // ── a command's card: on the page while it prints, and what it ended with afterwards ──
+            // A command used to leave a status line in the live bubble and nothing in the transcript until it came
+            // back, so a ten-minute build was one row shown after the wait it should have filled. The call is
+            // recorded before it runs, and this card is drawn from that call: the command, the directory it runs
+            // in, the state, and the shell's own lines appended as they arrive. When it ends, the row the transcript
+            // keeps carries the two numbers a person asks for — the exit code and how long it took.
+            var verdictSession = chat.StartConversation();
+            chat.SetWorkspaceRoot(verdictSession.Id, workspace);
+            chat.SetApprovalMode(verdictSession.Id, ToolApprovalModes.Full);
+            chat.OpenConversation(verdictSession.Id);
+            var verdictTurns = chat.ActiveConversation!.Messages;
+            verdictTurns.Add(ChatTurn.User("先编，再跑测试"));
+            verdictTurns.Add(ChatTurn.FunctionCall("call_ok", "run_command", "{\"command\":\"dotnet build\"}"));
+            verdictTurns.Add(ChatTurn.FunctionResult("call_ok", "shell: pwsh · exit: 0\nBuild succeeded",
+                facts: new ToolRunFacts(0, TimeSpan.FromSeconds(5))));
+            verdictTurns.Add(ChatTurn.FunctionCall("call_bad", "run_command", "{\"command\":\"dotnet test\"}"));
+            verdictTurns.Add(ChatTurn.FunctionResult("call_bad", "shell: pwsh · exit: 1\n1 test failed",
+                failed: true, facts: new ToolRunFacts(1, TimeSpan.FromSeconds(42))));
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            panel.SetActivityGroupExpandedForCheck(0, true);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var exitChips = panel.ActivityRowExitChipsForCheck;
+            var rowMetas = panel.ActivityRowMetaForCheck;
+            Check(exitChips.Length == 2 && exitChips[0].Contains('0') && exitChips[1].Contains('1'),
+                "命令结束时把退出码留在那一行上（实际 [" + string.Join(" / ", exitChips) + "]）");
+            Check(rowMetas.Contains("5s") && rowMetas.Contains("42s"),
+                "行尾还写着这条命令花了多久（实际 [" + string.Join(" / ", rowMetas) + "]）");
+            chat.DeleteConversation(verdictSession.Id);
+
+            // ── the card exists while the command is still printing ──
+            // A real process this time, and a slow one on purpose: the whole claim is about the stretch *before*
+            // the result exists, which no finished fixture can stand in for.
+            var printingSession = chat.StartConversation();
+            chat.SetWorkspaceRoot(printingSession.Id, workspace);
+            chat.SetApprovalMode(printingSession.Id, ToolApprovalModes.Full);
+            chat.OpenConversation(printingSession.Id);
+            panel.Reload();
+            var printingShell = CommandShells.ForCurrent();
+            var slowCommand = printingShell.IsPowerShell
+                ? "Write-Output 'first-line-of-build'; Start-Sleep -Seconds 3; Write-Output 'last-line-of-build'"
+                : "echo first-line-of-build; sleep 3; echo last-line-of-build";
+            var printing = new ApprovalChatClient
+            {
+                CallsRemaining = 1,
+                ToolName = "run_command",
+                Arguments = new Dictionary<string, object?> { ["command"] = slowCommand },
+            };
+            chat.ClientOverride = (_, _) => printing;
+            panel.SetInputForCheck("编一下这个工程");
+            await panel.SendComposerForCheck();
+            // The call is filed before the gate, so the first frame of this card may honestly say 「即将执行」 —
+            // what is asserted here is that the card exists at all in that breath, and that it turns into
+            // 「正在执行」 when the tool actually owns the run.
+            await WaitUntilAsync(() => panel.RunningCommandRowShownForCheck, 2000);
+            Check(panel.RunningCommandRowShownForCheck,
+                "命令一开始跑，页面上就有一张卡片，而不是等它结束才有（行「"
+                + panel.RunningCommandRowTextForCheck + "」）");
+            Check(panel.RunningCommandRowTextForCheck.Contains("first-line-of-build", StringComparison.Ordinal),
+                "卡片上带着要跑的那条命令（实际「" + panel.RunningCommandRowTextForCheck + "」）");
+            await WaitUntilAsync(() => panel.RunningCommandRowTextForCheck.Contains(
+                HubStrings.Get("ActivityRowCommandRunning"), StringComparison.Ordinal), 400);
+            Check(panel.RunningCommandRowTextForCheck.Contains(
+                      HubStrings.Get("ActivityRowCommandRunning"), StringComparison.Ordinal),
+                "工具真正拿到这段运行时，卡片说的是「正在执行」（实际「"
+                + panel.RunningCommandRowTextForCheck + "」）");
+            Check(panel.RunningCommandExpandedForCheck,
+                "卡片默认展开：进度就是它存在的理由，藏起来等于没说");
+            // The clock is what tells a silent command from a dead one, so it has to be there before the first line
+            // is: this is the same number the finished row will keep.
+            Check(panel.ActivityRowMetaForCheck.Any(meta => meta.EndsWith('s')),
+                "运行中的卡片带一个计时（实际 [" + string.Join(" / ", panel.ActivityRowMetaForCheck) + "]）");
+            await WaitUntilAsync(() =>
+                panel.RunningCommandOutputForCheck.Contains("first-line-of-build", StringComparison.Ordinal), 600);
+            Check(panel.RunningCommandOutputForCheck.Contains("first-line-of-build", StringComparison.Ordinal),
+                "命令的输出一边跑一边追加进这张卡片（实际「" + panel.RunningCommandOutputForCheck + "」）");
+            // A command that prints and sleeps is longer than the run helper's own one-second budget, so the wait
+            // is the harness's poll loop rather than that helper.
+            await WaitUntilAsync(() => !panel.IsStreamingForCheck, 2000);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.RunningCommandRowShownForCheck,
+                "命令结束后临时卡片让位给正式那一行，页面上不会同时有两条");
+            panel.SetActivityGroupExpandedForCheck(0, true);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.ActivityRowExitChipsForCheck is [var printedExit] && printedExit.Contains('0'),
+                "结束的那一行带着退出码（实际 [" + string.Join(" / ", panel.ActivityRowExitChipsForCheck) + "]）");
+            chat.DeleteConversation(printingSession.Id);
+
+            // ── a call waiting for a decision is not "running" ──
+            // The same command, in a mode that has to ask: the card that owns this stretch is the approval one, and
+            // a row claiming the command had started would say a person's click had already happened.
+            var askingSession = chat.StartConversation();
+            chat.SetWorkspaceRoot(askingSession.Id, workspace);
+            chat.SetApprovalMode(askingSession.Id, ToolApprovalModes.Ask);
+            chat.OpenConversation(askingSession.Id);
+            panel.Reload();
+            var asking = new ApprovalChatClient
+            {
+                CallsRemaining = 1,
+                ToolName = "run_command",
+                Arguments = new Dictionary<string, object?> { ["command"] = "echo hello" },
+            };
+            chat.ClientOverride = (_, _) => asking;
+            panel.SetInputForCheck("跑个 echo");
+            await panel.SendComposerForCheck();
+            await WaitUntilAsync(() => !panel.IsStreamingForCheck);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var parkedCall = chat.ActiveConversation!.Messages.LastOrDefault(turn =>
+                turn.Role == ChatRoles.Assistant && turn.ApprovalState == ChatApprovalStates.Pending);
+            Check(parkedCall is not null && !panel.RunningCommandRowShownForCheck,
+                "等审批的命令不画成「正在执行」：那一格里站着的是提问的卡片（运行中卡片 "
+                + panel.RunningCommandRowShownForCheck + "）");
+            chat.DeleteConversation(askingSession.Id);
+            chat.ClientOverride = savedOverride;
+
             // ── the command preview reads beside its verb, not across the column ──
             // The row laid its label into a star column and the preview after it, so the label ate the slack and the
             // preview landed on the row's right edge — the same second-column problem the expander arrow was moved

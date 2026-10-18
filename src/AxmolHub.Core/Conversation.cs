@@ -125,6 +125,21 @@ public sealed record PlanReference(string? File, string Title, int Chars, int To
 /// </summary>
 public sealed record ChangeLineCounts(int Added, int Removed);
 
+/// <summary>How the command behind a tool result ended, as facts rather than as the tail of a sentence: the exit
+/// code the shell gave back, and how long the run's tool bracket was open.
+///
+/// <para>It exists because the result text already says <c>exit: 0</c> in a line written for the <i>model</i>, and a
+/// card that parsed it back out would be a view reading prose as data — the failure mode that turns one wording
+/// change into a silently blank chip. Recorded when it is known and null otherwise, which is the difference
+/// between a command that ended by itself and one a person stopped, asked about, or that never started.</para>
+///
+/// <para>Both halves are stamped in the same breath, when the call ends, so a reader never has to invent a meaning
+/// for half a record — and neither half is a guess: the code is what the shell reported, the span is what the run
+/// measured around the call. Display-only: the request boundary writes from the turn's own text and never reads
+/// this, so it costs no tokens.</para>
+/// </summary>
+public sealed record ToolRunFacts(int? ExitCode, TimeSpan? Elapsed);
+
 /// <summary>
 /// What one answer <b>cost</b>, as the endpoint itself reported it — the sibling of the context meter, which
 /// says how much of the window a conversation fills and says nothing about what anybody paid.
@@ -285,6 +300,13 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// remember a search belongs to the service that ran it.</para></summary>
     public string? WebSearch { get; init; }
 
+    /// <summary>What the command behind this result ended with, when it was a command that ended by itself — the
+    /// exit code and how long it ran. Null on every turn that is not a landed <c>run_command</c>, on a result a
+    /// person answered instead of a process (a refusal, a skipped question), and on every session file written
+    /// before this existed, which still has to load. See <see cref="ToolRunFacts"/> for why it is a record rather
+    /// than one number or two fields.</summary>
+    public ToolRunFacts? ToolFacts { get; init; }
+
     /// <summary>Images the user attached to this turn, in the order they were added, each one named by the file
     /// the session's image directory holds it under. The default is empty rather than null because a conversation
     /// written before attachments existed has no such property and still has to load.</summary>
@@ -329,12 +351,14 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// <summary>A tool's answer. <paramref name="images"/> is for the one tool whose result <i>is</i> a picture:
     /// the name is recorded on the result so the transcript says what was captured, and the request boundary turns
     /// it into the user-role message that carries the bytes, because a <c>tool</c> message cannot hold an image.</summary>
-    public static ChatTurn FunctionResult(string callId, string text, bool failed = false, IReadOnlyList<ChatImage>? images = null) =>
+    public static ChatTurn FunctionResult(string callId, string text, bool failed = false,
+        IReadOnlyList<ChatImage>? images = null, ToolRunFacts? facts = null) =>
         new(ChatRoles.Tool, text, DateTimeOffset.Now)
         {
             ToolCallId = callId,
             ToolFailed = failed,
             Images = images ?? [],
+            ToolFacts = facts,
         };
 }
 

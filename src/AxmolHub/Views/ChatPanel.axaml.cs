@@ -386,6 +386,15 @@ public partial class ChatPanel : UserControl
         {
             if (_live is { } live && live.Run.ConversationId == conversationId) RefreshLive(live);
         };
+        // A command that printed another line. Its card is not a turn and not a token: the transcript grows nothing
+        // until the command ends, so what changes is the text inside one row that is already on screen. Refreshed
+        // from the run rather than rebuilt, and guarded by the session for the reason the two events above are — a
+        // build running in a window nobody is looking at must not paint into this one.
+        _chat.ToolOutputChanged += conversationId =>
+        {
+            if (_runningCommand is not { } card || card.ConversationId != conversationId) return;
+            RefreshRunningCommand(card, _chat.RunFor(conversationId));
+        };
         // A search the endpoint ran for itself: no card, no call row, nothing the person can act on — so the one
         // status line the bubble already has is where the fact belongs. Same session guard as the tool row above,
         // for the same reason: a reply running out of sight must not rewrite the line of the one on screen.
@@ -2299,6 +2308,10 @@ public partial class ChatPanel : UserControl
         if (_live is { } attached && (run is not { IsStreaming: true } || attached.Run != run))
             CloseLive();
         if (_live is { } held) MessageFlow.Children.Remove(held.Row);
+        // The command card comes off for the same reason and goes back on at the foot, after the stored rows: a
+        // command printing while the transcript is rebuilt must not leave its card stranded above the rows that
+        // explain it. The object survives the removal, so an opened panel and a scroll position survive it too.
+        if (_runningCommand is { } printing) MessageFlow.Children.Remove(printing.Shell);
 
         var visible = new List<(int Index, ChatTurn Turn, string? ToolName)>();
         if (conversation is not null)
@@ -2371,6 +2384,7 @@ public partial class ChatPanel : UserControl
             _stickToBottom = true;
             _openReusedRows = true;
             EmptyState.IsVisible = false;
+            SyncRunningCommandRow(conversation.Id, run);
             if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
             RenderNotice();
             ScrollToEndIfSticky();
@@ -2395,6 +2409,7 @@ public partial class ChatPanel : UserControl
             _pendingMarkdownRows = [];
             _openGroup = null;
             EmptyState.IsVisible = run is not { IsStreaming: true };
+            SyncRunningCommandRow(conversation?.Id, run);
             if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
             RenderNotice();
             UpdateScrollAffordance();
@@ -2538,6 +2553,7 @@ public partial class ChatPanel : UserControl
         _renderedTurns = [.. visible.Select(slot => slot.Turn)];
 
         EmptyState.IsVisible = false;
+        SyncRunningCommandRow(conversation.Id, run);
         if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
         RenderNotice();
         // The rows that just went in have not been measured yet, so this is posted: a view that was following
@@ -3447,6 +3463,302 @@ public partial class ChatPanel : UserControl
         };
     }
 
+    // ── the command card: the call that is working right now ──
+    // A transcript used to say nothing at all until a call came back: the row it grows is drawn from a result, so
+    // the whole of a ten-minute build was a status line in the live bubble and nothing a person could read. This
+    // card is that missing stretch — the call itself, the directory it runs in, the state, and the shell's own
+    // lines — and it is an ephemeral tail like the live bubble beside it, not a transcript row: it exists only
+    // while a command is in flight and it is drawn in the same shape and classes as the row the finished exchange
+    // gets, so what the person watched and what the transcript keeps are one surface in two tenses.
+
+    /// <summary>The command card at the foot of the reply, while one is printing. One at a time because that is what
+    /// the tier table allows: a command changes state, so a second one waits for the first.</summary>
+    private RunningCommandRow? _runningCommand;
+
+    /// <summary>Cards a person folded shut while the command printed. Held across a rebuild — a repaint of the
+    /// transcript must not re-open a panel somebody just closed — and dropped when the card is.</summary>
+    private readonly HashSet<string> _collapsedRunningCommands = new(StringComparer.Ordinal);
+
+    /// <summary>One command card, and the pieces a repaint has to reach without rebuilding it.</summary>
+    private sealed class RunningCommandRow
+    {
+        public required string ConversationId { get; init; }
+        public required string CallId { get; init; }
+        public required Border Shell { get; init; }
+        public required ToggleButton Toggle { get; init; }
+        public required Border Detail { get; init; }
+        public required TextBlock State { get; init; }
+        public required TextBlock Elapsed { get; init; }
+        public required TextBlock Output { get; init; }
+        public required ScrollViewer OutputScroll { get; init; }
+        public required TextBlock Dropped { get; init; }
+
+        /// <summary>The output text last written, so a refresh that finds the same lines does not reassign a
+        /// TextBlock — which would re-measure a box the person may be reading.</summary>
+        public string Painted { get; set; } = "";
+
+        /// <summary>Whether the panel is open. The card starts open: a command's progress is the whole reason it
+        /// exists, and hiding it behind a click would be the same silence in a new shape. It goes back to the
+        /// finished row's own memory when the card is dropped.</summary>
+        public bool Expanded { get; set; } = true;
+
+        /// <summary>Whether the output box follows its newest line. Its own copy of the transcript's stick rule,
+        /// for the same reason the thinking box has one.</summary>
+        public bool Stick { get; set; } = true;
+    }
+
+    /// <summary>Puts the command card at the foot of the reply, refreshes the one already there, or takes it away.
+    /// Called wherever the stored rows are laid down, because they are what it has to sit under.</summary>
+    private void SyncRunningCommandRow(string? conversationId, ConversationRun? run)
+    {
+        if (PendingCommandCall(conversationId, run) is not { } call)
+        {
+            ForgetRunningCommand();
+            return;
+        }
+
+        var callId = call.ToolCallId!;
+        if (_runningCommand is not { } card || card.ConversationId != conversationId
+            || !string.Equals(card.CallId, callId, StringComparison.Ordinal))
+        {
+            ForgetRunningCommand();
+            card = BuildRunningCommandRow(conversationId!, call);
+            _runningCommand = card;
+        }
+
+        RefreshRunningCommand(card, run);
+        MessageFlow.Children.Add(card.Shell);
+    }
+
+    /// <summary>Drops the card, keeping the one thing about it a person chose: an open panel becomes the finished
+    /// row's open panel, because the person was reading that output when the command ended.</summary>
+    private void ForgetRunningCommand()
+    {
+        if (_runningCommand is not { } card) return;
+        _runningCommand = null;
+        MessageFlow.Children.Remove(card.Shell);
+        _collapsedRunningCommands.Remove(card.CallId);
+        if (card.Expanded) RememberFold(_expandedRows, card.ConversationId, card.CallId, true);
+    }
+
+    /// <summary>The command this conversation is running right now, or null.
+    ///
+    /// <para>Three facts have to agree before a card is drawn, and each of them is a lie avoided. The call must have
+    /// no result yet, or the finished row is the surface and this one would duplicate it. It must not be waiting for
+    /// a decision: an approval card is already asking, and "running" over it would say a person's click had already
+    /// happened. And the run must actually own it — a stopped run or a restart leaves unanswered calls behind, and a
+    /// card claiming a command is printing for a run that is gone would outlive the process it named.</para>
+    /// </summary>
+    private ChatTurn? PendingCommandCall(string? conversationId, ConversationRun? run)
+    {
+        if (conversationId is null || run is null) return null;
+        var conversation = _chat.ActiveConversation;
+        if (conversation is null || !string.Equals(conversation.Id, conversationId, StringComparison.Ordinal))
+            return null;
+
+        var messages = conversation.Messages;
+        var answered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var turn in messages)
+        {
+            if (turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 } id) answered.Add(id);
+        }
+
+        // Newest first, and an unanswered call the run is actually inside wins over a newer one that is only
+        // recorded: a response can ask for two commands, both brackets open at the same gate, and the card has to
+        // follow the one printing rather than the one the model happened to name last.
+        ChatTurn? newest = null;
+        for (var index = messages.Count - 1; index >= 0; index--)
+        {
+            var turn = messages[index];
+            if (turn.Role != ChatRoles.Assistant || turn.ToolCallId is not { Length: > 0 } callId) continue;
+            if (!string.Equals(turn.ToolName, WorkspaceTools.RunCommandTool, StringComparison.Ordinal)) continue;
+            if (answered.Contains(callId)) continue;
+            if (turn.ApprovalState == ChatApprovalStates.Pending) return null;
+            if (run.IsCallRunning(callId)) return turn;
+            newest ??= turn;
+        }
+
+        // Nothing has started yet: the card is still owed, because the call is filed and the run is between a
+        // request and its first tool. Outside a run there is nothing to say, and that is the answer that keeps a
+        // stopped session's unanswered call from claiming a command is printing.
+        return newest is not null && run.IsStreaming ? newest : null;
+    }
+
+    /// <summary>The card itself: the same row a finished exchange gets, with the state and the clock where that row
+    /// keeps its chips, and the output underneath in the box the finished row's detail uses.
+    /// </summary>
+    private RunningCommandRow BuildRunningCommandRow(string conversationId, ChatTurn call)
+    {
+        var command = ArgField(call.ToolArguments, "command", "cmd") ?? "";
+        var grid = new Grid
+        {
+            Classes = { "activity-row", "running" },
+            ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto"),
+        };
+        // The status slot holds the mark, and the arrow trades places with it on hover — the same two glyphs in one
+        // cell the finished row uses, so nothing moves sideways when this row becomes that one. The mark is the
+        // circular arrow rather than a tick or a cross: a call in flight has no verdict yet, and either of the two
+        // would be a claim about how it ends.
+        grid.Children.Add(new Avalonia.Controls.Shapes.Path
+        {
+            Classes = { "activity-status" },
+            Data = ThemeGeometry("Hub.Icon.Refresh"),
+        });
+        grid.Children.Add(new Avalonia.Controls.Shapes.Path
+        {
+            Classes = { "activity-row-chevron" },
+            Data = ThemeGeometry("Hub.Icon.ChevronRight"),
+        });
+
+        var action = new TextBlock { Classes = { "activity-row-text" }, Text = DescribeToolCall(call) };
+        Grid.SetColumn(action, 1);
+        grid.Children.Add(action);
+
+        if (!string.IsNullOrWhiteSpace(command))
+        {
+            var oneLine = command.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            var chip = new Border
+            {
+                Classes = { "file-chip", "inline-chip" },
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Child = new TextBlock
+                {
+                    Text = oneLine.Length > CommandPreviewCharacters
+                        ? oneLine[..CommandPreviewCharacters] + "…"
+                        : oneLine,
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+            };
+            Grid.SetColumn(chip, 2);
+            grid.Children.Add(chip);
+        }
+
+        var state = new TextBlock { Classes = { "activity-row-meta" } };
+        Grid.SetColumn(state, 3);
+        grid.Children.Add(state);
+
+        var elapsed = new TextBlock { Classes = { "activity-row-meta" } };
+        Grid.SetColumn(elapsed, 4);
+        grid.Children.Add(elapsed);
+
+        // The detail: where the command runs, what it was asked with, and what it has said so far. The workspace is
+        // the session's own root — the tool runs in it, and naming it here is what makes a command's effect on a
+        // directory legible before it prints anything.
+        var body = new StackPanel { Orientation = Orientation.Vertical };
+        body.Children.Add(new TextBlock
+        {
+            Classes = { "activity-detail-label" },
+            Text = HubStrings.Get("ActivityDetailWorkspace"),
+        });
+        body.Children.Add(BoundedDetailScroll(
+            new TextBlock { Classes = { "activity-detail-body" }, Text = _chat.ActiveConversation?.WorkspaceRoot ?? "" },
+            60));
+        body.Children.Add(new TextBlock
+        {
+            Classes = { "activity-detail-label" },
+            Text = HubStrings.Get("ActivityDetailInput"),
+        });
+        body.Children.Add(BoundedDetailScroll(FormatToolArguments(call), 120));
+        body.Children.Add(new TextBlock
+        {
+            Classes = { "activity-detail-label" },
+            Text = HubStrings.Get("ActivityDetailCommandOutput"),
+        });
+        var output = new TextBlock { Classes = { "activity-detail-body" } };
+        var outputScroll = BoundedDetailScroll(output, 180);
+        body.Children.Add(outputScroll);
+        var dropped = new TextBlock
+        {
+            Classes = { "activity-detail-label" },
+            IsVisible = false,
+        };
+        body.Children.Add(dropped);
+
+        var detail = new Border
+        {
+            Classes = { "activity-detail" },
+            Child = body,
+        };
+
+        var toggle = new ToggleButton { Classes = { "activity-row-toggle" }, Content = grid };
+        var shell = new Border
+        {
+            Classes = { "activity-row-shell" },
+            Child = new StackPanel { Spacing = 0, Children = { toggle, detail } },
+        };
+
+        var callId = call.ToolCallId!;
+        var expanded = !_collapsedRunningCommands.Contains(callId);
+        detail.IsVisible = expanded;
+        toggle.IsChecked = expanded;
+        // Driven off IsChecked, never Click, exactly as the finished row is: a raised Click does not flip a
+        // ToggleButton, so a check could not drive it and half the wiring would be dead.
+        toggle.IsCheckedChanged += (_, _) =>
+        {
+            var open = toggle.IsChecked == true;
+            detail.IsVisible = open;
+            if (_runningCommand is { } current && string.Equals(current.CallId, callId, StringComparison.Ordinal))
+                current.Expanded = open;
+            if (open) _collapsedRunningCommands.Remove(callId);
+            else _collapsedRunningCommands.Add(callId);
+        };
+
+        var card = new RunningCommandRow
+        {
+            ConversationId = conversationId,
+            CallId = callId,
+            Shell = shell,
+            Toggle = toggle,
+            Detail = detail,
+            State = state,
+            Elapsed = elapsed,
+            Output = output,
+            OutputScroll = outputScroll,
+            Dropped = dropped,
+            Expanded = expanded,
+        };
+        // Wired after the card exists, because what it records is a field of the card: a command that keeps printing
+        // must not pull the box away from a person who scrolled up to read what went past.
+        outputScroll.ScrollChanged += (_, _) => card.Stick =
+            outputScroll.Offset.Y + outputScroll.Viewport.Height >= outputScroll.Extent.Height - StickEpsilon;
+        return card;
+    }
+
+    /// <summary>Redraws one card from the run: the state, the clock, and the lines printed so far.
+    ///
+    /// <para>Refreshed in place rather than rebuilt because a build prints faster than a transcript can be laid
+    /// down: the row, the open panel and the reading position all survive a line, and only two TextBlocks change.
+    /// </para></summary>
+    private void RefreshRunningCommand(RunningCommandRow card, ConversationRun? run)
+    {
+        var running = run?.IsCallRunning(card.CallId) == true;
+        card.State.Text = HubStrings.Get(running ? "ActivityRowCommandRunning" : "ActivityRowCommandQueued");
+        card.Elapsed.Text = running && run!.ToolElapsed(card.CallId) is { } spent ? FormatDuration(spent) : "";
+        card.Elapsed.IsVisible = card.Elapsed.Text.Length > 0;
+
+        IReadOnlyList<string> lines = [];
+        var dropped = 0;
+        if (run is not null) (lines, dropped) = run.CommandOutputOf(card.CallId);
+        var text = lines.Count == 0
+            ? HubStrings.Get("ActivityDetailCommandSilent")
+            : string.Join("\n", lines);
+        if (!string.Equals(text, card.Painted, StringComparison.Ordinal))
+        {
+            card.Painted = text;
+            card.Output.Text = text;
+            // The box follows the newest line only while the reader has left it at the bottom — a command whose
+            // output pushed itself up under somebody reading the top is the one thing this box must not do.
+            if (card.Stick) FollowNewestLine(card.OutputScroll);
+        }
+
+        card.Dropped.Text = dropped > 0
+            ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ActivityDetailCommandDroppedFormat"), dropped)
+            : "";
+        card.Dropped.IsVisible = dropped > 0;
+    }
+
     private static Border BuildActivityRowDetail(ChatTurn? call, ChatTurn result)
     {
         var body = new StackPanel
@@ -3545,14 +3857,21 @@ public partial class ChatPanel : UserControl
     {
         var command = call?.ToolName == "run_command" ? ArgField(call.ToolArguments, "command", "cmd") : null;
         var showsCommand = !string.IsNullOrWhiteSpace(command);
+        // What a command ended with, when anything recorded it: the exit code and how long it ran. They trail the
+        // preview rather than replacing it — one line still reads in order — and they are absent for every other
+        // tool, because a read has no exit code and a duration for one answers nothing anybody asked.
+        var facts = result.ToolFacts;
+        var marks = facts is null ? 0 : (facts.ExitCode is null ? 0 : 1) + (facts.Elapsed is null ? 0 : 1);
         // The preview owns the star column, so it reads immediately after the verb. A star on the label is what
         // used to eat all the slack and pin the preview to the row's right edge, which made the eye cross the
         // whole column to finish the sentence. Without a preview the label keeps the star, because that is where
         // a long 「读取 <path>」 gets trimmed.
+        var columns = showsCommand ? "Auto,Auto,*" : "Auto,*";
+        for (var trailing = 0; trailing < marks; trailing++) columns += ",Auto";
         var grid = new Grid
         {
             Classes = { "activity-row" },
-            ColumnDefinitions = new ColumnDefinitions(showsCommand ? "Auto,Auto,*" : "Auto,*"),
+            ColumnDefinitions = new ColumnDefinitions(columns),
         };
         if (result.ToolFailed) grid.Classes.Add("failed");
 
@@ -3596,6 +3915,41 @@ public partial class ChatPanel : UserControl
             };
             Grid.SetColumn(chip, 2);
             grid.Children.Add(chip);
+        }
+
+        // The verdict of a command, in the two numbers a person would ask for. The code is drawn as a chip like the
+        // command it follows, and takes the danger ink when it is not zero: the row already carries a red mark for a
+        // failed call, and a `0` in green beside one would be the row disagreeing with itself.
+        var trailingColumn = showsCommand ? 3 : 2;
+        if (facts?.ExitCode is { } exitCode && call is not null
+            && string.Equals(call.ToolName, WorkspaceTools.RunCommandTool, StringComparison.Ordinal))
+        {
+            var exit = new Border
+            {
+                // inline-chip for the layout it shares with the command preview, exit-chip so a check can tell the
+                // two apart in the same row.
+                Classes = { "file-chip", "inline-chip", "exit-chip" },
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Child = new TextBlock
+                {
+                    Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                        HubStrings.Get("ActivityRowExitCodeFormat"), exitCode),
+                },
+            };
+            if (exitCode != 0) exit.Classes.Add("failed");
+            Grid.SetColumn(exit, trailingColumn++);
+            grid.Children.Add(exit);
+        }
+
+        if (facts?.Elapsed is { } elapsed)
+        {
+            var spent = new TextBlock
+            {
+                Classes = { "activity-row-meta" },
+                Text = FormatDuration(elapsed),
+            };
+            Grid.SetColumn(spent, trailingColumn);
+            grid.Children.Add(spent);
         }
 
         return grid;
@@ -4598,6 +4952,9 @@ public partial class ChatPanel : UserControl
             current.Frame++;
             current.Elapsed.Text = FormatDuration(current.Run.Elapsed);
             RefreshGlyphPhase(current);
+            // The command card's clock ticks with the bubble's rather than on one of its own: it is a number about
+            // the same run, and a second timer would only be a second thing to stop.
+            if (_runningCommand is { } printing) RefreshRunningCommand(printing, current.Run);
         };
         _live = bubble;
         bubble.Timer.Start();
@@ -5267,6 +5624,45 @@ public partial class ChatPanel : UserControl
             .FirstOrDefault(border => border.Classes.Contains("inline-chip")) is { } chip
             ? Grid.GetColumn(chip)
             : -1;
+
+    // ── the command card, as a check can see it ──
+    // The card is not a turn: it is on the page only while a call is working, so the check that owns this must
+    // read it through the panel rather than through the transcript.
+
+    internal bool RunningCommandRowShownForCheck
+        => _runningCommand is { } card && MessageFlow.Children.Contains(card.Shell);
+
+    /// <summary>Everything the row's collapsed line says, joined: the verb, the command chip, the state and the
+    /// clock, in the order they read.</summary>
+    internal string RunningCommandRowTextForCheck => _runningCommand is { } card
+        ? string.Join(" · ", card.Shell.GetLogicalDescendants().OfType<TextBlock>()
+            .Select(text => text.Text ?? "").Where(text => text.Length > 0))
+        : "";
+
+    internal string RunningCommandOutputForCheck => _runningCommand?.Output.Text ?? "";
+
+    internal bool RunningCommandExpandedForCheck => _runningCommand?.Detail.IsVisible == true;
+
+    internal void SetRunningCommandExpandedForCheck(bool expanded)
+    {
+        if (_runningCommand is { } card) card.Toggle.IsChecked = expanded;
+    }
+
+    /// <summary>The exit code a finished command reports, in the order the rows were drawn. Empty unless a command
+    /// ended by itself and the number reached the turn.</summary>
+    internal string[] ActivityRowExitChipsForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+            .Where(border => border.Classes.Contains("exit-chip"))
+            .Select(border => border.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault()?.Text ?? "")
+            .ToArray();
+
+    /// <summary>The small trailing facts a row carries beside its sentence — a running command's state and clock,
+    /// a finished one's duration — in document order.</summary>
+    internal string[] ActivityRowMetaForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+            .Where(text => text.Classes.Contains("activity-row-meta"))
+            .Select(text => text.Text ?? "")
+            .ToArray();
 
     /// <summary>The gap between a piece of trailing text and the sentence it belongs to, and the empty row still
     /// left to its right. Read as a pair, because neither half separates the layouts on its own: a pinned chip has

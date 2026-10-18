@@ -75,6 +75,17 @@ public sealed class ChatWorkspace : IDisposable
     /// updates belongs to the session being looked at, and a background session's tool must not rewrite it.</summary>
     internal event Action<string, string, bool>? ToolActivityChanged;
 
+    /// <summary>A command in this session printed another line, or started, or finished. Its own event rather than
+    /// a repaint through <see cref="Changed"/> because the card that carries those lines is one row on screen and a
+    /// reload would rebuild the whole transcript to change a text box inside it — while a build is printing, the
+    /// reload would cost more than the command.
+    ///
+    /// <para>The session id travels for the same reason the tool event above carries one: a command running in a
+    /// session nobody is looking at must not touch the transcript of the one on screen. The line itself does not
+    /// travel — the view reads the run's buffer, so a coalesced raise can never lose text the way a dropped line
+    /// would.</para></summary>
+    internal event Action<string>? ToolOutputChanged;
+
     /// <summary>The endpoint reported a search it ran for itself in this session. No card, no result turn, no call
     /// id the person can act on — which is exactly why it needs its own line: the alternative is an answer that
     /// arrived from somewhere the interface never mentioned. The session id travels for the same reason as the
@@ -624,7 +635,12 @@ public sealed class ChatWorkspace : IDisposable
                 // make. The question goes up as a card above the composer and the tool body waits for the answer —
                 // which is the one road where the run's deadlines are already standing down, because the bracket a
                 // running tool opens disarms them for exactly as long as this can take.
-                (stalled, command) => AskAboutStalledProcessAsync(conversationId, stalled, command)),
+                (stalled, command) => AskAboutStalledProcessAsync(conversationId, stalled, command),
+                // The command's own lines while it prints, and the code it ended with. Both are display-only and
+                // both are queued on the conversation rather than held on the scope, for the reason the frames are:
+                // a tool body cannot name its call, and the card they feed is drawn from the run the app owns.
+                line => RecordCommandOutput(conversationId, line),
+                code => RecordCommandExit(conversationId, code)),
             // Null on a session file written before the setting existed reads as allowed, which is the only
             // honest reading of "nobody ever turned it off". Read here rather than at the call site because the
             // tool list is assembled once per request and a parked question can be answered long after.
@@ -695,6 +711,74 @@ public sealed class ChatWorkspace : IDisposable
         return _changeLines.TryGetValue(conversationId, out var queue)
                && queue.TryDequeue(out var lines)
             ? lines
+            : null;
+    }
+
+    /// <summary>How much a burst of command output is allowed to repaint. A build prints hundreds of lines a second
+    /// and no reader can take them at that rate, so the raises are coalesced — the view reads the run's buffer
+    /// rather than the line, which is what makes a skipped raise cost nothing but the moment it would have painted
+    /// on. Nothing is lost by it: the next line repaints, and a finished command repaints through
+    /// <see cref="Changed"/> with its whole output in the transcript.</summary>
+    private const int ToolOutputCadenceMs = 100;
+
+    private readonly ConcurrentDictionary<string, long> _toolOutputPosted = new();
+
+    /// <summary>One line of the command now printing, from the shell's own read pump.
+    ///
+    /// <para>Filed on the run rather than here because the run is what the card reads: it outlives the individual
+    /// approvals a batch may need, and it is discarded the moment the answer ends — so the live text of a command
+    /// nobody can see any more goes with it instead of accumulating in this class for the life of the process.</para>
+    /// </summary>
+    private void RecordCommandOutput(string conversationId, string line)
+    {
+        if (RunFor(conversationId) is not { } run || !run.AppendToolOutput(line)) return;
+        var now = Environment.TickCount64;
+        if (_toolOutputPosted.TryGetValue(conversationId, out var posted) && now - posted < ToolOutputCadenceMs)
+            return;
+        _toolOutputPosted[conversationId] = now;
+        NoteToolRun(conversationId);
+    }
+
+    /// <summary>The card standing for this session's running call has something new to say — a line, or the fact
+    /// that the tool now owns the run at all. Raised on the UI thread and coalesced per line by the caller, because
+    /// what the view does with it is set two TextBlocks rather than rebuild a row.</summary>
+    private void NoteToolRun(string conversationId) => RaiseOnUi(() => ToolOutputChanged?.Invoke(conversationId));
+
+    /// <summary>The exit code of a command this conversation just ran, waiting for the result turn that has to
+    /// carry it. Queued rather than handed straight to the turn for the same reason the frames are: the shell
+    /// finishes on its own thread, and the turn is written on the UI thread after the model's loop hands the result
+    /// back — which for an approved call is a later scope entirely.</summary>
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<int>> _commandExits = new();
+
+    private void RecordCommandExit(string conversationId, int exitCode)
+        => _commandExits.GetOrAdd(conversationId, _ => new ConcurrentQueue<int>()).Enqueue(exitCode);
+
+    /// <summary>Take the exit code the call being answered reported, or nothing when it reported none.
+    ///
+    /// <para>Drained on every completion, not only on a command's: a code that outlived its turn would be stamped
+    /// on the next command in the session, which is a number attached to the wrong run with nothing on screen to
+    /// say so. Only the last one is kept — the one road that runs a command twice is the stall answer, and the
+    /// result being written is the second run's.</para>
+    /// </summary>
+    private int? TakeCommandExit(string conversationId, string? toolName)
+    {
+        if (!_commandExits.TryGetValue(conversationId, out var queue)) return null;
+        int? last = null;
+        while (queue.TryDequeue(out var code)) last = code;
+        return string.Equals(toolName, WorkspaceTools.RunCommandTool, StringComparison.Ordinal) ? last : null;
+    }
+
+    /// <summary>The two facts a command's result carries: the code the shell reported and the span its bracket was
+    /// open. Null for every other tool, and for a call whose bracket never opened — a refused call, or one the turn
+    /// ended before delivering — because a duration for work that did not happen is a claim nobody measured.
+    ///
+    /// <para>The exit code is drained on every completion, whatever the tool answered: it is a queue, and a code
+    /// that outlived its call would otherwise be stamped on the next command in the session.</para></summary>
+    private ToolRunFacts? CommandFacts(string conversationId, string? toolName, TimeSpan? elapsed)
+    {
+        var exitCode = TakeCommandExit(conversationId, toolName);
+        return string.Equals(toolName, WorkspaceTools.RunCommandTool, StringComparison.Ordinal) && elapsed is { } span
+            ? new ToolRunFacts(exitCode, span)
             : null;
     }
 
@@ -4588,11 +4672,20 @@ public sealed class ChatWorkspace : IDisposable
     {
         var result = ToolApprovalResults.Unavailable;
         var failed = true;
+        // How long the call itself took, when it ran at all. Reading it off the bracket rather than off a stopwatch
+        // started here keeps one clock for both doors: a command the mode allowed and one a person approved are
+        // measured by the same code, so the number the card counted is the number the transcript keeps.
+        TimeSpan? elapsed = null;
         if (ChatTools.Find(call.Name, call.Mode, scope) is { } tool)
         {
             // The same bracket the loop puts around a call it lets run: an approved build is exactly as long as
             // an unapproved one, and the deadline restarted above has nothing to measure until this comes back.
-            run.BeginTool();
+            // It is named because this door runs a command too: an approved one prints on the same card while it
+            // works and keeps the same exit code afterwards, so the two paths cannot disagree about what happened.
+            run.BeginTool(call.CallId, call.Name);
+            // Same line the loop's gate sends: an approved call's card turns from 「即将执行」 into 「正在执行」 when
+            // this door starts it, and nothing else would say so until the command's first printed line.
+            NoteToolRun(run.ConversationId);
             try
             {
                 var arguments = System.Text.Json.JsonSerializer
@@ -4609,7 +4702,7 @@ public sealed class ChatWorkspace : IDisposable
             {
                 // Stopped while the approved call was running. The call gets no result turn, and the next
                 // reply closes it — which is the same path a restart mid-call takes.
-                run.EndTool();
+                run.EndTool(call.CallId);
                 CompleteRun(run, RunResult.Cancelled, run.LiveText.Length > 0, "ChatCancelled", false, null);
                 return;
             }
@@ -4618,13 +4711,14 @@ public sealed class ChatWorkspace : IDisposable
                 result = "Tool failed: " + ex.Message;
             }
 
-            run.EndTool();
+            elapsed = run.EndTool(call.CallId);
         }
 
         // Taken here, ahead of the UI hop, for the same reason the frames are: the queue is the tool's own thread
         // handing something to this thread, and a drain inside the update would be a drain that can be retried.
         var lines = TakeWriteTally(run.ConversationId, call.Name, result);
-        var turn = ChatTurn.FunctionResult(call.CallId, result, failed, TakeFrames(run.ConversationId));
+        var turn = ChatTurn.FunctionResult(call.CallId, result, failed, TakeFrames(run.ConversationId),
+            CommandFacts(run.ConversationId, call.Name, elapsed));
         // "批准" and not "允许": this call was answered by a person, and the daily log is the only record that
         // keeps the two apart once the card has folded into a line.
         run.RecordToolOutcome($"{call.Name}（{(failed ? "失败" : "批准")}）");
@@ -5392,12 +5486,15 @@ public sealed class ChatWorkspace : IDisposable
                      ?? ChatClientFactory.Create(request.Provider, request.ModelName, reasoning,
                          onRetryWait: (attempt, delay) => NoteRetryWait(run, attempt, delay));
         var pipeline = new ChatPipeline(client, reasoning);
-        // How many tool brackets each response has opened, counted per batch. A response that parks stops at its
-        // head call, and any call the mode allowed *ahead* of it opened its bracket on the way to that decision and
-        // is never delivered: nothing else will close it, and a run still holding one has its inactivity deadline
-        // disarmed around a tool that stopped existing when the card went up. Calls behind the parked one are
-        // delivered normally and close their own bracket, so only what is skipped is counted out here.
-        var brackets = new Dictionary<string, int>(StringComparer.Ordinal);
+        // Which tool brackets each response has opened, by batch. A response that parks stops at its head call, and
+        // any call the mode allowed *ahead* of it opened its bracket on the way to that decision and is never
+        // delivered: nothing else will close it, and a run still holding one has its inactivity deadline disarmed
+        // around a tool that stopped existing when the card went up. Calls behind the parked one are delivered
+        // normally and close their own bracket, so only what is skipped is released out here.
+        //
+        // The call ids rather than a count: a bracket is now also the clock a running command is measured on, so
+        // closing one has to name the call it belongs to — a counter cannot say which of the batch was abandoned.
+        var brackets = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         return pipeline.SendAsync(
             request.Provider,
             request.History,
@@ -5415,8 +5512,16 @@ public sealed class ChatWorkspace : IDisposable
                 var group = info.BatchId ?? info.CallId;
                 if (verdict == ChatPipeline.ToolGateOutcome.Allow)
                 {
-                    run.BeginTool();
-                    brackets[group] = brackets.GetValueOrDefault(group) + 1;
+                    // The call id and the tool's name go with the bracket: the first is what the card follows while
+                    // the call works and what the result's duration is stamped under, the second is what tells the
+                    // run that the lines arriving from the shell belong to this call.
+                    run.BeginTool(info.CallId, info.Name);
+                    if (!brackets.TryGetValue(group, out var opened)) brackets[group] = opened = [];
+                    opened.Add(info.CallId);
+                    // The card for this call was drawn while the gate was still deciding, so it is told the tool
+                    // owns the run now: its state stops saying 「即将执行」 and its clock starts. Unconditional, not
+                    // coalesced — this is the one line of its life that a second of silence would otherwise hide.
+                    NoteToolRun(run.ConversationId);
                     return verdict;
                 }
 
@@ -5425,7 +5530,7 @@ public sealed class ChatWorkspace : IDisposable
                     // not running either. Their brackets opened at their own verdict and nothing else will close
                     // them; releasing them here is what keeps the deadline measuring the wait for the model rather
                     // than a tool that stopped existing when the card went up.
-                    for (var index = 0; index < held; index++) run.EndTool();
+                    foreach (var abandoned in held) run.EndTool(abandoned);
                 return verdict;
             },
             // Which calls of a response may start before their siblings' answers land. The tier table answers it,
@@ -5466,18 +5571,24 @@ public sealed class ChatWorkspace : IDisposable
                 // turn is what lets the request boundary hand them to the model as the next user message. The line
                 // count is claimed in the same breath, off the same thread, for the same reason.
                 var lines = TakeWriteTally(run.ConversationId, info.Name, result);
-                var turn = ChatTurn.FunctionResult(info.CallId, result, failed, TakeFrames(run.ConversationId));
+                // The tool is off the run: the deadline counts again from now, and from before the UI hop for the
+                // same reason the start gives it. Closing the bracket here rather than after the turn is also what
+                // lets the result carry its own duration — the bracket measures the call rather than the answer,
+                // and it closes exactly once, so a number stamped here is the one the card counted while it ran.
+                var elapsed = run.EndTool(info.CallId);
+                var turn = ChatTurn.FunctionResult(info.CallId, result, failed, TakeFrames(run.ConversationId),
+                    CommandFacts(run.ConversationId, info.Name, elapsed));
                 run.RecordToolOutcome($"{info.Name}（{OutcomeWord(failed, result)}）");
                 // The refusal that ended the loop says so in its own first words — the one place that knows
                 // while it is still true. The stream ends with no text after it, and the ending branch reads
                 // the flag to name the reason instead of blaming the model's silence.
                 if (result.StartsWith(ToolSpinGuard.TerminationMarker, StringComparison.Ordinal))
                     run.NoteSpinStopped();
-                // The tool is off the run: the deadline counts again from now, and from before the UI hop for the
-                // same reason the start gives it.
-                run.EndTool();
-                if (brackets.TryGetValue(info.BatchId ?? info.CallId, out var held) && held > 0)
-                    brackets[info.BatchId ?? info.CallId] = held - 1;
+                if (brackets.TryGetValue(info.BatchId ?? info.CallId, out var held))
+                {
+                    held.Remove(info.CallId);
+                    if (held.Count == 0) brackets.Remove(info.BatchId ?? info.CallId);
+                }
                 await ApplyOnUiAsync(() =>
                 {
                     _sessions.TryUpdate(run.ConversationId, opened =>

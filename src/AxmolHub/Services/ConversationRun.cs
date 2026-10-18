@@ -108,6 +108,25 @@ internal sealed class ConversationRun : IDisposable
     private int _spawnsUsed;
     private volatile bool _parked;
     private int _toolRunning;
+    // Every call whose bracket is open, by call id, with the name it was asked under and the monotonic instant it
+    // started. The panel is the reader: it counts the clock while a command prints, and the span is stamped on the
+    // result turn when the bracket closes — so the number a person watched and the number the transcript keeps are
+    // the same measurement rather than two guesses at it.
+    private readonly Dictionary<string, ToolBracket> _toolCalls = new(StringComparer.Ordinal);
+    // The command now printing, and what it has said. One call can own this at a time: a second command waits for
+    // the first, which is the tier table's rule and the reason a single buffer is enough.
+    private string? _commandCall;
+    private readonly List<string> _commandLines = [];
+    private int _commandLinesDropped;
+
+    /// <summary>How much of a printing command the card keeps. The tail is what a person can use — a build's last
+    /// lines are the diagnosis — and a bound is what keeps a runaway command from holding its whole log in memory
+    /// for a view that shows a screenful.</summary>
+    private const int LiveCommandLines = 160;
+
+    /// <summary>How much of one line is kept. A single-line JSON blob or a minified bundle would otherwise be the
+    /// whole buffer, and no row can show a line this long anyway.</summary>
+    private const int LiveCommandLineCharacters = 400;
     // The elapsed clock is banked and restarted rather than continuous, because a stretch spent waiting for a
     // person to approve a tool is not this answer working. The ticks are monotonic, never a time of day: a wall
     // clock stepped backwards by NTP or a timezone rule would hand the view a negative duration.
@@ -383,21 +402,118 @@ internal sealed class ConversationRun : IDisposable
     /// <para>A count rather than a flag, because one response can hand over several calls and the whole batch is
     /// decided before any of it runs: every call of the batch opens its bracket at its own gate, so a flag would be
     /// cleared by whichever sibling came back first and start counting silence while the rest were still working.</para>
+    ///
+    /// <para>The call id rides along because the bracket is also the only honest clock a command has: the panel
+    /// counts from it while the command prints, and the time it measured is stamped on the result turn when it
+    /// closes. The name decides which call the printed lines belong to — exactly one tool streams them.</para>
     /// </summary>
-    internal void BeginTool()
+    internal void BeginTool(string callId, string name)
     {
         Interlocked.Increment(ref _toolRunning);
         _idle.CancelAfter(Timeout.InfiniteTimeSpan);
+        lock (_gate)
+        {
+            _toolCalls[callId] = new ToolBracket(name, Stopwatch.GetTimestamp());
+            if (!string.Equals(name, WorkspaceTools.RunCommandTool, StringComparison.Ordinal)) return;
+            // The lines belong to whichever command is printing, and only one body prints at a time: a response can
+            // ask for two commands, and both brackets open at the same gate — so the first one to open keeps the
+            // buffer, and ownership passes on when it closes rather than being taken by a call that has not started.
+            if (_commandCall is not null) return;
+            _commandCall = callId;
+            _commandLines.Clear();
+            _commandLinesDropped = 0;
+        }
     }
 
     /// <summary>A tool came back, or was refused. The deadline starts counting again only when the <i>last</i>
     /// bracket closes, and what it counts from then is a first frame rather than another chunk — the round that
     /// follows a result has to be built, sent and read before it can say anything. A refused call never entered
-    /// the bracket, so ending it for one simply re-arms.</summary>
-    internal void EndTool()
+    /// the bracket, so ending it for one simply re-arms.
+    ///
+    /// <para>Answers how long this call's bracket was open, or null when there was none to close — a refused or
+    /// abandoned call, whose completion re-arms the deadline exactly as before. Null there is the honest answer:
+    /// a duration for work that never ran would be a number nobody measured.</para></summary>
+    internal TimeSpan? EndTool(string callId)
     {
-        if (Interlocked.Decrement(ref _toolRunning) != 0) return;
+        TimeSpan? elapsed = null;
+        lock (_gate)
+        {
+            if (_toolCalls.Remove(callId, out var call)) elapsed = Stopwatch.GetElapsedTime(call.Started);
+            if (string.Equals(_commandCall, callId, StringComparison.Ordinal))
+            {
+                // The command is over: what it printed stays in the transcript as the result, so the live buffer
+                // goes with the card it was feeding rather than lingering as "still running" output. A sibling
+                // command that is already begun takes the buffer rather than leaving the rest of the run silent.
+                _commandCall = NextCommandCall(callId);
+                _commandLines.Clear();
+                _commandLinesDropped = 0;
+            }
+        }
+
+        if (Interlocked.Decrement(ref _toolRunning) != 0) return elapsed;
         BeginRound();
+        return elapsed;
+    }
+
+    /// <summary>Another command of the same run that is begun and still owes an answer, if there is one. Called with
+    /// the lock held, from <see cref="EndTool"/>, right after the call that is ending has left the table.</summary>
+    private string? NextCommandCall(string ended)
+    {
+        foreach (var (id, call) in _toolCalls)
+        {
+            if (string.Equals(id, ended, StringComparison.Ordinal)) continue;
+            if (string.Equals(call.Name, WorkspaceTools.RunCommandTool, StringComparison.Ordinal)) return id;
+        }
+        return null;
+    }
+
+    /// <summary>One line of the command now printing. False when no command owns the run, which is the usual state
+    /// of a scope that outlived its call — the line is dropped rather than filed against whatever runs next.
+    ///
+    /// <para>Bounded on both axes and bounded in the view's own terms: the tail of a long build is what a person can
+    /// use, an unbounded log of a runaway one is memory spent on text nobody will scroll to, and the count that is
+    /// dropped is kept so the card can say so instead of silently showing a shorter build than happened.</para>
+    /// </summary>
+    internal bool AppendToolOutput(string line)
+    {
+        lock (_gate)
+        {
+            if (_commandCall is null) return false;
+            if (_commandLines.Count >= LiveCommandLines)
+            {
+                _commandLines.RemoveAt(0);
+                _commandLinesDropped++;
+            }
+            _commandLines.Add(line.Length > LiveCommandLineCharacters
+                ? line[..LiveCommandLineCharacters] + "…"
+                : line);
+            return true;
+        }
+    }
+
+    /// <summary>How long the call has been running, or null when it is not running. Read by the card while the
+    /// command prints; the same bracket is what the result turn's stamp is measured on.</summary>
+    internal TimeSpan? ToolElapsed(string callId)
+    {
+        lock (_gate)
+            return _toolCalls.TryGetValue(callId, out var call) ? Stopwatch.GetElapsedTime(call.Started) : null;
+    }
+
+    /// <summary>Whether this call is the one holding the bracket — the fact that tells a card saying "running" from
+    /// a call that was recorded and not started yet.</summary>
+    internal bool IsCallRunning(string callId)
+    {
+        lock (_gate) return _toolCalls.ContainsKey(callId);
+    }
+
+    /// <summary>The lines the command printed so far, and how many fell off the front. Empty for any call that is
+    /// not the printing one, which is every call but one per run.</summary>
+    internal (IReadOnlyList<string> Lines, int Dropped) CommandOutputOf(string callId)
+    {
+        lock (_gate)
+            return string.Equals(_commandCall, callId, StringComparison.Ordinal)
+                ? ([.. _commandLines], _commandLinesDropped)
+                : ([], 0);
     }
 
     /// <summary>Hands the run to the retry policy's sleep for the duration. The tool bracket's reasoning applies
@@ -719,6 +835,11 @@ internal sealed class ConversationRun : IDisposable
         _stop.Dispose();
     }
 }
+
+/// <summary>One open tool bracket: the name the call was asked under and the monotonic instant it started. The
+/// name is what lets the run know whether the lines arriving through the scope belong to this call —
+/// <c>run_command</c> is the one tool that prints while it works.</summary>
+internal readonly record struct ToolBracket(string Name, long Started);
 
 /// <summary>What the panel needs to say when a run ends. The workspace chooses the key — it is the only place
 /// that knows which exception was thrown — and the panel resolves it, so localization stays in the view and

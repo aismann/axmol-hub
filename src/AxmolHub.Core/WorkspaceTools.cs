@@ -45,6 +45,13 @@ namespace AxmolHub.Core;
 /// is where that call is asked for and answered. Null in a scope with nobody to ask (a self-check, a tool run outside
 /// a window), and a stall on that road still ends the process, because "nobody is watching" cannot also mean
 /// "nothing is stopping it".</param>
+/// <param name="RecordCommandOutput">One line of the command now printing, handed over as it arrives so the
+/// transcript card can show a long build's progress instead of a command that has said nothing for ten minutes.
+/// Display-only and never replayed: the model still reads one whole result where the call ends. It is the same
+/// redacted text the log got, and the app decides where it lands — a tool body has no call id to name.</param>
+/// <param name="RecordCommandExit">The exit code the command ended with, reported where it is known. Reported
+/// before the result text is composed and outside it, because a caller that paints a row needs the number as a
+/// fact rather than as the tail of a sentence it would have to parse back out.</param>
 public sealed record WorkspaceToolScope(
     string? WorkspaceRoot,
     WorkspaceGuards Guards,
@@ -61,7 +68,13 @@ public sealed record WorkspaceToolScope(
     IReadOnlyList<WorkspaceProject>? Projects = null,
     Func<string, IDisposable?>? TakeChangeGate = null,
     Action<ChangeLineCounts>? RecordChangeLines = null,
-    Func<StalledProcess, string, Task<StalledProcessFate>>? AskAboutStalledProcess = null)
+    Func<StalledProcess, string, Task<StalledProcessFate>>? AskAboutStalledProcess = null,
+    // The command's lines as they arrive, and the code it ended with. Both are for the card the transcript grows
+    // while a command runs — the model still reads one whole result where the call ends — and both leave through
+    // the scope rather than the result for the same reason the frames do: a tool body never learns its own call
+    // id, so the app attributes what arrives here to the call it recorded as running.
+    Action<string>? RecordCommandOutput = null,
+    Action<int>? RecordCommandExit = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
@@ -92,6 +105,11 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     public const int MaxReadLimit = 2000;
     public const int DefaultCommandTimeoutSeconds = 300;
     public const int MaxCommandTimeoutSeconds = 900;
+
+    /// <summary>The one tool whose work is a command line, and therefore the one whose call grows a card while it
+    /// prints and reports an exit code when it ends. Named here rather than quoted at each reader: the tier table,
+    /// the card and the exit-code channel all have to be talking about the same name.</summary>
+    public const string RunCommandTool = "run_command";
 
     /// <summary>Sessions listed before the answer is cut, newest first — enough to pick a peer, short enough not
     /// to be the majority of a context window.</summary>
@@ -287,6 +305,10 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                 shell.Executable, shell.ArgumentsFor(command), root,
                 timeout: TimeSpan.FromSeconds(seconds),
                 sensitiveValues: context.SensitiveValues,
+                // The same redacted lines the log gets, handed out as they land: the card in the transcript is the
+                // only surface a long build has while it prints, and reading them back off the finished result
+                // would be the one thing that arrives after the wait it was supposed to fill.
+                onLine: line => context.RecordCommandOutput?.Invoke(line),
                 cancellation: cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -331,6 +353,10 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             return $"{header}{Lf}The command could not start: {ex.Message}";
         }
 
+        // Reported before the body is composed, and only on this road: every other ending above is a decision about
+        // a process rather than the process's own exit, and a number invented for one of them would be a claim
+        // about how a command ended that nobody observed.
+        context.RecordCommandExit?.Invoke(result.ExitCode);
         var output = Shaped(result.Output, result.Error);
         var body = $"{header} · exit: {result.ExitCode}{Lf}{output}";
         if (result.ExitCode != 0 && BuildCommandGrades.IsBuild(command))

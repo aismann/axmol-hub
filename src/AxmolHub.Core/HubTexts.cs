@@ -977,6 +977,23 @@ public static class HubTexts
         ["ActivityDetailOutput"] = ("输出", "Output"),
         ["ActivityDetailEmpty"] = ("无内容", "Nothing"),
         ["ActivityDetailTruncated"] = ("…（已截断）", "… (truncated)"),
+        // ── the command that is running right now ──
+        // The call is recorded before it runs, so this card exists while the command prints rather than after it
+        // comes back — which is the whole point of it: a build that says nothing for five minutes used to say
+        // nothing on the page either. "即将执行" covers the one breath between the call being filed and the tool
+        // owning it; it is not a permission state, and the card that asks for permission is a different surface.
+        ["ActivityRowCommandRunning"] = ("正在执行", "running"),
+        ["ActivityRowCommandQueued"] = ("即将执行", "starting"),
+        ["ActivityDetailWorkspace"] = ("工作目录", "Working directory"),
+        ["ActivityDetailCommandOutput"] = ("输出（执行中）", "Output (running)"),
+        ["ActivityDetailCommandSilent"] = ("还没有输出", "Nothing printed yet"),
+        // Said rather than swallowed: the card keeps a bounded tail, and a reader who is shown fewer lines than the
+        // command printed has to be told that is what happened.
+        ["ActivityDetailCommandDroppedFormat"] = ("…更早的 {0} 行没有保留", "…{0} earlier lines not kept"),
+        // The verdict of a command, in the number a person would ask for. The row's mark already says whether it
+        // failed; this says what it exited with, which is the difference between "a check failed" and "nothing was
+        // run at all".
+        ["ActivityRowExitCodeFormat"] = ("退出码 {0}", "exit {0}"),
         // Recorded as the user's own turn, in their voice: it is the thing they just did by clicking, and the
         // assistant has to read it before it touches the same file again.
         ["ChatUndoNotifiedFormat"] = ("我已撤销那次写入：{0} 已恢复到写入之前的内容。",
