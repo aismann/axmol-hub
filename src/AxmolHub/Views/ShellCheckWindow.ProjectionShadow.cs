@@ -13,10 +13,15 @@ namespace AxmolHub;
 /// somebody has decided the behaviour changes. That is deliberate — this file's job is to make "the new model
 /// agrees with what people are looking at" an assertion rather than a hope.</para>
 ///
-/// <para>What it compares: row kind and order, piece flat/folded, and the row count inside each piece. That last
-/// number carries the awkward rules — a suppressed <c>file_write</c> result, a thinking row, a call surface that
-/// keeps its prose. What it does <b>not</b> compare yet: which tool name a result prints (the two lookup
-/// policies), plan cards, and Markdown flavour. Those need a finer signature and are the next step.</para>
+/// <para>What it compares: row kind and order, piece flat/folded, every child of a piece (thought, call surface,
+/// exchange) with the tool name each exchange was actually paired with, and whether a prose row is Markdown or
+/// plain text. That last pair is what carries the awkward rules — a suppressed <c>file_write</c> result, a
+/// thinking row, a call surface that keeps its prose, the eager-Markdown window.</para>
+///
+/// <para>What it does <b>not</b> compare yet: plan cards, because a plan turn without a plan document draws no card
+/// at all — covering it needs a fixture with a real plan body; the conversation-wide tool-name lookup (only the
+/// piece-local pairing is pinned today); row identity rather than row kind; and the incremental path, which does not
+/// exist yet.</para>
 /// </summary>
 public partial class ShellCheckWindow
 {
@@ -85,6 +90,17 @@ public partial class ShellCheckWindow
                 conversation.Messages.Add(ChatTurn.Notice("换了模型"));
                 conversation.Messages.Add(ChatTurn.Assistant("收尾"));
             }),
+            new("duplicate-call-ids", conversation =>
+            {
+                // The trap the two lookup policies create: both calls carry the same id, so the piece-local pairing
+                // takes the LAST one while the conversation-wide lookup keeps the first. What has to agree is the
+                // name each painted row was actually drawn from.
+                conversation.Messages.Add(ChatTurn.User("并行两条命令"));
+                conversation.Messages.Add(ChatTurn.FunctionCall("dup", "run_command", "{}"));
+                conversation.Messages.Add(ChatTurn.FunctionResult("dup", "ok"));
+                conversation.Messages.Add(ChatTurn.FunctionCall("dup", "read_file", "{}"));
+                conversation.Messages.Add(ChatTurn.FunctionResult("dup", "ok"));
+            }),
         };
 
         foreach (var item in cases)
@@ -95,7 +111,8 @@ public partial class ShellCheckWindow
                 item.Build(session);
                 chat.OpenConversation(session.Id);
                 panel.Reload();
-                var snapshot = TranscriptProjection.Build(session, panel.ShowThinkingForCheck);
+                var snapshot = TranscriptProjection.Build(session, panel.ShowThinkingForCheck,
+                    ChatPanel.EagerMarkdownLimitForCheck);
                 var painted = panel.PaintedStructureForCheck.ToArray();
                 Check(snapshot.VisibleTurns <= ChatPanel.FirstPaintTurnsForCheck,
                     $"影子比较的夹具「{item.Label}」小于一屏，画的流才等于整份转录");
@@ -116,15 +133,27 @@ public partial class ShellCheckWindow
         panel.Reload();
     }
 
-    /// <summary>One token per top-level entry, matching what <c>PaintedStructureForCheck</c> produces.</summary>
+    /// <summary>One token per top-level entry, matching what <c>PaintedStructureForCheck</c> produces: kind, a plan
+    /// card by name, whether a prose row is Markdown, and every child of a piece with the tool name its exchange was
+    /// paired with.</summary>
     private static IEnumerable<string> Tokens(TranscriptSnapshot snapshot) => snapshot.Entries.Select(entry => entry switch
     {
-        TranscriptMessage message => "message:" + (message.Role == ChatRoles.User ? "user" : "assistant"),
-        TranscriptNotice => "notice",
-        TranscriptActivity activity => "piece:" + (activity.Piece.Folded ? "folded:" : "flat:")
-                                                + activity.Piece.Children.Count,
+        TranscriptMessage message => "M:"
+                                     + (message.IsPlan ? "plan"
+                                         : message.Role == ChatRoles.User ? "user" : "assistant")
+                                     + (message.Markdown ? ":md" : ""),
+        TranscriptNotice => "N",
+        TranscriptActivity activity => (activity.Piece.Folded ? "P:folded{" : "P:flat{")
+                                       + string.Join(",", activity.Piece.Children.Select(ChildToken)) + "}",
         _ => "unknown",
     });
+
+    private static string ChildToken(TranscriptRow row) => row.Kind switch
+    {
+        TranscriptRowKind.Thought => "Th",
+        TranscriptRowKind.ToolExchange => "T:" + (row.ToolName ?? ""),
+        _ => "C" + (row.Markdown ? ":md" : ""),
+    };
 
     private static string Divergence(string[] projected, string[] painted)
     {

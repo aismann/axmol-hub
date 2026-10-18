@@ -15,8 +15,9 @@ public enum TranscriptRowKind
 }
 
 /// <summary>One row inside a piece, or on its own. <c>SourceIndex</c> is a lookup hint into the conversation, never
-/// an identity: the index moves when a result is filed beside its call.</summary>
-public sealed record TranscriptRow(TranscriptRowKind Kind, int SourceIndex, string? ToolName);
+/// an identity: the index moves when a result is filed beside its call. <c>Markdown</c> records what the row would
+/// be drawn as — the eager window decides it, so the model and the renderer have to be told the same limit.</summary>
+public sealed record TranscriptRow(TranscriptRowKind Kind, int SourceIndex, string? ToolName, bool Markdown = false);
 
 /// <summary>A run of machine turns: folded (one collapsible head) or flat (a narrated call with its results).</summary>
 public sealed record TranscriptPiece(
@@ -29,7 +30,8 @@ public sealed record TranscriptPiece(
 /// <summary>One top-level thing the transcript shows, in reading order.</summary>
 public abstract record TranscriptEntry(int FirstVisible);
 
-public sealed record TranscriptMessage(int FirstVisible, int SourceIndex, string Role) : TranscriptEntry(FirstVisible);
+public sealed record TranscriptMessage(int FirstVisible, int SourceIndex, string Role, bool IsPlan, bool Markdown)
+    : TranscriptEntry(FirstVisible);
 
 public sealed record TranscriptNotice(int FirstVisible, int SourceIndex) : TranscriptEntry(FirstVisible);
 
@@ -84,23 +86,39 @@ public static class TranscriptProjection
         return names;
     }
 
-    public static TranscriptSnapshot Build(Conversation conversation, bool showThinking)
+    /// <param name="eagerMarkdownLimit">The renderer's own window for prose: only the newest
+    /// <paramref name="eagerMarkdownLimit"/> visible turns are drawn as Markdown. Passed in rather than assumed — a
+    /// model that guessed a different limit would agree with the renderer for exactly the wrong reason.</param>
+    public static TranscriptSnapshot Build(Conversation conversation, bool showThinking,
+        int eagerMarkdownLimit = int.MaxValue)
     {
-        var visible = new List<ChatTurn>();
-        foreach (var turn in conversation.Messages)
-            if (turn.Role != ChatRoles.System) visible.Add(turn);
+        var visible = new List<(int Source, ChatTurn Turn)>();
+        for (var at = 0; at < conversation.Messages.Count; at++)
+            if (conversation.Messages[at].Role != ChatRoles.System) visible.Add((at, conversation.Messages[at]));
 
         var entries = new List<TranscriptEntry>();
         var index = 0;
         while (index < visible.Count)
         {
-            var turn = visible[index];
+            var turn = visible[index].Turn;
             if (!IsActivityTurn(turn))
             {
                 // Prose closes the run: the next piece of machine work is a different exchange. A notice is a line
                 // about the conversation rather than something said, and closes it for the same reason.
-                if (turn.Role == ChatRoles.Notice) entries.Add(new TranscriptNotice(index, index));
-                else entries.Add(new TranscriptMessage(index, index, turn.Role));
+                if (turn.Role == ChatRoles.Notice)
+                {
+                    entries.Add(new TranscriptNotice(index, visible[index].Source));
+                }
+                else
+                {
+                    var plan = turn.PlanApprovalState is { Length: > 0 };
+                    // The renderer's own test, on the visible position: an older reply is plain text.
+                    var markdown = turn.Role != ChatRoles.User && !plan && turn.Role != ChatRoles.Tool
+                                   && turn.Text.Length > 0
+                                   && index >= visible.Count - eagerMarkdownLimit;
+                    entries.Add(new TranscriptMessage(index, visible[index].Source, turn.Role, plan, markdown));
+                }
+
                 index++;
                 continue;
             }
@@ -117,40 +135,53 @@ public static class TranscriptProjection
 
             index++;
             if (flat)
-                while (index < visible.Count && visible[index].Role == ChatRoles.Tool) index++;
+                while (index < visible.Count && visible[index].Turn.Role == ChatRoles.Tool) index++;
             else
-                while (index < visible.Count && IsActivityTurn(visible[index]) && !IsNarratedCall(visible[index]))
+                while (index < visible.Count && IsActivityTurn(visible[index].Turn)
+                                             && !IsNarratedCall(visible[index].Turn))
                     index++;
 
             var piece = ((TranscriptActivity)entries[^1]).Piece;
             // Re-sliced from where the run began, not from the turns that just arrived: a row is drawn from a call
             // and the result that answered it, so handing it only the new half would draw orphans.
             entries[^1] = new TranscriptActivity(
-                Describe(piece.Folded, piece.FirstVisible, index, visible, showThinking));
+                Describe(piece.Folded, piece.FirstVisible, index, visible, showThinking, eagerMarkdownLimit));
         }
 
         return new TranscriptSnapshot(entries, visible.Count);
     }
 
     /// <summary>The rows inside one piece, re-derived from its whole span.</summary>
-    private static TranscriptPiece Describe(bool folded, int first, int end, List<ChatTurn> visible, bool showThinking)
+    private static TranscriptPiece Describe(bool folded, int first, int end,
+        List<(int Source, ChatTurn Turn)> visible, bool showThinking, int eagerMarkdownLimit)
     {
         // In-piece pairing takes the LAST call carrying an id; the conversation-wide lookup takes the first.
         var calls = new Dictionary<string, ChatTurn>(StringComparer.Ordinal);
         for (var at = first; at < end; at++)
-            if (visible[at].Role == ChatRoles.Assistant && visible[at].ToolCallId is { Length: > 0 } id)
-                calls[id] = visible[at];
+            if (visible[at].Turn.Role == ChatRoles.Assistant && visible[at].Turn.ToolCallId is { Length: > 0 } id)
+                calls[id] = visible[at].Turn;
 
         var rows = new List<TranscriptRow>();
         for (var at = first; at < end; at++)
         {
-            var turn = visible[at];
+            var turn = visible[at].Turn;
             if (turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 })
             {
                 if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 } || IsNarratedCall(turn))
-                    rows.Add(new TranscriptRow(TranscriptRowKind.CallSurface, at, turn.ToolName));
+                {
+                    // The renderer tests the *source* index here rather than the visible one. Reproduced as it
+                    // stands: a model that quietly "fixed" it would disagree with the painted rows the moment a
+                    // system turn sat in front of the piece.
+                    rows.Add(new TranscriptRow(TranscriptRowKind.CallSurface, visible[at].Source, turn.ToolName,
+                        // The window is only half the renderer's test: a call that carries no prose draws no
+                        // Markdown block either, which is why a pending decision holds a plain row.
+                        turn.Text.Length > 0 && visible[at].Source >= visible.Count - eagerMarkdownLimit));
+                }
                 else if (showThinking && turn.Reasoning is { Length: > 0 })
-                    rows.Add(new TranscriptRow(TranscriptRowKind.Thought, at, null));
+                {
+                    rows.Add(new TranscriptRow(TranscriptRowKind.Thought, visible[at].Source, null));
+                }
+
                 continue;
             }
 
@@ -159,12 +190,13 @@ public static class TranscriptProjection
                 var paired = calls.TryGetValue(answered, out var call) ? call : null;
                 // A write's record line already speaks for its exchange.
                 if (paired?.ToolName == ChatChanges.FileWriteTool) continue;
-                rows.Add(new TranscriptRow(TranscriptRowKind.ToolExchange, at, paired?.ToolName ?? turn.ToolName));
+                rows.Add(new TranscriptRow(TranscriptRowKind.ToolExchange, visible[at].Source,
+                    paired?.ToolName ?? turn.ToolName));
                 continue;
             }
 
             if (showThinking && turn.Reasoning is { Length: > 0 })
-                rows.Add(new TranscriptRow(TranscriptRowKind.Thought, at, null));
+                rows.Add(new TranscriptRow(TranscriptRowKind.Thought, visible[at].Source, null));
         }
 
         return new TranscriptPiece(folded, first, end, calls.Count, rows);

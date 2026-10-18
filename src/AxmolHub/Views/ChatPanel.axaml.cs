@@ -3166,7 +3166,12 @@ public partial class ChatPanel : UserControl
             {
                 var call = calls.TryGetValue(answered, out var paired) ? paired : null;
                 if (call?.ToolName == ChatChanges.FileWriteTool) continue;
-                inner.Children.Add(BuildActivityRowShell(conversationId, call, turn));
+                var exchange = BuildActivityRowShell(conversationId, call, turn);
+                // The pairing this row was drawn from, kept as data: a result's name has two possible sources
+                // (the conversation-wide first call, the piece-local last call) and only the row knows which one
+                // it used. The shadow comparison reads it instead of guessing from a localised label.
+                exchange.Tag = call?.ToolName ?? "";
+                inner.Children.Add(exchange);
                 continue;
             }
 
@@ -5813,9 +5818,10 @@ public partial class ChatPanel : UserControl
 
     internal bool ShowThinkingForCheck => _chat?.ShowThinking ?? false;
 
-    /// <summary>What the flow actually holds, as one token per top-level child, for the shadow comparison against
-    /// <see cref="TranscriptProjection"/>. A piece is one token carrying its row count, because that count is where
-    /// a suppressed write record or a thinking row would show up.
+    /// <summary>What the flow actually holds, as one signature per top-level row, for the shadow comparison against
+    /// <see cref="TranscriptProjection"/>. Fine enough that a behaviour change cannot hide inside it: the row kind,
+    /// a plan card by name, whether a prose row holds Markdown, and inside every piece each child carrying the tool
+    /// name its exchange was actually paired with.
     ///
     /// <para>The two <b>ephemeral tails</b> are left out, by object identity rather than by class: the live bubble
     /// and the running-command card are drawn from a live run, not from stored turns, so a projection of the
@@ -5824,20 +5830,55 @@ public partial class ChatPanel : UserControl
     /// drop a real row one day.</para></summary>
     internal IReadOnlyList<string> PaintedStructureForCheck => MessageFlow.Children
         .Where(child => !ReferenceEquals(child, _live?.Row) && !ReferenceEquals(child, _runningCommand?.Shell))
-        .Select(child =>
-        {
-            if (child.Classes.Contains("load-earlier-row")) return "earlier";
-            if (child.Classes.Contains("activity-group")) return "piece:folded:" + PaintedRowsIn(child);
-            if (child.Classes.Contains("activity-plain")) return "piece:flat:" + PaintedRowsIn(child);
-            if (child.Classes.Contains("message-row"))
-                return "message:" + (child.Classes.Contains("user-row") ? "user" : "assistant");
-            if (child.Classes.Contains("notice")) return "notice";
-            return "other:" + string.Join("|", child.Classes);
-        }).ToArray();
+        .Select(PaintedToken)
+        .ToArray();
 
-    private static int PaintedRowsIn(Control child)
-        => child.GetLogicalDescendants().OfType<Control>()
-            .Count(row => row.Classes.Contains("message-row") || row.Classes.Contains("activity-row"));
+    private static string PaintedToken(Control child)
+    {
+        if (child.Classes.Contains("load-earlier-row")) return "earlier";
+        if (IsMachinePanel(child))
+        {
+            var rows = PaintedPieceRows(child).Select(PaintedChildToken);
+            return (child.Classes.Contains("activity-group") ? "P:folded{" : "P:flat{")
+                   + string.Join(",", rows) + "}";
+        }
+
+        if (child.Classes.Contains("message-row"))
+        {
+            var plan = child.GetLogicalDescendants().OfType<Border>()
+                .Any(border => border.Classes.Contains("plan-card"));
+            var kind = plan ? "plan" : child.Classes.Contains("user-row") ? "user" : "assistant";
+            return "M:" + kind + (HoldsMarkdown(child) ? ":md" : "");
+        }
+
+        if (child.Classes.Contains("notice")) return "N";
+        return "other:" + string.Join("|", child.Classes);
+    }
+
+    /// <summary>The rows of one piece, in order, off the container they were laid into: a flat piece is its own
+    /// panel, a folded one keeps them one level down inside its body.</summary>
+    private static IEnumerable<Control> PaintedPieceRows(Control piece)
+    {
+        if (piece is StackPanel plain) return plain.Children;
+        var body = piece.GetLogicalDescendants().OfType<StackPanel>()
+            .FirstOrDefault(panel => panel.Name == "ActivityGroupBody");
+        if (body is null) return [];
+        return body.Children.OfType<StackPanel>().FirstOrDefault()?.Children ?? body.Children;
+    }
+
+    private static string PaintedChildToken(Control row)
+    {
+        // A thought row is an exchange shell holding an `activity-row` marked `thought`, so the marker is one level
+        // down: checking the row itself reported every thinking row as an exchange with an empty tool name.
+        if (row.Classes.Contains("thought")
+            || row.GetLogicalDescendants().OfType<Control>().Any(inner => inner.Classes.Contains("thought")))
+            return "Th";
+        if (row.Classes.Contains("message-row")) return "C" + (HoldsMarkdown(row) ? ":md" : "");
+        return "T:" + (row.Tag as string ?? "");
+    }
+
+    private static bool HoldsMarkdown(Control row)
+        => row.GetLogicalDescendants().OfType<MarkdownScrollViewer>().Any();
 
     /// <summary>The line itself, found by its class. It is deliberately not a message row, so nothing that counts
     /// rows sees it — which is also why it has to be looked up by name rather than by position.</summary>
