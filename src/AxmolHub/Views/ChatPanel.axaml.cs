@@ -5815,17 +5815,25 @@ public partial class ChatPanel : UserControl
 
     /// <summary>What the flow actually holds, as one token per top-level child, for the shadow comparison against
     /// <see cref="TranscriptProjection"/>. A piece is one token carrying its row count, because that count is where
-    /// a suppressed write record or a thinking row would show up.</summary>
-    internal IReadOnlyList<string> PaintedStructureForCheck => MessageFlow.Children.Select(child =>
-    {
-        if (child.Classes.Contains("load-earlier-row")) return "earlier";
-        if (child.Classes.Contains("activity-group")) return "piece:folded:" + PaintedRowsIn(child);
-        if (child.Classes.Contains("activity-plain")) return "piece:flat:" + PaintedRowsIn(child);
-        if (child.Classes.Contains("message-row"))
-            return "message:" + (child.Classes.Contains("user-row") ? "user" : "assistant");
-        if (child.Classes.Contains("notice")) return "notice";
-        return "other:" + string.Join("|", child.Classes);
-    }).ToArray();
+    /// a suppressed write record or a thinking row would show up.
+    ///
+    /// <para>The two <b>ephemeral tails</b> are left out, by object identity rather than by class: the live bubble
+    /// and the running-command card are drawn from a live run, not from stored turns, so a projection of the
+    /// conversation has nothing to say about them. Identity is the only safe filter — the command card
+    /// deliberately wears the same classes as the finished row it becomes, so a class-based filter would silently
+    /// drop a real row one day.</para></summary>
+    internal IReadOnlyList<string> PaintedStructureForCheck => MessageFlow.Children
+        .Where(child => !ReferenceEquals(child, _live?.Row) && !ReferenceEquals(child, _runningCommand?.Shell))
+        .Select(child =>
+        {
+            if (child.Classes.Contains("load-earlier-row")) return "earlier";
+            if (child.Classes.Contains("activity-group")) return "piece:folded:" + PaintedRowsIn(child);
+            if (child.Classes.Contains("activity-plain")) return "piece:flat:" + PaintedRowsIn(child);
+            if (child.Classes.Contains("message-row"))
+                return "message:" + (child.Classes.Contains("user-row") ? "user" : "assistant");
+            if (child.Classes.Contains("notice")) return "notice";
+            return "other:" + string.Join("|", child.Classes);
+        }).ToArray();
 
     private static int PaintedRowsIn(Control child)
         => child.GetLogicalDescendants().OfType<Control>()
