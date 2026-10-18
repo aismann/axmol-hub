@@ -3658,13 +3658,15 @@ public partial class ChatPanel : UserControl
             ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto"),
         };
         // The status slot holds the mark, and the arrow trades places with it on hover — the same two glyphs in one
-        // cell the finished row uses, so nothing moves sideways when this row becomes that one. The mark is the
-        // circular arrow rather than a tick or a cross: a call in flight has no verdict yet, and either of the two
-        // would be a claim about how it ends.
+        // cell the finished row uses, so nothing moves sideways when this row becomes that one. The mark is a
+        // gap-topped ring rather than a tick or a cross: a call in flight has no verdict yet, and either of the two
+        // would be a claim about how it ends. It is Hub.Icon.InProgress and not Hub.Icon.Refresh for the same
+        // reason: the arrowed arc is the regenerate button's face in this same panel, and a row nobody can press
+        // must not wear it.
         grid.Children.Add(new Avalonia.Controls.Shapes.Path
         {
             Classes = { "activity-status" },
-            Data = ThemeGeometry("Hub.Icon.Refresh"),
+            Data = ThemeGeometry("Hub.Icon.InProgress"),
         });
         grid.Children.Add(new Avalonia.Controls.Shapes.Path
         {
@@ -5670,10 +5672,34 @@ public partial class ChatPanel : UserControl
     internal bool ActivityRowChevronUsesSidebarGlyphForCheck
         => ActivityRowChevronsForCheck.Any(path => ReferenceEquals(path.Data, ThemeGeometry("Hub.Icon.ChevronRight")));
 
-    /// <summary>The first row's status glyph size — asserted small so the ✓/✕ stay quiet under the 10px arrow.</summary>
+    /// <summary>The first row's status glyph size — asserted small so the ✓/✕ stay quiet beside the 10px
+    /// expander arrow that shares their slot.</summary>
     internal double ActivityRowStatusSizeForCheck
         => MessageFlow.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>()
             .FirstOrDefault(path => path.Classes.Contains("activity-status"))?.Width ?? -1;
+
+    /// <summary>The status marks on rows that have no verdict yet. The <c>running</c> class is what says so: a
+    /// finished row carries the same slot with a tick or a cross in it.</summary>
+    private IEnumerable<Avalonia.Controls.Shapes.Path> RunningRowStatusPathsForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+            .Where(grid => grid.Classes.Contains("activity-row") && grid.Classes.Contains("running"))
+            .SelectMany(grid => grid.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>())
+            .Where(path => path.Classes.Contains("activity-status"));
+
+    /// <summary>Whether a row with no verdict yet wears the gap-topped in-progress ring — and, the half that
+    /// actually pins the regression, whether the regenerate arrow is gone from it. Hub.Icon.Refresh is the
+    /// regenerate button's face in this same panel, so a row nobody can press must not wear it; identity rather
+    /// than shape is what this asserts, because a look-alike arc would pass a shape test.</summary>
+    internal bool ActivityRowRunningGlyphForCheck
+    {
+        get
+        {
+            var marks = RunningRowStatusPathsForCheck.ToList();
+            return marks.Count > 0
+                && marks.All(mark => ReferenceEquals(mark.Data, ThemeGeometry("Hub.Icon.InProgress")))
+                && marks.All(mark => !ReferenceEquals(mark.Data, ThemeGeometry("Hub.Icon.Refresh")));
+        }
+    }
 
     // ── where a row's trailing piece sits: beside its sentence, or pinned to the column's right edge ──
 

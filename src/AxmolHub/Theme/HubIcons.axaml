@@ -103,6 +103,15 @@
        centre in its slot. -->
   <StreamGeometry x:Key="Hub.Icon.Refresh">M15.5 5.9A7 7 0 1 1 8.5 5.9M5.3 5.3L8.5 5.9L7.4 8.9</StreamGeometry>
 
+  <!-- A 300° ring with a 60° gap at the top, no arrowhead = in progress. Deliberately NOT
+       Hub.Icon.Refresh: that one carries an arrowhead because it means "regenerate" (RetryMessage /
+       RegenerateMessage in ChatPanel), and an activity row that has merely been issued must not wear the
+       same face as a button the user can press. A ring with no end mark reads as "still going", which is
+       also what ActivityGlyph's RunningTool phase draws. Its box is 14 x 13.1 rather than square like the
+       arrowed one, and Stretch="Uniform" centres that slack instead of shifting the mark, so the 10 DIP
+       status slot still lines up with the tick and the cross beside it. -->
+  <StreamGeometry x:Key="Hub.Icon.InProgress">M15.5 5.9A7 7 0 1 1 8.5 5.9</StreamGeometry>
+
   <!-- A git branch = branch a new task from here: the trunk on the left, the current message as its bottom
        node, and a curve leaving for a new node at the top right. Stroked, r=2.2 nodes like the chat-mode
        bullseye. Bounding box is square (15.4 on both axes, centred on 12,12) for the reason above, and the
