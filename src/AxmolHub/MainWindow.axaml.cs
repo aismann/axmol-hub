@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
@@ -1008,20 +1009,40 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task ConfirmQuitAsync()
     {
+        if (!await AskBeforeQuittingAsync()) return;
+        _quitConfirmed = true;
+        Close();
+    }
+
+    /// <summary>
+    /// The same question for a quit the platform started (Cmd+Q, the Dock's or the application menu's Quit): the
+    /// answer cannot be a <see cref="Window.Close"/> here — the platform already gave up on this shutdown, and a
+    /// hidden window would never set off the lifetime's <c>OnLastWindowClose</c> — so the confirmed answer is an
+    /// explicit <see cref="IClassicDesktopStyleApplicationLifetime.Shutdown"/>. That call is programmatic, which is
+    /// why it cannot come back through this question a second time.
+    /// </summary>
+    private async Task ConfirmPlatformQuitAsync()
+    {
+        if (!await AskBeforeQuittingAsync()) return;
+        _quitConfirmed = true;
+        (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
+    }
+
+    /// <summary>The one question both quit paths ask, so the copy and the button set cannot drift apart.</summary>
+    private async Task<bool> AskBeforeQuittingAsync()
+    {
         var running = TaskQueue.Instance.ActiveCount;
         var answer = await HubDialog.ShowAsync(this,
             HubStrings.Get("QuitDuringDownloadsTitle"),
             string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("QuitDuringDownloadsBody"), running),
             HubDialogButtons.OkCancel, danger: true);
-        if (answer != HubDialogResult.Ok)
-        {
-            return;
-        }
-
-        _quitConfirmed = true;
-        Close();
+        return answer == HubDialogResult.Ok;
     }
+
+    /// <summary>A quit question is asked by, and owned by, this window — so a window the close button hid has to come
+    /// back first, or the modal has no owner on screen and the person who pressed Cmd+Q sees nothing happen.</summary>
+    private void RestoreForQuitQuestion() => RestoreFromActivation();
 
     internal void RestoreFromTray()
     {
@@ -1087,12 +1108,48 @@ public partial class MainWindow : Window
     /// window with a cancelable <c>Closing</c> and, if any of them refused, cancels the whole shutdown because
     /// <c>Windows.Count</c> is still non-zero. So hiding on one of these closes would not "keep Hub in the Dock", it
     /// would make Quit permanently impossible: the window disappears, the process stays, and the next Quit hides a
-    /// window that is already hidden. These closes are let through to close for real — which is also what disposes
-    /// the workspace, the chat store and the attention service, exactly as the tray's Exit does on Windows.
-    /// Automation never reaches here (it calls <c>Shutdown</c>, which closes with <c>ignoreCancel</c>).</para>
+    /// window that is already hidden. Answering it with <see cref="DecidePlatformQuit"/> instead keeps the questions
+    /// the close button asks — a live operation is cancelled, live transfers are questioned — while the answer that
+    /// ends the run is a real close, which is also what disposes the workspace, the chat store and the attention
+    /// service, exactly as the tray's Exit does on Windows. Automation never reaches here (it calls
+    /// <c>Shutdown</c>, which closes with <c>ignoreCancel</c>).</para>
     /// </summary>
     internal static bool IsPlatformQuit(WindowCloseReason reason)
         => reason is WindowCloseReason.ApplicationShutdown or WindowCloseReason.OSShutdown;
+
+    /// <summary>What a platform quit does, decided in one place so the rules the close button follows are the same
+    /// ones and can be asserted without a window.</summary>
+    internal enum PlatformQuitVerdict
+    {
+        /// <summary>End the process now.</summary>
+        Quit,
+
+        /// <summary>An exclusive operation is mid-write: cancel it and stay, exactly as the close button does.</summary>
+        CancelOperation,
+
+        /// <summary>Work is in flight that a quit would cut short: ask before ending it.</summary>
+        Ask,
+    }
+
+    /// <summary>
+    /// <see cref="PlatformQuitVerdict"/> for a quit the platform started. The order matters: an already-confirmed
+    /// quit and an automation run never ask again (a dialog in a check run would hang it), and a half-written
+    /// operation is cancelled rather than questioned — the question is about transfers, not about the operation the
+    /// cancel button exists for.
+    ///
+    /// <para>A system shutdown or logout is the exception among platform quits: nobody is there to answer, and a modal
+    /// would stall the logout rather than inform anyone — the system's own "Hub prevented shutdown" flow is not a
+    /// question Hub can ask inside. So that one goes straight through, and it still ends the run cleanly because the
+    /// close is a real close.</para>
+    /// </summary>
+    internal static PlatformQuitVerdict DecidePlatformQuit(
+        WindowCloseReason reason, bool quitConfirmed, bool isAutomation, bool workspaceBusy, int activeTasks)
+    {
+        if (quitConfirmed || isAutomation) return PlatformQuitVerdict.Quit;
+        if (reason == WindowCloseReason.OSShutdown) return PlatformQuitVerdict.Quit;
+        if (workspaceBusy) return PlatformQuitVerdict.CancelOperation;
+        return activeTasks > 0 ? PlatformQuitVerdict.Ask : PlatformQuitVerdict.Quit;
+    }
 
     /// <summary>
     /// A close hides the window instead of ending the process whenever the host has a way back to it:
@@ -2318,10 +2375,31 @@ public partial class MainWindow : Window
         // child processes would be left behind.
         Closing += (_, e) =>
         {
-            // A Quit the platform started must end the process; refusing it here would not hide Hub, it would
-            // cancel the whole shutdown (see IsPlatformQuit for the mechanism in the lifetime). It goes through as
-            // a real close before any of the questions below.
-            if (IsPlatformQuit(e.CloseReason)) return;
+            // A Quit the platform started — Cmd+Q, the Dock's or the application menu's Quit, the system logging
+            // out — must end the process, and refusing it in the wrong place cancels the whole shutdown (see
+            // IsPlatformQuit). So it gets the same questions the close button asks, and the answer that ends the
+            // run is an explicit Shutdown rather than a close: a hidden window never raises the last-window close
+            // the lifetime's default OnLastWindowClose waits for.
+            if (IsPlatformQuit(e.CloseReason))
+            {
+                switch (DecidePlatformQuit(e.CloseReason, _quitConfirmed, App.Options.IsAutomation,
+                            _workspace.IsBusy, TaskQueue.Instance.ActiveCount))
+                {
+                    case PlatformQuitVerdict.Quit:
+                        return;
+                    case PlatformQuitVerdict.CancelOperation:
+                        e.Cancel = true;
+                        RestoreForQuitQuestion();
+                        _workspace.Cancel();
+                        SetStatus(HubStrings.Get("Cancelling"));
+                        return;
+                    default:
+                        e.Cancel = true;
+                        RestoreForQuitQuestion();
+                        _ = ConfirmPlatformQuitAsync();
+                        return;
+                }
+            }
 
             // On Windows and macOS the close button hides the window instead of ending the run; see
             // ShouldHideOnCloseForCheck for why and for the automation / confirmed-quit exceptions. What brings

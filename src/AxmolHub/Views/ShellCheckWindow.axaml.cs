@@ -1098,6 +1098,33 @@ public partial class ShellCheckWindow : Window
               && !MainWindow.IsPlatformQuit(WindowCloseReason.OwnerWindowClosing)
               && !MainWindow.IsPlatformQuit(WindowCloseReason.Undefined),
             "平台发起的退出（Cmd+Q / Dock 或应用菜单的退出 / 系统注销）关的是真窗、进程真的退出，窗口关闭按钮仍走隐藏");
+        // …and it asks before ending work in flight, with the same rules the close button follows: a live operation is
+        // cancelled and the window stays, live transfers are questioned, and only a confirmed (or non-interactive)
+        // quit goes straight out. Without the middle rows a Cmd+Q during a download would silently cut it off.
+        Check(MainWindow.DecidePlatformQuit(WindowCloseReason.ApplicationShutdown, false, false, false, 0)
+                  == MainWindow.PlatformQuitVerdict.Quit
+              && MainWindow.DecidePlatformQuit(WindowCloseReason.ApplicationShutdown, true, false, true, 2)
+                  == MainWindow.PlatformQuitVerdict.Quit
+              && MainWindow.DecidePlatformQuit(WindowCloseReason.ApplicationShutdown, false, true, true, 2)
+                  == MainWindow.PlatformQuitVerdict.Quit
+              && MainWindow.DecidePlatformQuit(WindowCloseReason.ApplicationShutdown, false, false, true, 0)
+                  == MainWindow.PlatformQuitVerdict.CancelOperation
+              && MainWindow.DecidePlatformQuit(WindowCloseReason.ApplicationShutdown, false, false, true, 3)
+                  == MainWindow.PlatformQuitVerdict.CancelOperation
+              && MainWindow.DecidePlatformQuit(WindowCloseReason.ApplicationShutdown, false, false, false, 2)
+                  == MainWindow.PlatformQuitVerdict.Ask
+              && MainWindow.DecidePlatformQuit(WindowCloseReason.OSShutdown, false, false, true, 3)
+                  == MainWindow.PlatformQuitVerdict.Quit,
+            "平台发起的退出与关闭盘同一套规则：有操作在跑先取消并留下，有活动任务先问一次，确认过或自动化才直接退出");
+        // Which reason the close plate writes is not something to assume: both rules above are decided by it, and
+        // guessing wrong would either hide a Quit away or turn the close plate into a process exit. So it is read off
+        // a real Window. A never-shown one is enough — Avalonia raises Closing on Close() without a window manager.
+        WindowCloseReason? plateReason = null;
+        var plateProbe = new Window();
+        plateProbe.Closing += (_, e) => plateReason = e.CloseReason;
+        plateProbe.Close();
+        Check(plateReason is { } probed && !MainWindow.IsPlatformQuit(probed),
+            "关闭盘报的关闭理由不是平台退出，隐藏规则因此照旧生效（实际 " + (plateReason?.ToString() ?? "没有触发 Closing") + "）");
         // The Dock icon, on macOS, both ways AppKit reports it. The reopen event is the one that matters: it arrives
         // for a Dock click even when Hub is still frontmost with nothing on screen — the state a close leaves behind
         // — while the did-become-active notification only fires on an activation transition (a click from another
