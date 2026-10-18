@@ -225,6 +225,18 @@ jobs:
           fi
           ! grep -q '^FAIL' secrets.txt
 
+      # macOS notifications are hand-written Objective-C ABI: a global block plus two dynamically added
+      # delegate methods. A wrong offset or type encoding compiles cleanly and simply never paints a banner,
+      # which is the same symptom as a channel that was never wired up. The check returns before Avalonia,
+      # needs no desktop session, and never requests authorization; a person still clicks one real banner.
+      - name: Verify macOS notification contract
+        if: matrix.host == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet src/AxmolHub/bin/Release/net8.0/AxmolHub.dll --check-macos-notifications | tr -d '\r' | tee macos-notifications.txt
+          ! grep -q '^FAIL' macos-notifications.txt
+
       # Checks is net8.0-windows (the Windows-only assertions need it), so it stays on Windows.
       # This step only compiles: the headless-screenshot stage was removed, for the reason in
       # docs/ci.md §2.2.

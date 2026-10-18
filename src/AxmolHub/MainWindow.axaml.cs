@@ -157,10 +157,13 @@ public partial class MainWindow : Window
         _workspace = new HubWorkspace(dataRoot, preferences, preferencesStore);
         _workspace.Owner = this;
         _chat = new ChatWorkspace(dataRoot);
-        _attention.Initialize(id => NotificationActivated(id));
-        _attention.NotificationActivated += NotificationActivated;
+        // Diagnostic before Initialize: the macOS channel reports its environment note (for example "not inside
+        // an .app bundle") from Initialize, and a sink attached afterwards would lose the one line that explains
+        // why no banner will ever arrive.
         _attention.Diagnostic += message => Dispatcher.UIThread.Post(
             () => WriteLog("[System attention] " + message));
+        _attention.NotificationActivated += NotificationActivated;
+        _attention.Initialize(id => NotificationActivated(id));
         // The route GNOME gives a click on a notification's body: the shell raises the already-running window
         // instead of re-running the desktop entry, so no deeplink and no second instance ever reach the broker.
         // That raise produces nothing but this event, and the conversation it belongs to is the one the
@@ -629,7 +632,9 @@ public partial class MainWindow : Window
             HubStrings.Get("AttentionDiagnosticTitle"),
             HubStrings.Get("AttentionDiagnosticBody"),
             _attentionDiagnosticConversationId);
-        _attention.Report("A test notification was requested. OS notification settings or focus mode may still suppress its display.");
+        _attention.Report("A test notification was requested."
+                          + (MacUserNotifications.DescribeState() is { Length: > 0 } state ? " " + state : "")
+                          + " OS notification settings or focus mode may still suppress its display.");
 
         DispatcherTimer.RunOnce(() =>
         {

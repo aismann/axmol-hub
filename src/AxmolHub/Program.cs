@@ -29,6 +29,9 @@ internal static class Program
         }
         velopack.Run();
         SystemAttentionService.SetWindowsAppUserModelId();
+        // The macOS notification delegate has to exist before the application finishes launching: a click that
+        // started this process delivers its response right after, and an unset delegate drops that click.
+        MacUserNotifications.Prepare();
 
         // Verification-mode reports go to stdout and contain Chinese. Without UTF-8 they are
         // garbled on Windows (hit on the very first P5 self-check run: the assertion results
@@ -59,6 +62,15 @@ internal static class Program
         if (HubHostOptions.IsLinuxIntegrationSelfTest(args))
         {
             Environment.ExitCode = LinuxIntegrationSelfCheck.Run(HubHostOptions.LinuxIntegrationScratchArgument(args));
+            return;
+        }
+
+        // Same headless contract, for the macOS notification channel: the ABI it pins (the global block layout,
+        // the two delegate encodings, the presentation options) is invisible to the compiler, and a CI runner
+        // has no desktop session to click a banner in. No authorization is requested and nothing is painted.
+        if (HubHostOptions.IsMacNotificationSelfTest(args))
+        {
+            Environment.ExitCode = MacNotificationSelfCheck.Run();
             return;
         }
 

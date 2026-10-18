@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Xml;
 using Avalonia.Controls;
 using Avalonia.Platform;
@@ -78,8 +77,10 @@ internal sealed class SystemAttentionService : IDisposable
 
     internal void Initialize(Action<string> activated)
     {
+        // The macOS channel has its own reporter: it runs before this service's Diagnostic event has any
+        // listener (Program.Main prepares it), so it stores the environment note and hands it to Report here.
         if (OperatingSystem.IsMacOS())
-            MacNotifications.SetActivationHandler(activated);
+            MacUserNotifications.Initialize(activated, Report);
     }
 
     internal static void SetWindowsAppUserModelId()
@@ -97,10 +98,13 @@ internal sealed class SystemAttentionService : IDisposable
             if (OperatingSystem.IsWindows())
                 ShowWindowsToast(title, body, conversationId);
             else if (OperatingSystem.IsMacOS())
-                MacNotifications.Show(title, body, conversationId);
+                MacUserNotifications.Show(title, body, conversationId);
             else if (OperatingSystem.IsLinux())
                 ShowLinuxNotification(title, body, conversationId);
-            Report($"Submitted a system notification request for conversation {conversationId}.");
+            // The macOS channel reports its own outcome (queued, submitted, unavailable); a blanket "submitted"
+            // here would contradict it in the one case where the process has no notification identity.
+            if (!OperatingSystem.IsMacOS())
+                Report($"Submitted a system notification request for conversation {conversationId}.");
         }
         catch (Exception ex)
         {
@@ -155,7 +159,7 @@ internal sealed class SystemAttentionService : IDisposable
                 _badgedCount = pendingConversationCount;
             }
             else if (OperatingSystem.IsMacOS())
-                MacNotifications.SetBadge(pendingConversationCount > 0
+                MacUserNotifications.SetBadge(pendingConversationCount > 0
                     ? FormatBadgeCount(pendingConversationCount)
                     : null);
             else return false;
@@ -198,10 +202,15 @@ internal sealed class SystemAttentionService : IDisposable
             return false;
 
         var id = Uri.UnescapeDataString(uri.AbsolutePath.Trim('/'));
-        if (id.Length != 32 || !Guid.TryParseExact(id, "N", out _)) return false;
+        if (!IsConversationId(id)) return false;
         conversationId = id;
         return true;
     }
+
+    /// <summary>The one conversation-id shape Hub writes into a deep link and a macOS notification request:
+    /// 32 hex characters in the "N" GUID format. Shared so the two readers cannot drift.</summary>
+    internal static bool IsConversationId(string value)
+        => value.Length == 32 && Guid.TryParseExact(value, "N", out _);
 
     public void Dispose()
     {
@@ -395,112 +404,6 @@ internal sealed class SystemAttentionService : IDisposable
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
-
-    private static class MacNotifications
-    {
-        private static readonly byte[] DidActivateSignature = Encoding.ASCII.GetBytes("v@:@@\0");
-        private static readonly byte[] ShouldPresentSignature = Encoding.ASCII.GetBytes("B@:@\0");
-        private static readonly DidActivateHandler DidActivate = OnDidActivate;
-        private static readonly ShouldPresentHandler ShouldPresent = (_, _, _, _) => 1;
-        private static IntPtr _delegate;
-        private static bool _registered;
-        private static Action<string>? _activated;
-
-        internal static void Show(string title, string body, string conversationId)
-        {
-            RegisterDelegate();
-            var centerClass = objc_getClass("NSUserNotificationCenter");
-            var center = Send0(centerClass, Selector("defaultUserNotificationCenter"));
-            SendObject(center, Selector("setDelegate:"), _delegate);
-            var notificationClass = objc_getClass("NSUserNotification");
-            var notification = Send0(Send0(notificationClass, Selector("alloc")), Selector("init"));
-            SendObject(notification, Selector("setTitle:"), ToNSString(title));
-            SendObject(notification, Selector("setInformativeText:"), ToNSString(body));
-            SendObject(notification, Selector("setIdentifier:"), ToNSString(conversationId));
-            SendObject(center, Selector("deliverNotification:"), notification);
-        }
-
-        internal static void SetBadge(string? label)
-        {
-            var app = Send0(objc_getClass("NSApplication"), Selector("sharedApplication"));
-            var tile = Send0(app, Selector("dockTile"));
-            SendObject(tile, Selector("setBadgeLabel:"), label is null ? IntPtr.Zero : ToNSString(label));
-        }
-
-        internal static void SetActivationHandler(Action<string> handler) => _activated = handler;
-
-        private static void RegisterDelegate()
-        {
-            if (_registered) return;
-            var type = objc_allocateClassPair(objc_getClass("NSObject"), "AxmolHubNotificationDelegate", 0);
-            if (type == IntPtr.Zero)
-                type = objc_getClass("AxmolHubNotificationDelegate");
-            if (type == IntPtr.Zero) throw new InvalidOperationException("Could not create the macOS notification delegate.");
-
-            if (class_addMethod(type, Selector("userNotificationCenter:didActivateNotification:"),
-                    Marshal.GetFunctionPointerForDelegate(DidActivate), DidActivateSignature) == 0
-                || class_addMethod(type, Selector("userNotificationCenter:shouldPresentNotification:"),
-                    Marshal.GetFunctionPointerForDelegate(ShouldPresent), ShouldPresentSignature) == 0)
-                throw new InvalidOperationException("Could not register the macOS notification callbacks.");
-            if (objc_getClass("AxmolHubNotificationDelegate") == IntPtr.Zero) objc_registerClassPair(type);
-            _delegate = Send0(Send0(type, Selector("alloc")), Selector("init"));
-            _registered = true;
-        }
-
-        private static void OnDidActivate(IntPtr self, IntPtr selector, IntPtr center, IntPtr notification)
-        {
-            _ = self;
-            _ = selector;
-            _ = center;
-            var identifier = Send0(notification, Selector("identifier"));
-            var conversationId = NSStringToString(identifier);
-            if (conversationId.Length > 0) _activated?.Invoke(conversationId);
-        }
-
-        private static IntPtr ToNSString(string value)
-        {
-            var bytes = Marshal.StringToCoTaskMemUTF8(value);
-            try { return SendString(objc_getClass("NSString"), Selector("stringWithUTF8String:"), bytes); }
-            finally { Marshal.FreeCoTaskMem(bytes); }
-        }
-
-        private static string NSStringToString(IntPtr value)
-        {
-            if (value == IntPtr.Zero) return "";
-            var utf8 = Send0(value, Selector("UTF8String"));
-            return utf8 == IntPtr.Zero ? "" : Marshal.PtrToStringUTF8(utf8) ?? "";
-        }
-
-        private static IntPtr Selector(string name) => sel_registerName(name);
-        private static IntPtr Send0(IntPtr receiver, IntPtr selector) => objc_msgSend(receiver, selector);
-        private static void SendObject(IntPtr receiver, IntPtr selector, IntPtr value)
-            => objc_msgSend(receiver, selector, value);
-        private static IntPtr SendString(IntPtr receiver, IntPtr selector, IntPtr value)
-            => objc_msgSendString(receiver, selector, value);
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate void DidActivateHandler(IntPtr self, IntPtr selector, IntPtr center, IntPtr notification);
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate byte ShouldPresentHandler(IntPtr self, IntPtr selector, IntPtr center, IntPtr notification);
-
-        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_getClass")]
-        private static extern IntPtr objc_getClass(string name);
-        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "sel_registerName")]
-        private static extern IntPtr sel_registerName(string name);
-        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_allocateClassPair")]
-        private static extern IntPtr objc_allocateClassPair(IntPtr superclass, string name, nuint extraBytes);
-        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_registerClassPair")]
-        private static extern void objc_registerClassPair(IntPtr type);
-        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "class_addMethod")]
-        private static extern byte class_addMethod(IntPtr type, IntPtr selector, IntPtr implementation, byte[] types);
-        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
-        private static extern IntPtr objc_msgSend(IntPtr receiver, IntPtr selector);
-        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
-        private static extern void objc_msgSend(IntPtr receiver, IntPtr selector, IntPtr argument);
-        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
-        private static extern IntPtr objc_msgSendString(IntPtr receiver, IntPtr selector, IntPtr argument);
-    }
 
     /// <summary>The Windows taskbar overlay. <c>internal</c> rather than <c>private</c> because
     /// <c>--verify-shell</c> pins the two identifiers below and probes the interface for real; both assertions

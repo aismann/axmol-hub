@@ -22,6 +22,12 @@ try {
     if (-not (Test-Path -LiteralPath $taskExecutable -PathType Leaf)) { throw 'The Hub installer is missing the AxmolHub executable.' }
     $taskEntry = & /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' $taskPlist
     if ($LASTEXITCODE -ne 0 -or $taskEntry -cne 'AxmolHub') { throw 'The Hub app CFBundleExecutable must name AxmolHub.' }
+    # Notification authorization is keyed by this identifier, and UserNotifications refuses a process without
+    # one. A release whose plist lost it would install and launch fine while silently never notifying.
+    $taskBundleId = & /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' $taskPlist
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($taskBundleId)) {
+        throw 'The Hub app must declare a CFBundleIdentifier; macOS notification authorization is keyed by it.'
+    }
     $taskScheme = & /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' $taskPlist
     if ($LASTEXITCODE -ne 0 -or $taskScheme -cne 'axmolhub') { throw 'The Hub app must declare the axmolhub URL scheme.' }
 }

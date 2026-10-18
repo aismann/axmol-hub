@@ -80,8 +80,9 @@ P2–P6 期间仓库里曾**同时存在两个 GUI 项目**，CI 里也对应两
 | --- | --- | --- |
 | `Verify secret store on this host`<br>（`AxmolHub --check-secrets`） | 三平台 | **生产入口** `SecretStoreFactory.Create()`：写入 → 读回 → 篡改一字节必须读不出 → `credentials.json` 不含密钥 →（文件档）数据密钥 0600 且位置由 `HUB_SECRET_KEY_FILE` 决定 → Linux 上 `$BROWSER` 以 exec 方式被调用。末行输出 `backend=` 加档名（dpapi / encryptedfile / secret-service / none 四值之一），Linux job 额外钉住 `encryptedfile`；macOS 把"本平台暂无后端"当 PASS 分支，矩阵不为一个有意延后的项变红 |
 | `Verify secret store contract`<br>（`--check-secret-store`） | Windows | 纯函数与注入式假传输：blob 的 AAD 绑定（provider id 改名即失效）、版本字节、**外来 DPAPI blob 的识别**、路径净化（`../../evil`、`/etc/passwd` 出不了 `ai/secrets`）、`ResolvePath` 优先级、后端选择表（含 macOS 无档）、OAuth `ReadCallback` 的 state 先于 code、`$BROWSER` 参数表 |
+| `Verify macOS notification contract`<br>（`AxmolHub --check-macos-notifications`） | macOS | **生产入口**的 Objective-C 互操作：`_NSConcreteGlobalBlock` 可解析、按偏移 16 取到的 invoke 真的调用到、`UNUserNotificationCenter` delegate 的两个方法注册为 `v@:@@@?`、`willPresent` 交回 `List\|Banner`（24）、`UNNotificationDefaultActionIdentifier` 可解析、通知标识符只接受 32 位会话 id。不请求授权、不画通知；裸 dll 没有 bundle 身份时打印 `bundle=none bundled=no` 与 `SKIP`，ABI 断言仍照跑 |
 
-`--check-secrets` 在 `Program.Main` 里**早于 Avalonia 启动**就返回（与 Velopack 回调同一条规矩），所以它既不需要 X11 也不开任何窗口——这正是它能进 Linux 矩阵而 `--verify-shell` 不能的原因。它只写临时目录，并把 `HUB_SECRET_KEY_FILE` 指进那个临时目录，因此不会碰用户的 data root 与 `~/.config`。
+`--check-secrets` 在 `Program.Main` 里**早于 Avalonia 启动**就返回（与 Velopack 回调同一条规矩），所以它既不需要 X11 也不开任何窗口——这正是它能进 Linux 矩阵而 `--verify-shell` 不能的原因。它只写临时目录，并把 `HUB_SECRET_KEY_FILE` 指进那个临时目录，因此不会碰用户的 data root 与 `~/.config`。`--check-macos-notifications` 走同一条无头路径：不请求授权、不写任何文件，只在进程里建 block 和 delegate 并读回呈现选项。
 
 本机实测（2026-10-07）：Windows `backend=dpapi` 8 条 PASS；WSL2 Ubuntu-24.04 用框架依赖的 `linux-x64` 产物跑 `backend=encryptedfile` 12 条 PASS（含 0600 与浏览器启动两条只能在真 Unix 上断的）。GUI 侧另有 5 条中文断言，并已做过反向对照（让 DPAPI 也显示后端行 → 相关断言立刻 FAIL）。
 

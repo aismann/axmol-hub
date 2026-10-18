@@ -154,6 +154,7 @@ public partial class ShellCheckWindow : Window
         CheckStringDefinition();
         CheckWindowsTaskbarBadge();
         CheckWindowsToastInterop();
+        CheckMacNotificationInterop();
         await CheckCjkFontNoticeAsync();
         CheckEveryXamlResourceKeyResolves();
         var shell = CheckShell(scratchRoot);
@@ -13736,6 +13737,35 @@ public partial class ShellCheckWindow : Window
         Check(probed,
             "本机真的能按这些 IID 与槽位建出 toast 对象并拿到 notifier（停在 Show 之前，不画任何通知；"
             + "step=" + step + "，hr=" + WindowsToastInterop.Code(hr) + "）");
+    }
+
+    /// <summary>
+    /// The UserNotifications contract. The macOS channel is hand-written P/Invoke over the Objective-C runtime,
+    /// so its three invisible facts are pinned here the same way the WinRT IIDs are: the global block's invoke
+    /// offset, the two delegate type encodings, and the list|banner presentation options. The live probe builds
+    /// a real block and sends a real delegate message, but stops before authorization and never paints a
+    /// banner; a person still clicks one.
+    /// </summary>
+    private void CheckMacNotificationInterop()
+    {
+        Check(MacUserNotifications.PresentationBannerAndList == ((1 << 3) | (1 << 4))
+              && MacUserNotifications.WillPresentTypeEncoding == "v@:@@@?"
+              && MacUserNotifications.DidReceiveTypeEncoding == "v@:@@@?",
+            "macOS 通知的呈现选项是 List|Banner（24），两个 delegate 方法注册为 v@:@@@?（与 UserNotifications 头文件一致）");
+
+        if (!OperatingSystem.IsMacOS())
+        {
+            _lines.Add("SKIP  非 macOS 平台没有 UserNotifications，跳过 delegate 与 global block 的真实探测");
+            return;
+        }
+
+        var probed = MacUserNotifications.TryProbe(out var step, out var failure);
+        Check(probed,
+            "本机真的能建出 UNUserNotificationCenter delegate、按偏移取到 global block 的 invoke，并把 24 交回 completion"
+            + "（step=" + step + (failure is null ? "" : "，" + failure) + "）");
+        Check(MacUserNotifications.TryGetRequestConversationId(Guid.NewGuid().ToString("N"), out _)
+              && !MacUserNotifications.TryGetRequestConversationId("not-a-conversation", out _),
+            "macOS 通知请求的标识符只接受 32 位十六进制会话 id");
     }
 
     private async Task CheckCjkFontNoticeAsync()

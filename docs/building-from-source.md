@@ -65,7 +65,7 @@ dotnet build src/AxmolHub/AxmolHub.csproj -c Release
 dotnet run --project src/AxmolHub -- --data-root ./data
 ```
 
-macOS 本地构建会在当前编译的 `obj/` 目录下生成 `macos/Axmol Hub.app`，`dotnet run` 自动运行其中的程序。开发包的 `Info.plist` 明确指定 `Axmol Hub` 显示名称及应用图标，供 Dock 使用；启动参数和工作目录保持不变。`--no-build` 复用上次生成的开发包，因此首次运行或代码更新后需要先构建。这不改变发布安装包的打包流程。
+macOS 本地构建会在当前编译的 `obj/` 目录下生成 `macos/Axmol Hub.app`，`dotnet run` 自动运行其中的程序。开发包的 `Info.plist` 明确指定 `Axmol Hub` 显示名称及应用图标，供 Dock 使用；启动参数和工作目录保持不变。`--no-build` 复用上次生成的开发包，因此首次运行或代码更新后需要先构建。这不改变发布安装包的打包流程。开发包的 `CFBundleIdentifier` 是 `org.axmol.hub.development`：macOS 的通知授权按这个身份记录，所以开发包与安装版各有一份独立的通知权限。
 
 **四个页面（项目 / 引擎 / 工具链 / 设置）与四个对话框窗口**：左侧 218px 导航、三行内容区（页面 / 状态栏 / 日志面板）、统计卡、表格、设备条、操作按钮行的位置与文案都与原 WPF 版对齐；与原版只有三处刻意差异，原因写在 [avalonia-migration-plan.md](avalonia-migration-plan.md) §5.7。业务逻辑全在 `AxmolHub.Core`（界面项目只负责装配），编排在 `Services/HubWorkspace.cs`。
 
@@ -128,7 +128,7 @@ dotnet run --project src/AxmolHub -- --check-webfetch https://www.lua.org/manual
 
 `--verify-shell` 有三条值得单独说的断言：
 
-AI 助手的外壳检查还覆盖了计划审批卡、批准后以 Agent 模式继续、修改/拒绝、待审批计数、通知过滤（含窗口失焦与最小化）与会话深链激活。任务栏/Dock 徽标统计所有至少有一项未解决审批的会话（包括当前打开的会话），同一会话的多项审批只计一次；决定完成后计数随之更新，任务完成本身不计入。「用户看得见这条会话」要三件事同时成立：窗口在前台（既未失焦也未最小化）、停在 Assistant 页、且该页正显示这条会话——三项同时成立时，审批卡已经在眼前，因此不重复弹系统通知；最小化或 Alt-Tab 走开后，即使走开的正是当前会话，也会提醒。Windows 任务栏 overlay 和 macOS Dock 支持数字徽标；Linux 桌面环境没有统一的任务栏数字徽标接口，所以只使用该桌面实际提供的通知能力。自检会禁用真实系统通知和原生任务栏/Dock 徽标；Windows Toast、macOS 通知中心及 Linux 通知守护进程的显示与点击行为仍须在对应桌面环境实测。
+AI 助手的外壳检查还覆盖了计划审批卡、批准后以 Agent 模式继续、修改/拒绝、待审批计数、通知过滤（含窗口失焦与最小化）与会话深链激活。任务栏/Dock 徽标统计所有至少有一项未解决审批的会话（包括当前打开的会话），同一会话的多项审批只计一次；决定完成后计数随之更新，任务完成本身不计入。「用户看得见这条会话」要三件事同时成立：窗口在前台（既未失焦也未最小化）、停在 Assistant 页、且该页正显示这条会话——三项同时成立时，审批卡已经在眼前，因此不重复弹系统通知；最小化或 Alt-Tab 走开后，即使走开的正是当前会话，也会提醒。Windows 任务栏 overlay 和 macOS Dock 支持数字徽标；Linux 桌面环境没有统一的任务栏数字徽标接口，所以只使用该桌面实际提供的通知能力。自检会禁用真实系统通知和原生任务栏/Dock 徽标；Windows Toast、macOS 通知中心及 Linux 通知守护进程的显示与点击行为仍须在对应桌面环境实测。macOS 走 UserNotifications 的 `UNUserNotificationCenter`（`NSUserNotification` 自 macOS 11 起 deprecated）：第一次真要发通知时才请求授权，被拒后后续通知会重试（用户在系统设置里重新打开后无需重启）；无头部分由 `--check-macos-notifications` 钉住 block 布局、delegate 编码与呈现选项，授权框、横幅与点击仍需手测。
 
 **Linux 的三条点击路由**：`notify-send` 那一条命令同时埋了三个入口，参数形状由 `--check-linux-integration` 钉住（`SystemAttentionService.BuildLinuxNotificationArguments` 是纯函数，无显示器也能断言）：正文末尾的 `<a href="axmolhub://conversation/{id}">` 锚点——GNOME 对正文链接调 `Gio.app_info_launch_default_for_uri`，命中已注册的 `x-scheme-handler/axmolhub`，应用没在跑也有效；具名动作 `axmolhub-open`——会派发 `ActionInvoked` 的桌面把键回报给还在等的子进程，KDE 等走这条；`--hint=string:desktop-entry:axmol-hub`——让 Shell 能把通知归属到本应用，因为点横幅主体时 GNOME 只**前置已运行的窗口**，不重跑 `Exec`，也就没有第二个进程、没有深链，此时靠「最近通知的那条会话」补一跳（`MainWindow.OnWindowActivated`，TTL 90 秒、取一次即清）。两个本机实测出来的坑：`--action` 的语法是 `[NAME=]Text`，旧的 `default,Open` 没有等号，动作键退化成序号 `0`，点击因此永远认不出来；而**不能**拿规范里的 `default` 当动作名——GNOME 46 在横幅约 5 秒超时、无人点击时会自己回报 `default`，通知就会凭空把视图挪到那条会话上。对照实验：`--action=default=…` 8 秒内退出并打印 `default`，`--action=axmolhub-open=…` 静默 30 秒不打印。窗口侧同样实测过：启动那次 `Activated` 在通知 arm 之后约 13 毫秒就到，比任何点击都早，所以只有「确实离开过前台」之后的回归才被当作一次点击（`_foregroundHasLeftWindow`，`--verify-shell` 直接钉住这两步）。
 
@@ -145,6 +145,14 @@ dotnet run --project src\AxmolHub -- --data-root .\tmp\attention-test-data --pre
 ```
 
 应用日志位于 `.\tmp\attention-test-data\logs\`，筛选 `[System attention]` 可检查开始菜单快捷方式的 AppUserModelID、通知子进程结果与任务栏 overlay 的 HRESULT。成功特征：数字徽标是 `The diagnostic numeric taskbar badge was requested successfully.`，Windows toast 是 `Started Windows toast helper …` 紧跟 `Windows toast helper completed … Toast.Show completed.`。失败特征同样直白：`Could not update the taskbar badge: CoCreateInstance(CLSID_TaskbarList, IID_ITaskbarList3) returned 0x80004002`，那个 `0x80004002`(E_NOINTERFACE) 就是 0.8.x 整段时间红点不亮的原因——它不是 Windows 的行为，而是代码里的 `IID_ITaskbarList3` 字面量末段抄错（`…9E9F8A5EEA84`，真值 `…9E9F8A5EEFAF`），这个值在 `explorerframe.dll` 里一次都没有、`HKCR\Interface` 里也没有；`--verify-shell` 现在把两个标识符连同四个易混近邻一起钉住。Windows 设置中还需允许 Axmol Hub 通知，并关闭勿扰/专注助手后重测。Toast 需要开始菜单中的 `Axmol Hub.lnk` 带有匹配的 AppUserModelID（同机的 Electron 客户端只靠这一条就够，不需要再写 `HKCU\Software\Classes\AppUserModelId`）；诊断会报告快捷方式缺失或写入失败。开发版只有在已有匹配快捷方式（通常由安装版创建）时才能完成 Toast 展示验证；任务栏徽标诊断不依赖安装版。若生产日志出现 `No system notification for approval ...`，表示会话仍正在前台显示审批卡，按策略不会重复弹系统通知；若出现 Toast 成功而桌面未显示，则检查 Windows 通知权限和勿扰/专注模式；若没有 `Started Windows toast helper`，则先查审批事件与通知闸门。自检模式不会弹真实通知，`--test-system-attention` 才是桌面手测入口。**但它证明的是投递，不是触发**：诊断直接调 `Show()`，绕过 `ShouldNotifyApproval`/`ShouldNotifyRun` 闸门，所以它全绿也说明不了"最小化后会不会提醒"——那一半要按上一节的三条件手动走一遍：停在当前会话、起一个 run、把窗口最小化或 Alt-Tab 走开（不要切页、不要换会话）。
+
+**macOS 通知手动诊断**：同一个 `--test-system-attention` 可以走开发包：
+
+```bash
+dotnet run --project src/AxmolHub -- --data-root ./tmp/attention-test-data --preferences ./tmp/attention-test-preferences.json --test-system-attention
+```
+
+第一次真要发通知时 macOS 会弹系统授权框；允许后横幅才出现。日志同样在 `tmp/attention-test-data/logs/`，筛选 `[System attention]`：`Requested macOS notification authorization.` → `macOS notification authorization was granted.` / `... was denied; enable Axmol Hub in System Settings > Notifications` → `Submitted a macOS notification for conversation …` 分别是请求、结果与投递；`macOS notifications unavailable: …` 说明当前进程不在 `.app` 里（裸 `AxmolHub.dll` 就是这样，属预期），`Ignored a macOS notification action that is not the default open action.` 说明用户关闭了横幅而不是点击。和 Windows 一样，诊断直接调 `Show()`，绕过 `ShouldNotifyApproval`/`ShouldNotifyRun` 闸门，所以它证明投递，不证明触发——触发要按三条件手动走一遍。点击横幅应回到对应会话；关闭横幅不应跳转；拒绝后可在“系统设置 → 通知 → Axmol Hub”重新打开再完成一次 run，验证自愈。
 
 - **真切一次语言再切回来**，然后去读**早于切换就已建好**的控件上的文字（外壳导航项、设置页说明、引擎页表头）。它同时证明"已存在的控件跟着换文字"和"切回中文也生效"，并把设置文件落在临时目录里 —— 自检**不会**碰到你 `%LocalAppData%\AxmolHub\` 下的真实设置。去掉 `HubStrings.Apply` 那一行，构建照样 0 error，自检报 6 条 FAIL、退出 1。
 - **切换一次数据根再切回来**：换根、落盘、旧页面被丢弃、引擎列表跟着变空、拒绝盘符根、重复切换是无操作。漏掉"丢弃旧页面"的后果是"界面看着正常，一点按钮就在读一个已经不属于当前会话的工作区"——去掉 `_pages.Clear()` 一行，构建照样 0 error，自检报 3 条 FAIL、退出 1。
@@ -247,6 +255,14 @@ dotnet src/AxmolHub/bin/Release/net8.0/AxmolHub.dll --check-linux-integration ./
 ```
 
 无头（同样在 Avalonia 启动之前返回），`XDG_DATA_HOME` 被指进 scratch 目录、绝不写真实的 `~/.local/share`；断言桌面入口可解析、`Icon=`/`StartupWMClass=` 与窗口类同名、两档 hicolor PNG 的 IHDR 尺寸与桶名相符、重复注册不重写文件，退出码即失败条数。要看真效果：正常启动一次（非 `--smoke` 等自动化模式，它们刻意跳过注册），然后在 GNOME 里搜 `Axmol`。
+
+macOS 的通知通道不用打开 GUI 也能验证一半：
+
+```bash
+dotnet src/AxmolHub/bin/Release/net8.0/AxmolHub.dll --check-macos-notifications
+```
+
+无头（Avalonia 启动前返回），不请求授权、不画通知；断言 global block 的 invoke 偏移、delegate 类与两个方法编码、`willPresent` 交回的 24、以及通知标识符的接受/拒绝表。CI 的 macOS job 跑这一条：裸 dll 没有 bundle 身份，会打印 `SKIP`，属预期；开发包（`dotnet run`）会打印 `bundle=org.axmol.hub.development bundled=yes`，并真的把 delegate 设到 `UNUserNotificationCenter` 上。
 
 **边界**：`.AppImage` **文件本身**在文件管理器里的图标不在这里解决 —— vpk 不用 `appimagetool`，只把 `.DirIcon` 压进镜像，纯净的 GNOME/Nautilus 不读镜像内部，需要 appimaged / Gearlever / AppImageLauncher 这类 DE 集成守护进程。运行窗口与"显示应用"的图标是本次修的部分。
 

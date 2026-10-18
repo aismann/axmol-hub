@@ -112,6 +112,17 @@ internal sealed record HubHostOptions(
     }
 
     /// <summary>
+    /// <c>--check-macos-notifications</c>: the macOS notification channel's headless self-check. Handled like
+    /// <see cref="CheckSecretsFlag"/> — before Avalonia, no window — because the Objective-C block layout and the
+    /// delegate type encodings are ABI facts the compiler cannot check, and a CI runner has no desktop session
+    /// in which a banner could be inspected. It never requests authorization.
+    /// </summary>
+    public const string CheckMacNotificationsFlag = "--check-macos-notifications";
+
+    public static bool IsMacNotificationSelfTest(string[] args)
+        => args.Any(a => string.Equals(a, CheckMacNotificationsFlag, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
     /// <c>--check-webfetch &lt;url&gt;</c>: one real fetch through the shipped <c>web_fetch</c> body, headless.
     /// Handled like <see cref="CheckSecretsFlag"/> — before Avalonia, no window — because it is the only switch that
     /// can answer "did this build actually leave the machine, and what came back". Everything else about the tool is
