@@ -2027,6 +2027,7 @@ public partial class ShellCheckWindow : Window
         await CheckPlanApprovalAsync(shell, panel);
         await CheckAskUserAsync(shell, panel);
         await CheckAutoCompactionAsync(shell, panel, checkProvider.Id);
+        await CheckCompactingStatusAsync(shell, panel, checkProvider.Id);
         await CheckOverflowRecoveryAsync(shell, panel, checkModel);
         await CheckUsageReadBackAsync(shell, panel, checkModel);
         await CheckWorkspaceChipAsync(shell, panel);

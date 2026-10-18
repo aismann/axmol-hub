@@ -88,6 +88,13 @@ public sealed class ChatWorkspace : IDisposable
     /// the network. The bool is the bracket: true while waiting, false when the attempt goes out.</summary>
     internal event Action<string, bool>? RetryWaitChanged;
 
+    /// <summary>This session started or finished summarizing its earlier turns. Its own event rather than a
+    /// repaint through <see cref="Changed"/>: a compaction happens mid-turn, with a live bubble on screen, and the
+    /// one line that has to change is that bubble's status — the line a reload does not touch. Raised for the
+    /// button path too, where no bubble exists and the strip below the transcript carries the fact instead. The
+    /// bool is the bracket: true while the summarizer works, false when it is done.</summary>
+    internal event Action<string, bool>? CompactionChanged;
+
     public ChatWorkspace(string dataRoot)
     {
         _dataRoot = dataRoot;
@@ -354,6 +361,10 @@ public sealed class ChatWorkspace : IDisposable
             // Posted rather than raised: the button path calls this on the UI thread, but so does the pump
             // between segments, and there the caller is a thread-pool thread. `Changed` repaints controls.
             RaiseOnUi(() => Changed?.Invoke());
+            // The run goes silent for as long as the summarizer takes, so the status line the person is watching
+            // would otherwise go on saying tokens are coming. Raised here rather than where the answer lands,
+            // because the silence starts the moment this request goes out.
+            RaiseOnUi(() => CompactionChanged?.Invoke(conversationId, true));
             var request = await ReadOnUiAsync(() => PrepareCompressionRequest(conversationId)).ConfigureAwait(false);
             if (request is null) return false;
 
@@ -411,6 +422,9 @@ public sealed class ChatWorkspace : IDisposable
             await ApplyOnUiAsync(() =>
             {
                 _compressingConversations.Remove(conversationId);
+                // Every ending gives the line back — a summary, a refusal, a cancelled request — because the
+                // session has stopped working on it. What stands there next is the view's decision.
+                CompactionChanged?.Invoke(conversationId, false);
                 Changed?.Invoke();
             }).ConfigureAwait(false);
         }

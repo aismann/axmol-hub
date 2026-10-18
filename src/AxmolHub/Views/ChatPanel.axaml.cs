@@ -294,6 +294,20 @@ public partial class ChatPanel : UserControl
             live.Status.Text = waiting ? RetryActivityText(live.Run.RetryWaitNotice())
                 : live.ShowedText ? HubStrings.Get("ChatGenerating") : HubStrings.Get("ChatPreparing");
         };
+        // A compaction is the one stretch of a run where no token arrives and no tool runs, so the line that exists
+        // to say the turn is alive would go on claiming tokens are coming. Both brackets write the same line the
+        // retry wait uses, and give it back the same way. The strip below the flow is repainted as well, because
+        // that is the surface the button path has: compressing a session nobody has sent to leaves no bubble to
+        // correct, and RenderNotice is where the two surfaces take turns.
+        _chat.CompactionChanged += (conversationId, compacting) =>
+        {
+            if (_live is { } live && live.Run.ConversationId == conversationId)
+            {
+                live.Status.Text = compacting ? HubStrings.Get("ChatCompactingContext")
+                    : live.ShowedText ? HubStrings.Get("ChatGenerating") : HubStrings.Get("ChatPreparing");
+            }
+            RenderNotice();
+        };
         _chat.RunsChanged += conversationId =>
         {
             if (conversationId == _chat.ViewedConversationId) RenderMessages();
@@ -3465,12 +3479,35 @@ public partial class ChatPanel : UserControl
             or "ChatStreamInterrupted" or "ChatConnectionFailed" or "ChatRateLimited"
             or "ChatFailed" or "ChatNoResponse";
 
+    /// <summary>What the strip below the transcript says. Two painters rather than one, because the stored notice
+    /// can decline to speak — it ages out — while a compaction is only ever happening or over.</summary>
+    private void RenderNotice()
+    {
+        RenderStoredNotice();
+        RenderCompactingRow();
+    }
+
+    /// <summary>Adds the line a compaction owns, while one runs and no bubble is on screen. Read from the workspace
+    /// rather than remembered here, so a rebuild of the transcript paints it again for as long as it is true — the
+    /// reason this strip lives outside the flow at all. A run gets the same fact on its own status line instead:
+    /// saying it in both places would be one thing said twice.</summary>
+    private void RenderCompactingRow()
+    {
+        var conversationId = _chat.ActiveConversation?.Id;
+        if (conversationId is null || !_chat.IsCompressingContext(conversationId)) return;
+        // A run on this same session already says it on its own status line; a bubble belonging to another
+        // session is not this session's news, and must not silence the strip.
+        if (_live?.Run.ConversationId == conversationId) return;
+        NoticeHost.Children.Add(BuildNoticeRow(HubStrings.Get("ChatCompactingContext"), danger: false,
+            onRetry: null));
+    }
+
     /// <summary>Paints the stored notice, if it still is news: same conversation, nothing of the person's said
     /// since, and — for the news a run brought — no newer run begun. Called from the render path, so a rebuild
     /// cannot erase it and a new message cannot be answered by an old warning. With no conversation at all — the
     /// model list just emptied, say — there is nothing that can age it out, so the line stands until the next one
     /// replaces it.</summary>
-    private void RenderNotice()
+    private void RenderStoredNotice()
     {
         NoticeHost.Children.Clear();
         var viewed = _chat.ActiveConversation;

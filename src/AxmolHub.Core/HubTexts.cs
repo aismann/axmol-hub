@@ -587,6 +587,11 @@ public static class HubTexts
             "Past the room this conversation has: compress it, or drop an attachment."),
         ["ChatCompressContext"] = ("压缩上下文", "Compress context"),
         ["ChatCompressingContext"] = ("正在压缩上下文…", "Compressing context…"),
+        // The run goes silent while the summariser works: no token, no tool call, nothing that would prove it is
+        // alive. A state rather than the button's verb above, because nobody is being asked to do anything — it
+        // says what the session is doing, not what a control would do. Drawn on the bubble's status line while a
+        // run is on screen, and in the strip below the transcript when none is.
+        ["ChatCompactingContext"] = ("上下文压缩中…", "Compacting context…"),
         ["ChatContextCompressUnavailable"] = ("当前对话没有足够的早期内容可供压缩。", "There is not enough earlier conversation to compress yet."),
         ["ChatContextCompressFailed"] = ("压缩上下文失败：", "Could not compress context: "),
         ["ChatContextCompressing"] = ("上下文压缩完成前，暂时不能发送或重试消息。", "Sending or retrying is unavailable until context compression finishes."),
