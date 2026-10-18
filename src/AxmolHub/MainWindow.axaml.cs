@@ -1038,6 +1038,22 @@ public partial class MainWindow : Window
         Activate();
     }
 
+    /// <summary>
+    /// The macOS Dock (or Cmd-Tab) brought the app forward — <see cref="MacDockActivation"/> turned AppKit's
+    /// did-become-active notification into this call. It restores a hidden window and stops there.
+    ///
+    /// <para>Deliberately not <see cref="ActivateFromRequest"/>: that one also consumes a pending notification
+    /// target, and an ordinary raise must not jump to a conversation an earlier alert was about — the existing
+    /// gate for that lives in the window's own <c>Activated</c> handler
+    /// (<c>_foregroundHasLeftWindow</c>), and this path has no business bypassing it. When nothing is hidden
+    /// there is nothing to do, so a plain Cmd-Tab to a visible window changes nothing at all.</para>
+    /// </summary>
+    internal void RestoreFromActivation()
+    {
+        if (!ShouldShowForRequest(!IsVisible, App.Options.IsAutomation)) return;
+        RestoreFromTray();
+    }
+
     internal void ExitFromTray()
     {
         if (_workspace.IsBusy)

@@ -1087,13 +1087,27 @@ public partial class ShellCheckWindow : Window
               && !MainWindow.ShouldHideOnCloseForCheck(true, false, false, true, true)
               && !MainWindow.ShouldHideOnCloseForCheck(false, true, false, true, false),
             "关窗即隐藏：Windows 有托盘与 macOS 的 Dock 都隐藏主窗口，显式退出、自动化与其他平台仍执行原关闭流程");
-        // The way back to a hidden window, and why Hub carries it itself: this Avalonia version's desktop lifetime
-        // does not implement IActivatableLifetime, so ActivationKind.Reopen — the Dock click Avalonia would
-        // otherwise raise for exactly this case — never arrives. So the application menu holds Hub's own entry,
-        // built through the same factory App calls at startup and installed on the real menu here, which is what
-        // makes it more than a label: the row has to exist, come before the About row, and carry a handler.
+        // The two ways back to a hidden window on macOS. The Dock click is AppKit's did-become-active notification,
+        // because ActivationKind.Reopen — what Avalonia would raise for it — never comes: this version's desktop
+        // lifetime does not implement IActivatableLifetime. The notification is raised here for real: a check
+        // cannot click a Dock icon, so what is proven is the part that can silently be wrong — the registered
+        // selector, the callback bridge, and that the callback reaches the restore path. Uninstalled again so the
+        // rest of the suite runs against a plain centre.
         if (OperatingSystem.IsMacOS())
         {
+            var activated = 0;
+            var installed = MacDockActivation.Install(() => activated++);
+            MacDockActivation.PostActivationForCheck();
+            Dispatcher.UIThread.RunJobs();
+            MacDockActivation.Uninstall();
+            Check(installed && activated == 1,
+                "macOS 的 Dock 图标（应用被激活通知）真的进到恢复主窗口的回调里（实际装上 " + installed
+                + "，回调 " + activated + " 次）");
+
+            // The menu entry, which covers the case no activation can report: the app is already frontmost, so
+            // there is no transition to observe and the row is the only way back. Installed through the same
+            // factory App calls at startup and read back off the real application menu, so it has to exist, come
+            // before the About row, and carry a handler — a label alone would restore nothing.
             MacApplicationMenu.Install(Application.Current!, () => { });
             var applicationMenu = NativeMenu.GetMenu(Application.Current!)?.Items.OfType<NativeMenuItem>().ToArray()
                 ?? [];
@@ -1104,7 +1118,7 @@ public partial class ShellCheckWindow : Window
                   && showWindow.Menu is null
                   && showWindow.HasClickHandlers
                   && aboutIndex > 0,
-                "macOS 应用菜单第一项是 Hub 自己的「显示主窗口」，被关掉的主窗口从这里回来（实际第一项「"
+                "macOS 应用菜单第一项是 Hub 自己的「显示主窗口」，应用已在前台时从这里回来（实际第一项「"
                 + (showWindow?.Header ?? "没有菜单项") + "」，「" + AboutMenuLabel + "」排在第 " + aboutIndex
                 + " 项）");
         }

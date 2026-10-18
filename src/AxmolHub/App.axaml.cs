@@ -350,14 +350,21 @@ public partial class App : Application
         }
 
         // The macOS counterpart of the tray block above: the close button hides the window (see
-        // MainWindow.ShouldHideOnCloseForCheck), and what brings it back is Hub's own application-menu entry,
-        // because the platform event that would otherwise do it — ActivationKind.Reopen, which Avalonia raises
-        // for a Dock click while the app has no visible window — never arrives: this version's desktop lifetime,
-        // ClassicDesktopStyleApplicationLifetime, does not implement IActivatableLifetime. The shell self-check
-        // reads that entry off the installed menu rather than trusting this call. See MacApplicationMenu.
+        // MainWindow.ShouldHideOnCloseForCheck), and two things bring it back. A Dock click (or Cmd-Tab) — the
+        // platform gesture for it — arrives as AppKit's did-become-active notification, because ActivationKind
+        // .Reopen, which Avalonia would raise for a Dock click on an app with no visible window, never comes: this
+        // version's ClassicDesktopStyleApplicationLifetime does not implement IActivatableLifetime. And the
+        // application menu carries Hub's own entry for the one case the notification cannot report — the app is
+        // already frontmost, so no activation transition happens, and the row is the only way back. Both land on
+        // the window's restore path; the shell self-check reads the entry off the installed menu and raises the
+        // notification for real.
         if (OperatingSystem.IsMacOS() && !Options.IsAutomation)
         {
             MacApplicationMenu.Install(this, window.ActivateFromRequest);
+            if (MacDockActivation.Install(window.RestoreFromActivation))
+            {
+                desktop.Exit += (_, _) => MacDockActivation.Uninstall();
+            }
         }
 
         if (!Options.IsAutomation)
