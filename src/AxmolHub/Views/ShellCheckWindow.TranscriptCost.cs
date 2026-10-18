@@ -1,5 +1,6 @@
 using System.Linq;
 using Avalonia.Threading;
+using AxmolHub.Core;
 
 namespace AxmolHub;
 
@@ -60,6 +61,30 @@ public partial class ShellCheckWindow
             "回到刚离开的会话是接回原来的行，不是重画一遍：首行仍是同一个控件，"
             + $"纯文本行数不变（{promoted} 条）");
 
+        // ── A window edge that lands inside a machine exchange ──
+        // The cut is chosen by turn count, and a count knows nothing about which turns belong together. This
+        // fixture puts a tool result exactly at the edge, so a naive cut would paint a result whose call is above
+        // the window: the answer has to move the edge back over the call instead.
+        var edgeSession = chat.StartConversation();
+        for (var i = 0; i < 3; i++)
+            chat.SeedAssistantReplyForCheck(edgeSession.Id, $"前置回答 {i + 1}");
+        // Two turns appended straight to the live conversation, the way the tool-flood fixture builds a call and
+        // its result: there is no seed that writes a result, and what this check reads is how the window cuts a
+        // stored exchange rather than how one was stored.
+        var edgeTurns = chat.ActiveConversation!.Messages;
+        edgeTurns.Add(ChatTurn.FunctionCall("call_edge", "run_command", "{\"command\":\"git status\"}"));
+        edgeTurns.Add(ChatTurn.FunctionResult("call_edge", "ok"));
+        for (var i = 0; i < 29; i++)
+            chat.SeedAssistantReplyForCheck(edgeSession.Id, $"后续回答 {i + 1}");
+        chat.OpenConversation(longSession.Id);
+        chat.OpenConversation(edgeSession.Id);
+        panel.Reload();
+        var edgePainted = panel.PaintedTurnCountForCheck;
+        Check(edgePainted == ChatPanel.FirstPaintTurnsForCheck + 1,
+            $"窗口边落在工具调用中间时，边往回退一格把调用带进来：{ChatPanel.FirstPaintTurnsForCheck} 条变成 "
+            + $"{edgePainted} 条");
+        chat.DeleteConversation(edgeSession.Id);
+
         // ── A session longer than one window ──
         // What the window claims: the first frame costs what a screen costs, not what the session costs. Counted
         // before anything pumps the dispatcher, because afterwards only the line at the top is left as evidence.
@@ -73,6 +98,11 @@ public partial class ShellCheckWindow
         Check(firstPaint == ChatPanel.FirstPaintTurnsForCheck && panel.HasLoadEarlierRowForCheck,
             $"长会话先只画最新的一段：120 条回答里画 {firstPaint} 条"
             + $"（窗口 {ChatPanel.FirstPaintTurnsForCheck}），更早的用一行代替");
+
+        // Laid out, not merely present: a row whose style resolved to nothing would still be counted above.
+        Relayout(shell, panel, measure: true);
+        Check(panel.LoadEarlierRowHeightForCheck > 0,
+            "「加载更早的」真的画出来了，高 " + Fmt(panel.LoadEarlierRowHeightForCheck) + "px");
 
         // Each press widens the window by a step, and the line goes away once the whole history is in the flow.
         var presses = 0;

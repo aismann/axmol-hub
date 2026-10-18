@@ -66,6 +66,11 @@ public partial class ChatPanel : UserControl
     /// rows are all there — past this, drawing them again is cheaper than keeping them.</summary>
     private const int ParkedRowLimit = 200;
 
+    /// <summary>How far a window's edge may walk back to avoid cutting a tool call from its result. A normal
+    /// exchange — one call, one result — costs one step; the budget is only there so that a run of eighty rounds
+    /// cannot drag the whole window with it.</summary>
+    private const int WindowEdgeWalk = 12;
+
     /// <summary>How close to the bottom counts as "the user is at the bottom". A few pixels of slack stop
     /// sub-pixel scroll rounding from flipping the state on every scroll event.</summary>
     private const double StickEpsilon = 6;
@@ -2441,7 +2446,7 @@ public partial class ChatPanel : UserControl
         // teardown wearing a different hat.
         if (_renderedCount == 0 && visible.Count > _paintWindow)
         {
-            _paintedFrom = visible.Count - _paintWindow;
+            _paintedFrom = WindowEdge(visible, visible.Count - _paintWindow);
             // The loop below starts at the window's edge and paints on to the end, so "how much is in the flow" is
             // the tail of the transcript rather than all of it — which is the whole of what this costs the frame.
             _renderedCount = _paintedFrom;
@@ -2553,6 +2558,28 @@ public partial class ChatPanel : UserControl
         _renderedConversationId = null;
         _renderedCount = 0;
         RenderMessages();
+    }
+
+    /// <summary>
+    /// Where a window may start: the index asked for, moved back over a machine exchange the cut would otherwise
+    /// split.
+    ///
+    /// <para>A tool result whose call sits above the window is a row that reads as a tool nobody asked for, and
+    /// the pairing of a call with its result is the one thing the transcript's rows cannot be reordered out of.
+    /// The walk is bounded by <see cref="WindowEdgeWalk"/>: a run of eighty rounds is a tool storm, and pulling
+    /// eighty turns into the window to keep one exchange whole would hand the cost straight back. Past the budget
+    /// the exchange is cut, and only the row above the window's edge reads oddly.</para>
+    /// </summary>
+    private static int WindowEdge(List<(int Index, ChatTurn Turn, string? ToolName)> visible, int start)
+    {
+        var from = start;
+        for (var walked = 0; from > 0 && walked < WindowEdgeWalk; walked++)
+        {
+            if (visible[from].Turn.Role != ChatRoles.Tool || !IsActivityTurn(visible[from - 1].Turn)) break;
+            from--;
+        }
+
+        return from;
     }
 
     /// <summary>
@@ -5348,6 +5375,10 @@ public partial class ChatPanel : UserControl
 
     /// <summary>Whether the flow opens with the line that stands for the turns above it.</summary>
     internal bool HasLoadEarlierRowForCheck => LoadEarlierRowForCheck() is not null;
+
+    /// <summary>How tall that line is on screen. A count says the control is in the flow; this says it was laid
+    /// out, which is the difference between a row and a style that resolved to nothing.</summary>
+    internal double LoadEarlierRowHeightForCheck => LoadEarlierRowForCheck()?.Bounds.Height ?? 0;
 
     /// <summary>Presses that line the way a hand does, and answers whether there was one to press.</summary>
     internal bool ClickLoadEarlierForCheck()
