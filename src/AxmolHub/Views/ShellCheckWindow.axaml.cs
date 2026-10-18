@@ -593,6 +593,20 @@ public partial class ShellCheckWindow : Window
               && quotedDraft.Contains(chipProbe.Code, StringComparison.Ordinal),
             "点「引用」把选区以 markdown 引用格式送进输入框（实际「"
             + quotedDraft.Replace("\n", "\\n", StringComparison.Ordinal) + "」）");
+        // The person's own message is the one surface drawn with a SelectableTextBlock, and that control drops its
+        // selection when it loses the focus a menu's popup takes — the composer's bug, in the other control. Read
+        // end to end: select it, ask for the menu the way a right-click does, take the focus away, press both rows.
+        // The earlier cell above only asked which rows the menu carries, which is why it stayed green while the
+        // band and the copy were both gone.
+        panel.SetInputForCheck("");
+        var userPill = panel.ProbeUserPillSelectionForCheck();
+        Check(userPill.MenuOpen && userPill.SelectedText == userPill.Picked,
+            "自己发的消息弹出右键菜单后选区仍在（菜单打开=" + userPill.MenuOpen + "，选中「"
+            + userPill.Picked + "」，之后仍是「" + userPill.SelectedText + "」）");
+        Check(userPill.CopiedText == userPill.Picked
+              && userPill.Quoted.StartsWith("> ", StringComparison.Ordinal),
+            "自己发的消息上「复制」「引用」拿到的是那段选中文字（复制「" + userPill.CopiedText + "」，引用「"
+            + userPill.Quoted.Replace("\n", "\\n", StringComparison.Ordinal) + "」）");
         panel.SetInputForCheck("");
         panel.ApplyMarkdownSyntaxHighlightingForCheck();
         Check(panel.HasSyntaxHighlightedCode("cpp"),

@@ -21,6 +21,15 @@ namespace AxmolHub;
 /// framework opens itself — and that route is not cosmetic: it is what keeps the box's selection alive while the
 /// menu is up (see <see cref="AttachTextBox"/>). Because the table below cannot answer for a menu the framework
 /// owns, the lookups read <see cref="Control.ContextFlyout"/> first and fall back to it.</para>
+///
+/// <para>A menu opened by hand costs the selection unless something pays for it, and that is why
+/// <see cref="Attach"/> looks the way it does. The popup takes the keyboard focus, and a
+/// <see cref="SelectableTextBlock"/> — which is what the person's own message is drawn with — answers a lost
+/// focus by clearing its selection, keeping it only while its own <c>ContextFlyout</c>/<c>ContextMenu</c> is the
+/// open one. So the menu is handed to the control for as long as it is up, and its rows act on what was selected
+/// when it opened: the first keeps the band on screen, the second makes the copy land even if a host clears the
+/// selection anyway. A rendered document needs neither half — the library's selection lives in its blocks rather
+/// than in the focus.</para>
 /// </summary>
 internal static class SelectionMenu
 {
@@ -34,8 +43,15 @@ internal static class SelectionMenu
     {
         var menu = new MenuFlyout();
 
+        // What the surface held when the menu opened. A row pressed after the popup took the focus has to act on
+        // what the person saw when they asked for the menu, even if something cleared the selection in between —
+        // which is what a selectable block does (see the class header). Live first, this as the fallback, so a
+        // surface that keeps its selection reads as it always did.
+        var opened = "";
+        string Selection() => readSelection() is { Length: > 0 } live ? live : opened;
+
         var copy = new MenuItem { Header = HubStrings.Get("CopyMessage") };
-        copy.Click += async (_, _) => await CopyAsync(target, readSelection());
+        copy.Click += async (_, _) => await CopyAsync(target, Selection());
         menu.Items.Add(copy);
 
         if (quote is not null)
@@ -43,19 +59,41 @@ internal static class SelectionMenu
             var quoted = new MenuItem { Header = HubStrings.Get("QuoteSelection") };
             quoted.Click += (_, _) =>
             {
-                var text = readSelection();
+                var text = Selection();
                 if (text.Length > 0) quote(text);
             };
             menu.Items.Add(quoted);
         }
+
+        // The band survives the menu, and the framework is what pays for it. A popup takes the keyboard focus, and
+        // a selectable block answers a lost focus by clearing its selection — unless its own
+        // ContextFlyout/ContextMenu is the open one (SelectableTextBlock.OnLostFocus carries the very guard a
+        // TextBox does). Opening the menu by hand leaves that property null, which is why the band went the
+        // instant the menu appeared; a rendered document never had the problem, because its selection lives in the
+        // library's blocks and not in the focus. So the flyout is handed to the control for as long as it is up,
+        // and taken back afterwards — long enough to hold the band, short enough that the next right-click is
+        // still earned by a selection rather than opened by the framework for everyone.
+        var held = target as SelectableTextBlock;
+        var previousFlyout = held?.ContextFlyout;
+        menu.Closed += (_, _) =>
+        {
+            if (held is not null && ReferenceEquals(held.ContextFlyout, menu)) held.ContextFlyout = previousFlyout;
+        };
 
         Attached.AddOrUpdate(target, menu);
         target.AddHandler(InputElement.ContextRequestedEvent, (_, e) =>
         {
             // Nothing selected, nothing asked: a menu whose only rows could not act on anything is worse than no
             // menu, and leaving the event alone keeps the library's own handling (if it ever grows one) intact.
-            if (readSelection().Length == 0) return;
+            var text = readSelection();
+            if (text.Length == 0) return;
             e.Handled = true;
+            opened = text;
+            if (held is not null)
+            {
+                previousFlyout = held.ContextFlyout;
+                held.ContextFlyout = menu;
+            }
             menu.ShowAt(target, showAtPointer: true);
         }, RoutingStrategies.Bubble, handledEventsToo: true);
     }
@@ -116,6 +154,13 @@ internal static class SelectionMenu
         => MenuOf(target)?.Items.OfType<MenuItem>()
             .FirstOrDefault(item => item.Header?.ToString() == header);
 
+    /// <summary>Whether the surface's menu is up, for a check that has to see the popup open rather than only
+    /// read the rows it carries.</summary>
+    internal static bool IsOpenForCheck(Control target) => MenuOf(target) is { IsOpen: true };
+
+    /// <summary>Closes a menu a check opened, so the surface is left the way it was found.</summary>
+    internal static void HideForCheck(Control target) => MenuOf(target)?.Hide();
+
     /// <summary>The rows as one line, for the message of a check that failed: "复制|引用", or empty when the
     /// surface carries no menu. A boolean that cannot say which half of it was false costs a second run to
     /// diagnose.</summary>
@@ -131,9 +176,20 @@ internal static class SelectionMenu
             ? attached
             : target.ContextFlyout as MenuFlyout;
 
+    /// <summary>Where a copy lands when a check wants it, instead of the real clipboard — the same hook
+    /// <c>ChatSidebar.TestClipboardWriter</c> gives the conversation-id copy, and for the same reason: the suite
+    /// drives the row's own click handler, and reading the text back must not throw away what the person last
+    /// copied. Left null in the shell, where a copy goes to the clipboard.</summary>
+    internal static Func<string, Task>? TestClipboardWriter { get; set; }
+
     private static async Task CopyAsync(Control source, string text)
     {
         if (text.Length == 0) return;
+        if (TestClipboardWriter is { } writer)
+        {
+            await writer(text);
+            return;
+        }
         if (TopLevel.GetTopLevel(source)?.Clipboard is not { } clipboard) return;
 
         // The same shape the code block's copy button uses: a DataTransfer with one text item, so the clipboard

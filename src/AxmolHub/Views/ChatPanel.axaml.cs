@@ -5970,6 +5970,80 @@ public partial class ChatPanel : UserControl
             .Any(text => text.Classes.Contains("turn-text")
                          && MarkdownMessageRenderer.MatchesToken(text.SelectionBrush, "Hub.Selection"));
 
+    /// <summary>A reading off the person's own message taken while its right-click menu is up: whether the menu
+    /// opened, the text that was selected, what the block still holds, and what the two rows handed on.</summary>
+    internal readonly record struct UserPillSelectionProbe(bool MenuOpen, string Picked, string SelectedText,
+        string CopiedText, string Quoted);
+
+    /// <summary>Selects the whole of the person's own message, asks for its menu the way a right-click does, takes
+    /// the keyboard focus away from the block the way the menu's popup does, and presses both rows.
+    ///
+    /// <para>The range is set through the block's own properties rather than dragged out with pointer events: what
+    /// this pins is what the menu does to a selection, not how a drag builds one. The focus move is explicit for a
+    /// different reason — the popup takes the focus on a real desktop and may not under the check window, and the
+    /// reading has to come back the same everywhere. It is exactly the event the bug was about: the block dropping
+    /// its selection because something else took the focus.</para>
+    ///
+    /// <para>Everything is put back afterwards — the menu closed, the composer emptied and its focus restored, the
+    /// band cleared — because a selection left on screen would be read by the pixel checks that follow.</para>
+    /// </summary>
+    internal UserPillSelectionProbe ProbeUserPillSelectionForCheck()
+    {
+        var block = MessageFlow.GetLogicalDescendants().OfType<Border>()
+            .Where(border => border.Classes.Contains("user-pill"))
+            .SelectMany(pill => pill.GetLogicalDescendants().OfType<SelectableTextBlock>())
+            .FirstOrDefault(text => text.Classes.Contains("turn-text") && (text.Text ?? "").Length > 0);
+        if (block is null) return default;
+
+        var composerHadFocus = InputBox.IsKeyboardFocusWithin;
+        var picked = block.Text ?? "";
+        block.Focus();
+        block.SelectionStart = 0;
+        block.SelectionEnd = picked.Length;
+
+        // The request a right-click raises, not the menu opened by hand: what the reader presses is the request,
+        // and the handler that answers it is the half that lost the selection.
+        block.RaiseEvent(new ContextRequestedEventArgs());
+        Dispatcher.UIThread.RunJobs();
+        var menuOpen = SelectionMenu.IsOpenForCheck(block);
+
+        // The popup's focus grab, made deterministic — see the summary.
+        InputBox.Focus();
+        Dispatcher.UIThread.RunJobs();
+        var selected = block.SelectedText ?? "";
+
+        // 复制 goes to a recorded string instead of the clipboard, the way the sidebar's copy is checked.
+        var copied = "";
+        SelectionMenu.TestClipboardWriter = text =>
+        {
+            copied = text;
+            return Task.CompletedTask;
+        };
+        try
+        {
+            SelectionMenu.ItemForCheck(block, HubStrings.Get("CopyMessage"))
+                ?.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+        }
+        finally
+        {
+            SelectionMenu.TestClipboardWriter = null;
+        }
+
+        SetInputForCheck("");
+        SelectionMenu.ItemForCheck(block, HubStrings.Get("QuoteSelection"))
+            ?.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        var quoted = InputBox.Text ?? "";
+
+        SelectionMenu.HideForCheck(block);
+        block.ClearSelection();
+        SetInputForCheck("");
+        if (composerHadFocus) FocusComposerForCheck();
+        else MoveFocusOffComposerForCheck();
+        Dispatcher.UIThread.RunJobs();
+        return new UserPillSelectionProbe(menuOpen, picked, selected, copied, quoted);
+    }
+
     internal void ApplyMarkdownSyntaxHighlightingForCheck()
     {
         foreach (var viewer in MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>())
