@@ -4413,9 +4413,10 @@ public partial class ShellCheckWindow : Window
     ///
     /// <para>A tool loop thinks once per round, and the run's clock has been running since the first one. Read off
     /// the run alone, the later rounds inherit everything before them: on a real session a few seconds of thinking
-    /// filed itself as <c>已思考 51m</c>. The fixture therefore parks the second round for a stretch the assertion
-    /// can point at — and reads that stretch back off the same turn, so a run that merely finished fast cannot
-    /// pass the check by being short.</para>
+    /// filed itself as <c>已思考 51m</c>. The fixture therefore holds the first response before its tool call,
+    /// then lets the second response finish immediately. The measured hold must stay on the run's clock without
+    /// being charged to the second segment. Waiting inside the second response would instead be legitimate
+    /// time spent on that segment and would contradict the assertion.</para>
     /// </summary>
     private async Task CheckThoughtDurationAsync(MainWindow shell, ChatPanel panel)
     {
@@ -4425,21 +4426,23 @@ public partial class ShellCheckWindow : Window
         chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
         try
         {
-            var secondRound = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            chat.ClientOverride = (_, _) => new TwoRoundThinkingChatClient(secondRound.Task);
+            var firstRoundReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseFirstRound = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            chat.ClientOverride = (_, _) => new TwoRoundThinkingChatClient(firstRoundReady, releaseFirstRound.Task);
             panel.SetInputForCheck("想两轮再答");
             await panel.SendComposerForCheck();
-            await WaitUntilAsync(() => session.Messages.Any(turn => turn.ReasoningElapsed is not null),
-                maxTicks: 120);
-            // The gap between the rounds is the whole test, so it is real time rather than a poll: while this
-            // waits, the run is alive, the tool has come back, and the second round has thought nothing yet.
+            await firstRoundReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // Hold the first response before onToolStarted resets the segment clock. The second response must
+            // not inherit this interval; measure it instead of imposing a scheduler-sensitive upper time limit.
+            var heldAt = System.Diagnostics.Stopwatch.GetTimestamp();
             await Task.Delay(1200);
-            secondRound.SetResult(true);
+            var heldFor = System.Diagnostics.Stopwatch.GetElapsedTime(heldAt);
+            releaseFirstRound.SetResult(true);
             await panel.WaitForRunToFinishForCheck();
 
             var thought = session.Messages.Last(turn => turn.ReasoningElapsed is not null);
             var took = thought.RunElapsed ?? TimeSpan.Zero;
-            Check(thought.ReasoningElapsed < TimeSpan.FromMilliseconds(600) && took > TimeSpan.FromSeconds(1),
+            Check(thought.ReasoningElapsed is { } reasoning && took - reasoning >= heldFor,
                 "后一轮的「已思考」只算它自己那一段，不把前面几轮的工具时间也记在自己头上（这段思考 "
                 + thought.ReasoningElapsed?.TotalSeconds.ToString("0.00", CultureInfo.InvariantCulture)
                 + "s，整个运行 "
@@ -10785,10 +10788,10 @@ public partial class ShellCheckWindow : Window
         public void Dispose() { }
     }
 
-    /// <summary>Two rounds, each thinking for as long as it takes to say one clause, with the second round held
-    /// back until the check opens it. The hold is what separates the two clocks: everything the run spends between
-    /// the rounds belongs to the run, and none of it belongs to the thinking that comes after.</summary>
-    private sealed class TwoRoundThinkingChatClient(Task secondRound) : Microsoft.Extensions.AI.IChatClient
+    /// <summary>Two rounds with a hold before the first response hands over its tool call. That hold precedes
+    /// the next segment's reset, so it must never appear in the second round's thinking duration.</summary>
+    private sealed class TwoRoundThinkingChatClient(TaskCompletionSource<bool> firstRoundReady, Task releaseFirstRound)
+        : Microsoft.Extensions.AI.IChatClient
     {
         private int _calls;
 
@@ -10810,6 +10813,8 @@ public partial class ShellCheckWindow : Window
                     [new Microsoft.Extensions.AI.TextReasoningContent("第一轮想了一下。")]);
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant, "先查一下工程列表");
+                firstRoundReady.TrySetResult(true);
+                await releaseFirstRound.WaitAsync(cancellationToken).ConfigureAwait(false);
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant,
                     [new Microsoft.Extensions.AI.FunctionCallContent(
@@ -10817,7 +10822,6 @@ public partial class ShellCheckWindow : Window
             }
             else
             {
-                await secondRound.ConfigureAwait(false);
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant,
                     [new Microsoft.Extensions.AI.TextReasoningContent("第二轮又想了一下。")]);
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
