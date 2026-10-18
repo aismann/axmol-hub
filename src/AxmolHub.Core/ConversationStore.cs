@@ -144,10 +144,19 @@ public sealed class ConversationStore(string root)
     public Conversation? Load(string id)
     {
         var path = ConversationPath(id);
-        return File.Exists(path)
-            ? JsonSerializer.Deserialize<Conversation>(File.ReadAllText(path), Json)
-            : null;
+        return File.Exists(path) ? Read(path) : null;
     }
+
+    /// <summary>
+    /// One session file, parsed straight from the file's own bytes.
+    ///
+    /// <para>Deliberately not <c>File.ReadAllText</c>: that hands the parser a UTF-16 string which it has to
+    /// encode back to UTF-8 before it can read a token, so a long session is copied through memory twice for
+    /// nothing — the file is UTF-8 and the parser reads that form natively. The contract is otherwise identical
+    /// (same options, same result), which is why the difference is only visible in a profile.</para>
+    /// </summary>
+    private static Conversation? Read(string path)
+        => JsonSerializer.Deserialize<Conversation>(File.ReadAllBytes(path), Json);
 
     /// <summary>
     /// The session file's own text, before anything is deserialized. For the self-check only, and it exists
@@ -205,7 +214,7 @@ public sealed class ConversationStore(string root)
                     if (Path.GetFileName(file).Equals("index.json", StringComparison.OrdinalIgnoreCase)) continue;
                     try
                     {
-                        var conversation = JsonSerializer.Deserialize<Conversation>(File.ReadAllText(file), Json);
+                        var conversation = Read(file);
                         if (conversation is not null) summaries.Add(ConversationSummary.From(conversation));
                     }
                     catch (JsonException) { /* A corrupt session file is skipped, not fatal — the rest still load. */ }
