@@ -219,6 +219,7 @@ public partial class ChatPanel : UserControl
     private System.Diagnostics.Stopwatch? _openClock;
     private double _openBuildMs;
     private bool _openReusedRows;
+    private int _openReloads;
 
     /// <summary>One transcript's rows, detached but alive, with everything needed to tell whether they still
     /// describe the conversation they were drawn from.</summary>
@@ -572,7 +573,18 @@ public partial class ChatPanel : UserControl
         // build and the frame that draws it, and only the first of those three is the store's to own.
         var opening = _chat.ViewedConversationId is { Length: > 0 } viewed
                       && !string.Equals(viewed, _renderedConversationId, StringComparison.Ordinal);
-        if (opening) _openClock = System.Diagnostics.Stopwatch.StartNew();
+        if (opening)
+        {
+            _openClock = System.Diagnostics.Stopwatch.StartNew();
+            _openReloads = 1;
+        }
+        else if (_openClock is not null)
+        {
+            // Counted, not acted on: whether one open paints the panel once or three times is a question the
+            // cost line answers, and it is the only reason to know.
+            _openReloads++;
+        }
+
         _openReusedRows = false;
 
         InputBox.PlaceholderText = HubStrings.Get("InputPlaceholder");
@@ -608,11 +620,12 @@ public partial class ChatPanel : UserControl
     /// <summary>
     /// Writes what opening a session cost to the log, once the frame that draws it is over.
     ///
-    /// <para>Three numbers, because they answer three questions and only one of them used to be known: how long
+    /// <para>Four numbers, because they answer four questions and only one of them used to be known: how long
     /// the store took to hand the turns over (and whether it had to go to disk at all), how long the transcript
-    /// took to build, and how long the window took to draw it. Without the third, "opening a long session is
-    /// slow" is a sentence nobody can act on — a build that is slow and a layout that is slow fail differently
-    /// and are fixed differently.</para>
+    /// took to build, how long the window took to draw it, and how many times one open repainted the panel.
+    /// Without the third, "opening a long session is slow" is a sentence nobody can act on — a build that is
+    /// slow and a layout that is slow fail differently and are fixed differently. Without the fourth, the same
+    /// is true of "it repaints too often": the count is what says whether that claim is true.</para>
     /// </summary>
     private void NoteSessionOpen(string? conversationId)
     {
@@ -623,6 +636,7 @@ public partial class ChatPanel : UserControl
         var turns = _renderedCount;
         var build = _openBuildMs;
         var reused = _openReusedRows;
+        var repaints = _openReloads;
         var culture = System.Globalization.CultureInfo.InvariantCulture;
         Dispatcher.UIThread.Post(
             () =>
@@ -632,7 +646,8 @@ public partial class ChatPanel : UserControl
                     $"Session open: {conversationId} · {turns} turns"
                     + $" · read {load.Milliseconds.ToString("0.0", culture)} ms ({(load.CameFromCache ? "cached" : "disk")})"
                     + $" · build {build.ToString("0.0", culture)} ms ({(reused ? "re-attached rows" : "drawn")})"
-                    + $" · first layout {clock.Elapsed.TotalMilliseconds.ToString("0.0", culture)} ms");
+                    + $" · first layout {clock.Elapsed.TotalMilliseconds.ToString("0.0", culture)} ms"
+                    + $" · {repaints} repaint(s)");
             },
             DispatcherPriority.Loaded);
     }
@@ -2259,6 +2274,18 @@ public partial class ChatPanel : UserControl
         var visible = new List<(int Index, ChatTurn Turn, string? ToolName)>();
         if (conversation is not null)
         {
+            // A tool result prints the name its call carried, and the result turn does not keep it. Gathered in
+            // one pass rather than looked up per result: `IndexOfToolCall` is a linear scan, so asking it once
+            // per result is quadratic in the session's length — and an agent session is exactly where both the
+            // length and the number of results are large. First call wins, which is the scan's own rule, so a
+            // transcript with a duplicated id reads the same as it always did.
+            var callNames = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var earlier in conversation.Messages)
+            {
+                if (earlier.Role != ChatRoles.Assistant || earlier.ToolCallId is not { Length: > 0 } id) continue;
+                if (earlier.ToolName is { } named && !callNames.ContainsKey(id)) callNames[id] = named;
+            }
+
             for (var i = 0; i < conversation.Messages.Count; i++)
             {
                 var turn = conversation.Messages[i];
@@ -2267,7 +2294,7 @@ public partial class ChatPanel : UserControl
                 // the one its call carried, because the result turn itself does not keep it.
                 if (turn.Role == ChatRoles.System) continue;
                 visible.Add((i, turn, turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 } answered
-                    ? conversation.Messages.ElementAtOrDefault(conversation.IndexOfToolCall(answered))?.ToolName
+                    ? callNames.GetValueOrDefault(answered)
                     : null));
             }
         }
