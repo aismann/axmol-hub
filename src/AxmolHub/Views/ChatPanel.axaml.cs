@@ -66,11 +66,6 @@ public partial class ChatPanel : UserControl
     /// rows are all there — past this, drawing them again is cheaper than keeping them.</summary>
     private const int ParkedRowLimit = 200;
 
-    /// <summary>How far a window's edge may walk back to avoid cutting a tool call from its result. A normal
-    /// exchange — one call, one result — costs one step; the budget is only there so that a run of eighty rounds
-    /// cannot drag the whole window with it.</summary>
-    private const int WindowEdgeWalk = 12;
-
     /// <summary>How close to the bottom counts as "the user is at the bottom". A few pixels of slack stop
     /// sub-pixel scroll rounding from flipping the state on every scroll event.</summary>
     private const double StickEpsilon = 6;
@@ -2451,15 +2446,20 @@ public partial class ChatPanel : UserControl
         }
 
         var lastIndex = conversation.Messages.Count - 1;
-        // The window. A flow that is about to be laid down fresh starts at the newest stretch of a long session
-        // rather than at its first turn, and the line it opens with stands for the turns above it. Only a fresh
-        // flow is windowed: an append is a row at the end, and taking rows away to fit a window would be a
-        // teardown wearing a different hat.
+        // The transcript as rows, computed once and then painted. The loop below no longer decides where a piece
+        // begins or ends: it reads that from the model, which is the point of having one — the boundaries are one
+        // answer computed in one place instead of a predicate soup evaluated while drawing.
+        var snapshot = TranscriptProjection.Build(conversation, _chat.ShowThinking, EagerMarkdownLimit);
+        // The window. A fresh flow starts at a *piece boundary* near the newest FirstPaintTurns turns, never inside
+        // one: a cut between a call and its result paints a result whose call is above it. Only a fresh flow is
+        // windowed — an append is a row at the end, and taking rows away to fit a window would be a teardown
+        // wearing a different hat.
         if (_renderedCount == 0 && visible.Count > _paintWindow)
         {
-            _paintedFrom = WindowEdge(visible, visible.Count - _paintWindow);
-            // The loop below starts at the window's edge and paints on to the end, so "how much is in the flow" is
-            // the tail of the transcript rather than all of it — which is the whole of what this costs the frame.
+            var first = 0;
+            while (first < snapshot.Entries.Count
+                   && visible.Count - snapshot.Entries[first].FirstVisible > _paintWindow) first++;
+            _paintedFrom = first < snapshot.Entries.Count ? snapshot.Entries[first].FirstVisible : visible.Count;
             _renderedCount = _paintedFrom;
             MessageFlow.Children.Add(BuildLoadEarlierRow(conversation.Id, _paintedFrom));
         }
@@ -2468,79 +2468,64 @@ public partial class ChatPanel : UserControl
             _paintedFrom = 0;
         }
 
-        for (var i = _renderedCount; i < visible.Count;)
+        foreach (var entry in snapshot.Entries)
         {
-            // Machine turns — calls, their results, a thinking-only answer — lay out in pieces. A piece opened by
-            // a call that came with its own sentence is painted flat: the sentence is what the person is reading,
-            // and one action under it has no fold to earn. The machine work the model asked for without saying why
-            // still folds into one collapsible group. Prose, user turns and system turns break the run. The shape
-            // is paint-time only: every turn still produces its own row inside its piece, so the row count the
-            // transcript checks key on is unchanged, and MessageRows expands either container to find them.
-            if (IsActivityTurn(visible[i].Turn))
+            if (entry.FirstVisible >= visible.Count) break;
+            switch (entry)
             {
-                var start = i;
-                var carriesSentence = IsNarratedCall(visible[start].Turn);
-                // The piece on the page continues when this turn belongs to it: a fold takes the silent turns
-                // behind it, a flat exchange takes only the results filed beside the call that opened it — which
-                // is how a result landing after its sentence reaches the row under that sentence instead of
-                // opening a fold of its own. A call carrying its own sentence always starts a new piece.
-                var prior = _openGroup;
-                var attach = prior is not null && !carriesSentence
-                    && prior.ConversationId == conversation.Id && prior.EndVisible == start
-                    && MessageFlow.Children.Count > 0
-                    && ReferenceEquals(MessageFlow.Children[^1], prior.Group)
-                    && (prior.Folded || visible[start].Turn.Role == ChatRoles.Tool);
-                var flat = attach ? !prior!.Folded : carriesSentence;
-                i++;
-                if (flat)
+                case TranscriptActivity activity:
                 {
-                    while (i < visible.Count && visible[i].Turn.Role == ChatRoles.Tool) i++;
-                }
-                else
-                {
-                    while (i < visible.Count && IsActivityTurn(visible[i].Turn) && !IsNarratedCall(visible[i].Turn))
-                        i++;
-                }
-
-                if (attach && prior is { } same)
-                {
+                    var piece = activity.Piece;
+                    // Everything up to _renderedCount is already on the page: the window's prefix, or the piece
+                    // that has not grown since the last paint.
+                    if (piece.EndVisible <= _renderedCount) continue;
                     // Re-sliced from where the run began, not the turns that just arrived: a row is drawn from a
                     // call <i>and</i> the result that answered it, so handing the group only the new second half
-                    // would draw every result as a call nobody had asked for.
-                    same.Turns = visible.GetRange(same.FirstVisible, i - same.FirstVisible);
-                    same.EndVisible = i;
-                    DeriveActivityGroup(same, conversation.Id, lastIndex, visible.Count);
+                    // would draw every result as a call nobody had asked for. A piece that grew is the open group
+                    // still last in the flow, which is what keeps a head somebody expanded from being replaced.
+                    var slice = visible.GetRange(piece.FirstVisible, piece.EndVisible - piece.FirstVisible);
+                    if (piece.FirstVisible < _renderedCount && _openGroup is { } prior
+                        && ReferenceEquals(MessageFlow.Children[^1], prior.Group))
+                    {
+                        prior.Turns = slice;
+                        prior.EndVisible = piece.EndVisible;
+                        DeriveActivityGroup(prior, conversation.Id, lastIndex, visible.Count);
+                    }
+                    else
+                    {
+                        _openGroup = CreateActivityGroup(conversation.Id, piece.FirstVisible, slice, piece.Folded);
+                        DeriveActivityGroup(_openGroup, conversation.Id, lastIndex, visible.Count);
+                    }
+
+                    _renderedCount = piece.EndVisible;
+                    continue;
                 }
-                else
+
+                case TranscriptMessage message:
                 {
-                    _openGroup = CreateActivityGroup(conversation.Id, start,
-                        visible.GetRange(start, i - start), folded: !flat);
-                    DeriveActivityGroup(_openGroup, conversation.Id, lastIndex, visible.Count);
+                    if (message.FirstVisible < _renderedCount) continue;
+                    // Prose closes the piece: the next piece of machine work is a different exchange.
+                    _openGroup = null;
+                    var (index, turn, toolName) = visible[message.FirstVisible];
+                    AppendRenderedTurn(conversation.Id, index, turn, toolName, isLast: index == lastIndex,
+                        markdown: message.Markdown, target: MessageFlow, inGroup: false);
+                    _renderedCount = message.FirstVisible + 1;
+                    continue;
                 }
 
-                _renderedCount = i;
-                continue;
+                case TranscriptNotice notice:
+                {
+                    if (notice.FirstVisible < _renderedCount) continue;
+                    // A notice is a line about the conversation rather than something anybody said, so it gets the
+                    // notice row this same flow already uses at its bottom — centered in the column, which is what
+                    // makes a model switch read as a divider rather than as a reply that happened to be short.
+                    _openGroup = null;
+                    MessageFlow.Children.Add(BuildNoticeRow(visible[notice.FirstVisible].Turn.Text, danger: false,
+                        onRetry: null));
+                    _renderedCount = notice.FirstVisible + 1;
+                    continue;
+                }
             }
-
-            // Prose closes the piece: the next piece of machine work is a different exchange and stands on its own.
-            _openGroup = null;
-            var (index, turn, toolName) = visible[i];
-            // A notice is a line about the conversation rather than something anybody said, so it gets the notice
-            // row this same flow already uses at its bottom — centered in the column, which is what makes a model
-            // switch read as a divider rather than as a reply that happened to be short. It closes the piece for
-            // the reason prose does.
-            if (turn.Role == ChatRoles.Notice)
-            {
-                MessageFlow.Children.Add(BuildNoticeRow(turn.Text, danger: false, onRetry: null));
-                _renderedCount = i + 1;
-                i++;
-                continue;
-            }
-
-            AppendRenderedTurn(conversation.Id, index, turn, toolName, isLast: index == lastIndex,
-                markdown: i >= visible.Count - EagerMarkdownLimit, target: MessageFlow, inGroup: false);
-            _renderedCount = i + 1;
-            i++;
         }
 
         // Where the painted prefix ends, in the conversation's own terms. The next render compares against this
@@ -2570,28 +2555,6 @@ public partial class ChatPanel : UserControl
         _renderedConversationId = null;
         _renderedCount = 0;
         RenderMessages();
-    }
-
-    /// <summary>
-    /// Where a window may start: the index asked for, moved back over a machine exchange the cut would otherwise
-    /// split.
-    ///
-    /// <para>A tool result whose call sits above the window is a row that reads as a tool nobody asked for, and
-    /// the pairing of a call with its result is the one thing the transcript's rows cannot be reordered out of.
-    /// The walk is bounded by <see cref="WindowEdgeWalk"/>: a run of eighty rounds is a tool storm, and pulling
-    /// eighty turns into the window to keep one exchange whole would hand the cost straight back. Past the budget
-    /// the exchange is cut, and only the row above the window's edge reads oddly.</para>
-    /// </summary>
-    private static int WindowEdge(List<(int Index, ChatTurn Turn, string? ToolName)> visible, int start)
-    {
-        var from = start;
-        for (var walked = 0; from > 0 && walked < WindowEdgeWalk; walked++)
-        {
-            if (visible[from].Turn.Role != ChatRoles.Tool || !IsActivityTurn(visible[from - 1].Turn)) break;
-            from--;
-        }
-
-        return from;
     }
 
     /// <summary>

@@ -80,8 +80,10 @@ public partial class ShellCheckWindow
         chat.OpenConversation(edgeSession.Id);
         panel.Reload();
         var edgePainted = panel.PaintedTurnCountForCheck;
-        Check(edgePainted == ChatPanel.FirstPaintTurnsForCheck + 1,
-            $"窗口边落在工具调用中间时，边往回退一格把调用带进来：{ChatPanel.FirstPaintTurnsForCheck} 条变成 "
+        // The window lands on a piece boundary, so a call and its result are both in or both out: what is painted
+        // is what remains after stepping back over the whole exchange, not the budget plus one.
+        Check(edgePainted == ChatPanel.FirstPaintTurnsForCheck - 1,
+            $"窗口边落在工具调用中间时按段边界落地，不切开一次调用：{ChatPanel.FirstPaintTurnsForCheck} 条变成 "
             + $"{edgePainted} 条");
         chat.DeleteConversation(edgeSession.Id);
 
