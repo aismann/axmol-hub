@@ -90,7 +90,7 @@ Axmol Hub collects no telemetry or personal information. Network access fetches 
 
 ## Code signing policy
 
-Installers are unsigned. Windows may show a SmartScreen warning; macOS may require removing quarantine or notarization.
+Installers are unsigned. Windows may show a SmartScreen warning; macOS may require removing quarantine or notarization, for example: `sudo xattr -r -d com.apple.quarantine axmol-hub-0.12.1-osx-arm64.pkg`.
 
 - Committers and reviewers: [@halx99](https://github.com/halx99)
 - Approvers: [@halx99](https://github.com/halx99)
