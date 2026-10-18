@@ -27,12 +27,28 @@ namespace AxmolHub;
 
 public partial class ChatPanel : UserControl
 {
-    /// <summary>How many of the newest assistant turns are rendered as full Markdown. Older turns fall back
-    /// to plain selectable text. Every Markdown turn carries a MarkdownScrollViewer plus an AvaloniaEdit
-    /// highlighter, so an unbounded count is what makes a long session expensive; bounding it keeps the
-    /// heavy controls proportional to what a user actually reads rather than to the session's total length.
-    /// The limit is high enough that short sessions (all of the self-check fixtures) render everything.</summary>
-    private const int EagerMarkdownLimit = 40;
+    /// <summary>How many of the newest assistant turns are rendered as full Markdown when a transcript is laid
+    /// down. Older turns fall back to plain selectable text and are promoted the moment a reader scrolls one
+    /// into reach (<see cref="PromoteMarkdownInView"/>). Every Markdown turn carries a MarkdownScrollViewer, a
+    /// Markdig pass and an AvaloniaEdit highlighter, so the count that matters is the one on screen rather than
+    /// the one in the session; bounding it keeps the heavy controls proportional to what a person actually reads
+    /// rather than to the session's total length. The limit is high enough that short sessions (all of the
+    /// self-check fixtures) render everything without a promotion pass.</summary>
+    private const int EagerMarkdownLimit = 12;
+
+    /// <summary>How many plain rows one promotion pass may upgrade. A scroll arrives as a burst and a pass that
+    /// swallowed the whole burst would stall the very frame it exists to keep smooth, so the rest wait for the
+    /// next pass — which is queued from the one that filled its quota.</summary>
+    private const int MarkdownPromotionsPerPass = 3;
+
+    /// <summary>How many transcripts that were left behind keep their rows. Two, because coming back is a single
+    /// step either way (the session just left, and the one before it) — a longer chain would keep Markdown
+    /// viewers and their editors alive for sessions nobody is going back to.</summary>
+    private const int ParkedTranscriptDepth = 2;
+
+    /// <summary>The class a row wears while its Markdown is still held back. It is also what makes such a row
+    /// findable without a side table, so a check can count what a session opened with from outside.</summary>
+    private const string PlainTurnClass = "plain-turn";
 
     /// <summary>How close to the bottom counts as "the user is at the bottom". A few pixels of slack stop
     /// sub-pixel scroll rounding from flipping the state on every scroll event.</summary>
@@ -180,6 +196,58 @@ public partial class ChatPanel : UserControl
     /// <see cref="DeriveActivityGroup"/>.</summary>
     private ActivityGroupView? _openGroup;
 
+    /// <summary>The visible turns the flow was laid down from, held <b>by reference</b>. A conversation whose
+    /// turns are all the same objects is a conversation whose rows still mean what they said, which is the whole
+    /// test a parked transcript is taken back on — <see cref="ChatTurn"/> is an immutable record, so a turn that
+    /// was rewritten anywhere (an approval decided, an undo copy spent, an edit made) is a different object.</summary>
+    private List<ChatTurn> _renderedTurns = [];
+
+    /// <summary>The rows that were drawn as plain text although their turn holds Markdown, waiting for a reader
+    /// to scroll them into reach. Panel-wide rather than per control for the same reason the fold memory is: a
+    /// rebuild can put a row somewhere else, and the record has to survive that or follow it.</summary>
+    private List<PendingMarkdownRow> _pendingMarkdownRows = [];
+
+    /// <summary>Transcripts that were on screen before and whose rows are still worth keeping — the answer to
+    /// "the person is going back and forth between two sessions". Reusing the rows is what makes the second
+    /// visit cheap: the Markdig pass, the AvaloniaEdit editors and the syntax highlighting behind them are
+    /// exactly the work a rebuild would repeat, and a control that was only detached does not need it again.
+    /// Ordered most recently left first, bounded by <see cref="ParkedTranscriptDepth"/>.</summary>
+    private readonly List<RenderedTranscript> _parkedTranscripts = [];
+
+    /// <summary>How much of a session open this panel measured for itself; see
+    /// <see cref="NoteSessionOpen"/>.</summary>
+    private System.Diagnostics.Stopwatch? _openClock;
+    private double _openBuildMs;
+    private bool _openReusedRows;
+
+    /// <summary>One transcript's rows, detached but alive, with everything needed to tell whether they still
+    /// describe the conversation they were drawn from.</summary>
+    private sealed class RenderedTranscript
+    {
+        public required string ConversationId { get; init; }
+        public List<Control> Rows { get; } = [];
+        public List<ChatTurn> Turns { get; } = [];
+        public List<PendingMarkdownRow> PendingMarkdown { get; } = [];
+        public ActivityGroupView? OpenGroup { get; set; }
+        public string ApprovalStamp { get; set; } = "";
+        public bool ShowThinking { get; set; }
+    }
+
+    /// <summary>A row drawn as plain text although its turn holds Markdown, with everything needed to draw it
+    /// properly in place: the panel it sits in and the control itself, because a transcript that grew a group
+    /// since it was painted did not move this row's parent even though its position in the flow changed.</summary>
+    private sealed class PendingMarkdownRow
+    {
+        public required Panel Parent { get; init; }
+        public required Control Row { get; init; }
+        public required string ConversationId { get; init; }
+        public required int Index { get; init; }
+        public required ChatTurn Turn { get; init; }
+        public string? ToolName { get; init; }
+        public bool IsLast { get; init; }
+        public bool InGroup { get; init; }
+    }
+
     /// <summary>Which folds the person opened, held as data rather than as a control's state. Extending a group
     /// in place keeps its head alive, but not every rebuild can be avoided: a decision rewrites what an
     /// already-painted turn looks like, and a result approved late is filed beside its call rather than at the
@@ -205,15 +273,18 @@ public partial class ChatPanel : UserControl
         else set.Remove(key);
     }
 
-    /// <summary>Drops the fold choices of sessions that no longer exist. Deleting a conversation raises
-    /// <see cref="ChatWorkspace.Changed"/>, so this runs on the very repaint that follows it and the two sets
-    /// never outlive the conversations they name.</summary>
+    /// <summary>Drops the fold choices — and the parked rows — of sessions that no longer exist. Deleting a
+    /// conversation raises <see cref="ChatWorkspace.Changed"/>, so this runs on the very repaint that follows it
+    /// and none of them outlives the conversations they name.</summary>
     private void PruneFoldMemory()
     {
-        if (_expandedGroups.Count == 0 && _expandedRows.Count == 0) return;
+        if (_expandedGroups.Count == 0 && _expandedRows.Count == 0 && _parkedTranscripts.Count == 0) return;
         var alive = _chat!.Conversations.Select(summary => summary.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var gone in _expandedGroups.Keys.Where(id => !alive.Contains(id)).ToArray()) _expandedGroups.Remove(gone);
         foreach (var gone in _expandedRows.Keys.Where(id => !alive.Contains(id)).ToArray()) _expandedRows.Remove(gone);
+        // Parked rows are the same kind of debris and a heavier one: a transcript of a deleted session keeps its
+        // Markdown viewers, their editors and their decoded pictures alive for a session nobody can open again.
+        _parkedTranscripts.RemoveAll(parked => !alive.Contains(parked.ConversationId));
     }
 
     private static string SlotKey(ChatTurn turn)
@@ -357,6 +428,9 @@ public partial class ChatPanel : UserControl
         {
             UpdateMessageColumnWidth();
             UpdateScrollAffordance();
+            // The transcript of a long session is largely plain until this runs, and a scroll is exactly the
+            // news that some of it is now in front of someone.
+            ScheduleMarkdownPromotion();
         };
         // A hand on the thumb owns the reading position. While it is held, no automatic scroll may move what it
         // holds and the streamed reply must not re-measure the column under it; the moment it lets go, the
@@ -493,6 +567,14 @@ public partial class ChatPanel : UserControl
     public void Reload()
     {
         if (_chat is null) return;
+        // A session switch is the one repaint worth timing, because it is the one a person calls "opening it".
+        // Measured around the whole of it rather than inside the store: the stall they feel is the read, the
+        // build and the frame that draws it, and only the first of those three is the store's to own.
+        var opening = _chat.ViewedConversationId is { Length: > 0 } viewed
+                      && !string.Equals(viewed, _renderedConversationId, StringComparison.Ordinal);
+        if (opening) _openClock = System.Diagnostics.Stopwatch.StartNew();
+        _openReusedRows = false;
+
         InputBox.PlaceholderText = HubStrings.Get("InputPlaceholder");
         GreetingLabel.Text = HubStrings.Get("AssistantGreeting");
         GreetingSubtitle.Text = HubStrings.Get("AssistantGreetingSubtitle");
@@ -502,7 +584,9 @@ public partial class ChatPanel : UserControl
         RefreshModelPicker();
         RefreshComposerChoices();
         UpdateForkNotice();
+        var buildClock = opening ? System.Diagnostics.Stopwatch.StartNew() : null;
         RenderMessages();
+        if (buildClock is not null) _openBuildMs = buildClock.Elapsed.TotalMilliseconds;
         UpdateContextRing();
         // The two composer-anchored surfaces read the transcript, not the run registry, so a repaint is the one
         // place both can be brought in step with whatever just changed.
@@ -515,6 +599,42 @@ public partial class ChatPanel : UserControl
         // The right-hand column is the third surface that reads the transcript rather than the run registry. It
         // repaints only when the transcript grew, so a reply streaming text costs no pane rebuild.
         RefreshInspectorIfTranscriptMoved();
+        if (opening) NoteSessionOpen(_chat.ViewedConversationId);
+        // Rows that came up already in front of the reader are promoted without waiting for a scroll: a session
+        // short enough to fit a screen is a session whose whole transcript can be upgraded at once.
+        ScheduleMarkdownPromotion();
+    }
+
+    /// <summary>
+    /// Writes what opening a session cost to the log, once the frame that draws it is over.
+    ///
+    /// <para>Three numbers, because they answer three questions and only one of them used to be known: how long
+    /// the store took to hand the turns over (and whether it had to go to disk at all), how long the transcript
+    /// took to build, and how long the window took to draw it. Without the third, "opening a long session is
+    /// slow" is a sentence nobody can act on — a build that is slow and a layout that is slow fail differently
+    /// and are fixed differently.</para>
+    /// </summary>
+    private void NoteSessionOpen(string? conversationId)
+    {
+        var clock = _openClock;
+        _openClock = null;
+        if (clock is null) return;
+        var chat = _chat!;
+        var turns = _renderedCount;
+        var build = _openBuildMs;
+        var reused = _openReusedRows;
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                var load = chat.LastSessionLoad;
+                chat.LogProvider?.Invoke()?.Write(
+                    $"Session open: {conversationId} · {turns} turns"
+                    + $" · read {load.Milliseconds.ToString("0.0", culture)} ms ({(load.CameFromCache ? "cached" : "disk")})"
+                    + $" · build {build.ToString("0.0", culture)} ms ({(reused ? "re-attached rows" : "drawn")})"
+                    + $" · first layout {clock.Elapsed.TotalMilliseconds.ToString("0.0", culture)} ms");
+            },
+            DispatcherPriority.Loaded);
     }
 
     /// <summary>The four starting points the empty state offers, in the order they read best.</summary>
@@ -1807,6 +1927,10 @@ public partial class ChatPanel : UserControl
     /// The pictures one sent message carries, painted from the file Hub kept. Bounded so a 5K capture cannot push
     /// the chat column open, and a file that is no longer there says so rather than drawing nothing at all — the
     /// transcript claims a picture was sent, and that claim has to stay checkable.
+    ///
+    /// <para>Every cell is built at once but its pixels are not: the decode runs off the UI thread and to the
+    /// width the column shows (see <see cref="DecodeTurnPictureAsync"/>), because a session with screenshots in
+    /// it would otherwise pay several megapixels of decoding inside the frame that opens it.</para>
     /// </summary>
     private Control BuildTurnPictures(string conversationId, IReadOnlyList<ChatImage> images)
     {
@@ -1815,50 +1939,85 @@ public partial class ChatPanel : UserControl
         foreach (var image in images)
         {
             var path = _chat.StoredImagePath(conversationId, image.File);
-            var bitmap = path is null ? null : TryOpenBitmap(path);
-            Control cell = bitmap is not null
-                ? new Image
-                {
-                    Source = bitmap,
-                    Stretch = Stretch.Uniform,
-                    MaxWidth = 260,
-                    MaxHeight = 200,
-                }
-                : new TextBlock
-                {
-                    Classes = { "muted" },
-                    Text = HubStrings.Get("ChatImageGone"),
-                };
-            ToolTip.SetTip(cell, $"{image.File} · {image.MediaType} · {image.Bytes} bytes");
-            var frame = new Border { Child = cell, Classes = { "turn-picture" } };
-            Control slot = frame;
-            if (bitmap is not null)
+            // A missing file is answered from the name alone. That is a fact about the disk rather than about
+            // the pixels, and waiting for a decode to fail would say it one frame later.
+            if (path is null)
             {
-                // The spacing moves onto the button so the gap between two thumbnails is not itself a hit target.
-                frame.Margin = new Thickness(0);
-                var opener = new Button
-                {
-                    Classes = { "picture-face" },
-                    Content = frame,
-                    Margin = new Thickness(0, 0, 6, 6),
-                    Cursor = new Cursor(StandardCursorType.Hand),
-                };
-                // The set is the conversation's pictures in transcript order and this one's place in it; the
-                // bytes stay unread until the viewer lands on them (see PictureRef).
-                var key = $"{conversationId}#{image.File}";
-                opener.Click += (_, _) =>
-                {
-                    var set = TranscriptPictureSet(conversationId);
-                    var at = 0;
-                    while (at < set.Count && set[at].Key != key) at++;
-                    ShowPictureViewer?.Invoke(set, at >= set.Count ? 0 : at);
-                };
-                slot = opener;
+                row.Children.Add(GonePictureCell(image));
+                continue;
             }
-            row.Children.Add(slot);
+
+            var picture = new Image { Stretch = Stretch.Uniform, MaxWidth = 260, MaxHeight = 200 };
+            ToolTip.SetTip(picture, $"{image.File} · {image.MediaType} · {image.Bytes} bytes");
+            // The spacing moves onto the button so the gap between two thumbnails is not itself a hit target.
+            var frame = new Border { Child = picture, Classes = { "turn-picture" }, Margin = new Thickness(0) };
+            var opener = new Button
+            {
+                Classes = { "picture-face" },
+                Content = frame,
+                Margin = new Thickness(0, 0, 6, 6),
+                Cursor = new Cursor(StandardCursorType.Hand),
+            };
+            // The set is the conversation's pictures in transcript order and this one's place in it; the
+            // bytes stay unread until the viewer lands on them (see PictureRef).
+            var key = $"{conversationId}#{image.File}";
+            opener.Click += (_, _) =>
+            {
+                var set = TranscriptPictureSet(conversationId);
+                var at = 0;
+                while (at < set.Count && set[at].Key != key) at++;
+                ShowPictureViewer?.Invoke(set, at >= set.Count ? 0 : at);
+            };
+            row.Children.Add(opener);
+            _ = DecodeTurnPictureAsync(path, picture, opener, image);
         }
 
         return row;
+    }
+
+    /// <summary>One frame saying the picture is gone, in the shape a transcript row gives it. Shared by the two
+    /// ways a picture can be missing — no file, and a file no decoder will take.</summary>
+    private static Border GonePictureCell(ChatImage image)
+    {
+        var gone = new TextBlock { Classes = { "muted" }, Text = HubStrings.Get("ChatImageGone") };
+        ToolTip.SetTip(gone, $"{image.File} · {image.MediaType} · {image.Bytes} bytes");
+        return new Border { Child = gone, Classes = { "turn-picture" } };
+    }
+
+    /// <summary>
+    /// Fills one transcript thumbnail, off the UI thread and at the size the column draws.
+    ///
+    /// <para>Width rather than height because the row is a horizontal wrap of pictures capped at
+    /// <c>260</c> logical pixels: a screenshot keeps everything a 260-wide slot can show and nothing above it, so
+    /// decoding the full 4K frame would be twelve megapixels to make a two-hundred-pixel image. The scale factor
+    /// is the window's, so a 2x display still gets 2x of pixels.</para>
+    /// </summary>
+    private async Task DecodeTurnPictureAsync(string path, Image target, ContentControl holder, ChatImage image)
+    {
+        var scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1d;
+        var width = (int)Math.Clamp(Math.Ceiling(260 * scale), 64, 1560);
+        Bitmap? bitmap;
+        try
+        {
+            bitmap = await Task.Run(() => TryDecodeBitmap(path, width)).ConfigureAwait(true);
+        }
+        catch (Exception)
+        {
+            // Off the UI thread there is no frame to fail: a decoder that throws something the narrow list in
+            // TryDecodeBitmap did not name still ends as a cell that says the picture is gone, which is the same
+            // answer the renderer gives a file it cannot read at all.
+            bitmap = null;
+        }
+
+        if (bitmap is not null)
+        {
+            target.Source = bitmap;
+            return;
+        }
+
+        // A file the header promised and the decoder refused. It says so where the picture would have been,
+        // rather than leaving an empty frame that reads as a picture Hub has not finished loading.
+        holder.Content = GonePictureCell(image);
     }
 
     /// <summary>
@@ -1913,11 +2072,15 @@ public partial class ChatPanel : UserControl
         }
     }
 
-    private static Bitmap? TryOpenBitmap(string path)
+    /// <summary>One transcript thumbnail, decoded to the width the column can show. Read from a stream rather
+    /// than from a file name because that is the form of the call that takes a width — and the width is the whole
+    /// point: the reader is shown 260 logical pixels of a capture that may be 4000 wide.</summary>
+    private static Bitmap? TryDecodeBitmap(string path, int width)
     {
         try
         {
-            return new Bitmap(path);
+            using var stream = System.IO.File.OpenRead(path);
+            return Bitmap.DecodeToWidth(stream, width);
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException
                                    or System.Security.SecurityException or ArgumentException)
@@ -2122,12 +2285,50 @@ public partial class ChatPanel : UserControl
         var showThinkingChanged = _renderedShowThinking != _chat.ShowThinking;
         _renderedShowThinking = _chat.ShowThinking;
 
+        // Coming back to a session whose rows are still parked re-attaches them instead of drawing them again.
+        // None of the conditions above can see this case — it is another session by definition, which is exactly
+        // what a teardown fires on — so it is answered here, before the teardown below pays for Markdig and
+        // AvaloniaEdit a second time over the same turns.
+        if (conversation is { } returning
+            && !string.Equals(returning.Id, _renderedConversationId, StringComparison.Ordinal)
+            && TakeParked(returning.Id, visible, approvalStamp) is { } parked)
+        {
+            ParkCurrentTranscript();
+            MessageFlow.Children.Clear();
+            foreach (var row in parked.Rows) MessageFlow.Children.Add(row);
+            _renderedConversationId = returning.Id;
+            _renderedCount = visible.Count;
+            _renderedTailKey = SlotKey(visible[^1].Turn);
+            _renderedTurns = parked.Turns;
+            _pendingMarkdownRows = parked.PendingMarkdown;
+            _openGroup = parked.OpenGroup;
+            _parkedTranscripts.Remove(parked);
+            // The rows came back, not the reading position: a session opens on its newest message exactly as it
+            // does the first time, which is what a person who clicked it in the sidebar asked for.
+            _stickToBottom = true;
+            _openReusedRows = true;
+            EmptyState.IsVisible = false;
+            if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
+            RenderNotice();
+            ScrollToEndIfSticky();
+            UpdateScrollAffordance();
+            // The rows that came back carry the promotions they never got: which of them are within reach is a
+            // question about where the view lands, so it is asked after the landing has been queued.
+            ScheduleMarkdownPromotion();
+            return;
+        }
+
         if (visible.Count == 0)
         {
+            // Whatever was on screen is still worth keeping: leaving a session for the empty state is the same
+            // errand as leaving it for another one.
+            ParkCurrentTranscript();
             MessageFlow.Children.Clear();
             _renderedConversationId = conversation?.Id;
             _renderedCount = 0;
             _renderedTailKey = "";
+            _renderedTurns = [];
+            _pendingMarkdownRows = [];
             _openGroup = null;
             EmptyState.IsVisible = run is not { IsStreaming: true };
             if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
@@ -2146,9 +2347,19 @@ public partial class ChatPanel : UserControl
         if (aDifferentSession || historyShrank || approvalChanged || showThinkingChanged
             || (_renderedCount > 0 && SlotKey(visible[_renderedCount - 1].Turn) != _renderedTailKey))
         {
+            // The session being left keeps its rows, and this is the call that makes coming back cheap: the next
+            // visit to it is usually the very next thing the person does. Only on a switch — a teardown for a
+            // decision or a shrunken history is this same session being redrawn, and its own rows are exactly
+            // what is about to be wrong.
+            if (aDifferentSession) ParkCurrentTranscript();
             MessageFlow.Children.Clear();
             _renderedConversationId = conversation.Id;
             _renderedCount = 0;
+            _renderedTurns = [];
+            // The records die with the rows they pointed at: everything below lays the transcript down again,
+            // and a record left over from the flow that was just thrown away would name a control nobody can
+            // reach, which is a promotion that silently paints into a detached panel.
+            _pendingMarkdownRows = [];
             _openGroup = null;
             // A session opens on its newest message. The scroll offset belongs to the viewer rather than to the
             // conversation, so without this a switch inherits wherever the previous one had been read up to.
@@ -2238,6 +2449,10 @@ public partial class ChatPanel : UserControl
         // append — rebuild the flow instead of drawing the shifted tail twice.
         _renderedTailKey = SlotKey(visible[^1].Turn);
 
+        // The turns these rows stand for, held by reference so that leaving the session keeps a way to ask
+        // whether they still say what was drawn (see <see cref="RenderedTranscript"/>).
+        _renderedTurns = [.. visible.Select(slot => slot.Turn)];
+
         EmptyState.IsVisible = false;
         if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
         RenderNotice();
@@ -2245,6 +2460,7 @@ public partial class ChatPanel : UserControl
         // the reply keeps following it, and one the person had scrolled away from is left where they put it.
         ScrollToEndIfSticky();
         UpdateScrollAffordance();
+        ScheduleMarkdownPromotion();
     }
 
     /// <summary>Forces a full rebuild on the next <see cref="RenderMessages"/> — used after an edit or a
@@ -2256,7 +2472,145 @@ public partial class ChatPanel : UserControl
         RenderMessages();
     }
 
-    private void AppendRenderedTurn(
+    /// <summary>
+    /// The parked transcript for <paramref name="conversationId"/>, if its rows still describe the conversation
+    /// about to be drawn. One that does not is dropped here rather than left to be re-examined on every later
+    /// visit: the test is one reference comparison per turn, and the rows behind it are the expensive thing to
+    /// keep alive.
+    /// </summary>
+    private RenderedTranscript? TakeParked(string conversationId,
+        List<(int Index, ChatTurn Turn, string? ToolName)> visible, string approvalStamp)
+    {
+        var parked = _parkedTranscripts.Find(candidate => candidate.ConversationId == conversationId);
+        if (parked is null) return null;
+        // A parked transcript is rows over turns: everything inside it points back into the conversation by
+        // index, so it is reusable exactly while it still describes the same turns in the same order, wearing
+        // the same decisions, under the same answer to "is the thinking drawn".
+        var same = parked.Turns.Count == visible.Count
+                   && parked.ApprovalStamp == approvalStamp
+                   && parked.ShowThinking == _chat.ShowThinking;
+        for (var i = 0; same && i < parked.Turns.Count; i++)
+            same = ReferenceEquals(parked.Turns[i], visible[i].Turn);
+        if (same) return parked;
+        _parkedTranscripts.Remove(parked);
+        return null;
+    }
+
+    /// <summary>
+    /// Puts the transcript on screen aside — rows and all — so that coming back to it re-attaches instead of
+    /// drawing again. Called on the way out of a session, before the flow is cleared for the next one; the rows
+    /// stay alive detached, which is what a control that was only removed already is.
+    ///
+    /// <para>Nothing is parked while the flow holds no turns: rows are the whole of what this saves, and a
+    /// transcript with none costs nothing to draw again.</para>
+    /// </summary>
+    private void ParkCurrentTranscript()
+    {
+        if (_renderedConversationId is not { Length: > 0 } id) return;
+        if (_renderedTurns.Count == 0 || MessageFlow.Children.Count == 0) return;
+        _parkedTranscripts.RemoveAll(parked => parked.ConversationId == id);
+        var parked = new RenderedTranscript
+        {
+            ConversationId = id,
+            ApprovalStamp = _renderedApprovalStamp,
+            ShowThinking = _renderedShowThinking,
+            OpenGroup = _openGroup,
+        };
+        parked.Rows.AddRange(MessageFlow.Children);
+        parked.Turns.AddRange(_renderedTurns);
+        parked.PendingMarkdown.AddRange(_pendingMarkdownRows);
+        _parkedTranscripts.Insert(0, parked);
+        while (_parkedTranscripts.Count > ParkedTranscriptDepth)
+            _parkedTranscripts.RemoveAt(_parkedTranscripts.Count - 1);
+    }
+
+    /// <summary>Set while a promotion pass is queued for the end of the frame.</summary>
+    private bool _markdownPassQueued;
+
+    /// <summary>Queues one promotion pass for the end of the frame. Queued rather than run inline because both
+    /// callers — a render, and a scroll — are already inside a frame that has to stay responsive.</summary>
+    private void ScheduleMarkdownPromotion()
+    {
+        if (_markdownPassQueued || _pendingMarkdownRows.Count == 0) return;
+        _markdownPassQueued = true;
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                _markdownPassQueued = false;
+                PromoteMarkdownInView();
+            },
+            DispatcherPriority.Background);
+    }
+
+    /// <summary>
+    /// Renders the Markdown of the plain rows the reader has scrolled within reach of, and queues the next pass
+    /// when it spent its quota.
+    ///
+    /// <para>Which rows: those whose bottom is at or below the top edge of the viewport and whose top is inside
+    /// two screens below it. Rows <b>above</b> the top edge are deliberately left alone — drawing one properly
+    /// changes its height, and a height that changes above the reading position pushes everything under it down,
+    /// which is a transcript jumping under a hand that is scrolling it. Below the top edge the same growth only
+    /// moves what has not been read yet. A row that is above the edge today enters the window the moment it is
+    /// scrolled back to, so nothing is left permanently plain.</para>
+    /// </summary>
+    private void PromoteMarkdownInView()
+    {
+        if (_pendingMarkdownRows.Count == 0) return;
+        var offset = MessageScroller.Offset.Y;
+        var reach = MessageScroller.Viewport.Height;
+        var ceiling = offset + (2 * reach);
+        var promoted = 0;
+        for (var i = 0; i < _pendingMarkdownRows.Count && promoted < MarkdownPromotionsPerPass;)
+        {
+            var pending = _pendingMarkdownRows[i];
+            var position = pending.Parent.Children.IndexOf(pending.Row);
+            // The row is gone: the piece it lived in was drawn again, or the flow was rebuilt around it. The
+            // record goes with the control it named, which is what keeps this list from filling up with rows
+            // nobody can reach.
+            if (position < 0)
+            {
+                _pendingMarkdownRows.RemoveAt(i);
+                continue;
+            }
+
+            var top = pending.Row.TranslatePoint(new Point(0, 0), MessageFlow)?.Y;
+            if (top is not { } y || !pending.Row.IsEffectivelyVisible
+                || y + pending.Row.Bounds.Height < offset || y > ceiling)
+            {
+                i++;
+                continue;
+            }
+
+            _pendingMarkdownRows.RemoveAt(i);
+            // Drawn the ordinary way into a panel of its own and then moved into place: a turn has exactly one
+            // way of being drawn, and a promotion that assembled a second one would be a second thing to keep
+            // in step with the first.
+            var staging = new StackPanel { Spacing = 8 };
+            AppendRenderedTurn(pending.ConversationId, pending.Index, pending.Turn, pending.ToolName,
+                pending.IsLast, markdown: true, target: staging, inGroup: pending.InGroup);
+            if (staging.Children.Count != 1) continue;
+            var promotedRow = staging.Children[0];
+            staging.Children.RemoveAt(0);
+            promotedRow.Classes.Remove(PlainTurnClass);
+            pending.Parent.Children[position] = promotedRow;
+            promoted++;
+        }
+
+        // A pass that spent its whole quota has more rows waiting in the same window; one that did not has
+        // nothing left in reach and will be asked again by the next scroll.
+        if (promoted == MarkdownPromotionsPerPass) ScheduleMarkdownPromotion();
+    }
+
+    /// <summary>
+    /// Draws one turn into <paramref name="target"/> and answers with the row it built.
+    ///
+    /// <para>The row comes back because the caller that held its Markdown back has to be able to find it again:
+    /// a plain row carries <see cref="PlainTurnClass"/> and is filed in <see cref="_pendingMarkdownRows"/>, and
+    /// <see cref="PromoteMarkdownInView"/> replaces it in place — which needs the control, not just the turn.
+    /// A Markdown row is drawn here or nowhere: the promotion pass re-enters this method with
+    /// <c>markdown: true</c> rather than assembling a second, different way of drawing a turn.</para>
+    /// </summary>
+    private Control AppendRenderedTurn(
         string conversationId, int index, ChatTurn turn, string? toolName, bool isLast, bool markdown,
         Panel target, bool inGroup)
     {
@@ -2338,12 +2692,35 @@ public partial class ChatPanel : UserControl
         // each turn the transcript paints. A body no longer on disk copies as nothing, which beats copying the
         // card's title back as though it were the plan.
         var copyText = isPlanTurn ? _chat.PlanBody(turn, out _) ?? "" : turn.Text;
-        target.Children.Add(BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At));
+        var row = BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At);
+        target.Children.Add(row);
 
         // User text is plain by nature, and a tool payload is now a quiet line rather than a bubble; only the
         // assistant's own words carry Markdown worth rendering — and a plan's words do not render here at all.
-        if (!fromUser && markdown && !isPlanTurn && turn.Role != ChatRoles.Tool && turn.Text.Length > 0)
-            MarkdownMessageRenderer.RenderInto(body, turn.Text, QuoteIntoComposer);
+        // A prose turn whose Markdown was held back keeps the plain block added above, wears the mark that says
+        // so, and is filed with what a later pass needs to draw it properly once a reader scrolls to it.
+        if (!fromUser && !isPlanTurn && turn.Role != ChatRoles.Tool && turn.Text.Length > 0)
+        {
+            if (markdown)
+            {
+                MarkdownMessageRenderer.RenderInto(body, turn.Text, QuoteIntoComposer);
+            }
+            else
+            {
+                row.Classes.Add(PlainTurnClass);
+                _pendingMarkdownRows.Add(new PendingMarkdownRow
+                {
+                    Parent = target,
+                    Row = row,
+                    ConversationId = conversationId,
+                    Index = index,
+                    Turn = turn,
+                    ToolName = toolName,
+                    IsLast = isLast,
+                    InGroup = inGroup,
+                });
+            }
+        }
 
         // The thinking sits above the answer, which is the order it happened in and the order every client of
         // this shape puts it — but it has to be <i>inserted</i>, not added, because the pass just above clears
@@ -2371,6 +2748,7 @@ public partial class ChatPanel : UserControl
             body.Children.Add(BuildSearchSources(searches));
 
         if (approvalSurface is not null) body.Children.Add(approvalSurface);
+        return row;
     }
 
     /// <summary>The person's own words, as something they can select, copy and quote.</summary>
@@ -2521,6 +2899,9 @@ public partial class ChatPanel : UserControl
             var expanded = head.IsChecked == true;
             body.IsVisible = expanded;
             RememberFold(_expandedGroups, conversationId, foldKey, expanded);
+            // A fold the person just opened is the one place where a plain row becomes readable without any
+            // scrolling at all, and the rows inside it were drawn plain while it was shut.
+            if (expanded) ScheduleMarkdownPromotion();
         };
         head.IsChecked = IsFoldOpen(_expandedGroups, conversationId, foldKey);
 
@@ -2569,6 +2950,10 @@ public partial class ChatPanel : UserControl
         }
 
         var inner = view.Inner;
+        // The rows inside this piece are about to be thrown away and drawn again, so the promotions that named
+        // them go first: a record pointing at a control nobody can reach is a promotion that paints into a panel
+        // that is no longer in the flow.
+        _pendingMarkdownRows.RemoveAll(pending => ReferenceEquals(pending.Parent, inner));
         inner.Children.Clear();
         foreach (var (index, turn, toolName) in turns)
         {
@@ -4802,6 +5187,27 @@ public partial class ChatPanel : UserControl
             .Any(viewer => viewer.Markdown?.Contains(code, StringComparison.Ordinal) == true
                            && viewer.Bounds.Width > 0
                            && viewer.Bounds.Height > 0);
+
+    /// <summary>The eager window itself, so a check can assert against the number the renderer uses rather than
+    /// against a copy of it that would drift.</summary>
+    internal static int EagerMarkdownLimitForCheck => EagerMarkdownLimit;
+
+    /// <summary>How many rendered Markdown documents the transcript is holding. The claim this measures is not
+    /// speed but shape: the expensive viewers have to be proportional to what a person can see, not to how long
+    /// the session has been going.</summary>
+    internal int MarkdownDocumentCountForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>().Count();
+
+    /// <summary>Rows drawn as plain text although their turn holds Markdown — the ones no promotion pass has
+    /// reached yet.</summary>
+    internal int PlainTurnRowCountForCheck
+        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+            .Count(border => border.Classes.Contains(PlainTurnClass));
+
+    /// <summary>The first control in the flow, as an object. Identity rather than content, because what a check
+    /// wants to say about coming back to a session is that the rows it left came back — not that new ones were
+    /// drawn to look the same.</summary>
+    internal object? FirstTranscriptRowForCheck => MessageFlow.Children.FirstOrDefault();
 
     /// <summary>The left indent a rendered list actually gets, or -1 when no document on screen held one.
     /// GithubLike stamps 40 onto every list grid and a nested list pays it again, so this is the only reading

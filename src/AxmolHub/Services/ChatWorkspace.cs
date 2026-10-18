@@ -2763,11 +2763,22 @@ public sealed class ChatWorkspace : IDisposable
         return (StartOrOpenEmptyConversation(full), null);
     }
 
+    /// <summary>
+    /// What the last <see cref="OpenConversation"/> cost, and whether it had to touch the disk at all. Read by
+    /// the panel's open-cost line (<c>ChatPanel.NoteSessionOpen</c>), which is its only consumer: "opening is
+    /// slow because of the file" is a claim that needs the file's own number under it, and the second open of a
+    /// session is answered from the registry without one.
+    /// </summary>
+    internal (double Milliseconds, bool CameFromCache) LastSessionLoad { get; private set; }
+
     public Conversation? OpenConversation(string id)
     {
         // The registry hands back the one instance, so opening a session that is streaming does not swap in a
         // copy that a later write would silently replace.
+        var cachedBefore = _sessions.Peek(id) is not null;
+        var readClock = System.Diagnostics.Stopwatch.StartNew();
         _active = _sessions.Load(id);
+        LastSessionLoad = (readClock.Elapsed.TotalMilliseconds, cachedBefore);
         _selectedMode = _active is null ? ChatModes.Agent : NormalizeMode(_active.Mode);
         _selectedReasoningEffort = ChatReasoningEfforts.Normalize(_active?.ReasoningEffort);
         if (_active is { } opened)

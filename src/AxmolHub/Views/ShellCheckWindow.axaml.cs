@@ -2045,6 +2045,7 @@ public partial class ShellCheckWindow : Window
         await CheckThoughtDurationAsync(shell, panel);
         await CheckScrollAsync(shell, panel);
         await CheckThumbDragAsync(shell, panel);
+        CheckTranscriptCost(shell, panel);
         await CheckActivityOrchestrationAsync(shell, panel);
         await CheckToolFloodAsync(shell, panel);
         await CheckInspectorAndSteerAsync(shell, panel);
