@@ -1,12 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using Avalonia.Controls;
 
 namespace AxmolHub;
 
 /// <summary>
-/// The application icon at runtime: the window icon and the Linux desktop integration (which lays the
+/// The application icon at runtime: the window icon, macOS Dock and Linux desktop integration (which lays the
 /// same bytes into the icon theme) read one set of files shipped next to the assembly.
 ///
 /// <para>256 is the size the window icon uses, deliberately: X11's <c>_NET_WM_ICON</c> carries raw ARGB32
@@ -27,6 +28,7 @@ internal static class HubAppIcon
 {
     /// <summary>The size the window icon and the smaller icon-theme bucket use.</summary>
     internal const int WindowIconSize = 256;
+    internal const int DockIconSize = 512;
 
     private static readonly Dictionary<int, byte[]?> Read = new();
     private static WindowIcon? _windowIcon;
@@ -69,5 +71,62 @@ internal static class HubAppIcon
         }
 
         return _windowIcon;
+    }
+
+    /// <summary>Set the Dock icon after Avalonia initializes AppKit, including runs outside an app bundle.</summary>
+    internal static void ApplyMacDockIcon()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        try
+        {
+            MacDockIcon.Apply(FilePath(DockIconSize));
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceWarning($"Could not set the Hub Dock icon: {ex}");
+        }
+    }
+
+    private static class MacDockIcon
+    {
+        internal static void Apply(string path)
+        {
+            if (!File.Exists(path)) throw new FileNotFoundException("The Hub Dock icon is missing.", path);
+            var nativePath = IntPtr.Zero;
+            var image = IntPtr.Zero;
+            try
+            {
+                nativePath = InitUtf8(Send(objc_getClass("NSString"), Sel("alloc")),
+                    Sel("initWithUTF8String:"), path);
+                if (nativePath == IntPtr.Zero) throw new InvalidOperationException("Could not create the Dock icon path.");
+                image = Send(Send(objc_getClass("NSImage"), Sel("alloc")), Sel("initWithContentsOfFile:"), nativePath);
+                if (image == IntPtr.Zero) throw new InvalidOperationException("Could not load the Hub Dock icon.");
+                var app = Send(objc_getClass("NSApplication"), Sel("sharedApplication"));
+                if (app == IntPtr.Zero) throw new InvalidOperationException("AppKit is not initialized.");
+                SendVoid(app, Sel("setApplicationIconImage:"), image);
+            }
+            finally
+            {
+                if (image != IntPtr.Zero) SendVoid(image, Sel("release"));
+                if (nativePath != IntPtr.Zero) SendVoid(nativePath, Sel("release"));
+            }
+        }
+
+        private static IntPtr Sel(string name) => sel_registerName(name);
+
+        [DllImport("/usr/lib/libobjc.A.dylib")]
+        private static extern IntPtr objc_getClass(string name);
+        [DllImport("/usr/lib/libobjc.A.dylib")]
+        private static extern IntPtr sel_registerName(string name);
+        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+        private static extern IntPtr Send(IntPtr receiver, IntPtr selector);
+        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+        private static extern IntPtr Send(IntPtr receiver, IntPtr selector, IntPtr argument);
+        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+        private static extern void SendVoid(IntPtr receiver, IntPtr selector);
+        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+        private static extern void SendVoid(IntPtr receiver, IntPtr selector, IntPtr argument);
+        [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+        private static extern IntPtr InitUtf8(IntPtr receiver, IntPtr selector, [MarshalAs(UnmanagedType.LPUTF8Str)] string value);
     }
 }

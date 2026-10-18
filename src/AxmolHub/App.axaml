@@ -1,6 +1,7 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="AxmolHub.App"
+             Name="Axmol Hub"
              RequestedThemeVariant="Default">
 
   <!-- Default follows the system theme. The WPF version only had the dark theme; light was added in P3

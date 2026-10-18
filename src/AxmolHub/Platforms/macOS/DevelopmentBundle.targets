@@ -1,0 +1,42 @@
+<Project>
+  <!-- A bare apphost can keep its file name in the Dock tooltip even after Application.Name changes.
+       Development runs use a real bundle; publishing remains owned by the installer scripts. -->
+  <PropertyGroup>
+    <_HubMacDevelopmentBundleEnabled Condition="$([MSBuild]::IsOSPlatform('OSX')) and '$(UseAppHost)' != 'false' and ('$(RuntimeIdentifier)' == '' or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx-'))) and '$(DesignTimeBuild)' != 'true'">true</_HubMacDevelopmentBundleEnabled>
+  </PropertyGroup>
+
+  <Target Name="HubMacDevelopmentBundlePath" Condition="'$(_HubMacDevelopmentBundleEnabled)' == 'true'">
+    <PropertyGroup>
+      <_HubMacDevelopmentBundle>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'macos', 'Axmol Hub.app'))</_HubMacDevelopmentBundle>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="HubCreateMacDevelopmentBundle"
+          AfterTargets="Build"
+          DependsOnTargets="HubMacDevelopmentBundlePath"
+          Condition="'$(_HubMacDevelopmentBundleEnabled)' == 'true'">
+    <!-- Recreate only this generated bundle so removed dependencies cannot survive a rebuild. -->
+    <RemoveDir Directories="$(_HubMacDevelopmentBundle)" />
+    <MakeDir Directories="$(_HubMacDevelopmentBundle)/Contents/MacOS;$(_HubMacDevelopmentBundle)/Contents/Resources" />
+    <ItemGroup>
+      <_HubMacDevelopmentFiles Include="$(TargetDir)**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_HubMacDevelopmentFiles)"
+          DestinationFiles="@(_HubMacDevelopmentFiles->'$(_HubMacDevelopmentBundle)/Contents/MacOS/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)DevelopmentInfo.plist"
+          DestinationFiles="$(_HubMacDevelopmentBundle)/Contents/Info.plist" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/Assets/hub-icon.icns"
+          DestinationFolder="$(_HubMacDevelopmentBundle)/Contents/Resources" />
+  </Target>
+
+  <!-- ComputeRunArguments also runs when dotnet run skips the build. Execute the bundle's apphost directly
+       to preserve arguments, working directory, stdout, exit status and the debugger connection. -->
+  <Target Name="HubConfigureMacDevelopmentRun"
+          BeforeTargets="ComputeRunArguments"
+          DependsOnTargets="HubMacDevelopmentBundlePath"
+          Condition="'$(_HubMacDevelopmentBundleEnabled)' == 'true' and ('$(StartAction)' == '' or '$(StartAction)' == 'Project')">
+    <PropertyGroup>
+      <RunCommand>$(_HubMacDevelopmentBundle)/Contents/MacOS/AxmolHub</RunCommand>
+    </PropertyGroup>
+  </Target>
+</Project>

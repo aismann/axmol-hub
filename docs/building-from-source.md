@@ -65,6 +65,8 @@ dotnet build src/AxmolHub/AxmolHub.csproj -c Release
 dotnet run --project src/AxmolHub -- --data-root ./data
 ```
 
+macOS 本地构建会在当前编译的 `obj/` 目录下生成 `macos/Axmol Hub.app`，`dotnet run` 自动运行其中的程序。开发包的 `Info.plist` 明确指定 `Axmol Hub` 显示名称及应用图标，供 Dock 使用；启动参数和工作目录保持不变。`--no-build` 复用上次生成的开发包，因此首次运行或代码更新后需要先构建。这不改变发布安装包的打包流程。
+
 **四个页面（项目 / 引擎 / 工具链 / 设置）与四个对话框窗口**：左侧 218px 导航、三行内容区（页面 / 状态栏 / 日志面板）、统计卡、表格、设备条、操作按钮行的位置与文案都与原 WPF 版对齐；与原版只有三处刻意差异，原因写在 [avalonia-migration-plan.md](avalonia-migration-plan.md) §5.7。业务逻辑全在 `AxmolHub.Core`（界面项目只负责装配），编排在 `Services/HubWorkspace.cs`。
 
 **切换数据根已可用**：只重建工作区并丢弃页面缓存，**窗口本身不动** —— 因此它不依赖外壳形态。新根落盘失败时会在旧状态上就地报错，不会留下"界面指向新根、设置文件还写着旧根"的错位。

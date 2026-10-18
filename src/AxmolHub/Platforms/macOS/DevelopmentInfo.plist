@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>org.axmol.hub.development</string>
+  <key>CFBundleName</key>
+  <string>Axmol Hub</string>
+  <key>CFBundleDisplayName</key>
+  <string>Axmol Hub</string>
+  <key>CFBundleExecutable</key>
+  <string>AxmolHub</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>hub-icon.icns</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>

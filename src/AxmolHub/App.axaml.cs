@@ -27,6 +27,7 @@ public partial class App : Application
 
         try
         {
+            HubAppIcon.ApplyMacDockIcon();
             Start(desktop);
         }
         catch (Exception ex)
