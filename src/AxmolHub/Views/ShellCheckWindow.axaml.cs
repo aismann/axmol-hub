@@ -2048,6 +2048,7 @@ public partial class ShellCheckWindow : Window
         await CheckToolFloodAsync(shell, panel);
         await CheckInspectorAndSteerAsync(shell, panel);
         CheckModelSwitchNotice(shell, panel);
+        await CheckAboutMenuAsync();
 
         shell.Chat.DeleteConversation(opsConversation.Id);
         shell.Chat.ClientOverride = null;

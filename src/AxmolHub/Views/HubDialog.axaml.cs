@@ -1,4 +1,6 @@
 using Avalonia.Controls;
+using Avalonia.Media.Imaging;
+using AxmolHub.Core;
 
 namespace AxmolHub;
 
@@ -33,6 +35,14 @@ public partial class HubDialog : Window
 
     public HubDialogResult Result { get; private set; } = HubDialogResult.Cancel;
 
+    /// <summary>
+    /// Where a link in this box is handed to. Replacing it is how <c>--verify-shell</c> proves the About box's
+    /// repository link is wired without opening a browser on the machine running the check — the same shape as
+    /// <see cref="ChatWorkspace.BrowserOpener"/>, and <see cref="UrlLauncher"/> itself is covered on its own (the
+    /// Checks project, <c>--check-secrets</c>).
+    /// </summary>
+    internal static Func<string, bool> LinkOpener { get; set; } = UrlLauncher.TryOpen;
+
     public HubDialog()
     {
         InitializeComponent();
@@ -50,7 +60,9 @@ public partial class HubDialog : Window
         string title,
         string message,
         HubDialogButtons buttons = HubDialogButtons.Ok,
-        bool danger = false)
+        bool danger = false,
+        Bitmap? picture = null,
+        string? linkUrl = null)
     {
         var dialog = new HubDialog();
 
@@ -58,6 +70,8 @@ public partial class HubDialog : Window
         // is bound to it (see HubDialogChrome), so the title cannot be said twice and cannot go out of step.
         dialog.Title = title;
         dialog.DialogMessage.Text = message;
+        dialog.SetPicture(picture);
+        dialog.AddLink(linkUrl);
         dialog.Build(buttons, danger);
 
         if (owner is not null)
@@ -81,6 +95,31 @@ public partial class HubDialog : Window
     /// would itself be a box on such a system, so the prompt can't close the loop.
     /// Order and semantics (which is primary / cancel) are **unchanged**: those are guarded by self-check assertions.
     /// </summary>
+    /// <summary>
+    /// Shows <paramref name="picture"/> above the text. A null picture leaves the row collapsed rather than
+    /// blank: this box is also every confirmation and notice in the shell, and none of those has a logo.
+    /// </summary>
+    private void SetPicture(Bitmap? picture)
+    {
+        DialogPicture.Source = picture;
+        DialogPicture.IsVisible = picture is not null;
+    }
+
+    /// <summary>
+    /// Adds the destination the box points at, as a row of its own above the answers. A Button rather than a
+    /// TextBlock with a pointer handler, because focus, Enter/Space and the hand cursor come with it; the caption
+    /// is the address itself, so a reader who will not click still sees where it goes.
+    /// </summary>
+    private void AddLink(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        var link = new Button { Name = "DialogLink", Content = url, Classes = { "link" } };
+        link.Click += (_, _) => _ = LinkOpener(url);
+        DialogLinks.Children.Add(link);
+        DialogLinks.IsVisible = true;
+    }
+
     private void Build(HubDialogButtons buttons, bool danger)
     {
         switch (buttons)

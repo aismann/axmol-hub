@@ -161,6 +161,22 @@
     <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
   </Style>
 
+  <!-- A link, for the one destination the About box points at. A Button rather than a TextBlock with a pointer
+       handler, so focus, Enter/Space and the hand cursor come with it; quiet enough that the row reads as text
+       until the pointer is on it. -->
+  <Style Selector="Button.link">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="MinHeight" Value="0" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.Accent}" />
+    <Setter Property="Cursor" Value="Hand" />
+    <Setter Property="HorizontalAlignment" Value="Left" />
+  </Style>
+  <Style Selector="Button.link:pointerover">
+    <Setter Property="Foreground" Value="{DynamicResource Hub.AccentBorder}" />
+  </Style>
+
   <!-- A model row is a small outlined card so the list reads as a list. Surface fill + hairline border;
        hover only lifts the fill. -->
   <Style Selector="Border.model-row">

@@ -35,4 +35,22 @@
     <StyleInclude Source="avares://AxmolHub/Theme/HubStyles.axaml" />
   </Application.Styles>
 
+  <!-- macOS reads the application menu from here; with no menu of Hub's own the framework exports one whose
+       About entry opens Avalonia's About dialog (docs.avaloniaui.net/docs/platform-specific-guides/macos
+       #application-menu). On macOS the items exported here are the application menu's own items — the exporter
+       appends the standard Services / Hide / Show All / Quit entries after them — so the About entry is a plain
+       top-level item: a menu of Hub's own inside the application menu would add a second level for one row.
+       Windows and Linux have no exporter to read this: the object graph exists on all three hosts, which is
+       what the shell self-check reads.
+
+       The header is a literal, not {DynamicResource}: a NativeMenuItem is not in the visual or logical tree, so
+       a resource reference there has no lookup chain and would render blank with no error. The product's name
+       is the same in both UI languages, so nothing is lost — only the dialog's button is copy that follows the
+       language setting (it comes from HubTexts). -->
+  <NativeMenu.Menu>
+    <NativeMenu>
+      <NativeMenuItem Header="About Axmol Hub…" Click="OnAboutMenuClick" />
+    </NativeMenu>
+  </NativeMenu.Menu>
+
 </Application>

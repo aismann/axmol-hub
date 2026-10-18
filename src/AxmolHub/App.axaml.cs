@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AxmolHub.Core;
@@ -43,6 +44,60 @@ public partial class App : Application
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>
+    /// The About surface's copy. Fixed English, unlike the dialog's button: the product's name, its one-sentence
+    /// description and the repository address read the same in both UI languages, so they have no second column —
+    /// which is why they live here rather than in <see cref="HubTexts"/>.
+    /// </summary>
+    private const string AboutTitle = "About Axmol Hub";
+
+    private const string AboutTagline =
+        "Axmol Hub is the desktop workspace for Axmol game development: engines, projects, toolchains and an AI "
+        + "assistant in one place.";
+
+    private const string AboutRepository = "https://github.com/axmolengine/axmol-hub";
+
+    /// <summary>The application menu's About entry, clicked (see the <c>NativeMenu</c> in App.axaml).</summary>
+    private void OnAboutMenuClick(object? sender, EventArgs e)
+        => _ = ShowAboutAsync((ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow);
+
+    /// <summary>
+    /// One place for this surface: the menu entry above and <c>--verify-shell</c> both come through here, so the
+    /// check reads the same dialog a click opens rather than a re-enactment of it. A null owner is the platform's
+    /// own arrangement (HubDialog degrades to a non-modal Show), which is also what lets the check drive it without
+    /// blocking the suite.
+    ///
+    /// <para>The body is the name with the assembly's version — one product version, in Directory.Build.props —
+    /// and then the one sentence that says what Hub is. The logo is the same 256 px icon the window wears, and it
+    /// is read once and kept: a box the user can open all day must not reload it on every open, and a missing icon
+    /// file is an appearance problem rather than a reason for the dialog to fail.</para>
+    /// </summary>
+    internal static Task<HubDialogResult> ShowAboutAsync(Window? owner)
+        => HubDialog.ShowAsync(
+            owner,
+            AboutTitle,
+            "Axmol Hub v" + HubReleaseInfo.DisplayVersion + "\n\n" + AboutTagline,
+            picture: AboutPicture(),
+            linkUrl: AboutRepository);
+
+    private static Bitmap? _aboutPicture;
+
+    private static Bitmap? AboutPicture()
+    {
+        if (_aboutPicture is not null) return _aboutPicture;
+        try
+        {
+            var path = HubAppIcon.FilePath(HubAppIcon.WindowIconSize);
+            if (File.Exists(path)) _aboutPicture = new Bitmap(path);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceWarning($"Could not load the Hub logo for the About box: {ex}");
+        }
+
+        return _aboutPicture;
     }
 
     private void Start(IClassicDesktopStyleApplicationLifetime desktop)

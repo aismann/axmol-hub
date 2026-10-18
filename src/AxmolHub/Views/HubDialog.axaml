@@ -29,10 +29,18 @@
          longer draws: the window now has its own drawn edge, so the content goes straight on the window's
          background and the hairline under the bar is the one separator it needs. -->
     <StackPanel Grid.Row="1" Spacing="14" Margin="20,14,20,18">
+      <!-- A caller-supplied logo (the About box's). Collapsed rather than left empty for every other use of this
+           box: a confirmation or a notice with a blank square above the question would be chrome saying nothing. -->
+      <Image Name="DialogPicture" Width="64" Height="64" IsVisible="False" HorizontalAlignment="Left"
+             RenderOptions.BitmapInterpolationMode="HighQuality" />
       <!-- Long text (exception stack traces) goes through scrolling, so the dialog never grows off-screen. -->
       <ScrollViewer MaxHeight="320" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <TextBlock Name="DialogMessage" Classes="muted" TextWrapping="Wrap" />
       </ScrollViewer>
+      <!-- A destination the box points at (the About box's repository). Its own row above the answers, because a
+           link is not an answer to the question the box asks; hidden — not merely empty — unless a caller supplies
+           one, since a row takes its share of the panel's spacing even when it holds nothing. -->
+      <StackPanel Name="DialogLinks" Spacing="8" HorizontalAlignment="Left" IsVisible="False" />
       <StackPanel Name="DialogButtons" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" />
     </StackPanel>
   </Grid>
