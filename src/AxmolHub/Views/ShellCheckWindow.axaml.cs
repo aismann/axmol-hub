@@ -1087,6 +1087,17 @@ public partial class ShellCheckWindow : Window
               && !MainWindow.ShouldHideOnCloseForCheck(true, false, false, true, true)
               && !MainWindow.ShouldHideOnCloseForCheck(false, true, false, true, false),
             "关窗即隐藏：Windows 有托盘与 macOS 的 Dock 都隐藏主窗口，显式退出、自动化与其他平台仍执行原关闭流程");
+        // A quit the platform starts — Cmd+Q, the Dock's or the application menu's Quit, the system logging out —
+        // has to end the process, and the reason it needs its own rule is the lifetime: it closes every window with
+        // a cancelable Closing and cancels the whole shutdown when one of them refuses. Letting the hide rule answer
+        // one of these would therefore strand the process rather than keep it in the Dock, while the window's own
+        // close button keeps hiding.
+        Check(MainWindow.IsPlatformQuit(WindowCloseReason.ApplicationShutdown)
+              && MainWindow.IsPlatformQuit(WindowCloseReason.OSShutdown)
+              && !MainWindow.IsPlatformQuit(WindowCloseReason.WindowClosing)
+              && !MainWindow.IsPlatformQuit(WindowCloseReason.OwnerWindowClosing)
+              && !MainWindow.IsPlatformQuit(WindowCloseReason.Undefined),
+            "平台发起的退出（Cmd+Q / Dock 或应用菜单的退出 / 系统注销）关的是真窗、进程真的退出，窗口关闭按钮仍走隐藏");
         // The Dock icon, on macOS, both ways AppKit reports it. The reopen event is the one that matters: it arrives
         // for a Dock click even when Hub is still frontmost with nothing on screen — the state a close leaves behind
         // — while the did-become-active notification only fires on an activation transition (a click from another
