@@ -8,8 +8,9 @@ namespace AxmolHub.Agent;
 /// <summary>The subscription catalog is separate from the API-key catalog.</summary>
 public static class OpenAiCodexModels
 {
-    // A Codex protocol compatibility version, independent of the Hub release number.
-    public const string CatalogClientVersion = "0.99.0";
+    // The server filters catalog rows by this Codex protocol version, independently of the Hub release.
+    // Older versions can return only hidden internal models even after a successful sign-in.
+    public const string CatalogClientVersion = "0.162.0";
 
     public static async Task<ModelFetchResult> FetchAsync(HttpClient http, ModelProvider provider, CancellationToken token)
     {

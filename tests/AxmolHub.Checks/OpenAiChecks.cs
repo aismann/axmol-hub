@@ -223,6 +223,24 @@ internal static class OpenAiChecks
             """));
         Check(catalog.Models.SequenceEqual(["fixture-model"]) && catalog.Capabilities["fixture-model"].ContextTokens == 128000
             && catalog.ReasoningModels["fixture-model"].Efforts.SequenceEqual(["low", "high"]), "Codex model metadata maps into Hub capabilities");
+        var catalogFixture = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "openai-codex-models.json"));
+        var realCatalog = OpenAiCodexModels.Parse(catalogFixture);
+        Check(realCatalog.Reachable && realCatalog.Models.Contains("gpt-6.1-sol") && realCatalog.Capabilities["gpt-6.1-sol"].ContextTokens > 0,
+            "the real Codex catalog exposes usable models and their context windows");
+        using (var catalogHttp = new HttpClient(new Handler((request, _) =>
+        {
+            Check(request.RequestUri!.AbsolutePath == "/backend-api/codex/models"
+                && Query(request.RequestUri.AbsoluteUri)["client_version"] == "0.162.0",
+                "catalog requests advertise the supported Codex version instead of the obsolete version that hides all chat models");
+            Check(request.Headers.Authorization?.Parameter == "catalog-access", "catalog requests use the OAuth access token");
+            return Task.FromResult(Json(Encoding.UTF8.GetString(catalogFixture)));
+        })))
+        {
+            provider.OpenAiTokenProvider = (_, _) => Task.FromResult(tokens with { AccessToken = "catalog-access" });
+            var fetchedCatalog = await OpenAiCodexModels.FetchAsync(catalogHttp, provider, default);
+            Check(fetchedCatalog.Reachable && fetchedCatalog.Models.SequenceEqual(realCatalog.Models),
+                "the model fetch path preserves the usable rows from a real Codex catalog");
+        }
         var adapted = OpenAiCodexRequestPolicy.Adapt("""
             {"store":true,"max_output_tokens":123,"temperature":1,"input":[{"role":"system","content":"instructions"},{"type":"function_call","id":"item1","call_id":"call1","name":"read_file","arguments":"{}"},{"type":"function_call_output","call_id":"call1","output":"file contents"}]}
             """);
