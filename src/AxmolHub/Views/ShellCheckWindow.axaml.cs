@@ -575,14 +575,12 @@ public partial class ShellCheckWindow : Window
         Check(chipProbe.Found && chipProbe.RangeAgrees,
             "行内代码块的字符区间与库自己的选区索引一致（库读到「" + chipProbe.LibraryText + "」，代码是「"
             + chipProbe.Code + "」）");
-        Check(chipProbe.Found && chipProbe.DraggedTinted && chipProbe.DraggedRestored,
-            "拖选跨过行内代码块时它才显示选取状态：选中换成 Hub.SelectionChip，清除后回到 Hub.SurfaceRaised（实际 "
-            + chipProbe.Code + " 拖选=" + chipProbe.DraggedTinted + " 复原=" + chipProbe.DraggedRestored + "）");
-        // The gesture a reader actually makes on a chip: a click, or a click with a pixel of travel. The library
-        // hands it the chip's own characters, which looks exactly like a selection while copying as nothing.
-        Check(chipProbe.Found && chipProbe.ClickDropped && chipProbe.ClickUnmarked,
-            "点在行内代码块上不选中任何东西：选区被丢掉也不显示选取状态（实际 选区为空=" + chipProbe.ClickDropped
-            + "，未标=" + chipProbe.ClickUnmarked + "）");
+        Check(chipProbe.Found && chipProbe.AcrossSelected && chipProbe.InternalSelected,
+            "会话行内代码支持跨边界和内部逐字鼠标拖选，不给整块染色（跨边界="
+            + chipProbe.AcrossSelected + "，内部=" + chipProbe.InternalSelected + "）");
+        Check(chipProbe.Found && chipProbe.ClickEmpty && chipProbe.NoWholeChipTint,
+            "单击行内代码清除选区，不出现整块模拟选中状态（选区为空=" + chipProbe.ClickEmpty + "）");
+        await VerifyInlineCodeSurfacesAsync();
         Check(chipProbe.Found && chipProbe.DraggedCopied,
             "跨行内代码块的选区把它自己的代码也算进要复制的文本（读到「" + chipProbe.DraggedText + "」）");
         Check(panel.MarkdownSelectionMenuForCheck(),

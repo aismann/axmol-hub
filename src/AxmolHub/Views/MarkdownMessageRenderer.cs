@@ -57,6 +57,13 @@ internal static class MarkdownMessageRenderer
         // closer to the rendered content than ChatPanel's styles, so it wins there. Appending after it
         // is what lets the Hub tokens override the table colors GithubLike hardcodes for light themes.
         viewer.Styles.Add(new HubMarkdownStyles());
+        // CHyperlink restores a local arrow when the pointer leaves it. Restore the text style instead,
+        // without replacing the hand that its enter handler sets on a genuine link.
+        viewer.AddHandler(InputElement.PointerMovedEvent, (_, e) =>
+        {
+            if (e.Source is CTextBlock block && Equals(block.Cursor, Cursor.Default))
+                block.ClearValue(InputElement.CursorProperty);
+        }, RoutingStrategies.Bubble, handledEventsToo: true);
         var syntax = Syntax.Value;
         var plugins = new MdAvPlugins();
         plugins.Plugins.Add(syntax.Plugin);
@@ -64,9 +71,8 @@ internal static class MarkdownMessageRenderer
         EventHandler? layoutUpdated = null;
         layoutUpdated = (_, _) =>
         {
-            // The chip hook goes in before the syntax pass can unsubscribe: it is one subscription per viewer,
-            // idempotent, and it has to exist before the first pointer gesture rather than before the first frame.
-            InstallChipSelection(viewer);
+            // Prepare the text geometry before the syntax pass can unsubscribe this layout hook.
+            InstallReadingCode(viewer);
             if (ApplySyntaxHighlighting(viewer)) viewer.LayoutUpdated -= layoutUpdated;
         };
         viewer.LayoutUpdated += layoutUpdated;
@@ -99,67 +105,56 @@ internal static class MarkdownMessageRenderer
             code.FontFamily = mono;
     }
 
-    /// <summary>
-    /// Keeps the marks on the code chips in step with the selection the library keeps on the document.
-    ///
-    /// <para>A block publishes no selection event — its <c>Selection</c> is a plain property over two text
-    /// pointers, not an AvaloniaProperty, so there is nothing to subscribe to — but the input that changes one is
-    /// published, so this hangs on that. The read is deferred to the dispatcher because the library's own pointer
-    /// handler must have run before the new range can be read back, and handled events are read too: the press
-    /// the library consumes is exactly the one that clears the previous selection.</para>
-    ///
-    /// <para>Installed on the viewer rather than on each block, which is what makes a gesture that clears a
-    /// selection living in another block come out right — the range is read from every block in the document, not
-    /// only from the one the pointer happened to land on.</para>
-    /// </summary>
-    internal static void InstallChipSelection(MarkdownScrollViewer viewer)
+    /// <summary>Separate inline code decoration from text hit testing and selection painting.
+    /// The library keeps the original CTextBlock in its document model, so wrap rather than replace it.</summary>
+    private static void InstallReadingCode(MarkdownScrollViewer viewer)
     {
-        if (viewer.Classes.Contains("hub-chip-selection")) return;
-        viewer.Classes.Add("hub-chip-selection");
-
-        // One gesture, one deferred read: the deferral is what makes the order irrelevant, so every input event
-        // that can move a selection is wired to the same handler instead of each one growing its own.
-        void OnGesture(object? sender, RoutedEventArgs _)
-            => Dispatcher.UIThread.Post(() => SyncChipSelection(viewer));
-
-        foreach (var gesture in new RoutedEvent[]
-                 {
-                     InputElement.PointerPressedEvent, InputElement.PointerMovedEvent,
-                     InputElement.PointerReleasedEvent, InputElement.KeyDownEvent, InputElement.KeyUpEvent,
-                 })
+        foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>().ToArray())
         {
-            viewer.AddHandler(gesture, OnGesture, RoutingStrategies.Bubble, handledEventsToo: true);
+            if (block.Classes.Contains("hub-reading-code")) continue;
+            if (!ChipsOf(block).Any()) continue;
+            var parent = block.GetVisualParent();
+            if (parent is not Panel && parent is not Decorator && parent is not ContentControl) continue;
+
+            CInline Replace(CInline inline)
+            {
+                if (inline is CCode code)
+                {
+                    var children = code.Content.ToArray();
+                    code.Content = [];
+                    return new ReadingCode(children) { FontFamily = code.FontFamily };
+                }
+                if (inline is CSpan span) span.Content = span.Content.Select(Replace).ToArray();
+                return inline;
+            }
+
+            var content = block.Content.Select(Replace).ToArray();
+            // CTextBlock's Reset handler receives no OldItems from Clear and leaves stale logical children.
+            foreach (var old in block.Content.ToArray()) block.Content.Remove(old);
+            block.Content.AddRange(content);
+            block.Classes.Add("hub-reading-code");
+            var codes = block.GetLogicalDescendants().OfType<ReadingCode>().ToArray();
+            var layer = new Grid();
+            Grid.SetRow(layer, Grid.GetRow(block));
+            Grid.SetColumn(layer, Grid.GetColumn(block));
+            Grid.SetRowSpan(layer, Grid.GetRowSpan(block));
+            Grid.SetColumnSpan(layer, Grid.GetColumnSpan(block));
+            DockPanel.SetDock(layer, DockPanel.GetDock(block));
+            switch (parent)
+            {
+                case Panel panel:
+                    var index = panel.Children.IndexOf(block);
+                    panel.Children.RemoveAt(index);
+                    panel.Children.Insert(index, layer);
+                    break;
+                case Decorator decorator: decorator.Child = layer; break;
+                case ContentControl host: host.Content = layer; break;
+            }
+            var backdrop = new InlineCodeBackdrop(block, codes) { IsHitTestVisible = false };
+            layer.Children.Add(backdrop);
+            layer.Children.Add(block);
+            block.LayoutUpdated += (_, _) => backdrop.InvalidateVisual();
         }
-    }
-
-    /// <summary>Marks every code chip the document's current selection covers, and unmarks the rest.</summary>
-    internal static void SyncChipSelection(MarkdownScrollViewer viewer)
-    {
-        foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
-            SyncChipSelection(block);
-    }
-
-    private static void SyncChipSelection(CTextBlock block)
-    {
-        var selection = block.Selection;
-        var from = Math.Min(selection?.From ?? 0, selection?.To ?? 0);
-        var to = Math.Max(selection?.From ?? 0, selection?.To ?? 0);
-        var chips = ChipsOf(block);
-
-        // A gesture that lands on an inline code chip — a click, or a click with a pixel of travel — is handed
-        // the chip's own characters, because the library's caret model treats a chip as one unit and a chip is
-        // where the press was. The reader asked for the opposite, twice over: a chip must not be picked up by
-        // clicking it, and the only selection a chip may wear is the one a drag across it produces. So a range
-        // that begins and ends inside one chip is dropped rather than merely left unmarked — what stays in the
-        // block is then only ever a selection somebody can act on.
-        if (to > from && chips.Any(chip => from >= chip.Start && to <= chip.Start + chip.Length))
-        {
-            block.ClearSelection();
-            from = to = 0;
-        }
-
-        foreach (var (chip, start, length) in chips)
-            chip.Classes.Set("hub-chip-selected", start < to && start + length > from);
     }
 
     /// <summary>Every code chip a block draws, in document order, with the character range each one covers.
@@ -224,11 +219,7 @@ internal static class MarkdownMessageRenderer
         return string.Join("\n", parts);
     }
 
-    /// <summary>Verification hook: selects what a drag across the document's first inline code chip produces — a
-    /// range that begins in the text before it and ends inside it — runs the pass the pointer runs, and returns
-    /// the chip's own code (empty when the document draws no chip). Deliberately a range that *spans* the chip's
-    /// edge: that is the selection the reader asked to keep, and the one a chip-internal one has to be told apart
-    /// from.</summary>
+    /// <summary>Selects across the first inline code for the quote-menu check.</summary>
     internal static string SelectAcrossChip(MarkdownScrollViewer viewer)
     {
         foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
@@ -238,24 +229,17 @@ internal static class MarkdownMessageRenderer
 
             var chip = chips[0];
             block.Select(Math.Max(0, chip.Start - 1), chip.Start + chip.Length);
-            SyncChipSelection(block);
             return chip.Chip.AsString() ?? "";
         }
 
         return "";
     }
 
-    /// <summary>Verification hook: walks the first code chip in the document through the three gestures that
-    /// decide what a chip may show, and reports what each one left behind. Readings rather than throws, so a
-    /// failure prints with numbers in it.
-    ///
-    /// <para><c>RangeAgrees</c> is the library's own answer to the range this file reconstructed: that range
-    /// selected through the library's index overload has to read back as the chip's own code, or every mark this
-    /// file computes is measured against the wrong coordinate space.</para>
-    /// </summary>
-    internal static (bool Found, bool RangeAgrees, bool DraggedTinted, bool DraggedCopied, bool DraggedRestored,
-        bool ClickDropped, bool ClickUnmarked, string Code, string LibraryText, string DraggedText)
-        ProbeChipSelectionForCheck(MarkdownScrollViewer viewer)
+    /// <summary>Readings from real pointer gestures, plus the library's index-coordinate sanity check.</summary>
+    internal readonly record struct InlineCodeProbe(bool Found, bool RangeAgrees, bool AcrossSelected, bool DraggedCopied,
+        bool InternalSelected, bool ClickEmpty, bool NoWholeChipTint, string Code, string LibraryText, string DraggedText);
+
+    internal static InlineCodeProbe ProbeChipSelectionForCheck(MarkdownScrollViewer viewer)
     {
         foreach (var block in viewer.GetVisualDescendants().OfType<CTextBlock>())
         {
@@ -269,38 +253,55 @@ internal static class MarkdownMessageRenderer
             block.Select(probe.Start, probe.Start + probe.Length);
             var libraryText = block.GetSelectedText() ?? "";
 
-            // A drag across the chip: marked, and included in the text this file hands to the clipboard.
-            block.Select(Math.Max(0, probe.Start - 1), probe.Start + probe.Length);
-            SyncChipSelection(block);
-            var draggedTinted = Marked(probe.Chip);
+            if (probe.Chip is not ReadingCode reading || reading.Geometries.Count != 1
+                || TopLevel.GetTopLevel(block) is not { } root) continue;
+            var geometry = reading.Geometries[0];
+            Point At(double character)
+            {
+                geometry = reading.Geometries[0];
+                return (block.TranslatePoint(default, root) ?? default) + new Vector(
+                    geometry.Left + geometry.Width * character / code.Length, geometry.Top + geometry.Height / 2);
+            }
+            var pointer = new Pointer(Pointer.GetNextFreeId(), PointerType.Mouse, true);
+            void Gesture(Point start, Point end)
+            {
+                block.RaiseEvent(new PointerPressedEventArgs(block, pointer, root, start, 0,
+                    new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed),
+                    KeyModifiers.None, 1));
+                block.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, block, pointer, root, end, 0,
+                    new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other), KeyModifiers.None));
+                block.RaiseEvent(new PointerReleasedEventArgs(block, pointer, root, end, 0,
+                    new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased),
+                    KeyModifiers.None, MouseButton.Left));
+                Dispatcher.UIThread.RunJobs();
+            }
+
+            // Exercise routed input, not Select: the decorated span used to consume the press itself.
+            Gesture(At(0) - new Vector(3, 0), At(code.Length) + new Vector(3, 0));
             var draggedText = SelectionText(viewer);
             var draggedCopied = draggedText.Contains(code, StringComparison.Ordinal);
+            var acrossSelected = block.Selection is { } across && across.To != across.From
+                && !Marked(probe.Chip);
 
-            // Cleared again: back to the paragraph's own chip surface.
+            Gesture(At(1), At(code.Length - 1));
+            var internalText = SelectionText(viewer);
+            var internalSelected = code.Length > 2 && internalText == code[1..^1];
+
+            Gesture(At(1), At(1));
+            var clickEmpty = SelectionText(viewer).Length == 0;
+            var noWholeChipTint = !Marked(probe.Chip);
+            pointer.Capture(null);
             block.ClearSelection();
-            SyncChipSelection(block);
-            var draggedRestored = !Marked(probe.Chip);
 
-            // A click on the chip, i.e. a range that begins and ends inside it: nothing selected, nothing marked.
-            block.Select(probe.Start + 1, probe.Start + probe.Length);
-            SyncChipSelection(block);
-            var clickDropped = block.Selection is null;
-            var clickUnmarked = !Marked(probe.Chip);
-
-            block.ClearSelection();
-            SyncChipSelection(block);
-
-            return (true, libraryText == code, draggedTinted, draggedCopied, draggedRestored,
-                clickDropped, clickUnmarked, code, libraryText, draggedText);
+            return new(true, libraryText == code, acrossSelected, draggedCopied, internalSelected,
+                clickEmpty, noWholeChipTint, code, libraryText, draggedText);
         }
 
-        return (false, false, false, false, false, false, false, "", "", "");
+        return new(false, false, false, false, false, false, false, "", "", "");
     }
 
-    /// <summary>Whether a chip is wearing the selected look — the class *and* the brush it resolves to, because
-    /// the class alone would also be true of a rule that lost to the base chip style.</summary>
-    private static bool Marked(CCode chip)
-        => chip.Classes.Contains("hub-chip-selected") && MatchesToken(chip.Background, "Hub.SelectionChip");
+    /// <summary>The obsolete whole-chip mark must never return.</summary>
+    private static bool Marked(CCode chip) => chip.Classes.Contains("hub-chip-selected");
 
     /// <summary>Whether every block in the document paints its selection band from the Hub token instead of the
     /// library's own fallback. <see cref="Brushes.Cyan"/> is the specific thing being ruled out: it is what
@@ -574,7 +575,8 @@ internal static class MarkdownMessageRenderer
                && MatchesToken(body.Foreground, "Hub.TextBody")
                && body.FontSize == 12 && heading.FontSize > body.FontSize
                && inline is not null && MatchesToken(inline.Foreground, "Hub.TextBody")
-               && MatchesToken(inline.Background, "Hub.SurfaceRaised")
+               && inline is ReadingCode && IsTransparent(inline.Background)
+               && viewer.GetVisualDescendants().OfType<InlineCodeBackdrop>().Any()
                && codeBlock is not null && MatchesToken(codeBlock.Background, "Hub.SurfaceSunken")
                && MatchesToken(codeBlock.BorderBrush, "Hub.BorderSubtle")
                && link is not null && MatchesToken(link.Foreground, "Hub.Link");

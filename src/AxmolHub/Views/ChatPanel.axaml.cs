@@ -5497,13 +5497,9 @@ public partial class ChatPanel : UserControl
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasThemedSelection);
 
-    /// <summary>Drives a real code chip through the three gestures that decide what it may show — a click on it,
-    /// a drag across it, cleared again — and reports what each one left behind. The first viewer on screen that
-    /// draws an inline code chip answers, so this reads a document the transcript really built rather than a
-    /// fixture built for the check.</summary>
-    internal (bool Found, bool RangeAgrees, bool DraggedTinted, bool DraggedCopied, bool DraggedRestored,
-        bool ClickDropped, bool ClickUnmarked, string Code, string LibraryText, string DraggedText)
-        ProbeMarkdownChipSelection()
+    /// <summary>Exercises click, internal drag and cross-boundary drag on the first inline code in the actual
+    /// transcript, rather than substituting a renderer-only fixture for the message the reader sees.</summary>
+    internal MarkdownMessageRenderer.InlineCodeProbe ProbeMarkdownChipSelection()
         => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
             .Select(MarkdownMessageRenderer.ProbeChipSelectionForCheck)
             .FirstOrDefault(probe => probe.Found);
