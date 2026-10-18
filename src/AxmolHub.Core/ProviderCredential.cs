@@ -15,17 +15,8 @@ public static class CredentialSources
 /// <summary>
 /// One saved credential for a provider — an <b>account</b>, in GitHub Copilot's terms.
 ///
-/// <para><b>Why this is not just "a key field on the provider".</b> A provider can legitimately be used with
-/// several credentials at once: a personal OrcaRouter account and a work one, or a project key and a fallback.
-/// Copilot models exactly this with its account list, so "one provider, one key" is the shape that has to be
-/// stretched.</para>
-///
-/// <para><b>Why the source is not a type.</b> OrcaRouter's OAuth flow is documented as minting <i>a normal API
-/// key</i>: the same <c>sk-yoex-…</c> string a user could have pasted, with no refresh token, no expiry and no
-/// separate token-exchange at call time. So an OAuth credential and a pasted credential are the same thing on
-/// the wire, and the only honest difference is provenance. Modelling them as two credential types would mean
-/// two storage paths, two read paths and a branch in the client factory — all for a distinction that vanishes
-/// the moment the key is issued.</para>
+/// <para>Hub currently binds one credential to each configured provider. Source records provenance;
+/// AuthKind distinguishes a renewable OpenAI token bundle from the plain key OrcaRouter mints.</para>
 ///
 /// <para>The secret itself is <b>not here</b>: it lives in <see cref="ISecretStore"/> keyed by <see cref="Id"/>,
 /// exactly as <see cref="ModelProvider.ApiKey"/> used to. This object is the non-secret half that can be written
@@ -48,6 +39,9 @@ public sealed class ProviderCredential
 
     /// <summary>One of <see cref="CredentialSources"/>. Provenance only — see the note on the class.</summary>
     public string Source { get; set; } = CredentialSources.ApiKey;
+
+    /// <summary>Wire credential type; absent in older files means a plain API key.</summary>
+    public string AuthKind { get; set; } = "apiKey";
 
     /// <summary>
     /// The account identity the provider reported, when it reported one (OrcaRouter returns <c>user_id</c>).

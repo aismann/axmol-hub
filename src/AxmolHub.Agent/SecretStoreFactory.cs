@@ -12,9 +12,7 @@ namespace AxmolHub.Agent;
 /// between tiers is which attacker is stopped, and <see cref="ISecretStore.Descriptor"/> carries that to the
 /// settings page instead of letting one sentence cover three backends.</para>
 ///
-/// <para><b>macOS still has no tier.</b> Its documented backend is the Keychain, and a file there would have Hub
-/// claim OS-credential protection it has not implemented. The platform keeps reporting "unsupported" until that
-/// lands.</para>
+/// <para>macOS uses native generic passwords in the login Keychain, isolated by data root.</para>
 /// </summary>
 public static class SecretStoreFactory
 {
@@ -33,11 +31,10 @@ public static class SecretStoreFactory
         return SecretStoreResolver.Decide(platform, keyringAvailable: false) switch
         {
             SecretStoreKind.Dpapi when OperatingSystem.IsWindows() => new DpapiSecretStore(dataRoot),
+            SecretStoreKind.Keychain when OperatingSystem.IsMacOS() => new MacKeychainSecretStore(dataRoot),
             SecretStoreKind.EncryptedFile => new AesGcmFileSecretStore(dataRoot),
             _ => throw new PlatformNotSupportedException(
-                "Secure API key storage is not implemented on this platform. Windows uses DPAPI and Linux uses an " +
-                "encrypted local file; the macOS Keychain backend is planned, and macOS deliberately gets no file " +
-                "fallback rather than a weaker promise than its Keychain."),
+                "Secure credential storage is unavailable for this platform."),
         };
     }
 }

@@ -137,7 +137,7 @@ public static class ModelList
     /// <c>Content-Length</c>: a chunked response declares no length at all, and the cap is the only thing
     /// standing between a misbehaving endpoint and an unbounded buffer.
     /// </summary>
-    internal static async Task<byte[]> ReadBoundedAsync(Stream stream, CancellationToken cancellationToken)
+    public static async Task<byte[]> ReadBoundedAsync(Stream stream, CancellationToken cancellationToken)
     {
         using var buffer = new MemoryStream();
         var chunk = new byte[81920];

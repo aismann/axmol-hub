@@ -24,8 +24,8 @@
     {
       "id": "openai",
       "name": "OpenAI",
-      "description": "OpenAI's own API. Requires a key from platform.openai.com and a model name your account can call.",
-      "descriptionZh": "OpenAI 官方接口。需要 platform.openai.com 的密钥，以及你的账户可调用的模型名。",
+      "description": "Sign in with ChatGPT to use your Codex plan, or use an API key from platform.openai.com.",
+      "descriptionZh": "使用 ChatGPT 登录以调用 Codex 套餐，或使用 platform.openai.com 的 API 密钥。",
       "baseUrl": "https://api.openai.com/v1",
       "defaultEnabledModels": ["gpt-6.1-sol"],
       "maxContextTokens": 500000,
@@ -35,7 +35,8 @@
           "defaultEffort": "low"
         }
       },
-      "authMethods": ["apiKey"],
+      "authMethods": ["oauth", "apiKey"],
+      "oauth": { "flow": "openaiPkce" },
       "keyValidation": { "type": "httpGetModels", "path": "/models" }
     },
     {

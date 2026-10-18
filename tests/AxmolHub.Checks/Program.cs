@@ -15,6 +15,12 @@ Directory.CreateDirectory(root);
 
 // Build has been delegated to the engine cmdline; the ProjectService in Checks shares the in-repo wrapper script.
 EngineCommandLine EngineCli(ProcessRunner runner) => new(runner, Path.GetFullPath("src/AxmolHub.Core/Scripts/Invoke-Axmol.ps1"));
+if (args.Contains("--check-openai-oauth"))
+{
+    await OpenAiChecks.RunAsync(root, args.Contains("--native-keychain"), args.Contains("--loopback"));
+    return;
+}
+
 if (args.Contains("--check-ai-providers"))
 {
     void AssertRejects(Action action, string name)
@@ -1050,13 +1056,16 @@ if (args.Contains("--check-secret-store"))
         // header. The rule is a shape heuristic, and a heuristic that only ever sees its own synthetic example
         // drifts into "nothing is recognisable" — this is also the exact blob a copied Windows data directory
         // arrives with, which is the case the header exists for.
-        var realDpapi = System.Security.Cryptography.ProtectedData.Protect(
-            Encoding.UTF8.GetBytes(secret), "AxmolHub.Secrets.v1"u8.ToArray(),
-            System.Security.Cryptography.DataProtectionScope.CurrentUser);
-        Assert(SecretBlobFormat.Classify(realDpapi) == SecretBlobOrigin.DpapiLikely,
-            "a real DPAPI blob from this machine reads as a foreign backend, not as one of ours");
-        Assert(Rejects(() => SecretBlobFormat.Unprotect(realDpapi, key, "orcarouter")) == SecretStoreFailure.ForeignBackend,
-            "and the refusal names the reason rather than claiming the key is wrong");
+        if (OperatingSystem.IsWindows())
+        {
+            var realDpapi = System.Security.Cryptography.ProtectedData.Protect(
+                Encoding.UTF8.GetBytes(secret), "AxmolHub.Secrets.v1"u8.ToArray(),
+                System.Security.Cryptography.DataProtectionScope.CurrentUser);
+            Assert(SecretBlobFormat.Classify(realDpapi) == SecretBlobOrigin.DpapiLikely,
+                "a real DPAPI blob from this machine reads as a foreign backend, not as one of ours");
+            Assert(Rejects(() => SecretBlobFormat.Unprotect(realDpapi, key, "orcarouter")) == SecretStoreFailure.ForeignBackend,
+                "and the refusal names the reason rather than claiming the key is wrong");
+        }
 
         // ── where the blobs go, and what an id cannot do to it ──
         var blobs = new SecretBlobFiles(scratch);
@@ -1092,8 +1101,8 @@ if (args.Contains("--check-secret-store"))
         Assert(SecretStoreResolver.Decide(HubPlatform.Linux, true) == SecretStoreKind.SecretService
                && SecretStoreResolver.Decide(HubPlatform.Linux, false) == SecretStoreKind.EncryptedFile,
             "Linux prefers the keyring and falls back to the file tier when no provider answers");
-        Assert(SecretStoreResolver.Decide(HubPlatform.MacOS, true) == SecretStoreKind.None,
-            "macOS gets no tier at all rather than a file standing in for its Keychain");
+        Assert(SecretStoreResolver.Decide(HubPlatform.MacOS, true) == SecretStoreKind.Keychain,
+            "macOS selects the native Keychain tier");
         Assert(!SecretStoreResolver.ShouldProbeKeyring(HubPlatform.Windows)
                && !SecretStoreResolver.ShouldProbeKeyring(HubPlatform.MacOS)
                && SecretStoreResolver.ShouldProbeKeyring(HubPlatform.Linux),
@@ -1105,10 +1114,13 @@ if (args.Contains("--check-secret-store"))
             Path.Combine(scratch, "factory"), HubPlatform.Linux);
         Assert(factoryFile.Descriptor.Kind == SecretStoreKind.EncryptedFile,
             "the factory hands Linux the file tier, and does not throw any more");
-        Assert(SecretStoreFactory.Create(Path.Combine(scratch, "factory"), HubPlatform.Windows).Descriptor.Kind
-               == SecretStoreKind.Dpapi, "and still hands Windows DPAPI");
-        Assert(Throws(() => SecretStoreFactory.Create(scratch, HubPlatform.MacOS)) is PlatformNotSupportedException,
-            "macOS still refuses, in as many words");
+        if (OperatingSystem.IsWindows())
+            Assert(SecretStoreFactory.Create(Path.Combine(scratch, "factory"), HubPlatform.Windows).Descriptor.Kind
+                   == SecretStoreKind.Dpapi, "and still hands Windows DPAPI");
+        Assert(OperatingSystem.IsMacOS()
+            ? SecretStoreFactory.Create(scratch, HubPlatform.MacOS).Descriptor.Kind == SecretStoreKind.Keychain
+            : Throws(() => SecretStoreFactory.Create(scratch, HubPlatform.MacOS)) is PlatformNotSupportedException,
+            "the Keychain factory is only instantiated on macOS");
 
         // ── the file store as the app uses it ──
         var storeRoot = Path.Combine(scratch, "data");

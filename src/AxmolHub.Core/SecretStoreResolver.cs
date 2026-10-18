@@ -16,8 +16,7 @@ public enum HubPlatform
 /// places an assertion cannot reach — <c>OperatingSystem.IsLinux()</c> cannot be made true on a Windows runner,
 /// and a D-Bus probe needs a session bus. With the decision separate from both, every branch of it is assertable
 /// on any host, which is the same reason <c>CjkFontNotice.RunningOnLinux</c> exists. It also keeps the table in
-/// one readable place: Windows on DPAPI, Linux on Secret Service or the file tier, macOS still on nothing until
-/// its Keychain backend lands.</para>
+/// one readable place: Windows on DPAPI, Linux on Secret Service or the file tier, macOS on the native Keychain.</para>
 /// </summary>
 public static class SecretStoreResolver
 {
@@ -35,11 +34,9 @@ public static class SecretStoreResolver
     /// </summary>
     public static SecretStoreKind Decide(HubPlatform platform, bool keyringAvailable) => platform switch
     {
+        HubPlatform.MacOS => SecretStoreKind.Keychain,
         HubPlatform.Windows => SecretStoreKind.Dpapi,
         HubPlatform.Linux => keyringAvailable ? SecretStoreKind.SecretService : SecretStoreKind.EncryptedFile,
-        // macOS intentionally keeps reporting "none": its documented backend is the Keychain, and quietly using
-        // a file there would claim a protection the platform was supposed to get properly. Adding it is one
-        // line here once a Keychain store exists.
         _ => SecretStoreKind.None,
     };
 

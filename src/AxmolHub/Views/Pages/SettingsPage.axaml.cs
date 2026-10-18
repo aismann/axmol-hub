@@ -1392,6 +1392,16 @@ public partial class SettingsPage : UserControl
         if (BuildSecretBackendLine(_chat.SecretBackend) is { } backend)
         {
             ProviderGroupList.Children.Add(backend);
+            if (_chat.SecretBackend.Kind == SecretStoreKind.Keychain && _chat.SecretBackend.DegradedReason is not null)
+            {
+                var retry = new Button { Content = HubStrings.Get("TaskRetry") };
+                retry.Click += (_, _) =>
+                {
+                    try { _chat.RetrySecretReads(); RebuildProviderGroups(); }
+                    catch (SecretStoreException exception) { SetProviderStatus(true, exception.Message); }
+                };
+                ProviderGroupList.Children.Add(retry);
+            }
         }
     }
 
@@ -1428,11 +1438,11 @@ public partial class SettingsPage : UserControl
         // Only the file tier explains itself. DPAPI is the promise every Windows install already got, a None
         // descriptor already surfaces through the auth dialog's own refusal, and repeating either here would be
         // a second label for information the screen carries once already.
-        if (backend.Kind != SecretStoreKind.EncryptedFile) return null;
+        if (backend.Kind is not (SecretStoreKind.EncryptedFile or SecretStoreKind.Keychain)) return null;
 
         return new TextBlock
         {
-            Text = HubStrings.Get("AuthSecretBackendFile"),
+            Text = HubStrings.Get(backend.Kind == SecretStoreKind.Keychain ? "AuthSecretBackendKeychain" : "AuthSecretBackendFile"),
             Classes = { "muted" },
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
@@ -2653,9 +2663,8 @@ public partial class SettingsPage : UserControl
     /// status line rather than a dialog: the flow is async and the user is looking at another window, so a
     /// modal box would be waiting in the wrong place.
     ///
-    /// <para><b>There is deliberately no "paste the callback URL" dialog.</b> The redirect targets this machine's
-    /// loopback port, so any browser on it finishes the sign-in without the user typing anything; where no browser
-    /// could be launched the status line hands over the link instead.</para>
+    /// <para>OpenAI shows a settings-layer card with manual callback entry; discovery providers use their
+    /// loopback listener, and device providers retain the existing code window.</para>
     ///
     /// <para>The button is passed in rather than looked up: with several groups on screen there is no single
     /// "the sign-in button", and disabling the wrong one would leave the clicked button live while a second
@@ -2666,9 +2675,12 @@ public partial class SettingsPage : UserControl
     /// started from the auth dialog instead of from a row: there is no row button to disable, and the dialog
     /// has already closed by the time the flow runs.
     /// </param>
+    internal bool OpenAiLayerForCheck => OpenAiLoginLayer.ClipToBounds && OpenAiLoginLayer.Background is not null
+        && OpenAiLoginLayer.Parent is Grid grid && grid.Children.IndexOf(OpenAiLoginLayer) == grid.Children.Count - 1;
+
     private async Task SignInAsync(ModelProvider provider, Button? button)
     {
-        if (_chat is null || !provider.SupportsOAuth) return;
+        if (_chat is null || !provider.SupportsOAuth || OpenAiLoginLayer.IsVisible) return;
 
         SetProviderStatus(false, HubStrings.Get("AuthOAuthPending"));
         if (button is not null) button.IsEnabled = false;
@@ -2709,6 +2721,9 @@ public partial class SettingsPage : UserControl
             });
         }
 
+        using var openAiCancellation = new CancellationTokenSource();
+        void Detached(object? sender, VisualTreeAttachmentEventArgs args) => openAiCancellation.Cancel();
+        if (provider.OAuth?.EffectiveFlow == ProviderOAuthFlows.OpenAi) DetachedFromVisualTree += Detached;
         try
         {
             var result = await _chat.SignInWithOAuthAsync(provider.Id, url =>
@@ -2717,7 +2732,14 @@ public partial class SettingsPage : UserControl
                 // is about to be rebuilt anyway), so it goes to the status line, which is already the channel
                 // for every other outcome of this flow.
                 SetProviderStatus(false, HubStrings.Get("AuthOAuthNoBrowser") + "\n" + url);
-            }, deviceCancellation?.Token ?? default, deviceProgress);
+            }, deviceCancellation?.Token ?? openAiCancellation.Token, deviceProgress, attempt =>
+            {
+                OpenAiLoginHost.Content = new OpenAiLoginCard(attempt, () => openAiCancellation.Cancel());
+                OpenAiLoginLayer.IsVisible = true;
+            });
+
+            OpenAiLoginLayer.IsVisible = false;
+            OpenAiLoginHost.Content = null;
 
             if (result is null)
             {
@@ -2760,6 +2782,9 @@ public partial class SettingsPage : UserControl
         }
         finally
         {
+            DetachedFromVisualTree -= Detached;
+            OpenAiLoginLayer.IsVisible = false;
+            OpenAiLoginHost.Content = null;
             if (button is not null) button.IsEnabled = true;
             // The outcome belongs to the settings status line — the same channel every other sign-in result
             // uses — so the code window has nothing left to say and goes away. IsVisible rather than a
@@ -2914,7 +2939,13 @@ public partial class SettingsPage : UserControl
             return;
         }
 
-        var stored = _chat.AddCredential(provider.Id, "", outcome.ApiKey, CredentialSources.ApiKey);
+        ProviderCredential? stored;
+        try { stored = _chat.AddCredential(provider.Id, "", outcome.ApiKey, CredentialSources.ApiKey); }
+        catch (SecretStoreException exception)
+        {
+            SetProviderStatus(true, exception.Message);
+            return;
+        }
         if (stored is null)
         {
             SetProviderStatus(true, HubStrings.Get("AuthSecretsUnsupported"));

@@ -51,7 +51,7 @@ internal static class SecretStoreSelfCheck
         }
         catch (PlatformNotSupportedException)
         {
-            // A platform with no backend is a known state, not a failure: macOS Keychain is deferred, and the CI
+            // A platform with no backend is a known state, not a failure: unknown platforms may have no backend, and the CI
             // matrix must not go red over a decision the product took deliberately.
             Console.WriteLine("PASS: no secret store on this platform, and the factory says so instead of storing a plaintext key");
             Console.WriteLine("backend=none");
@@ -98,7 +98,7 @@ internal static class SecretStoreSelfCheck
         {
             // Only the keyring tier legitimately keeps nothing in ai/secrets; every file-backed tier that fails
             // to write there is the bug this check exists to catch.
-            Check(descriptor.Kind == SecretStoreKind.SecretService,
+            Check(descriptor.Kind is SecretStoreKind.SecretService or SecretStoreKind.Keychain,
                 $"the store wrote a blob at {blob}, or is the keyring tier (kind={descriptor.Kind})");
         }
 

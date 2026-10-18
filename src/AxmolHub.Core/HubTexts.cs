@@ -658,8 +658,16 @@ public static class HubTexts
         // The wording states only what is true on both backend tiers. "Stored in the operating system's credential store" is wrong on the
         // Linux file backend, and the backend line (AuthSecretBackendFile) is what makes "where this key actually went" clear.
         ["ApiKeyHint"] = ("密钥只保存在本机，不会写入配置文件或日志。", "The key stays on this machine and is never written to config files or logs."),
-        ["ApiKeyPlatformUnsupported"] = ("当前平台尚不支持安全保存密钥（Windows 使用 DPAPI，Linux 使用本机加密文件；macOS 的 Keychain 待补）。", "Secure key storage is not available on this platform (Windows uses DPAPI, Linux uses an encrypted local file; the macOS Keychain backend is pending)."),
+        ["ApiKeyPlatformUnsupported"] = ("当前平台不支持安全保存密钥。", "Secure key storage is not available on this platform."),
         // Backend disclosure: the three tiers guard against different things, and one blanket "safely stored" would flatten the difference, so the store itself reports which tier it is.
+        ["AuthOpenAiTitle"] = ("使用 ChatGPT 登录", "Sign in with ChatGPT"),
+        ["AuthOpenAiHint"] = ("在浏览器中完成登录。如果无法自动返回，请复制浏览器地址栏中的完整回调 URL 并粘贴到下方。", "Complete sign-in in your browser. If it cannot return automatically, copy the full callback URL from the browser address bar and paste it below."),
+        ["AuthOpenAiOpen"] = ("打开浏览器", "Open browser"),
+        ["AuthOpenAiCopy"] = ("复制登录链接", "Copy sign-in link"),
+        ["AuthOpenAiCallback"] = ("粘贴完整回调 URL", "Paste the full callback URL"),
+        ["AuthOpenAiSubmit"] = ("完成登录", "Complete sign-in"),
+        ["AuthOpenAiInvalid"] = ("回调地址无效、已处理或不属于本次登录，请重新复制。", "The callback is invalid, already handled, or belongs to another sign-in. Copy it again."),
+        ["AuthSecretBackendKeychain"] = ("密钥和登录令牌保存在 macOS 钥匙串中。", "Keys and sign-in tokens are stored in the macOS Keychain."),
         ["AuthSecretBackendFile"] = ("此平台的密钥保存在本机加密文件中（数据密钥在用户配置目录，权限 600），而非系统凭据存储。", "On this platform keys are kept in an encrypted local file (data key in your profile directory, mode 600) rather than the OS credential store."),
         ["AuthSecretBackendDegraded"] = ("已存储的密钥有无法读取的项，重新输入即可覆盖：", "A stored key could not be read; entering it again replaces it: "),
         ["AuthNoBrowserLink"] = ("无法打开浏览器，请手动访问：", "No browser could be opened. Visit this link by hand: "),

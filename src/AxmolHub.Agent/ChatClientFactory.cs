@@ -64,7 +64,8 @@ public static class ChatClientFactory
     /// change what already works.</para>
     /// </summary>
     public static string ProtocolFor(Core.ModelProvider provider, string? model)
-        => Core.ModelProtocols.IsKnown(provider.Protocol)
+        => provider.IsOpenAiOAuth ? Core.ModelProtocols.Responses
+            : Core.ModelProtocols.IsKnown(provider.Protocol)
             ? provider.Protocol!
             : Core.ContextBudget.CapabilitiesOf(provider, model)?.Protocol ?? Core.ModelProtocols.Chat;
 
@@ -141,19 +142,26 @@ public static class ChatClientFactory
             // that changes is a build error at this line, which is the loud failure we want, and a project-wide
             // NoWarn would also be swallowing the next one.
 #pragma warning disable OPENAI001 // OpenAI.Responses is marked experimental in the 2.14 SDK.
-            var options = new ResponsesClientOptions { Endpoint = new Uri(provider.BaseUrl) };
+            var options = new ResponsesClientOptions { Endpoint = new Uri(provider.IsOpenAiOAuth ? OpenAiCodexTransport.BaseUrl : provider.BaseUrl) };
             // The retry decision is stated on both wires from one constant, so the two cannot drift into two
             // different numbers of attempts — and both wrap it in the same policy, so a wait is reported on
             // whichever wire the model answers on.
             options.RetryPolicy = new IdleAwareRetryPolicy(MaxRetries, onRetryWait);
-            if (transport is not null)
+            if (provider.IsOpenAiOAuth)
+            {
+                options.Transport = new HttpClientPipelineTransport(new System.Net.Http.HttpClient(
+                    new OpenAiCodexTransport(provider, transport ?? new System.Net.Http.HttpClientHandler { AllowAutoRedirect = false })));
+                options.AddPolicy(new OpenAiCodexRequestPolicy(), PipelinePosition.BeforeTransport);
+            }
+            else if (transport is not null)
                 options.Transport = new HttpClientPipelineTransport(new System.Net.Http.HttpClient(transport));
             if (headers is not null)
                 options.AddPolicy(headers, PipelinePosition.BeforeTransport);
             // Last, so the recorded body is the one that leaves: the replay policy above has already rewritten
             // the messages, and a recording taken before that would document an intention rather than a request.
             options.AddPolicy(new WireLogPolicy(), PipelinePosition.BeforeTransport);
-            return new ResponsesClient(credential, options).AsIChatClient(model);
+            var responses = new ResponsesClient(credential, options).AsIChatClient(model);
+            return provider.IsOpenAiOAuth ? new OpenAiCodexChatClient(responses) : responses;
 #pragma warning restore OPENAI001
         }
 

@@ -101,7 +101,7 @@ public sealed class ChatWorkspace : IDisposable
         // The secret store is platform-specific, and where a platform has no backend it is deliberately left
         // unimplemented rather than given a plaintext fallback. A failure here must not take the whole app down —
         // chat simply cannot store keys on that platform, and the panel reports that when the user tries to
-        // configure one. Windows (DPAPI) and Linux (an AES-GCM blob file) both always succeed; only macOS throws.
+        // configure one. Windows uses DPAPI, Linux an encrypted file, and macOS the native Keychain.
         try { _secrets = SecretStoreFactory.Create(dataRoot); }
         catch (PlatformNotSupportedException) { _secrets = null; }
 
@@ -111,7 +111,7 @@ public sealed class ChatWorkspace : IDisposable
         LoadProviders();
     }
 
-    /// <summary>Whether API keys can be persisted at all on this platform (not macOS).</summary>
+    /// <summary>Whether API keys and OAuth tokens can be persisted on this platform.</summary>
     public bool CanStoreSecrets => _secrets is not null;
 
     /// <summary>
@@ -1520,6 +1520,7 @@ public sealed class ChatWorkspace : IDisposable
             }
 
             provider.Credential = owned.FirstOrDefault();
+            BindOpenAiTokens(provider);
         }
 
         // Written back only when extras were actually dropped, so an ordinary launch touches nothing.
@@ -1566,10 +1567,18 @@ public sealed class ChatWorkspace : IDisposable
         var existing = CredentialFor(providerId);
         if (existing is not null)
         {
-            if (!string.IsNullOrEmpty(secret)) existing.Secret = secret;
-            existing.Source = source;
-            if (label.Trim().Length > 0) existing.Label = label.Trim();
-            SaveCredentials();
+            lock (existing)
+            {
+                if (!string.IsNullOrEmpty(secret)) _secrets!.Write(existing.Id, secret);
+                if (!string.IsNullOrEmpty(secret)) existing.Secret = secret;
+                existing.AuthKind = "apiKey";
+                existing.AccountId = null;
+                existing.Scope = null;
+                existing.Source = source;
+                if (label.Trim().Length > 0) existing.Label = label.Trim();
+                BindOpenAiTokens(provider);
+                SaveCredentials(writeSecrets: false);
+            }
             Changed?.Invoke();
             return existing;
         }
@@ -1585,9 +1594,11 @@ public sealed class ChatWorkspace : IDisposable
 
         if (credential.Label.Length == 0) credential.Label = DefaultCredentialLabel(providerId);
 
+        if (credential.Secret is { Length: > 0 }) _secrets!.Write(credential.Id, credential.Secret);
         _credentialList.Add(credential);
-        SaveCredentials();
+        SaveCredentials(writeSecrets: false);
         provider.Credential = credential;
+        BindOpenAiTokens(provider);
         Changed?.Invoke();
         return credential;
     }
@@ -1602,7 +1613,7 @@ public sealed class ChatWorkspace : IDisposable
     /// refreshes access, it does not mean "now I have two accounts". A genuinely second account is a second
     /// provider.</para>
     /// </summary>
-    public ProviderCredential? AddOAuthCredential(string providerId, string? accountId, string? scope, string secret)
+    public ProviderCredential? AddOAuthCredential(string providerId, string? accountId, string? scope, string secret, string authKind = "apiKey")
     {
         if (!CanStoreSecrets) return null;
         // A sign-in that came back without a key did not authenticate anything. Storing the record anyway would
@@ -1615,37 +1626,65 @@ public sealed class ChatWorkspace : IDisposable
         var existing = CredentialFor(providerId);
         if (existing is not null)
         {
-            existing.Secret = secret;
-            existing.Scope = scope;
-            existing.Source = CredentialSources.OAuth;
-            if (accountId is { Length: > 0 })
+            lock (existing)
             {
+                _secrets!.Write(existing.Id, secret);
+                existing.Secret = secret;
+                existing.AuthKind = authKind;
+                existing.Scope = scope;
+                existing.Source = CredentialSources.OAuth;
                 existing.AccountId = accountId;
-                existing.Label = AccountLabel(providerId, accountId);
+                if (accountId is { Length: > 0 }) existing.Label = AccountLabel(providerId, accountId);
+                BindOpenAiTokens(provider);
+                SaveCredentials(writeSecrets: false);
             }
-
-            SaveCredentials();
             Changed?.Invoke();
             return existing;
         }
-
         var credential = new ProviderCredential
         {
-            Id = "cred-" + Guid.NewGuid().ToString("N")[..12],
-            ProviderId = providerId,
+            Id = "cred-" + Guid.NewGuid().ToString("N")[..12], ProviderId = providerId,
             Label = accountId is { Length: > 0 } ? AccountLabel(providerId, accountId) : DefaultCredentialLabel(providerId),
-            Source = CredentialSources.OAuth,
-            AccountId = accountId,
-            Scope = scope,
-            Secret = secret,
+            Source = CredentialSources.OAuth, AuthKind = authKind, AccountId = accountId, Scope = scope, Secret = secret,
         };
-
+        _secrets!.Write(credential.Id, secret);
         _credentialList.Add(credential);
-        SaveCredentials();
+        SaveCredentials(writeSecrets: false);
         provider.Credential = credential;
+        BindOpenAiTokens(provider);
         Changed?.Invoke();
         return credential;
     }
+
+    private static readonly HttpClient OpenAiRefreshHttp = new(new HttpClientHandler { AllowAutoRedirect = false })
+        { Timeout = TimeSpan.FromSeconds(45) };
+
+    private void BindOpenAiTokens(ModelProvider provider)
+    {
+        if (provider.Id == "openai")
+        {
+            var mode = provider.IsOpenAiOAuth ? "openaiOAuth" : "apiKey";
+            var cached = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(provider.Id));
+            if (provider.ModelAuthKind != mode)
+            {
+                provider.Models.Clear();
+                provider.Model = "";
+                provider.ModelAuthKind = mode;
+                provider.Models.AddRange((cached?.Models ?? []).Select(name => new ProviderModel { Name = name, Enabled = true }));
+                provider.Normalize();
+                _providers.Save(_providerList);
+            }
+            var preset = AiProviderManifest.CreateBuiltIn(provider.Id);
+            provider.ReasoningModels = MergeReasoningModels(preset?.ReasoningModels, cached?.ReasoningModels);
+            provider.ModelCapabilities = MergeCapabilities(preset?.ModelCapabilities, cached?.Capabilities);
+        }
+        provider.OpenAiTokenProvider = provider.IsOpenAiOAuth && provider.Credential is { } credential && _secrets is not null
+            ? new OpenAiTokenSession(provider, credential, _secrets, _oauthHttp ?? OpenAiRefreshHttp).GetAsync : null;
+    }
+
+    private string ModelCacheId(string providerId)
+        => _providerList.FirstOrDefault(provider => provider.Id == providerId)?.IsOpenAiOAuth == true
+            ? providerId + ":openaiOAuth" : providerId;
 
     /// <summary>A labelled fallback for an account the provider named; "OrcaRouter · 1234567" reads better than a bare id.</summary>
     private string AccountLabel(string providerId, string accountId)
@@ -1678,12 +1717,16 @@ public sealed class ChatWorkspace : IDisposable
         var credential = _credentialList.FirstOrDefault(candidate => candidate.Id == credentialId);
         if (credential is null) return false;
 
-        _credentialList.Remove(credential);
-        _credentials.DeleteSecret(credential.Id);
-
-        if (_providerList.FirstOrDefault(provider => provider.Id == credential.ProviderId) is { } provider)
+        lock (credential)
         {
-            provider.Credential = null;
+            _credentials.DeleteSecret(credential.Id);
+            _credentialList.Remove(credential);
+            credential.Secret = null;
+            if (_providerList.FirstOrDefault(provider => provider.Id == credential.ProviderId) is { } provider)
+            {
+                provider.Credential = null;
+                provider.OpenAiTokenProvider = null;
+            }
         }
 
         _credentials.Save(_credentialList);
@@ -1934,10 +1977,25 @@ public sealed class ChatWorkspace : IDisposable
         Changed?.Invoke();
     }
 
-    /// <summary>Persists the credential list; secrets go to the OS credential store, never the JSON.</summary>
-    public void SaveCredentials()
+    /// <summary>Retries startup reads after the user unlocks or grants access to the credential store.</summary>
+    public void RetrySecretReads()
     {
-        _credentials.Save(_credentialList);
+        if (_secrets is null) return;
+        foreach (var credential in _credentialList)
+        {
+            lock (credential)
+            {
+                if (credential.Secret is null) credential.Secret = _secrets.Read(credential.Id);
+            }
+        }
+        foreach (var provider in _providerList) BindOpenAiTokens(provider);
+        Changed?.Invoke();
+    }
+
+    /// <summary>Persists the credential list; secrets go to the OS credential store, never the JSON.</summary>
+    public void SaveCredentials(bool writeSecrets = true)
+    {
+        _credentials.Save(_credentialList, writeSecrets);
         Changed?.Invoke();
     }
 
@@ -1961,22 +2019,23 @@ public sealed class ChatWorkspace : IDisposable
     /// the HTTP transport, the browser, and the link the user gets when no browser could be launched. Those are
     /// exactly what a self-check must not do for real, and exactly what the flow's constructor takes.</para>
     ///
-    /// <para><paramref name="onManualUrl"/> is the dead-end guard, not a second sign-in route: the callback lands
-    /// on this machine's <c>127.0.0.1</c>, so once the person has the authorization page open in any browser here
-    /// there is nothing left for them to do by hand.</para>
+    /// <para><paramref name="onManualUrl"/> exposes the link when a browser cannot be opened. OpenAI also
+    /// reports the pending attempt so the caller can accept a manually pasted callback URL.</para>
     /// </summary>
     public async Task<OAuthSignInOutcome?> SignInWithOAuthAsync(
         string providerId,
         Action<string>? onManualUrl = null,
         CancellationToken cancellationToken = default,
-        IProgress<DeviceCodeChallenge>? deviceProgress = null)
+        IProgress<DeviceCodeChallenge>? deviceProgress = null,
+        Action<OpenAiLoginAttempt>? openAiProgress = null)
     {
         if (!CanStoreSecrets) return null;
 
         var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
         if (provider?.OAuth is not { IsUsableFlow: true } oauth) return null;
 
-        var http = _oauthHttp ?? new HttpClient { Timeout = OAuthTimeout };
+        using var ownedHttp = _oauthHttp is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(45) } : null;
+        var http = _oauthHttp ?? ownedHttp!;
         void OpenOrReport(string url)
         {
             // Try the browser first; when that fails the URL is handed to the caller instead of being
@@ -1993,6 +2052,14 @@ public sealed class ChatWorkspace : IDisposable
             // The two flows are chosen by the manifest's declared shape rather than by provider id: which
             // endpoints a preset talks to is a fact about the service, and a device-code provider has no
             // discovery document to find on its own.
+            if (oauth.EffectiveFlow == ProviderOAuthFlows.OpenAi)
+            {
+                var tokens = await new OpenAiOAuthFlow(http).SignInAsync(
+                    openAiProgress ?? (_ => { }), OpenOrReport, cancellationToken);
+                var saved = AddOAuthCredential(providerId, tokens.AccountId, "openid profile email offline_access", tokens.Encode(), "openaiOAuth");
+                return saved is null ? new OAuthSignInOutcome(Error: "The credential could not be stored.")
+                    : new OAuthSignInOutcome(Credential: saved);
+            }
             var result = oauth.EffectiveFlow == ProviderOAuthFlows.DeviceCode
                 ? await new DeviceCodeOAuthFlow(http, OpenOrReport, DeviceCodeWait)
                     .SignInAsync(oauth, deviceProgress, cancellationToken)
@@ -2085,7 +2152,7 @@ public sealed class ChatWorkspace : IDisposable
             // Not disposed when injected: the caller owns it and may reuse it for several probes. Disposing
             // here would make the second key check fail with ObjectDisposedException, which this method
             // reports as Unreachable — "could not ask" — for a reason that has nothing to do with the network.
-            using var owned = _oauthHttp is null ? new HttpClient { Timeout = TimeSpan.FromSeconds(20) } : null;
+            using var owned = _oauthHttp is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(20) } : null;
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
 
@@ -2136,24 +2203,33 @@ public sealed class ChatWorkspace : IDisposable
         var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
         if (provider is null) return ModelFetchResult.Unreachable("No such provider.");
 
+        var catalogCredential = provider.Credential;
+        var catalogMode = ModelCacheId(providerId);
+        var catalogAccount = catalogCredential?.AccountId;
+
         // The injected client is *not* disposed. It is owned by whoever set ModelListHttp — the self-check reuses
         // one handler across a dozen fetches, and disposing it here would make every fetch after the first
         // fail with ObjectDisposedException, which surfaces as "the endpoint is unavailable" and reads like a
         // product bug. A client built here is ours, so only that one is disposed.
-        using var owned = _modelListHttp is null ? new HttpClient { Timeout = TimeSpan.FromSeconds(20) } : null;
+        using var owned = _modelListHttp is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(20) } : null;
         var client = _modelListHttp ?? owned!;
         // No ConfigureAwait(false) here: the continuation below ends in SaveProviders() → Changed, which is
         // consumed by ChatPanel.Reload — code that mutates Avalonia controls. It must resume on the captured
         // UI context; resuming on the thread pool would touch the visual tree from a worker thread and hang
         // the whole UI (a CPU-bound cross-thread re-entrancy, not a network wait).
-        var result = await ModelList.FetchAsync(client, provider, cancellationToken);
+        var result = provider.IsOpenAiOAuth
+            ? await OpenAiCodexModels.FetchAsync(client, provider, cancellationToken)
+            : await ModelList.FetchAsync(client, provider, cancellationToken);
+        if (!_providerList.Contains(provider) || !ReferenceEquals(provider.Credential, catalogCredential)
+            || ModelCacheId(providerId) != catalogMode || provider.Credential?.AccountId != catalogAccount)
+            return ModelFetchResult.Unreachable("The provider credential changed during the catalog request. Retry the request.");
         if (!result.Reachable) return result;
 
         // Split against the *previous* fetch, not against nothing. "Not in this response" alone cannot tell a
         // retired model from a hand-written one — both are simply absent — and guessing wrong in either
         // direction is bad: dropping a name the user typed deletes work they did on purpose, and keeping one
         // the provider retired offers a name that will 404 on first use and blames their key.
-        var cachedEntry = _modelLists.Load().FirstOrDefault(entry => entry.Id == providerId);
+        var cachedEntry = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(providerId));
         var reported = cachedEntry?.Models ?? [];
         var kept = ManualModelsOf(provider, result.Models, reported).ToList();
 
@@ -2185,7 +2261,7 @@ public sealed class ChatWorkspace : IDisposable
         var declared = AiProviderManifest.CreateBuiltIn(providerId);
         provider.ReasoningModels = MergeReasoningModels(declared?.ReasoningModels, result.ReasoningModels);
         provider.ModelCapabilities = MergeCapabilities(declared?.ModelCapabilities, result.Capabilities);
-        _modelLists.Save(providerId, result.Models, result.ReasoningModels, result.Capabilities);
+        _modelLists.Save(ModelCacheId(providerId), result.Models, result.ReasoningModels, result.Capabilities);
         SaveProviders();
         return result;
     }
@@ -2225,7 +2301,7 @@ public sealed class ChatWorkspace : IDisposable
     /// the caller can say "not fetched yet" rather than "fetched and found nothing".
     /// </summary>
     public IReadOnlyList<string> CachedModels(string providerId)
-        => _modelLists.Load().FirstOrDefault(entry => entry.Id == providerId)?.Models ?? [];
+        => _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(providerId))?.Models ?? [];
 
     /// <summary>
     /// Declared first, observed over it: a manifest entry is a guess made the day the preset was written, and
@@ -2497,6 +2573,7 @@ public sealed class ChatWorkspace : IDisposable
         // be read by something that no longer exists. Clearing it here rather than lazily is also what stops
         // the file growing a row per provider ever added.
         _modelLists.Save(providerId, null);
+        _modelLists.Save(providerId + ":openaiOAuth", null);
 
         Changed?.Invoke();
         return true;
@@ -2525,9 +2602,7 @@ public sealed class ChatWorkspace : IDisposable
         var removed = false;
         foreach (var credential in _credentialList.Where(credential => credential.ProviderId == providerId).ToList())
         {
-            _credentialList.Remove(credential);
-            _credentials.DeleteSecret(credential.Id);
-            removed = true;
+            removed |= RemoveCredential(credential.Id);
         }
 
         if (removed)
@@ -4967,7 +5042,7 @@ public sealed class ChatWorkspace : IDisposable
         {
             if (ModelFor(conversationId) is not { } choice) return;
             var provider = choice.Provider;
-            var cache = _modelLists.Load().FirstOrDefault(entry => entry.Id == provider.Id);
+            var cache = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(provider.Id));
             var reasoning = new Dictionary<string, AiModelReasoning>(StringComparer.OrdinalIgnoreCase);
             if (cache?.ReasoningModels is { } cached)
                 foreach (var (name, profile) in cached)
@@ -4982,7 +5057,7 @@ public sealed class ChatWorkspace : IDisposable
             // Capabilities ride along: the same entry holds the windows the gateway reported, and Save replaces
             // the whole provider record — leaving them out would erase a model's window every time a reply
             // proved that model could think.
-            _modelLists.Save(provider.Id, cache?.Models ?? [], reasoning, cache?.Capabilities);
+            _modelLists.Save(ModelCacheId(provider.Id), cache?.Models ?? [], reasoning, cache?.Capabilities);
             provider.ReasoningModels = MergeReasoningModels(
                 AiProviderManifest.CreateBuiltIn(provider.Id)?.ReasoningModels, reasoning);
             Audit(conversationId, $"Reasoning {(rejected ? "refused" : "confirmed")}: {level} on {choice.ModelName}");
@@ -5001,7 +5076,7 @@ public sealed class ChatWorkspace : IDisposable
         {
             if (ModelFor(conversationId) is not { } choice) return;
             var provider = choice.Provider;
-            var cache = _modelLists.Load().FirstOrDefault(entry => entry.Id == provider.Id);
+            var cache = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(provider.Id));
             var capabilities = new Dictionary<string, ModelCapabilities>(StringComparer.OrdinalIgnoreCase);
             if (cache?.Capabilities is { } cached)
                 foreach (var (name, caps) in cached)
@@ -5011,7 +5086,7 @@ public sealed class ChatWorkspace : IDisposable
             if (known.ContextTokens == tokens && known.Source == CapabilitySource.LearnedFromRefusal) return;
             capabilities[choice.ModelName] = known.WithContext(tokens, CapabilitySource.LearnedFromRefusal);
 
-            _modelLists.Save(provider.Id, cache?.Models ?? [], cache?.ReasoningModels, capabilities);
+            _modelLists.Save(ModelCacheId(provider.Id), cache?.Models ?? [], cache?.ReasoningModels, capabilities);
             provider.ModelCapabilities = MergeCapabilities(
                 AiProviderManifest.CreateBuiltIn(provider.Id)?.ModelCapabilities, capabilities);
         }).ConfigureAwait(false);

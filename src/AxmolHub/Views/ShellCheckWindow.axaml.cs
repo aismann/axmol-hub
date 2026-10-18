@@ -11620,14 +11620,65 @@ public partial class ShellCheckWindow : Window
         // page looks like right now and, through the same render function, the two tiers this machine is not.
         Check(shell.Chat.CanStoreSecrets,
             "本机可以保存密钥，鉴权闸门不再拦（Windows 走 DPAPI，Linux 走本机加密文件）");
-        Check(settings.SecretBackendLineShown == (shell.Chat.SecretBackend.Kind == SecretStoreKind.EncryptedFile),
+        Check(settings.SecretBackendLineShown == (shell.Chat.SecretBackend.Kind is SecretStoreKind.EncryptedFile or SecretStoreKind.Keychain),
             "后端提示行只在用的是本机加密文件时出现（DPAPI 不把已经承诺过的东西再说一遍）");
         Check(settings.SecretBackendTextForCheck(SecretStoreKind.EncryptedFile, null) is { Length: > 0 },
             "文件档那一行说清密钥存在本机加密文件里，而不是含糊地讲「系统凭据存储」");
+        Check(settings.OpenAiLayerForCheck, "OpenAI 登录层裁剪内容、有遮罩且位于设置内容之上");
+        using (var openAiCardCancellation = new CancellationTokenSource())
+        using (var openAiCardHttp = new HttpClient())
+        {
+            try
+            {
+                await new AxmolHub.Agent.OpenAiOAuthFlow(openAiCardHttp).SignInAsync(attempt =>
+                {
+                    var card = new OpenAiLoginCard(attempt, () => openAiCardCancellation.Cancel());
+                    Check(card.HasActionsForCheck && card.ClipToBounds && card.CallbackForCheck.PlaceholderText == HubStrings.Get("AuthOpenAiCallback"),
+                        "OpenAI 登录卡片提供链接操作、回调输入与取消，且裁剪内容");
+                    var cancel = card.GetLogicalDescendants().OfType<Button>().Single(button => Equals(button.Content, HubStrings.Get("Cancel")));
+                    cancel.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+                    Check(openAiCardCancellation.IsCancellationRequested, "关闭 OpenAI 登录卡片会取消授权等待");
+                }, _ => { }, openAiCardCancellation.Token);
+            }
+            catch (OperationCanceledException) { }
+        }
+        Check(settings.SecretBackendTextForCheck(SecretStoreKind.Keychain, null) is { Length: > 0 },
+            "macOS 提示密钥和登录令牌保存在钥匙串中");
         Check(settings.SecretBackendTextForCheck(SecretStoreKind.Dpapi, null) is null,
             "DPAPI 档不显示后端提示行（多说一次就是噪音）");
         Check(settings.SecretBackendTextForCheck(SecretStoreKind.EncryptedFile, "the data key file is missing") is { Length: > 0 },
             "已存的密钥读不出来时给一行可操作的说明，而不是静默地当成「还没鉴权」");
+
+        // Switching authentication must not carry one service's catalog onto the other service.
+        var authCacheRoot = Path.Combine(scratchRoot, "openai-auth-cache");
+        using var authWorkspace = new ChatWorkspace(authCacheRoot);
+        var openAiCacheProvider = authWorkspace.AddPreset("openai");
+        Check(openAiCacheProvider is not null, "可添加 OpenAI 以验证鉴权方式切换");
+        if (openAiCacheProvider is not null)
+        {
+            var authCatalogs = new ModelListStore(authCacheRoot);
+            authCatalogs.Save("openai", ["api-fixture"]);
+            authCatalogs.Save("openai:openaiOAuth", ["codex-fixture"]);
+            authWorkspace.SetApiKey("openai", "fixture-api-key");
+            var originalCredentialId = authWorkspace.CredentialFor("openai")?.Id;
+            openAiCacheProvider.Models.Add(new ProviderModel { Name = "api-fixture", Enabled = true });
+            var fixtureTokens = new OpenAiTokens("fixture-access", "fixture-refresh", null, DateTimeOffset.UtcNow.AddHours(1), "fixture-account");
+            authWorkspace.AddOAuthCredential("openai", "fixture-account", "openid profile email offline_access", fixtureTokens.Encode(), "openaiOAuth");
+            Check(openAiCacheProvider.IsOpenAiOAuth && openAiCacheProvider.Models.Select(model => model.Name).SequenceEqual(["codex-fixture"])
+                && authWorkspace.CachedModels("openai").SequenceEqual(["codex-fixture"]),
+                "API Key 切到 OAuth 只显示订阅模型缓存");
+            using (var reopenedOpenAi = new ChatWorkspace(authCacheRoot))
+                Check(reopenedOpenAi.Providers.First(provider => provider.Id == "openai").IsOpenAiOAuth
+                    && reopenedOpenAi.CachedModels("openai").SequenceEqual(["codex-fixture"]),
+                    "重启后恢复 OAuth 凭据类型和对应模型缓存");
+            authWorkspace.SetApiKey("openai", "replacement-api-key");
+            Check(!openAiCacheProvider.IsOpenAiOAuth && openAiCacheProvider.Models.Select(model => model.Name).SequenceEqual(["api-fixture"])
+                && authWorkspace.CredentialFor("openai")?.Id == originalCredentialId && openAiCacheProvider.ApiKey == "replacement-api-key",
+                "OAuth 切回 API Key 会清除令牌类型、替换秘密并恢复 API 模型缓存");
+            authWorkspace.RemoveProvider("openai");
+            Check(!authCatalogs.Load().Any(entry => entry.Id is "openai" or "openai:openaiOAuth"),
+                "删除 OpenAI 提供商会删除两种鉴权模式的模型缓存");
+        }
 
         // ── The list shows no credential input, ever ──
         // This is the assertion the whole revision exists for. It is checked on every rendered group rather

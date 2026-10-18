@@ -6,6 +6,9 @@ public enum SecretStoreKind
     /// <summary>No store is available; nothing can be persisted (the default for an unknown platform).</summary>
     None,
 
+    /// <summary>macOS login keychain.</summary>
+    Keychain,
+
     /// <summary>Windows DPAPI, current-user scope (<c>DpapiSecretStore</c>).</summary>
     Dpapi,
 
@@ -15,7 +18,7 @@ public enum SecretStoreKind
     /// <summary>Local AES-GCM blob file plus a separate permission-protected data key.</summary>
     EncryptedFile,
 
-    /// <summary>Nothing persists: a stand-in used where a store must not be reached (tests, macOS today).</summary>
+    /// <summary>Nothing persists: a stand-in used where a store must not be reached (tests).</summary>
     Volatile,
 }
 
@@ -40,5 +43,5 @@ public sealed record SecretStoreDescriptor(SecretStoreKind Kind, string Location
     public static readonly SecretStoreDescriptor None = new(SecretStoreKind.None, "");
 
     /// <summary>Whether keys handed to this store can be expected to still be there next launch.</summary>
-    public bool Persists => Kind is SecretStoreKind.Dpapi or SecretStoreKind.SecretService or SecretStoreKind.EncryptedFile;
+    public bool Persists => Kind is SecretStoreKind.Keychain or SecretStoreKind.Dpapi or SecretStoreKind.SecretService or SecretStoreKind.EncryptedFile;
 }

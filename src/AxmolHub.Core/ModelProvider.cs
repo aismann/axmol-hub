@@ -64,6 +64,9 @@ public sealed class ModelProvider
     /// </summary>
     public string? PreferredAuthMethod { get; set; }
 
+    /// <summary>Identifies which authentication catalog the saved model selection belongs to.</summary>
+    public string ModelAuthKind { get; set; } = "apiKey";
+
     /// <summary>OAuth configuration for a provider that offers browser sign-in; <c>null</c> otherwise.</summary>
     public AiProviderOAuth? OAuth { get; set; }
 
@@ -237,7 +240,16 @@ public sealed class ModelProvider
     /// construction.
     /// </summary>
     [JsonIgnore]
-    public string? ApiKey => Credential?.Secret;
+    public string? ApiKey => IsOpenAiOAuth && Credential?.Secret is { } bundle
+        ? OpenAiTokens.Decode(bundle).AccessToken : Credential?.Secret;
+
+    [JsonIgnore]
+    public bool IsOpenAiOAuth => Id == "openai" && Credential?.AuthKind == "openaiOAuth";
+
+    /// <summary>Supplied by the credential owner; all HTTP callers share refresh and persistence.</summary>
+    [JsonIgnore]
+    public Func<bool, CancellationToken, Task<OpenAiTokens>>? OpenAiTokenProvider { get; set; }
+
 
     /// <summary>
     /// Whether this provider can be called right now: it either needs no credential, or it holds one whose secret

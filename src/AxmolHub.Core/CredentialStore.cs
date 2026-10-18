@@ -34,7 +34,8 @@ public sealed class CredentialStore(string root, ISecretStore secrets)
 
         foreach (var credential in credentials)
         {
-            credential.Secret = secrets.Read(credential.Id);
+            try { credential.Secret = secrets.Read(credential.Id); }
+            catch (SecretStoreException) { credential.Secret = null; }
         }
 
         return credentials;
@@ -44,14 +45,14 @@ public sealed class CredentialStore(string root, ISecretStore secrets)
     /// Persists the credential list (secrets excluded) and writes each secret to the secret store.
     ///
     /// A credential with no secret is <b>kept in the list</b> rather than dropped: on a platform with no secret
-    /// store (macOS/Linux today) the metadata still round-trips, so the UI can explain what is missing instead
+    /// store the metadata still round-trips, so the UI can explain what is missing instead
     /// of the entry silently vanishing.
     /// </summary>
-    public void Save(IReadOnlyList<ProviderCredential> credentials)
+    public void Save(IReadOnlyList<ProviderCredential> credentials, bool writeSecrets = true)
     {
-        foreach (var credential in credentials.Where(credential => credential.HasSecret))
+        foreach (var credential in credentials.Where(credential => writeSecrets && credential.HasSecret))
         {
-            secrets.Write(credential.Id, credential.Secret!);
+            lock (credential) secrets.Write(credential.Id, credential.Secret!);
         }
 
         StateStore.WriteJson(CredentialPath, credentials);

@@ -48,6 +48,9 @@ public static class ProviderOAuthFlows
     /// <summary>Authorization Code + PKCE: endpoints read from an RFC 8414 discovery document, callback on loopback.</summary>
     public const string Discovery = "discovery";
 
+    /// <summary>Codex-compatible OpenAI authorization code flow.</summary>
+    public const string OpenAi = "openaiPkce";
+
     /// <summary>RFC 8628 device code: the provider issues a short code and the client polls until it is approved.</summary>
     public const string DeviceCode = "deviceCode";
 }
@@ -142,7 +145,7 @@ public sealed class AiProviderOAuth
     /// entry written before device sign-in existed is describing.</summary>
     [JsonIgnore]
     public string EffectiveFlow
-        => Flow == ProviderOAuthFlows.DeviceCode ? ProviderOAuthFlows.DeviceCode : ProviderOAuthFlows.Discovery;
+        => Flow is ProviderOAuthFlows.DeviceCode or ProviderOAuthFlows.OpenAi ? Flow : ProviderOAuthFlows.Discovery;
 
     /// <summary>
     /// Whether this entry declares enough to finish a sign-in, rather than declaring an <c>oauth</c> method and
@@ -157,6 +160,7 @@ public sealed class AiProviderOAuth
     [JsonIgnore]
     public bool IsUsableFlow => EffectiveFlow switch
     {
+        ProviderOAuthFlows.OpenAi => true,
         ProviderOAuthFlows.DeviceCode => ClientId is { Length: > 0 }
                                          && IsSafeEndpoint(DeviceAuthorizationUrl)
                                          && IsSafeEndpoint(TokenUrl),
