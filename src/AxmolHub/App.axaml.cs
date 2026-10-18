@@ -349,6 +349,17 @@ public partial class App : Application
             }
         }
 
+        // The macOS counterpart of the tray block above: the close button hides the window (see
+        // MainWindow.ShouldHideOnCloseForCheck), and what brings it back is Hub's own application-menu entry,
+        // because the platform event that would otherwise do it — ActivationKind.Reopen, which Avalonia raises
+        // for a Dock click while the app has no visible window — never arrives: this version's desktop lifetime,
+        // ClassicDesktopStyleApplicationLifetime, does not implement IActivatableLifetime. The shell self-check
+        // reads that entry off the installed menu rather than trusting this call. See MacApplicationMenu.
+        if (OperatingSystem.IsMacOS() && !Options.IsAutomation)
+        {
+            MacApplicationMenu.Install(this, window.ActivateFromRequest);
+        }
+
         if (!Options.IsAutomation)
         {
             try

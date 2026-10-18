@@ -1072,12 +1072,42 @@ public partial class ShellCheckWindow : Window
             "最大化 / 关闭按钮的提示随当前窗口状态正确（实际「" + shell.MaximizeTipForCheck + "」/「"
             + shell.CloseTipForCheck + "」）");
         var trayMenuCommands = WindowsTrayIntegration.CreateMenu(shell).Items.OfType<NativeMenuItem>().ToArray();
-        Check(MainWindow.ShouldHideOnCloseForCheck(true, false, false, true)
-              && !MainWindow.ShouldHideOnCloseForCheck(false, false, false, true)
-              && !MainWindow.ShouldHideOnCloseForCheck(true, true, false, true)
-              && !MainWindow.ShouldHideOnCloseForCheck(true, false, true, true)
-              && !MainWindow.ShouldHideOnCloseForCheck(true, false, false, false),
-            "Windows 交互关闭隐藏主窗口，显式退出、自动化与其他平台仍执行原关闭流程");
+        // Closing hides the window wherever the host has a way back to it: Windows once the tray icon exists, and
+        // macOS with no integration object at all — the Dock belongs to every app, and the entry that restores the
+        // window is Hub's own (asserted below). Hiding is also what keeps the process alive on macOS: a hidden
+        // window never raises the last-window close, so the desktop lifetime's default shutdown mode never fires.
+        // An answered "quit anyway", automation and a host with neither way back keep the original close, which is
+        // what these negative rows pin.
+        Check(MainWindow.ShouldHideOnCloseForCheck(true, false, false, false, true)
+              && MainWindow.ShouldHideOnCloseForCheck(false, true, false, false, false)
+              && MainWindow.ShouldHideOnCloseForCheck(false, true, false, false, true)
+              && !MainWindow.ShouldHideOnCloseForCheck(false, false, false, false, true)
+              && !MainWindow.ShouldHideOnCloseForCheck(true, false, true, false, true)
+              && !MainWindow.ShouldHideOnCloseForCheck(false, true, true, false, false)
+              && !MainWindow.ShouldHideOnCloseForCheck(true, false, false, true, true)
+              && !MainWindow.ShouldHideOnCloseForCheck(false, true, false, true, false),
+            "关窗即隐藏：Windows 有托盘与 macOS 的 Dock 都隐藏主窗口，显式退出、自动化与其他平台仍执行原关闭流程");
+        // The way back to a hidden window, and why Hub carries it itself: this Avalonia version's desktop lifetime
+        // does not implement IActivatableLifetime, so ActivationKind.Reopen — the Dock click Avalonia would
+        // otherwise raise for exactly this case — never arrives. So the application menu holds Hub's own entry,
+        // built through the same factory App calls at startup and installed on the real menu here, which is what
+        // makes it more than a label: the row has to exist, come before the About row, and carry a handler.
+        if (OperatingSystem.IsMacOS())
+        {
+            MacApplicationMenu.Install(Application.Current!, () => { });
+            var applicationMenu = NativeMenu.GetMenu(Application.Current!)?.Items.OfType<NativeMenuItem>().ToArray()
+                ?? [];
+            var showWindow = applicationMenu.FirstOrDefault();
+            var aboutIndex = Array.FindIndex(applicationMenu, item => item.Header == AboutMenuLabel);
+            Check(showWindow is not null
+                  && showWindow.Header == HubTexts.Get("TrayShowWindow", HubStrings.Language)
+                  && showWindow.Menu is null
+                  && showWindow.HasClickHandlers
+                  && aboutIndex > 0,
+                "macOS 应用菜单第一项是 Hub 自己的「显示主窗口」，被关掉的主窗口从这里回来（实际第一项「"
+                + (showWindow?.Header ?? "没有菜单项") + "」，「" + AboutMenuLabel + "」排在第 " + aboutIndex
+                + " 项）");
+        }
         Check(MainWindow.ShouldShowForRequest(true, false)
               && !MainWindow.ShouldShowForRequest(false, false)
               && !MainWindow.ShouldShowForRequest(true, true),

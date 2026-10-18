@@ -1058,10 +1058,27 @@ public partial class MainWindow : Window
         Close();
     }
 
+    /// <summary>The tray icon was created, so a close has somewhere to hide to. Windows only: macOS needs no
+    /// integration object, because the Dock belongs to every app and the menu entry that restores the window is
+    /// Hub's own (see <see cref="ShouldHideOnCloseForCheck"/> and <see cref="MacApplicationMenu"/>).</summary>
     internal void EnableTrayCloseBehavior() => _trayCloseEnabled = true;
 
-    internal static bool ShouldHideOnCloseForCheck(bool isWindows, bool isAutomation, bool quitConfirmed, bool trayAvailable)
-        => isWindows && !isAutomation && !quitConfirmed && trayAvailable;
+    /// <summary>
+    /// A close hides the window instead of ending the process whenever the host has a way back to it:
+    /// Windows' tray icon (once it was created) and the macOS Dock, which every app has.
+    ///
+    /// <para>Hiding, not "closing the window but staying alive": <see cref="Window.Closed"/> disposes the
+    /// workspace, the chat session store and the attention service, so a real close would end background
+    /// replies and the task queue as well — which is not what "close the window" means on either host, and
+    /// not what the tray behaviour has done on Windows all along. A hidden window never raises the last-window
+    /// close, so the desktop lifetime's default <c>OnLastWindowClose</c> never fires either: the process
+    /// stays, and Cmd+Q / the Dock's Quit still call <c>Shutdown</c> directly. Automation is excluded because
+    /// the check and screenshot runs close their window to exit, and <paramref name="quitConfirmed"/> because
+    /// an answered "quit anyway" must really quit.</para>
+    /// </summary>
+    internal static bool ShouldHideOnCloseForCheck(
+        bool isWindows, bool isMacOS, bool isAutomation, bool quitConfirmed, bool trayAvailable)
+        => !isAutomation && !quitConfirmed && (isMacOS || (isWindows && trayAvailable));
 
 
     private void ToggleTaskPopup()
@@ -2269,8 +2286,13 @@ public partial class MainWindow : Window
         // child processes would be left behind.
         Closing += (_, e) =>
         {
+            // On Windows and macOS the close button hides the window instead of ending the run; see
+            // ShouldHideOnCloseForCheck for why and for the automation / confirmed-quit exceptions. What brings
+            // it back is the tray icon on Windows and the application menu's "show main window" entry on macOS
+            // (MacApplicationMenu), since the Dock click Avalonia would raise for it never reaches this version.
             if (ShouldHideOnCloseForCheck(
-                    OperatingSystem.IsWindows(), App.Options.IsAutomation, _quitConfirmed, _trayCloseEnabled))
+                    OperatingSystem.IsWindows(), OperatingSystem.IsMacOS(), App.Options.IsAutomation,
+                    _quitConfirmed, _trayCloseEnabled))
             {
                 e.Cancel = true;
                 Hide();
