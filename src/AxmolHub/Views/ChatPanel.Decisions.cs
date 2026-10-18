@@ -1473,6 +1473,11 @@ public partial class ChatPanel
 
     // ── A command that went quiet while it is still running ──
 
+    /// <summary>How much of the quiet command this card's title draws. The line is the model's own, and it can be a
+    /// compound of any length: the title is the Auto row of a card the host clips, so the part that does not fit is
+    /// drawn from the tip rather than taken out of the height the three answers need.</summary>
+    private const int StallCommandShown = 120;
+
     /// <summary>
     /// The card Hub raises when one of the assistant's commands stops producing output but has not stopped running.
     /// Nobody pressed anything here, so there is no tool call to approve: what is on the card is a live process, and
@@ -1501,13 +1506,20 @@ public partial class ChatPanel
         };
         glyph.Classes.Add("system-command");
         title.Children.Add(glyph);
-        title.Children.Add(new TextBlock
+        var command = stall.Command.Length <= StallCommandShown
+            ? stall.Command
+            : stall.Command[..StallCommandShown].TrimEnd() + "…";
+        var heading = new TextBlock
         {
             Classes = { "approval-title" },
             Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("StallQuestionFormat"), stall.Command, $"{(int)stall.SilentFor.TotalSeconds}s"),
+                HubStrings.Get("StallQuestionFormat"), command, $"{(int)stall.SilentFor.TotalSeconds}s"),
             TextWrapping = TextWrapping.Wrap,
-        });
+        };
+        // What the command actually was, whole, for the pointer: the title draws as much of it as a fixed row can
+        // hold, and the answer buttons underneath are the part of this card that may never be pushed out of the clip.
+        if (command != stall.Command) ToolTip.SetTip(heading, TipContent(stall.Command));
+        title.Children.Add(heading);
         Grid.SetColumn(title.Children[1], 1);
         Grid.SetRow(title, 0);
         card.Children.Add(title);
