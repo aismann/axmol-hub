@@ -33,8 +33,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "PlistBuddy failed: $taskCommand" }
     }
 
-    & /usr/sbin/pkgutil --flatten $taskExpanded $taskRebuilt
+    # Fully expanded payloads must be archived again, not stored as directories in the XAR.
+    & /usr/sbin/pkgutil --flatten-full $taskExpanded $taskRebuilt
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $taskRebuilt)) { throw 'pkgutil could not rebuild the Hub installer package.' }
+    & "$PSScriptRoot/Test-MacPackage.ps1" -PackagePath $taskRebuilt
     Move-Item -LiteralPath $taskRebuilt -Destination $taskPackage -Force
 }
 finally {

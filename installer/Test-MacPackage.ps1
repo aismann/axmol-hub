@@ -1,0 +1,30 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$PackagePath
+)
+$ErrorActionPreference = 'Stop'
+
+$taskPackage = (Resolve-Path -LiteralPath $PackagePath).Path
+$taskWork = Join-Path ([IO.Path]::GetTempPath()) ('axmolhub-package-check-' + [Guid]::NewGuid().ToString('N'))
+
+try {
+    # Read the actual archive, not the BOM: a broken package can still have a valid file manifest.
+    $taskPayload = @(& /usr/sbin/pkgutil --payload-files $taskPackage)
+    if ($LASTEXITCODE -ne 0 -or $taskPayload.Count -eq 0) { throw 'The Hub installer payload is unreadable or empty.' }
+
+    & /usr/sbin/pkgutil --expand-full $taskPackage $taskWork
+    if ($LASTEXITCODE -ne 0) { throw 'pkgutil could not expand the rebuilt Hub installer package.' }
+    $taskPlists = @(Get-ChildItem -LiteralPath $taskWork -Filter 'Info.plist' -File -Recurse |
+        Where-Object { $_.FullName -match '\.app/Contents/Info\.plist$' })
+    if ($taskPlists.Count -ne 1) { throw "Expected one Hub app Info.plist in the rebuilt package, found $($taskPlists.Count)." }
+    $taskPlist = $taskPlists[0].FullName
+    $taskExecutable = Join-Path $taskPlists[0].DirectoryName 'MacOS/AxmolHub'
+    if (-not (Test-Path -LiteralPath $taskExecutable -PathType Leaf)) { throw 'The Hub installer is missing the AxmolHub executable.' }
+    $taskEntry = & /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' $taskPlist
+    if ($LASTEXITCODE -ne 0 -or $taskEntry -cne 'AxmolHub') { throw 'The Hub app CFBundleExecutable must name AxmolHub.' }
+    $taskScheme = & /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' $taskPlist
+    if ($LASTEXITCODE -ne 0 -or $taskScheme -cne 'axmolhub') { throw 'The Hub app must declare the axmolhub URL scheme.' }
+}
+finally {
+    if (Test-Path -LiteralPath $taskWork) { Remove-Item -LiteralPath $taskWork -Recurse -Force }
+}
