@@ -232,6 +232,11 @@ public partial class ChatPanel : UserControl
     /// for turns from here to the end, which makes this the one number that says where the window starts.</summary>
     private int _paintedFrom;
 
+    /// <summary>Occurrence identity for the conversation on the page. Nothing consumes the keys yet: they are minted
+    /// here because the next step — fold memory and a virtualised view keyed by row instead of by visible index —
+    /// needs an identity that survives a `with` rewrite, and this is the one place that knows it.</summary>
+    private readonly TranscriptProjectionState _projection = new();
+
     /// <summary>Set by <see cref="ExpandEarlierTurns"/> to ask for the next paint to lay the flow down again from
     /// a wider window. A flag rather than a sentinel in the fields above, because the teardown it requests must
     /// <b>not</b> be read as a switch of session: nothing is parked, and the reading position does not move.</summary>
@@ -2449,7 +2454,7 @@ public partial class ChatPanel : UserControl
         // The transcript as rows, computed once and then painted. The loop below no longer decides where a piece
         // begins or ends: it reads that from the model, which is the point of having one — the boundaries are one
         // answer computed in one place instead of a predicate soup evaluated while drawing.
-        var snapshot = TranscriptProjection.Build(conversation, _chat.ShowThinking, EagerMarkdownLimit);
+        var snapshot = _projection.Build(conversation, _chat.ShowThinking, EagerMarkdownLimit);
         // The window. A fresh flow starts at a *piece boundary* near the newest FirstPaintTurns turns, never inside
         // one: a cut between a call and its result paints a result whose call is above it. Only a fresh flow is
         // windowed — an append is a row at the end, and taking rows away to fit a window would be a teardown
