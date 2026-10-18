@@ -50,6 +50,22 @@ public partial class ChatPanel : UserControl
     /// findable without a side table, so a check can count what a session opened with from outside.</summary>
     private const string PlainTurnClass = "plain-turn";
 
+    /// <summary>
+    /// How many of the newest turns a transcript paints when it is laid down.
+    ///
+    /// <para>The rest of a long session is reachable through the line at the top of the flow instead of being
+    /// paid for up front: building and measuring a row is nearly all of what an open costs, and a session of four
+    /// hundred turns painted in full holds the window for about three quarters of a second before the first thing
+    /// can be read. The number is above every self-check fixture — the longest is 18 turns — so the suite keeps
+    /// exercising the ordinary full paint, and only <c>CheckTranscriptCost</c> meets the window.</para>
+    /// </summary>
+    private const int FirstPaintTurns = 30;
+
+    /// <summary>How many rows a transcript may park when it is left. A row holds its whole Markdown document, its
+    /// editors and its decoded pictures, so a session somebody expanded all the way to the top is a session whose
+    /// rows are all there — past this, drawing them again is cheaper than keeping them.</summary>
+    private const int ParkedRowLimit = 200;
+
     /// <summary>How close to the bottom counts as "the user is at the bottom". A few pixels of slack stop
     /// sub-pixel scroll rounding from flipping the state on every scroll event.</summary>
     private const double StickEpsilon = 6;
@@ -207,6 +223,20 @@ public partial class ChatPanel : UserControl
     /// rebuild can put a row somewhere else, and the record has to survive that or follow it.</summary>
     private List<PendingMarkdownRow> _pendingMarkdownRows = [];
 
+    /// <summary>How many turns a full paint may lay down, newest first. Doubles when a person asks for the ones
+    /// above, so each click's pause has a bound; panel-wide rather than per conversation, because somebody who
+    /// once wanted the earlier messages does not want to be asked again in every session they open.</summary>
+    private int _paintWindow = FirstPaintTurns;
+
+    /// <summary>The first visible turn the flow holds, or 0 when it holds the whole transcript. Rows exist only
+    /// for turns from here to the end, which makes this the one number that says where the window starts.</summary>
+    private int _paintedFrom;
+
+    /// <summary>Set by <see cref="ExpandEarlierTurns"/> to ask for the next paint to lay the flow down again from
+    /// a wider window. A flag rather than a sentinel in the fields above, because the teardown it requests must
+    /// <b>not</b> be read as a switch of session: nothing is parked, and the reading position does not move.</summary>
+    private bool _paintFromScratch;
+
     /// <summary>Transcripts that were on screen before and whose rows are still worth keeping — the answer to
     /// "the person is going back and forth between two sessions". Reusing the rows is what makes the second
     /// visit cheap: the Markdig pass, the AvaloniaEdit editors and the syntax highlighting behind them are
@@ -232,6 +262,10 @@ public partial class ChatPanel : UserControl
         public ActivityGroupView? OpenGroup { get; set; }
         public string ApprovalStamp { get; set; } = "";
         public bool ShowThinking { get; set; }
+
+        /// <summary>Where this transcript's window started, so that coming back to it restores the same edge
+        /// rather than displaying rows as if the whole history were in the flow.</summary>
+        public int PaintedFrom { get; set; }
     }
 
     /// <summary>A row drawn as plain text although its turn holds Markdown, with everything needed to draw it
@@ -2325,6 +2359,7 @@ public partial class ChatPanel : UserControl
             foreach (var row in parked.Rows) MessageFlow.Children.Add(row);
             _renderedConversationId = returning.Id;
             _renderedCount = visible.Count;
+            _paintedFrom = parked.PaintedFrom;
             _renderedTailKey = SlotKey(visible[^1].Turn);
             _renderedTurns = parked.Turns;
             _pendingMarkdownRows = parked.PendingMarkdown;
@@ -2353,6 +2388,7 @@ public partial class ChatPanel : UserControl
             MessageFlow.Children.Clear();
             _renderedConversationId = conversation?.Id;
             _renderedCount = 0;
+            _paintedFrom = 0;
             _renderedTailKey = "";
             _renderedTurns = [];
             _pendingMarkdownRows = [];
@@ -2366,12 +2402,13 @@ public partial class ChatPanel : UserControl
 
         // A teardown is for the cases an append cannot express: another session's turns, a history that shrank
         // under an edit or a regenerate, a decision that rewrote what an already-painted turn looks like, a display
-        // switch that did the same, and a turn that has moved into a slot it did not occupy when the flow was laid
-        // down. A growing activity run is none of those: its new turns extend the group that is already the last
-        // row, which is what keeps a head the person had opened from being swapped out for a fresh collapsed one.
+        // switch that did the same, a turn that has moved into a slot it did not occupy when the flow was laid
+        // down, and a window the person just widened. A growing activity run is none of those: its new turns extend
+        // the group that is already the last row, which is what keeps a head the person had opened from being
+        // swapped out for a fresh collapsed one.
         var aDifferentSession = _renderedConversationId != conversation!.Id;
         var historyShrank = visible.Count < _renderedCount;
-        if (aDifferentSession || historyShrank || approvalChanged || showThinkingChanged
+        if (aDifferentSession || historyShrank || approvalChanged || showThinkingChanged || _paintFromScratch
             || (_renderedCount > 0 && SlotKey(visible[_renderedCount - 1].Turn) != _renderedTailKey))
         {
             // The session being left keeps its rows, and this is the call that makes coming back cheap: the next
@@ -2379,9 +2416,11 @@ public partial class ChatPanel : UserControl
             // decision or a shrunken history is this same session being redrawn, and its own rows are exactly
             // what is about to be wrong.
             if (aDifferentSession) ParkCurrentTranscript();
+            _paintFromScratch = false;
             MessageFlow.Children.Clear();
             _renderedConversationId = conversation.Id;
             _renderedCount = 0;
+            _paintedFrom = 0;
             _renderedTurns = [];
             // The records die with the rows they pointed at: everything below lays the transcript down again,
             // and a record left over from the flow that was just thrown away would name a control nobody can
@@ -2391,11 +2430,28 @@ public partial class ChatPanel : UserControl
             // A session opens on its newest message. The scroll offset belongs to the viewer rather than to the
             // conversation, so without this a switch inherits wherever the previous one had been read up to.
             // Revalidating the same transcript is not a switch, though: whoever had scrolled up to read something
-            // stays where they put it.
+            // stays where they put it — and neither is a window the person just widened while reading the top.
             if (aDifferentSession || historyShrank) _stickToBottom = true;
         }
 
         var lastIndex = conversation.Messages.Count - 1;
+        // The window. A flow that is about to be laid down fresh starts at the newest stretch of a long session
+        // rather than at its first turn, and the line it opens with stands for the turns above it. Only a fresh
+        // flow is windowed: an append is a row at the end, and taking rows away to fit a window would be a
+        // teardown wearing a different hat.
+        if (_renderedCount == 0 && visible.Count > _paintWindow)
+        {
+            _paintedFrom = visible.Count - _paintWindow;
+            // The loop below starts at the window's edge and paints on to the end, so "how much is in the flow" is
+            // the tail of the transcript rather than all of it — which is the whole of what this costs the frame.
+            _renderedCount = _paintedFrom;
+            MessageFlow.Children.Add(BuildLoadEarlierRow(conversation.Id, _paintedFrom));
+        }
+        else if (_renderedCount == 0)
+        {
+            _paintedFrom = 0;
+        }
+
         for (var i = _renderedCount; i < visible.Count;)
         {
             // Machine turns — calls, their results, a thinking-only answer — lay out in pieces. A piece opened by
@@ -2500,6 +2556,47 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>
+    /// The line a windowed transcript opens with, standing for every turn above it.
+    ///
+    /// <para>Not a message row and not a machine panel — it carries neither class, so nothing in the transcript's
+    /// row accounting, its fold memory or its checks can mistake it for something somebody said. What it does
+    /// carry is the count, because "earlier messages" alone gives a reader no way to tell whether the click buys
+    /// forty rows or four thousand.</para>
+    /// </summary>
+    private Control BuildLoadEarlierRow(string conversationId, int hidden)
+    {
+        var button = new Button
+        {
+            Classes = { "load-earlier" },
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Content = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatLoadEarlier"), hidden),
+        };
+        button.Click += (_, _) => ExpandEarlierTurns(conversationId);
+        return new Border { Classes = { "load-earlier-row" }, Child = button };
+    }
+
+    /// <summary>
+    /// Widens the window and lays the transcript down again from further up.
+    ///
+    /// <para>The click is a person saying they want the earlier messages, so the work is paid once, on their word,
+    /// rather than guessed at while they read: a background pass that kept laying the flow down again would tear
+    /// the transcript apart under the eye for content nobody had asked for yet. Doubling rather than "everything"
+    /// keeps each click's pause bounded — 30, 60, 120 — and on any real session the last click lands on the whole
+    /// history, because the window has passed the transcript's length.</para>
+    ///
+    /// <para>Nothing scrolls. The person is at the top by definition, since that is where the line they clicked
+    /// was, and the content that arrives is the content they asked for.</para>
+    /// </summary>
+    private void ExpandEarlierTurns(string conversationId)
+    {
+        if (!string.Equals(_chat.ActiveConversation?.Id, conversationId, StringComparison.Ordinal)) return;
+        _paintWindow = _paintWindow > int.MaxValue / 2 ? int.MaxValue : _paintWindow * 2;
+        _paintFromScratch = true;
+        RenderMessages();
+    }
+
+    /// <summary>
     /// The parked transcript for <paramref name="conversationId"/>, if its rows still describe the conversation
     /// about to be drawn. One that does not is dropped here rather than left to be re-examined on every later
     /// visit: the test is one reference comparison per turn, and the rows behind it are the expensive thing to
@@ -2535,6 +2632,10 @@ public partial class ChatPanel : UserControl
     {
         if (_renderedConversationId is not { Length: > 0 } id) return;
         if (_renderedTurns.Count == 0 || MessageFlow.Children.Count == 0) return;
+        // A transcript somebody widened all the way to the top is a transcript with every row in it, and a row
+        // holds its whole Markdown document, its editors and its decoded pictures. Past this, drawing it again is
+        // cheaper than keeping it — and the window means the ordinary case never comes near the limit.
+        if (MessageFlow.Children.Count > ParkedRowLimit) return;
         _parkedTranscripts.RemoveAll(parked => parked.ConversationId == id);
         var parked = new RenderedTranscript
         {
@@ -2542,6 +2643,7 @@ public partial class ChatPanel : UserControl
             ApprovalStamp = _renderedApprovalStamp,
             ShowThinking = _renderedShowThinking,
             OpenGroup = _openGroup,
+            PaintedFrom = _paintedFrom,
         };
         parked.Rows.AddRange(MessageFlow.Children);
         parked.Turns.AddRange(_renderedTurns);
@@ -5235,6 +5337,30 @@ public partial class ChatPanel : UserControl
     /// wants to say about coming back to a session is that the rows it left came back — not that new ones were
     /// drawn to look the same.</summary>
     internal object? FirstTranscriptRowForCheck => MessageFlow.Children.FirstOrDefault();
+
+    /// <summary>How many turns a fresh paint lays down, so a check can assert against the number the renderer uses
+    /// rather than against a copy of it that would drift.</summary>
+    internal static int FirstPaintTurnsForCheck => FirstPaintTurns;
+
+    /// <summary>How many turns the flow is holding: the whole transcript when nobody is windowed, the newest
+    /// stretch of it otherwise.</summary>
+    internal int PaintedTurnCountForCheck => _renderedCount - _paintedFrom;
+
+    /// <summary>Whether the flow opens with the line that stands for the turns above it.</summary>
+    internal bool HasLoadEarlierRowForCheck => LoadEarlierRowForCheck() is not null;
+
+    /// <summary>Presses that line the way a hand does, and answers whether there was one to press.</summary>
+    internal bool ClickLoadEarlierForCheck()
+    {
+        if (LoadEarlierRowForCheck() is not Border { Child: Button button }) return false;
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        return true;
+    }
+
+    /// <summary>The line itself, found by its class. It is deliberately not a message row, so nothing that counts
+    /// rows sees it — which is also why it has to be looked up by name rather than by position.</summary>
+    private Control? LoadEarlierRowForCheck()
+        => MessageFlow.Children.FirstOrDefault(child => child.Classes.Contains("load-earlier-row"));
 
     /// <summary>The left indent a rendered list actually gets, or -1 when no document on screen held one.
     /// GithubLike stamps 40 onto every list grid and a nested list pays it again, so this is the only reading

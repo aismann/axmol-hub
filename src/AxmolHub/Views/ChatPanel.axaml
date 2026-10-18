@@ -50,6 +50,28 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.Link}" />
     </Style>
 
+    <!-- The line a windowed transcript opens with: the newest stretch is painted and this stands for everything
+         above it. Quiet and centered like the fork notice above, because both are a line *about* the transcript
+         rather than something in it — and a button that looks like a button here would read as an action of the
+         same weight as sending a message. -->
+    <Style Selector="Border.load-earlier-row">
+      <Setter Property="Margin" Value="0,2,0,9" />
+    </Style>
+    <Style Selector="Button.load-earlier">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="8,3" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.load-earlier:pointerover">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.Link}" />
+    </Style>
+
     <!-- Assistant message: no frame at all, plain text on the background. -->
     <Style Selector="Border.assistant-msg">
       <Setter Property="Background" Value="Transparent" />

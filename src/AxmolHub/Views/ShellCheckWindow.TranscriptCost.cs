@@ -60,6 +60,29 @@ public partial class ShellCheckWindow
             "回到刚离开的会话是接回原来的行，不是重画一遍：首行仍是同一个控件，"
             + $"纯文本行数不变（{promoted} 条）");
 
+        // ── A session longer than one window ──
+        // What the window claims: the first frame costs what a screen costs, not what the session costs. Counted
+        // before anything pumps the dispatcher, because afterwards only the line at the top is left as evidence.
+        var windowed = chat.StartConversation();
+        for (var i = 0; i < 120; i++)
+            chat.SeedAssistantReplyForCheck(windowed.Id, $"第 {i + 1} 条回答，带 `代码` 与 **粗体**。");
+        chat.OpenConversation(longSession.Id);
+        chat.OpenConversation(windowed.Id);
+        panel.Reload();
+        var firstPaint = panel.PaintedTurnCountForCheck;
+        Check(firstPaint == ChatPanel.FirstPaintTurnsForCheck && panel.HasLoadEarlierRowForCheck,
+            $"长会话先只画最新的一段：120 条回答里画 {firstPaint} 条"
+            + $"（窗口 {ChatPanel.FirstPaintTurnsForCheck}），更早的用一行代替");
+
+        // Each press widens the window by a step, and the line goes away once the whole history is in the flow.
+        var presses = 0;
+        while (panel.HasLoadEarlierRowForCheck && presses < 10 && panel.ClickLoadEarlierForCheck()) presses++;
+        Relayout(shell, panel, measure: true);
+        Check(!panel.HasLoadEarlierRowForCheck && panel.PaintedTurnCountForCheck == 120,
+            $"点「加载更早的」一次给一批，点到底把整段都给出来：按了 {presses} 次，现在画 "
+            + $"{panel.PaintedTurnCountForCheck} 条，头上那行{(panel.HasLoadEarlierRowForCheck ? "还在" : "没了")}");
+
+        chat.DeleteConversation(windowed.Id);
         chat.DeleteConversation(other.Id);
         chat.DeleteConversation(longSession.Id);
         if (before is { Length: > 0 } && chat.Conversations.Any(summary => summary.Id == before))

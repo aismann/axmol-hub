@@ -775,6 +775,10 @@ public static class HubTexts
         ["ChatWriteRecordFormat"] = ("写入 {0}", "wrote {0}"),
         ["ChatUndoButton"] = ("撤销", "Undo"),
         ["ChatUndoTip"] = ("把 {0} 恢复到这次写入之前的内容", "Put {0} back to what it held before this write"),
+        // The one line a long session opens with instead of its whole history: the transcript paints its newest
+        // stretch and this stands for everything above it. It names the count, because "earlier messages" alone
+        // gives a reader no way to tell whether the click buys forty rows or four thousand.
+        ["ChatLoadEarlier"] = ("加载更早的 {0} 条消息", "Load {0} earlier messages"),
 
         // ── The decision surfaces that live in the composer (2026-10-08) ──
         // A pending call and a pending plan are both a question the run is parked on, and both are now asked in
