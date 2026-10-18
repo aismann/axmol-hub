@@ -4863,8 +4863,8 @@ public partial class ShellCheckWindow : Window
                       HubStrings.Get("ActivityRowCommandRunning"), StringComparison.Ordinal),
                 "工具真正拿到这段运行时，卡片说的是「正在执行」（实际「"
                 + panel.RunningCommandRowTextForCheck + "」）");
-            Check(panel.RunningCommandExpandedForCheck,
-                "卡片默认展开：进度就是它存在的理由，藏起来等于没说");
+            Check(!panel.RunningCommandExpandedForCheck,
+                "卡片默认收着：一行说清在跑什么，输出不替人把整列顶开");
             // The clock is what tells a silent command from a dead one, so it has to be there before the first line
             // is: this is the same number the finished row will keep.
             Check(panel.ActivityRowMetaForCheck.Any(meta => meta.EndsWith('s')),
@@ -4873,6 +4873,14 @@ public partial class ShellCheckWindow : Window
                 panel.RunningCommandOutputForCheck.Contains("first-line-of-build", StringComparison.Ordinal), 600);
             Check(panel.RunningCommandOutputForCheck.Contains("first-line-of-build", StringComparison.Ordinal),
                 "命令的输出一边跑一边追加进这张卡片（实际「" + panel.RunningCommandOutputForCheck + "」）");
+            panel.SetRunningCommandExpandedForCheck(true);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.RunningCommandExpandedForCheck,
+                "点一下展开：已经打出来的内容就在那里，不用等命令结束");
+            panel.SetRunningCommandExpandedForCheck(false);
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.RunningCommandExpandedForCheck, "再点一下收回去");
             // A command that prints and sleeps is longer than the run helper's own one-second budget, so the wait
             // is the harness's poll loop rather than that helper.
             await WaitUntilAsync(() => !panel.IsStreamingForCheck, 2000);

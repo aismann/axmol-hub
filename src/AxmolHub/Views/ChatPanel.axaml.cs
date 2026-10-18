@@ -3440,12 +3440,14 @@ public partial class ChatPanel : UserControl
     // gets, so what the person watched and what the transcript keeps are one surface in two tenses.
 
     /// <summary>The command card at the foot of the reply, while one is printing. One at a time because that is what
-    /// the tier table allows: a command changes state, so a second one waits for the first.</summary>
+    /// the tier table allows: a command changes state, so a second one waits for the first.
+    ///
+    /// <para>Its panel is shut until somebody opens it, and the <c>_expandedRows</c> memory it reads and writes is
+    /// the same one the finished row uses, under the same key. That is not a shortcut: it is what makes the two
+    /// tenses one surface — a person who opened the output while the build ran finds it open in the transcript
+    /// afterwards, and a person who left it alone gets the same one line the row would have drawn anyway.</para>
+    /// </summary>
     private RunningCommandRow? _runningCommand;
-
-    /// <summary>Cards a person folded shut while the command printed. Held across a rebuild — a repaint of the
-    /// transcript must not re-open a panel somebody just closed — and dropped when the card is.</summary>
-    private readonly HashSet<string> _collapsedRunningCommands = new(StringComparer.Ordinal);
 
     /// <summary>One command card, and the pieces a repaint has to reach without rebuilding it.</summary>
     private sealed class RunningCommandRow
@@ -3465,13 +3467,9 @@ public partial class ChatPanel : UserControl
         /// TextBlock — which would re-measure a box the person may be reading.</summary>
         public string Painted { get; set; } = "";
 
-        /// <summary>Whether the panel is open. The card starts open: a command's progress is the whole reason it
-        /// exists, and hiding it behind a click would be the same silence in a new shape. It goes back to the
-        /// finished row's own memory when the card is dropped.</summary>
-        public bool Expanded { get; set; } = true;
-
         /// <summary>Whether the output box follows its newest line. Its own copy of the transcript's stick rule,
-        /// for the same reason the thinking box has one.</summary>
+        /// for the same reason the thinking box has one. Nothing is written into a shut panel, so this only starts
+        /// mattering the moment somebody opens it — and from then on it keeps the box where they left it.</summary>
         public bool Stick { get; set; } = true;
     }
 
@@ -3498,15 +3496,14 @@ public partial class ChatPanel : UserControl
         MessageFlow.Children.Add(card.Shell);
     }
 
-    /// <summary>Drops the card, keeping the one thing about it a person chose: an open panel becomes the finished
-    /// row's open panel, because the person was reading that output when the command ended.</summary>
+    /// <summary>Drops the card. What the person chose about its panel needs no work here: that decision lives in the
+    /// fold memory the finished row reads, under the call id, so an output opened while the command printed is
+    /// already open in the transcript afterwards — and one left shut stays the one line it always was.</summary>
     private void ForgetRunningCommand()
     {
         if (_runningCommand is not { } card) return;
         _runningCommand = null;
         MessageFlow.Children.Remove(card.Shell);
-        _collapsedRunningCommands.Remove(card.CallId);
-        if (card.Expanded) RememberFold(_expandedRows, card.ConversationId, card.CallId, true);
     }
 
     /// <summary>The command this conversation is running right now, or null.
@@ -3657,7 +3654,10 @@ public partial class ChatPanel : UserControl
         };
 
         var callId = call.ToolCallId!;
-        var expanded = !_collapsedRunningCommands.Contains(callId);
+        // Shut by default, like every other activity row: the head says what is running and where, and the output is
+        // there for whoever wants it. Opening it is the person's call, not the card's — a build that pushed its log
+        // under the conversation as soon as it started was the card deciding for them.
+        var expanded = IsFoldOpen(_expandedRows, conversationId, callId);
         detail.IsVisible = expanded;
         toggle.IsChecked = expanded;
         // Driven off IsChecked, never Click, exactly as the finished row is: a raised Click does not flip a
@@ -3666,10 +3666,8 @@ public partial class ChatPanel : UserControl
         {
             var open = toggle.IsChecked == true;
             detail.IsVisible = open;
-            if (_runningCommand is { } current && string.Equals(current.CallId, callId, StringComparison.Ordinal))
-                current.Expanded = open;
-            if (open) _collapsedRunningCommands.Remove(callId);
-            else _collapsedRunningCommands.Add(callId);
+            // The finished row's own memory, under the same key: one decision covers both tenses of the exchange.
+            RememberFold(_expandedRows, conversationId, callId, open);
         };
 
         var card = new RunningCommandRow
@@ -3684,7 +3682,6 @@ public partial class ChatPanel : UserControl
             Output = output,
             OutputScroll = outputScroll,
             Dropped = dropped,
-            Expanded = expanded,
         };
         // Wired after the card exists, because what it records is a field of the card: a command that keeps printing
         // must not pull the box away from a person who scrolled up to read what went past.
@@ -3716,8 +3713,10 @@ public partial class ChatPanel : UserControl
             card.Painted = text;
             card.Output.Text = text;
             // The box follows the newest line only while the reader has left it at the bottom — a command whose
-            // output pushed itself up under somebody reading the top is the one thing this box must not do.
-            if (card.Stick) FollowNewestLine(card.OutputScroll);
+            // output pushed itself up under somebody reading the top is the one thing this box must not do. A shut
+            // panel has nothing to follow and queues no work: the text still lands, so the first click shows
+            // everything printed so far in one frame.
+            if (card.Stick && card.Detail.IsVisible) FollowNewestLine(card.OutputScroll);
         }
 
         card.Dropped.Text = dropped > 0
