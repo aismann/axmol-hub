@@ -692,13 +692,20 @@ public partial class ChatPanel
 
         var card = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
 
+        var shown = AskUserQuestion.QuestionShown(question);
         var title = new TextBlock
         {
             Classes = { "question-title" },
             Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ChatQuestionTitleFormat"), question),
+                HubStrings.Get("ChatQuestionTitleFormat"), shown),
             TextWrapping = TextWrapping.Wrap,
         };
+        // The title wraps, but the row it sits in is the card's fixed top: a question long enough to need more room
+        // than the host's ceiling would take that room from the options under it, so the card draws the head and the
+        // tip is where the whole sentence lives. Armed only when something was left out — a tip that repeats the
+        // line under the pointer is chrome. The plan card tips unconditionally because its title is always one
+        // trimmed line, so there it is never the whole of anything.
+        if (shown != question) ToolTip.SetTip(title, TipContent(question));
         Grid.SetRow(title, 0);
         card.Children.Add(title);
 
@@ -768,11 +775,19 @@ public partial class ChatPanel
             Child = new TextBlock { Text = choice.Letter },
         });
         var text = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
-        text.Children.Add(new TextBlock { Classes = { "question-label" }, Text = choice.Label });
+        var label = new TextBlock { Classes = { "question-label" }, Text = choice.LabelShown };
+        // The same bargain the title makes, one level down: the row draws its bounded head so the list keeps its
+        // height, and the tip carries the whole label. Armed only when the row genuinely had to leave something out.
+        if (choice.LabelShown != choice.Label) ToolTip.SetTip(label, TipContent(choice.Label));
+        text.Children.Add(label);
         // A detail the model did not write is not a row to leave in — an empty line under every label would be
         // chrome, and the charter's answer to that is to remove it.
         if (choice.Detail.Length > 0)
-            text.Children.Add(new TextBlock { Classes = { "question-detail" }, Text = choice.Detail });
+        {
+            var detail = new TextBlock { Classes = { "question-detail" }, Text = choice.DetailShown };
+            if (choice.DetailShown != choice.Detail) ToolTip.SetTip(detail, TipContent(choice.Detail));
+            text.Children.Add(detail);
+        }
         Grid.SetColumn(text, 1);
         grid.Children.Add(text);
 
@@ -780,6 +795,20 @@ public partial class ChatPanel
         row.Click += (_, _) => ChooseQuestionOption(choice.Letter);
         return row;
     }
+
+    /// <summary>
+    /// What a tip shows when the card had to draw less than was written. The app declares no <c>ToolTip</c> style, so
+    /// the stock presenter has no ceiling on its width and a question — a sentence, not a label — would arrive as one
+    /// line wider than the window. The wrap and the width are the whole of the treatment; ink and face are left
+    /// alone on purpose, because they inherit from the presenter, which is why a holder like this can be a bare
+    /// <see cref="TextBlock"/> at all.
+    /// </summary>
+    private static TextBlock TipContent(string text) => new()
+    {
+        Text = text,
+        TextWrapping = TextWrapping.Wrap,
+        MaxWidth = 420,
+    };
 
     /// <summary>The line that is not one of the model's options. It carries no letter cap: it is not a fifth choice
     /// the assistant authored, and giving it a key would let a keyboard press pick an answer nobody wrote.</summary>

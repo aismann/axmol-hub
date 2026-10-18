@@ -26,17 +26,33 @@ public static class AskUserQuestion
     /// and OpenClaw allow three, Qoder's own card allows four.</summary>
     public const int MaximumOptions = 4;
 
-    /// <summary>How much question text a card holds. Long past what a decision needs, and short enough that the
-    /// question and its options fit the one row above the composer the charter gives a question.</summary>
+    /// <summary>How much question text a card <i>draws</i>. Long past what a decision needs, and short enough that
+    /// the question and its options fit the one row above the composer the charter gives a question. Nothing past
+    /// it is discarded any more: the parse keeps the whole sentence and the card's tip carries the rest, because a
+    /// question is model-authored text and a tooltip is the only place a bounded row can hold all of it.</summary>
     public const int QuestionLimit = 240;
 
+    /// <summary>What one option row draws of its label, and of the detail under it. The same bargain as the
+    /// question's own limit: the row draws this much, the tip carries the whole of what was written.</summary>
     public const int LabelLimit = 80;
     public const int DetailLimit = 240;
 
     /// <summary>One answer the person can pick. <paramref name="letter"/> is the cap drawn on its row and the key
     /// that arms it, assigned by position rather than authored: a model that wrote its own letters would be free
-    /// to skip A or name a fifth, and the card's keyboard would no longer match what it draws.</summary>
-    public sealed record Option(string Letter, string Label, string Detail);
+    /// to skip A or name a fifth, and the card's keyboard would no longer match what it draws.
+    ///
+    /// <para><paramref name="label"/> and <paramref name="detail"/> are the whole of what the model wrote, and the
+    /// <c>…Shown</c> pair is the bounded surface's view of them. Keeping both is what lets the row draw a fixed
+    /// height and still offer the rest in its tip — and it is why the answer sent back is the whole label rather
+    /// than one that ends in an ellipsis the model never typed.</para></summary>
+    public sealed record Option(string Letter, string Label, string Detail)
+    {
+        /// <summary>What the option row draws of the label.</summary>
+        public string LabelShown => Cut(Label, LabelLimit);
+
+        /// <summary>What the row draws of the detail under it.</summary>
+        public string DetailShown => Cut(Detail, DetailLimit);
+    }
 
     /// <summary>Reads a call's arguments into the question a card shows. Returns false with the sentence the model
     /// gets instead when they cannot become one — which covers unparseable JSON as well as the structural
@@ -98,7 +114,9 @@ public static class AskUserQuestion
                 return false;
             }
 
-            read.Add(new Option("", Cut(label, LabelLimit), Cut(Text(entry, "detail").Trim(), DetailLimit)));
+            // Whole, not cut: the row draws LabelShown of it and its tip holds the rest, and a label ending in an
+            // ellipsis is one the answer text would hand back to the model as an option it never wrote.
+            read.Add(new Option("", label, Text(entry, "detail").Trim()));
         }
 
         if (read.Count < MinimumOptions || read.Count > MaximumOptions)
@@ -115,15 +133,24 @@ public static class AskUserQuestion
         for (var i = 0; i < read.Count; i++)
             lettered.Add(read[i] with { Letter = ((char)('A' + i)).ToString() });
 
-        question = Cut(asked.Trim(), QuestionLimit);
+        // Whole for the same reason the labels are: the card draws QuestionShown of it and its title's tip carries
+        // the rest, so the parse is where the sentence stops being shortened.
+        question = asked.Trim();
         options = lettered;
         refusal = "";
         return true;
     }
 
+    /// <summary>What the card draws of the question. It wraps, so the bound is not a line — it is the height the
+    /// one row above the composer may take before the options under it stop being reachable.</summary>
+    public static string QuestionShown(string question) => Cut(question, QuestionLimit);
+
     /// <summary>What the model reads when a person picks one of its options. The letter rides along with the label
     /// because that is what the person saw, and because a model holding two of these in its history can otherwise
-    /// no longer tell which row it had called "B".</summary>
+    /// no longer tell which row it had called "B".
+    ///
+    /// <para>The label is the whole of what the model wrote, not the row's drawn head: a tool result saying
+    /// <c>B: The transport layer, which is where the retry…</c> would describe a choice nobody was offered.</para></summary>
     public static string Answered(string question, Option option)
         => $"The user answered \"{option.Letter}: {option.Label}\" to \"{question}\".";
 
@@ -171,9 +198,11 @@ public static class AskUserQuestion
             ? value.GetString() ?? ""
             : "";
 
-    /// <summary>Truncates rather than refuses. A label one character over the limit is still the choice the model
-    /// meant to offer, and throwing the whole question away over it would trade a clipped word for a lost turn.
-    /// The cut trims back to the last non-space so an ellipsis never sits after a gap nobody typed.</summary>
+    /// <summary>The drawing cut: the head of a longer string, with an ellipsis where it stopped. Nothing is thrown
+    /// away by it any more — the parse keeps the whole text and this is what a bounded surface draws of it, with
+    /// the rest riding in a tip — so it shortens rather than refuses, and the element that draws it is the one that
+    /// decides whether the text it drew was already the whole of it. The cut trims back to the last non-space so an
+    /// ellipsis never sits after a gap nobody typed.</summary>
     private static string Cut(string value, int limit)
         => value.Length <= limit
             ? value

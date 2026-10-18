@@ -6402,14 +6402,23 @@ if (args.Contains("--check-ai-tool-policy"))
             throw new Exception($"A question with {label} was accepted, or refused with nothing to say.");
     }
 
-    // A label over the limit is clipped, not fatal: the choice the model meant to offer is still worth showing,
-    // and losing the whole question over one character would trade a clipped word for a lost turn.
+    // Long text is kept whole and drawn short. The card's rows have a fixed height, so what does not fit is a
+    // drawing problem — and a parse that threw the rest away would leave the tip with nothing to show while the
+    // answer sent back described an option, in a row ending in an ellipsis, that the model never wrote.
+    var longLabel = new string('x', AskUserQuestion.LabelLimit + 40);
+    var longQuestion = new string('q', AskUserQuestion.QuestionLimit + 60);
     if (!AskUserQuestion.TryParse(
-            $$"""{"question":"q","options":[{"label":"{{new string('x', AskUserQuestion.LabelLimit + 40)}}"},{"label":"b"}]}""",
-            out _, out var clipped, out _)
-        || clipped[0].Label.Length != AskUserQuestion.LabelLimit
-        || !clipped[0].Label.EndsWith('…'))
-        throw new Exception("An over-long label was not clipped to the limit with an ellipsis.");
+            $$"""{"question":"{{longQuestion}}","options":[{"label":"{{longLabel}}"},{"label":"b"}]}""",
+            out var askedLong, out var clipped, out _)
+        || clipped[0].Label != longLabel
+        || clipped[0].LabelShown.Length != AskUserQuestion.LabelLimit
+        || !clipped[0].LabelShown.EndsWith('…')
+        || askedLong != longQuestion
+        || AskUserQuestion.QuestionShown(askedLong).Length != AskUserQuestion.QuestionLimit
+        || !AskUserQuestion.QuestionShown(askedLong).EndsWith('…'))
+        throw new Exception("A long label or question was discarded instead of kept whole and drawn short.");
+    if (!AskUserQuestion.Answered("q", clipped[0]).Contains(longLabel, StringComparison.Ordinal))
+        throw new Exception("The answer sent back carried the drawn cut rather than the label the model wrote.");
 
     // What the person's answer becomes on the way back to the model. Pinned here because the card is the only
     // other reader of these, and a view that composed transcript text would drift from it silently.

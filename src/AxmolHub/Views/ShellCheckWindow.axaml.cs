@@ -7203,6 +7203,7 @@ public partial class ShellCheckWindow : Window
         var cardSession = chat.StartConversation();
         var skipSession = chat.StartConversation();
         var owedSession = chat.StartConversation();
+        var longSession = chat.StartConversation();
         var questionArguments = new Dictionary<string, object?>
         {
             ["question"] = "重试逻辑放在哪一层？",
@@ -7247,6 +7248,24 @@ public partial class ShellCheckWindow : Window
                  }),
             ],
         };
+        // The card draws a bounded head of everything it did not author and keeps the whole of it in a tip. Both
+        // halves are asserted below, because either one alone is a lie: text thrown away before the card saw it
+        // leaves a tip with nothing to show, and a cut with no tip presents a truncated sentence as the sentence.
+        var longQuestion = new string('问', AskUserQuestion.QuestionLimit + 20);
+        var longLabel = new string('长', AskUserQuestion.LabelLimit + 30);
+        var longClient = new ApprovalChatClient
+        {
+            ToolName = AskUserTool.ToolName,
+            Arguments = new Dictionary<string, object?>
+            {
+                ["question"] = longQuestion,
+                ["options"] = new object?[]
+                {
+                    new Dictionary<string, object?> { ["label"] = longLabel },
+                    new Dictionary<string, object?> { ["label"] = "短的那一项" },
+                },
+            },
+        };
         chat.IdleTimeout = TimeSpan.FromSeconds(5);
         // Both windows: a card that parks is armed with the round's window now, and a fixture that lets
         // only the silence one expire would sit on the default until the suite's own ceiling.
@@ -7258,6 +7277,7 @@ public partial class ShellCheckWindow : Window
                 var id when id == cardSession.Id => cardClient,
                 var id when id == skipSession.Id => skipClient,
                 var id when id == owedSession.Id => owedClient,
+                var id when id == longSession.Id => longClient,
                 _ => new ScriptedChatClient(["不该被使用"]),
             };
 
@@ -7397,6 +7417,31 @@ public partial class ShellCheckWindow : Window
                 "第二个答完之后两条结果都在，运行收尾（实际 "
                 + owedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) + " 条）");
 
+            // Long text. The question and the label each had to be drawn short to keep the card at the height its
+            // layout was built on, and the whole of each is one hover away — the row is the head, the tip is the
+            // sentence. The short label is the negative half: a tip that repeated the line under the pointer would
+            // be chrome, and it is what proves the tip is a fallback rather than something every row wears.
+            chat.OpenConversation(longSession.Id);
+            chat.TryEnqueueSend(longSession.Id, "问个长的", null, out _);
+            await WaitForIdleAsync(chat);
+            chat.OpenConversation(longSession.Id);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.QuestionLabelForCheck("A").EndsWith('…')
+                  && panel.QuestionLabelTipForCheck("A") == longLabel
+                  && panel.QuestionLabelTipForCheck("B").Length == 0
+                  && panel.QuestionTitleForCheck.EndsWith('…')
+                  && panel.QuestionTitleTipForCheck == longQuestion,
+                "长的问题与选项画得下多少画多少、画不下的整段放进提示，短的那一项不挂提示（卡上 "
+                + panel.QuestionLabelForCheck("A").Length + " 字，提示 "
+                + panel.QuestionLabelTipForCheck("A").Length + " 字）");
+            panel.ClickQuestionChoiceForCheck("B");
+            panel.ClickQuestionContinueForCheck();
+            await WaitForIdleAsync(chat);
+            Check(chat.RunFor(longSession.Id) is null,
+                "长提问答完之后这条会话也不再挂着运行");
+
             // The other axis: switched off means the model is never told the capability exists. Asserted on the
             // declaration list rather than on a parked call, because a tool that is declared and then ignored
             // would still let the model ask into a void — and that is the failure this cell exists to catch.
@@ -7418,7 +7463,7 @@ public partial class ShellCheckWindow : Window
             chat.IdleTimeout = savedIdleTimeout;
             chat.FirstFrameTimeout = savedFirstFrameTimeout;
             chat.PreferencesProvider = savedPreferencesProvider;
-            foreach (var session in new[] { observer, cardSession, skipSession, owedSession })
+            foreach (var session in new[] { observer, cardSession, skipSession, owedSession, longSession })
                 chat.DeleteConversation(session.Id);
             await WaitForIdleAsync(chat);
             panel.Reload();

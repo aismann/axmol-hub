@@ -5249,6 +5249,34 @@ public partial class ChatPanel : UserControl
             .GetLogicalDescendants().OfType<TextBlock>()
             .FirstOrDefault(text => text.Classes.Contains("question-label"))?.Text ?? "";
 
+    /// <summary>The whole question, when the card had to leave part of it out of the title and handed the rest to a
+    /// tip. Empty when nothing was cut — a card that tipped the line it already draws would be saying the same
+    /// sentence twice, and the empty answer is what lets a check prove the tip is a fallback and not a habit.</summary>
+    internal string QuestionTitleTipForCheck
+        => QuestionCard?.GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(text => text.Classes.Contains("question-title")) is { } title
+            ? TipTextOf(title)
+            : "";
+
+    /// <summary>The whole label of one option row, on the same terms as the title's.</summary>
+    internal string QuestionLabelTipForCheck(string letter)
+        => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(row => row.Tag as string == letter)?
+            .GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(text => text.Classes.Contains("question-label")) is { } label
+            ? TipTextOf(label)
+            : "";
+
+    /// <summary>A tip read back as text, whichever shape it was installed in: the plain string most controls carry,
+    /// or the wrapping holder <c>TipContent</c> builds for a sentence.</summary>
+    private static string TipTextOf(Control control)
+        => ToolTip.GetTip(control) switch
+        {
+            TextBlock holder => holder.Text ?? "",
+            null => "",
+            var other => other.ToString() ?? "",
+        };
+
     private TextBox? QuestionAnswerBox => QuestionCard?.GetLogicalDescendants().OfType<TextBox>()
         .FirstOrDefault(box => box.Name == "QuestionAnswerBox");
 
