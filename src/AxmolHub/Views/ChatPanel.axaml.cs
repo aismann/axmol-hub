@@ -5807,6 +5807,32 @@ public partial class ChatPanel : UserControl
 
     /// <summary>The line itself, found by its class. It is deliberately not a message row, so nothing that counts
     /// rows sees it — which is also why it has to be looked up by name rather than by position.</summary>
+    /// <summary>The conversation the shadow comparison reads: the projection is built from data, never from
+    /// controls.</summary>
+    internal Conversation? ActiveConversationForCheck => _chat?.ActiveConversation;
+
+    internal bool ShowThinkingForCheck => _chat?.ShowThinking ?? false;
+
+    /// <summary>What the flow actually holds, as one token per top-level child, for the shadow comparison against
+    /// <see cref="TranscriptProjection"/>. A piece is one token carrying its row count, because that count is where
+    /// a suppressed write record or a thinking row would show up.</summary>
+    internal IReadOnlyList<string> PaintedStructureForCheck => MessageFlow.Children.Select(child =>
+    {
+        if (child.Classes.Contains("load-earlier-row")) return "earlier";
+        if (child.Classes.Contains("activity-group")) return "piece:folded:" + PaintedRowsIn(child);
+        if (child.Classes.Contains("activity-plain")) return "piece:flat:" + PaintedRowsIn(child);
+        if (child.Classes.Contains("message-row"))
+            return "message:" + (child.Classes.Contains("user-row") ? "user" : "assistant");
+        if (child.Classes.Contains("notice")) return "notice";
+        return "other:" + string.Join("|", child.Classes);
+    }).ToArray();
+
+    private static int PaintedRowsIn(Control child)
+        => child.GetLogicalDescendants().OfType<Control>()
+            .Count(row => row.Classes.Contains("message-row") || row.Classes.Contains("activity-row"));
+
+    /// <summary>The line itself, found by its class. It is deliberately not a message row, so nothing that counts
+    /// rows sees it — which is also why it has to be looked up by name rather than by position.</summary>
     private Control? LoadEarlierRowForCheck()
         => MessageFlow.Children.FirstOrDefault(child => child.Classes.Contains("load-earlier-row"));
 
