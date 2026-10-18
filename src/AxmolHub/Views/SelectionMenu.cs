@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -6,8 +7,10 @@ using Avalonia.Interactivity;
 namespace AxmolHub;
 
 /// <summary>
-/// The right-click menus Hub's text surfaces carry: on a selection inside a message they offer 复制 and 引用, and
-/// on the composer the three clipboard verbs a text box is expected to have.
+/// The clipboard routes Hub's text surfaces carry — the right-click menu, and the key that has to answer a
+/// selection at all: on a selection inside a message the menu offers 复制 and 引用, on the composer it carries the
+/// three clipboard verbs a text box is expected to have, and <see cref="AttachCopyKey"/> is what gives a rendered
+/// document its Ctrl+C.
 ///
 /// <para>Why this file exists at all: nothing in the shell had a context menu. Avalonia's <see cref="TextBox"/>
 /// ships none, and the rendered Markdown is a third-party control with no menu of its own, so a right-click
@@ -30,6 +33,14 @@ namespace AxmolHub;
 /// when it opened: the first keeps the band on screen, the second makes the copy land even if a host clears the
 /// selection anyway. A rendered document needs neither half — the library's selection lives in its blocks rather
 /// than in the focus.</para>
+///
+/// <para>A rendered document does need one further route, and it is the one <see cref="AttachCopyKey"/> adds.
+/// Living in the blocks rather than in the focus is what keeps its band on screen through a menu — and it is also
+/// why no key ever reached it. Avalonia delivers a shortcut along the routed key route, which begins at the
+/// focused element; the document never asked for the focus, so Ctrl+C went to whatever was focused last, usually
+/// the composer, whose own selection is empty. That is the whole difference between the surfaces that worked and
+/// the ones that did not: a <see cref="SelectableTextBlock"/> — the person's own message — and a
+/// <see cref="TextBox"/> both take the focus when they are clicked, and this document did not.</para>
 /// </summary>
 internal static class SelectionMenu
 {
@@ -95,6 +106,76 @@ internal static class SelectionMenu
                 held.ContextFlyout = menu;
             }
             menu.ShowAt(target, showAtPointer: true);
+        }, RoutingStrategies.Bubble, handledEventsToo: true);
+    }
+
+    /// <summary>The keyboard half of a text surface: <c>Ctrl+C</c> (or <c>Cmd+C</c>) hands over what is selected in
+    /// it, read the same way its menu reads it.
+    ///
+    /// <para>Needed because a shortcut travels the routed key route, which starts at the focused element, and a
+    /// rendered document never asks for the focus (see the class header). A drag therefore leaves the band on
+    /// screen with the keyboard still in the composer, whose selection is empty — so Ctrl+C copied nothing, and a
+    /// surface a person could select in but not copy from reads as a broken window.</para>
+    ///
+    /// <para>The library takes the keyboard by itself — it calls Focus on the press — so what this adds is not the
+    /// taking but the giving back: the keyboard is taken when the gesture <i>selected something</i> (a drag, or a
+    /// second click that picks a word), and handed to whoever held it before when the gesture selected nothing. A
+    /// click that only places a caret must leave the reader's keyboard where it was, or every click made on an
+    /// answer while reading back would send the next keystroke nowhere. The previous holder is read on the tunnel
+    /// of the press, the last moment it can be seen (measured 2026-10-18: still the composer on the tunnel, already
+    /// this document on the bubble), and the keyboard is only handed back while this element is what holds it — a
+    /// press inside the fenced code editor or on a copy button focuses something of its own, and that focus is not
+    /// ours to move. The adorner is cleared and the surface kept out of the tab order, because this focus exists to
+    /// route a key and must neither draw chrome nor grow a Tab stop per message.</para>
+    ///
+    /// <para><c>handledEventsToo</c> both ways round, and <see cref="KeyEventArgs.Handled"/> set after the copy has
+    /// been handed over: the library consumes the pointer gestures that build the selection, and if it — or a later
+    /// version of it — answers Ctrl+C as well, the text must still land on the clipboard once.</para>
+    /// </summary>
+    internal static void AttachCopyKey(Control target, Func<string> readSelection)
+    {
+        target.Focusable = true;
+        target.FocusAdorner = null;
+        KeyboardNavigation.SetIsTabStop(target, false);
+
+        var previous = (IInputElement?)null;
+        var pressedAt = (Point?)null;
+        var repeated = false;
+        target.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
+        {
+            previous = TopLevel.GetTopLevel(target)?.FocusManager?.GetFocusedElement();
+            pressedAt = e.GetPosition(target);
+            repeated = e.ClickCount > 1;
+        }, RoutingStrategies.Tunnel, handledEventsToo: true);
+        target.AddHandler(InputElement.PointerReleasedEvent, (_, e) =>
+        {
+            var start = pressedAt;
+            var multiClick = repeated;
+            var holder = previous;
+            pressedAt = null;
+            repeated = false;
+            previous = null;
+            if (start is not { } from) return;
+            var to = e.GetPosition(target);
+            // A press released on the very pixel it started on is a caret; a drag is a hand that moved.
+            var dragged = Math.Abs(to.X - from.X) > 0.5 || Math.Abs(to.Y - from.Y) > 0.5;
+            if ((dragged || multiClick) && readSelection().Length > 0) return;
+            if (holder is not { } back || ReferenceEquals(back, target)) return;
+            // Only when this document is the one that took it: a child that wanted the keyboard for itself (the
+            // code editor, a copy button) is not something to hand back out from under.
+            if (!ReferenceEquals(TopLevel.GetTopLevel(target)?.FocusManager?.GetFocusedElement(), target)) return;
+            if (back is InputElement element) element.Focus();
+        }, RoutingStrategies.Bubble, handledEventsToo: true);
+        target.AddHandler(InputElement.KeyDownEvent, async (_, e) =>
+        {
+            if (e.Key != Key.C) return;
+            if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) && !e.KeyModifiers.HasFlag(KeyModifiers.Meta)) return;
+            var text = readSelection();
+            // Nothing selected here: the key belongs to whoever else can answer it, and swallowing it would leave
+            // the composer unable to copy its own text.
+            if (text.Length == 0) return;
+            e.Handled = true;
+            await CopyAsync(target, text);
         }, RoutingStrategies.Bubble, handledEventsToo: true);
     }
 

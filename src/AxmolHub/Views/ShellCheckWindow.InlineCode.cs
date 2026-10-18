@@ -73,6 +73,21 @@ public sealed partial class ShellCheckWindow
                     window.UpdateLayout();
                 }
                 string Selected() => MarkdownMessageRenderer.SelectionText(viewer);
+                // The key as a keyboard raises it, on the document itself. Which handler answers, and whether the
+                // event is left unhandled for the next surface, are both part of what is being claimed.
+                bool CopyKey()
+                {
+                    var args = new KeyEventArgs
+                    {
+                        RoutedEvent = InputElement.KeyDownEvent,
+                        Key = Key.C,
+                        KeyModifiers = KeyModifiers.Control,
+                        Source = viewer,
+                    };
+                    viewer.RaiseEvent(args);
+                    Dispatcher.UIThread.RunJobs();
+                    return args.Handled;
+                }
                 Drag(2, 2);
                 Check(Selected() == "", name + "：单击行内代码不选中整块");
                 var directory = ScratchDirectory.Resolve("inline-code-selection");
@@ -108,8 +123,44 @@ public sealed partial class ShellCheckWindow
                 Check(Selected() == "igured ", name + "：从代码拖出正文时保留准确范围（实际「" + Selected() + "」）");
                 Drag(-0.5, 10.5);
                 Check(Selected() == " Configured ", name + "：跨代码复制的文本包含完整代码");
+
+                // A shortcut travels the route that starts at the focused element, so the document has to hold the
+                // keyboard for Ctrl+C to mean anything here. The gesture that left a selection is what takes it —
+                // the half the person's own message always had, since a SelectableTextBlock asks on a click.
+                Check(viewer.IsFocused, name + "：选中之后文档自己拿到键盘焦点，快捷键才有落处");
+
+                // 复制 goes to a recorded string instead of the clipboard, the way the sidebar's copy is checked.
+                var copied = "";
+                var previousWriter = SelectionMenu.TestClipboardWriter;
+                SelectionMenu.TestClipboardWriter = text =>
+                {
+                    copied = text;
+                    return Task.CompletedTask;
+                };
+                bool answered;
+                try
+                {
+                    answered = CopyKey();
+                }
+                finally
+                {
+                    SelectionMenu.TestClipboardWriter = previousWriter;
+                }
+                Check(answered && copied == " Configured ",
+                    name + "：Ctrl+C 交出去的就是这段选中的文字，行内代码也在其中（实际「" + copied + "」）");
+
+                // One click, two claims: the keyboard stays where the reader already had it, and a document with
+                // nothing selected does not eat the key it was given — the composer beside it still has something
+                // to answer with.
+                var holder = inspector.GetVisualDescendants().OfType<Button>().First();
+                holder.Focus();
+                Dispatcher.UIThread.RunJobs();
                 Drag(2, 2);
                 Check(Selected() == "" && block.Cursor?.ToString() == "Ibeam", name + "：再次单击清除选区，代码光标为文本选择形态");
+                Check(holder.IsFocused, name + "：只清除选区的单击不会把键盘焦点抢走（现在 旁人=" + holder.IsFocused
+                    + " 文档=" + viewer.IsFocused + "）");
+                var swallowed = CopyKey();
+                Check(!swallowed, name + "：没有选区时文档不吞掉 Ctrl+C（实际 handled=" + swallowed + "）");
 
                 var link = viewer.GetVisualDescendants().OfType<CTextBlock>().Single(candidate => candidate.Text == "Link");
                 void Hover(CTextBlock target, Point point) => target.RaiseEvent(new PointerEventArgs(

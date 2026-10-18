@@ -93,6 +93,10 @@ internal static class MarkdownMessageRenderer
         // into a surface where a selection cannot be copied or quoted — the inspector being the surface that would
         // have been forgotten.
         SelectionMenu.Attach(viewer, () => SelectionText(viewer), quote);
+        // And the key that has to reach it. A document's selection lives in the library's blocks rather than in
+        // the keyboard focus, so this is the only thing that brings Ctrl+C here at all (see
+        // SelectionMenu.AttachCopyKey) — attached in the same place, for the same reason.
+        SelectionMenu.AttachCopyKey(viewer, () => SelectionText(viewer));
         return viewer;
     }
 
