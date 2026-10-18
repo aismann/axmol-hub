@@ -350,21 +350,21 @@ public partial class App : Application
         }
 
         // The macOS counterpart of the tray block above: the close button hides the window (see
-        // MainWindow.ShouldHideOnCloseForCheck), and two things bring it back. A Dock click (or Cmd-Tab) — the
-        // platform gesture for it — arrives as AppKit's did-become-active notification, because ActivationKind
-        // .Reopen, which Avalonia would raise for a Dock click on an app with no visible window, never comes: this
-        // version's ClassicDesktopStyleApplicationLifetime does not implement IActivatableLifetime. And the
-        // application menu carries Hub's own entry for the one case the notification cannot report — the app is
-        // already frontmost, so no activation transition happens, and the row is the only way back. Both land on
-        // the window's restore path; the shell self-check reads the entry off the installed menu and raises the
-        // notification for real.
+        // MainWindow.ShouldHideOnCloseForCheck), and the Dock icon is the way back — AppKit's reopen event, which
+        // arrives whether Hub was in the background or is still frontmost with nothing on screen (the state a close
+        // leaves behind), plus the did-become-active notification for the Cmd-Tab half. Neither is what Avalonia
+        // would provide: ActivationKind.Reopen never comes, because this version's
+        // ClassicDesktopStyleApplicationLifetime does not implement IActivatableLifetime. See MacDockActivation; the
+        // shell self-check raises both signals for real.
+        //
+        // The menu entry is the fallback for the one case AppKit leaves us nothing to answer for — no application
+        // delegate at all — and is deliberately not installed otherwise: with the reopen hook in place a second
+        // route to the same window would be chrome nobody needs.
         if (OperatingSystem.IsMacOS() && !Options.IsAutomation)
         {
-            MacApplicationMenu.Install(this, window.ActivateFromRequest);
-            if (MacDockActivation.Install(window.RestoreFromActivation))
-            {
-                desktop.Exit += (_, _) => MacDockActivation.Uninstall();
-            }
+            var dockClickAnswers = MacDockActivation.Install(window.RestoreFromActivation);
+            desktop.Exit += (_, _) => MacDockActivation.Uninstall();
+            if (!dockClickAnswers) MacApplicationMenu.Install(this, window.ActivateFromRequest);
         }
 
         if (!Options.IsAutomation)

@@ -1087,27 +1087,30 @@ public partial class ShellCheckWindow : Window
               && !MainWindow.ShouldHideOnCloseForCheck(true, false, false, true, true)
               && !MainWindow.ShouldHideOnCloseForCheck(false, true, false, true, false),
             "关窗即隐藏：Windows 有托盘与 macOS 的 Dock 都隐藏主窗口，显式退出、自动化与其他平台仍执行原关闭流程");
-        // The two ways back to a hidden window on macOS. The Dock click is AppKit's did-become-active notification,
-        // because ActivationKind.Reopen — what Avalonia would raise for it — never comes: this version's desktop
-        // lifetime does not implement IActivatableLifetime. The notification is raised here for real: a check
-        // cannot click a Dock icon, so what is proven is the part that can silently be wrong — the registered
-        // selector, the callback bridge, and that the callback reaches the restore path. Uninstalled again so the
-        // rest of the suite runs against a plain centre.
+        // The Dock icon, on macOS, both ways AppKit reports it. The reopen event is the one that matters: it arrives
+        // for a Dock click even when Hub is still frontmost with nothing on screen — the state a close leaves behind
+        // — while the did-become-active notification only fires on an activation transition (a click from another
+        // app, or Cmd-Tab). Neither is what Avalonia would raise: ActivationKind.Reopen never comes, because this
+        // version's desktop lifetime does not implement IActivatableLifetime. A check cannot click a Dock icon, so it
+        // raises both signals for real and reads the callbacks: what that proves is the part that can silently be
+        // wrong — the registered selector, the delegate subclass and the original implementation still being
+        // consulted, the callback bridge, and that both reach the restore path. Uninstalled again so the rest of the
+        // suite runs against a plain notification centre and Avalonia's own delegate class.
         if (OperatingSystem.IsMacOS())
         {
             var activated = 0;
             var installed = MacDockActivation.Install(() => activated++);
             MacDockActivation.PostActivationForCheck();
             Dispatcher.UIThread.RunJobs();
+            var reopenAnswered = MacDockActivation.PressReopenForCheck();
             MacDockActivation.Uninstall();
-            Check(installed && activated == 1,
-                "macOS 的 Dock 图标（应用被激活通知）真的进到恢复主窗口的回调里（实际装上 " + installed
-                + "，回调 " + activated + " 次）");
+            Check(installed && activated == 2 && reopenAnswered == 1,
+                "macOS 的 Dock 图标两条路（reopen 事件与应用被激活通知）都进到恢复主窗口的回调里（实际装上 "
+                + installed + "，回调 " + activated + " 次，reopen 回复 " + reopenAnswered + "）");
 
-            // The menu entry, which covers the case no activation can report: the app is already frontmost, so
-            // there is no transition to observe and the row is the only way back. Installed through the same
-            // factory App calls at startup and read back off the real application menu, so it has to exist, come
-            // before the About row, and carry a handler — a label alone would restore nothing.
+            // The fallback entry, which App installs only when AppKit left no delegate to answer for. Installed
+            // through the same factory App uses and read back off the real application menu, so it has to exist,
+            // come before the About row, and carry a handler — a label alone would restore nothing.
             MacApplicationMenu.Install(Application.Current!, () => { });
             var applicationMenu = NativeMenu.GetMenu(Application.Current!)?.Items.OfType<NativeMenuItem>().ToArray()
                 ?? [];
@@ -1118,7 +1121,7 @@ public partial class ShellCheckWindow : Window
                   && showWindow.Menu is null
                   && showWindow.HasClickHandlers
                   && aboutIndex > 0,
-                "macOS 应用菜单第一项是 Hub 自己的「显示主窗口」，应用已在前台时从这里回来（实际第一项「"
+                "macOS 应用菜单第一项是 Hub 自己的「显示主窗口」，作为没有应用 delegate 时的退路（实际第一项「"
                 + (showWindow?.Header ?? "没有菜单项") + "」，「" + AboutMenuLabel + "」排在第 " + aboutIndex
                 + " 项）");
         }

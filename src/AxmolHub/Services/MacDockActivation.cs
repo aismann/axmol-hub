@@ -5,18 +5,27 @@ using System.Text;
 namespace AxmolHub;
 
 /// <summary>
-/// AppKit's "the application became active" notification, observed so that clicking Hub's Dock icon brings back a
-/// main window the close button hid (see <see cref="MainWindow.ShouldHideOnCloseForCheck"/>).
+/// The two AppKit signals that mean "the user is bringing Hub forward", wired so that a click on Hub's Dock icon
+/// brings back a main window the close button hid (see <see cref="MainWindow.ShouldHideOnCloseForCheck"/>).
 ///
 /// <para>Why AppKit directly: Avalonia 12.1.3's <c>ClassicDesktopStyleApplicationLifetime</c> does not implement
-/// <c>IActivatableLifetime</c>, so the <c>ActivationKind.Reopen</c> that the framework would raise for exactly this
+/// <c>IActivatableLifetime</c>, so the <c>ActivationKind.Reopen</c> the framework would raise for exactly this
 /// gesture is never raised — the shell self-check reads that interface off the running lifetime, which is the same
-/// fact this file works around. Becoming active is the transition a Dock click of a background app produces, and it
-/// is also produced by Cmd-Tab, which is the other way back to a window that is not on screen.</para>
+/// fact this file works around.</para>
 ///
-/// <para>Nothing is swizzled: the observer is a class of Hub's own, added to the shared notification centre, so
-/// Avalonia's own application delegate keeps whatever it does with the same notification. The callback restores a
-/// hidden window and does nothing else — in particular it does not go through
+/// <para>Two signals, because one of them is not enough and which one fires depends on where the app was when the
+/// icon was clicked. A Dock click is delivered to the application delegate as
+/// <c>applicationShouldHandleReopen:hasVisibleWindows:</c> — that is the one that always arrives, including when Hub
+/// is still the frontmost app with nothing on screen, which is exactly the state a close leaves behind. The
+/// did-become-active notification only arrives on an activation <em>transition</em>, i.e. when the click comes from
+/// another app (and when Cmd-Tab raises Hub), so on its own it misses the "closed, then clicked again" case.</para>
+///
+/// <para>The reopen half does override one method, and the honest name for it is an isa-swizzle: a dynamic subclass
+/// of Avalonia's own delegate class, installed on that one delegate object, which restores the window and then
+/// reports the reopen as handled. Everything else on the delegate is inherited untouched, and the original
+/// implementation — if the class has one — is called first, so this is an addition to Avalonia's delegate rather
+/// than a replacement for it. The notification half touches nothing: it is an observer of Hub's own on the shared
+/// centre. Both, and the callback itself, only put a hidden window back: they deliberately do not run
 /// <see cref="MainWindow.ActivateFromRequest"/>, whose notification bookkeeping (open the conversation an alert was
 /// about) belongs to the window's own <c>Activated</c> handler, which gates it on the window having genuinely left
 /// the foreground.</para>
@@ -29,25 +38,40 @@ internal static class MacDockActivation
 
     private const string ObserverClassName = "AxmolHubActivationObserver";
 
-    /// <summary><c>v@:@</c>: void, self, _cmd, one object — the shape AppKit reads off <c>class_addMethod</c>.</summary>
+    /// <summary>The subclass of Avalonia's application delegate that answers the reopen event. Distinct from the
+    /// observer class above: that one is Hub's own object on the notification centre, this one is a stand-in for
+    /// somebody else's class and must inherit all of it.</summary>
+    private const string ReopenDelegateClassName = "AxmolHubReopenDelegate";
+
+    /// <summary><c>v@:@</c>: void, self, _cmd, one object — the shape the runtime reads off <c>class_addMethod</c>.
+    /// </summary>
     private static readonly byte[] ActivatedSignature = Encoding.ASCII.GetBytes("v@:@\0");
 
+    /// <summary><c>B@:@c</c>: BOOL, self, _cmd, one object and one BOOL — <c>applicationShouldHandleReopen:
+    /// hasVisibleWindows:</c>. ObjC encodes <c>BOOL</c> as <c>c</c> on the 64-bit runtime.</summary>
+    private static readonly byte[] ReopenSignature = Encoding.ASCII.GetBytes("B@:@c\0");
+
     private static readonly ActivatedHandler Activated = OnActivated;
+    private static readonly ReopenHandler Reopen = OnReopen;
     private static IntPtr _observer;
+    private static IntPtr _reopenTarget;
+    private static IntPtr _reopenTargetClass;
+    private static ReopenHandler? _originalReopen;
     private static bool _installed;
     private static Action? _restore;
 
-    /// <summary>Puts the observer on the default notification centre and reports whether it went on. False off
+    /// <summary>Wires both signals and reports whether the reopen one went on — that is the one a caller may have to
+    /// make up for, because it is the only signal a Dock click of an already-frontmost Hub produces. False off
     /// macOS, so a caller can state the platform as a fact rather than branching twice.</summary>
     internal static bool Install(Action restore)
     {
         if (!OperatingSystem.IsMacOS()) return false;
         _restore = restore;
-        if (_installed) return true;
+        if (_installed) return _reopenTarget != IntPtr.Zero;
 
         // The class is created once per process; a second Install (the self-check installs and uninstalls its own)
-        // only adds another observer object on the same class, because class_addMethod on an existing class would
-        // fail for a method that is already registered.
+        // only puts another observer on the centre, because class_addMethod on an existing class would fail for a
+        // method that is already registered.
         var type = objc_getClass(ObserverClassName);
         var selector = Selector("hubApplicationActivated:");
         if (type == IntPtr.Zero)
@@ -66,12 +90,59 @@ internal static class MacDockActivation
         SendAddObserver(center, Selector("addObserver:selector:name:object:"), _observer, selector,
             ToNSString(BecameActiveNotification), IntPtr.Zero);
         _installed = true;
+        return HookReopen();
+    }
+
+    /// <summary>The reopen half: a subclass of whatever class Avalonia's application delegate is, carrying one method
+    /// that restores the window, installed on that single delegate object. Returns false when there is no delegate to
+    /// stand in for — the caller then has to offer the window another way back, because AppKit would have had nobody
+    /// to tell.</summary>
+    private static bool HookReopen()
+    {
+        var app = Send0(objc_getClass("NSApplication"), Selector("sharedApplication"));
+        if (app == IntPtr.Zero) return false;
+        var appDelegate = Send0(app, Selector("delegate"));
+        if (appDelegate == IntPtr.Zero) return false;
+        var original = object_getClass(appDelegate);
+        if (original == IntPtr.Zero) return false;
+
+        var selector = Selector("applicationShouldHandleReopen:hasVisibleWindows:");
+
+        // Kept so the override adds to Avalonia's answer instead of discarding it: its class may well implement the
+        // method already, and then what it does with a reopen stays its business. Looked up separately from the
+        // subclass below, because a second Install finds the subclass already made and still has to know this.
+        if (_originalReopen is null)
+        {
+            var existing = class_getInstanceMethod(original, selector);
+            if (existing != IntPtr.Zero)
+            {
+                var implementation = method_getImplementation(existing);
+                if (implementation != IntPtr.Zero)
+                    _originalReopen = Marshal.GetDelegateForFunctionPointer<ReopenHandler>(implementation);
+            }
+        }
+
+        var subclass = objc_getClass(ReopenDelegateClassName);
+        if (subclass == IntPtr.Zero)
+        {
+            subclass = objc_allocateClassPair(original, ReopenDelegateClassName, 0);
+            if (subclass == IntPtr.Zero) return false;
+            if (class_addMethod(subclass, selector, Marshal.GetFunctionPointerForDelegate(Reopen),
+                    ReopenSignature) == 0)
+                return false;
+            objc_registerClassPair(subclass);
+        }
+
+        object_setClass(appDelegate, subclass);
+        _reopenTarget = appDelegate;
+        _reopenTargetClass = original;
         return true;
     }
 
-    /// <summary>Takes the observer back off the centre. Only the shutdown path needs it — the process is ending —
-    /// but a notification centre outliving its observer is a crash waiting for a slow machine, not a detail worth
-    /// leaving to "we exit fast enough".</summary>
+    /// <summary>Takes the observer back off the centre and puts the delegate back on its own class. Only the shutdown
+    /// path needs it — the process is ending — but a notification centre outliving its observer, or a delegate left
+    /// wearing Hub's subclass, is a crash waiting for a slow machine rather than a detail worth leaving to "we exit
+    /// fast enough".</summary>
     internal static void Uninstall()
     {
         if (_installed && _observer != IntPtr.Zero)
@@ -81,7 +152,13 @@ internal static class MacDockActivation
             Send0(_observer, Selector("release"));
         }
 
+        if (_reopenTarget != IntPtr.Zero && _reopenTargetClass != IntPtr.Zero)
+            object_setClass(_reopenTarget, _reopenTargetClass);
+
         _observer = IntPtr.Zero;
+        _reopenTarget = IntPtr.Zero;
+        _reopenTargetClass = IntPtr.Zero;
+        _originalReopen = null;
         _installed = false;
         _restore = null;
     }
@@ -95,8 +172,20 @@ internal static class MacDockActivation
         SendPost(center, Selector("postNotificationName:object:"), ToNSString(BecameActiveNotification), IntPtr.Zero);
     }
 
-    /// <summary>The callback. AppKit posts on the main run loop, which is Avalonia's UI thread, so the restore is
-    /// called directly: a dispatcher hop would only put the window up after whatever the click was meant to show.
+    /// <summary>Sends the reopen event to the application delegate, which is what a Dock click does. The self-check
+    /// cannot click the icon, so it sends the message the click would send: what that proves is everything that can
+    /// silently be wrong — that the delegate really wears the subclass, that the override really runs, that the
+    /// original implementation is still consulted, and that the answer says "handled".</summary>
+    internal static byte PressReopenForCheck()
+    {
+        if (_reopenTarget == IntPtr.Zero) return 0;
+        var app = Send0(objc_getClass("NSApplication"), Selector("sharedApplication"));
+        return SendReopen(_reopenTarget, Selector("applicationShouldHandleReopen:hasVisibleWindows:"), app, 0);
+    }
+
+    /// <summary>The callback. AppKit posts and sends these on the main run loop, which is Avalonia's UI thread, so the
+    /// restore is called directly: a dispatcher hop would only put the window up after whatever the click was meant
+    /// to show. Both signals land here, and the restore is idempotent — a Dock click from another app produces both.
     /// </summary>
     private static void OnActivated(IntPtr self, IntPtr selector, IntPtr notification)
     {
@@ -104,6 +193,18 @@ internal static class MacDockActivation
         _ = selector;
         _ = notification;
         _restore?.Invoke();
+    }
+
+    /// <summary>Answers the reopen event. Avalonia's own answer is asked first and thrown away — it is called for its
+    /// effects, not for its value, since the value this method must return is "yes, handled" and the window is back.
+    /// </summary>
+    private static byte OnReopen(IntPtr self, IntPtr selector, IntPtr sender, byte hasVisibleWindows)
+    {
+        _ = self;
+        _ = selector;
+        if (_originalReopen is { } original) _ = original(self, selector, sender, hasVisibleWindows);
+        _restore?.Invoke();
+        return 1;
     }
 
     private static IntPtr ToNSString(string value)
@@ -126,8 +227,19 @@ internal static class MacDockActivation
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void ActivatedHandler(IntPtr self, IntPtr selector, IntPtr notification);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte ReopenHandler(IntPtr self, IntPtr selector, IntPtr sender, byte hasVisibleWindows);
+
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_getClass")]
     private static extern IntPtr objc_getClass(string name);
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "object_getClass")]
+    private static extern IntPtr object_getClass(IntPtr instance);
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "object_setClass")]
+    private static extern IntPtr object_setClass(IntPtr instance, IntPtr type);
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "class_getInstanceMethod")]
+    private static extern IntPtr class_getInstanceMethod(IntPtr type, IntPtr selector);
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "method_getImplementation")]
+    private static extern IntPtr method_getImplementation(IntPtr method);
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "sel_registerName")]
     private static extern IntPtr sel_registerName(string name);
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_allocateClassPair")]
@@ -147,4 +259,6 @@ internal static class MacDockActivation
         IntPtr receiver, IntPtr selector, IntPtr observer, IntPtr method, IntPtr name, IntPtr value);
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
     private static extern void SendPost(IntPtr receiver, IntPtr selector, IntPtr name, IntPtr value);
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+    private static extern byte SendReopen(IntPtr receiver, IntPtr selector, IntPtr sender, byte hasVisibleWindows);
 }
