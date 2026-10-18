@@ -18,10 +18,7 @@ namespace AxmolHub;
 /// plain text. That last pair is what carries the awkward rules — a suppressed <c>file_write</c> result, a
 /// thinking row, a call surface that keeps its prose, the eager-Markdown window.</para>
 ///
-/// <para>What it does <b>not</b> compare yet: plan cards, because a plan turn without a plan document draws no card
-/// at all — covering it needs a fixture with a real plan body; the conversation-wide tool-name lookup (only the
-/// piece-local pairing is pinned today); row identity rather than row kind; and the incremental path, which does not
-/// exist yet.</para>
+/// <para>Occurrence identity is covered separately. Incremental projection updates do not exist yet.</para>
 /// </summary>
 public partial class ShellCheckWindow
 {
@@ -33,6 +30,7 @@ public partial class ShellCheckWindow
         var before = chat.ActiveConversation?.Id;
         var cases = new ProjectionCase[]
         {
+            new("plan", conversation => conversation.Messages.Add(ChatTurn.User("制定计划"))),
             new("prose", conversation =>
             {
                 conversation.Messages.Add(ChatTurn.User("问题"));
@@ -109,10 +107,14 @@ public partial class ShellCheckWindow
             try
             {
                 item.Build(session);
+                if (item.Label == "plan") chat.SeedPlanReplyForCheck(session.Id, "## Implementation plan\n\n1. Inspect.\n2. Fix.\n3. Verify.");
                 chat.OpenConversation(session.Id);
                 panel.Reload();
                 var snapshot = TranscriptProjection.Build(session, panel.ShowThinkingForCheck,
                     ChatPanel.EagerMarkdownLimitForCheck);
+                var names = TranscriptProjection.CallNames(session);
+                if (item.Label == "duplicate-call-ids")
+                    Check(names["dup"] == "run_command", "全局工具名查找保留首个调用，与段内末次配对独立");
                 var painted = panel.PaintedStructureForCheck.ToArray();
                 Check(snapshot.VisibleTurns <= ChatPanel.FirstPaintTurnsForCheck,
                     $"影子比较的夹具「{item.Label}」小于一屏，画的流才等于整份转录");

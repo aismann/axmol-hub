@@ -15,6 +15,36 @@ namespace AxmolHub;
 /// keep by doing the work proportionally, so a stopwatch would be measuring the same thing less reliably.</para></summary>
 public partial class ShellCheckWindow
 {
+    private void CheckRetainedContext(MainWindow shell)
+    {
+        var chat = shell.Chat;
+        var before = chat.ActiveConversation?.Id;
+        var session = chat.StartConversation();
+        try
+        {
+            for (var i = 0; i < 40; i++)
+                session.Messages.Add(ChatTurn.Assistant(new string('x', 100_000)));
+            session.LastInputTokens = 100;
+            session.LastUsageAt = System.DateTimeOffset.MaxValue;
+            var usage = chat.TranscriptUsageForCheck(session.Id);
+            var reading = chat.CompactionReadingForCheck(session.Id);
+            Check(usage.DroppedTurns > 0 && usage.Used == 100
+                  && ContextCompaction.ShouldCompact(reading.Used, reading.Room),
+                "历史已被裁剪时，即使最近实测输入很小也触发压缩，避免滑动前缀反复损失缓存");
+            session.Messages.Clear();
+            session.Messages.Add(ChatTurn.User("short"));
+            session.LastInputTokens = reading.Room;
+            var cleared = chat.CompactionReadingForCheck(session.Id);
+            Check(!ContextCompaction.ShouldCompact(cleared.Used, cleared.Room),
+                "本地清理后的压缩判断立即下降，不重复采用清理前的实测用量");
+        }
+        finally
+        {
+            chat.DeleteConversation(session.Id);
+            if (before is not null) chat.OpenConversation(before);
+        }
+    }
+
     /// <summary>
     /// Three claims about one twenty-answer session: it opens with a bounded number of Markdown documents, the
     /// plain rows near the reader are promoted once the dispatcher runs, and leaving it and coming back
@@ -158,11 +188,13 @@ public partial class ShellCheckWindow
             + $"{panel.PaintedTurnCountForCheck} 条，头上那行{(panel.HasLoadEarlierRowForCheck ? "还在" : "没了")}");
 
         chat.DeleteConversation(windowed.Id);
+        CheckRetainedContext(shell);
         CheckProjectionIdentity(shell, panel);
         CheckTranscriptProjection(shell, panel);
         CheckSessionOpenMeasurements(shell, panel, longSession.Id, other.Id);
         // Last, and opt-in: the benchmark switches sessions hundreds of times, and the assertions above read the
         // view's own position and promotion state.
+        CheckRequestStability(shell, panel);
         RunTranscriptBenchmark(shell, panel);
         chat.DeleteConversation(other.Id);
         chat.DeleteConversation(longSession.Id);

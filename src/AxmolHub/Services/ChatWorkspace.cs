@@ -390,6 +390,10 @@ public sealed class ChatWorkspace : IDisposable
                                declaredTools: request.Value.Tools,
                                modelName: request.Value.ModelName,
                                maxOutputTokens: request.Value.MaxOutputTokens,
+                               onUsage: report => Audit(conversationId,
+                                   $"Compaction usage: model={request.Value.ModelName} input={report.SummedInputTokens} "
+                                   + $"cached={report.SummedCachedInputTokens} output={report.OutputTokens} "
+                                   + $"reasoning={report.ReasoningTokens} requests={report.Requests}"),
                                cancellationToken: cancellationToken).ConfigureAwait(false))
                 summary.Append(chunk);
 
@@ -1141,6 +1145,8 @@ public sealed class ChatWorkspace : IDisposable
             OutputReserve = window.OutputReserve,
             Used = used,
             Estimated = estimated,
+            RetainedEstimate = history.Sum(ContextTrimmer.EstimateTokens)
+                + ContextTrimmer.EstimateTokens(prompt.SystemPrompt) + schema,
             Free = Math.Max(0, window.ConversationRoom - used),
             MeasuredInputTokens = measurement,
             DroppedTurns = Math.Max(0, history.Count(turn => turn.Role != ChatRoles.System) - kept),
@@ -1294,10 +1300,13 @@ public sealed class ChatWorkspace : IDisposable
     /// room the model actually has for it — both read on the UI thread, because both belong to the session.</summary>
     private (int Used, int Room) CompactionReading(string conversationId)
     {
-        // Both numbers come off the one reading, so the trigger cannot act on a room the meter is not showing —
-        // a second window computation here is a second opinion, and the screen would be the one out of date.
+        // Share the meter's resolved room, but measure the retained context before the trimmer drops anything.
         var usage = EstimateTranscript(conversationId);
-        return (usage.Used, usage.Room);
+        // A measured input describes the already-trimmed request, not the history still retained for replay.
+        // Using it here can keep compaction permanently below its trigger while Trim moves the prefix on
+        // every send, invalidating the provider's prefix cache. The retained estimate also falls immediately
+        // after clearing/summarizing; the last wire measurement cannot observe either local change.
+        return (usage.RetainedEstimate, usage.Room);
     }
 
     /// <summary>
@@ -1363,7 +1372,9 @@ public sealed class ChatWorkspace : IDisposable
                              + "session above target";
                     opened.ContextCompactionBlocked = true;
                 }
-                else if (ContextCompaction.IsHardStopped(used, room))
+                // A successful early summary may still leave a large newest batch. Progress is not proof
+                // of an unshrinkable floor: subsequent results can make that batch old enough to reclaim.
+                else if (!changed && ContextCompaction.IsHardStopped(used, room))
                 {
                     reason = $"the conversation is past the {ContextCompaction.HardStopRatio:P0} point where no "
                              + "tier can help";
@@ -3393,6 +3404,7 @@ public sealed class ChatWorkspace : IDisposable
     /// <summary>What the pump measures between segments. Exposed so a check can tell "compaction did not run"
     /// from "the transcript was never over the threshold" — the two look identical from outside.</summary>
     internal ContextUsage TranscriptUsageForCheck(string conversationId) => EstimateTranscript(conversationId);
+    internal (int Used, int Room) CompactionReadingForCheck(string conversationId) => CompactionReading(conversationId);
 
     /// <summary>Appends one turn to a session through the real write path. For the self-check only: a session
     /// earns its place in the history list with its first message, so a check that needs a long list has to
@@ -4905,14 +4917,29 @@ public sealed class ChatWorkspace : IDisposable
         var noticeDanger = false;
         string? detail = null;
         var compacted = false;
+        var prepareSegment = true;
         try
         {
             while (true)
             {
+                // Compact before the first request too: a loaded long session must not pay for a sliding
+                // prefix once before the post-segment check gets a chance to run.
+                if (prepareSegment && !run.ContextYieldSuppressed)
+                    compacted |= await CompactTiersAsync(run, "Auto compaction", forced: false).ConfigureAwait(false);
+                prepareSegment = false;
                 (result, noticeKey, noticeDanger, detail) = await StreamSegmentAsync(run).ConfigureAwait(false);
                 if (result == RunResult.Parked) return;
+                if (result == RunResult.ContextBoundary)
+                {
+                    var changed = await CompactIfNeededAsync(run).ConfigureAwait(false);
+                    compacted |= changed;
+                    run.ContextYieldSuppressed = !changed;
+                    continue;
+                }
                 // Between segments is the only point in a run with no stream open, so it is where a transcript
                 // that has outgrown the window gets compacted before the next request is built from it.
+                // Even if an early handoff could not help, later results may now be old enough to reclaim.
+                // Suppression bounds mid-loop retries; it must not suppress the existing end-of-segment pass.
                 compacted |= await CompactIfNeededAsync(run).ConfigureAwait(false);
                 if (!run.TryTakeSteer(out var steerText, out var steerContext, out var steerPictures)) break;
                 if (await AppendSteerTurnAsync(run, steerText, steerContext, steerPictures).ConfigureAwait(false) is null)
@@ -4920,6 +4947,7 @@ public sealed class ChatWorkspace : IDisposable
                     result = RunResult.Cancelled;
                     break;
                 }
+                prepareSegment = true;
             }
         }
         catch (Exception ex)
@@ -5079,6 +5107,11 @@ public sealed class ChatWorkspace : IDisposable
             // The call above put its own reply on the record; this segment's finally must not write it twice.
             replyRecorded = true;
             return retry;
+        }
+        catch (ToolLoopContextBoundaryException)
+        {
+            Audit(run.ConversationId, "Tool-loop context boundary: compacting before the next model request");
+            return (RunResult.ContextBoundary, null, false, null);
         }
         catch (Exception ex)
         {
@@ -5495,6 +5528,8 @@ public sealed class ChatWorkspace : IDisposable
         // The call ids rather than a count: a bracket is now also the clock a running command is measured on, so
         // closing one has to name the call it belongs to — a counter cannot say which of the batch was abandoned.
         var brackets = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        long loggedInput = 0, loggedCached = 0;
+        var loggedRequests = 0;
         return pipeline.SendAsync(
             request.Provider,
             request.History,
@@ -5627,6 +5662,15 @@ public sealed class ChatWorkspace : IDisposable
                 // Banked on the run first: the run is what outlives this stream call and is the only place the
                 // whole send — every segment, every round of the tool loop — adds up. The session reading below
                 // stays a last-request snapshot on purpose, because the window meter wants exactly that.
+                if (report.Requests > loggedRequests)
+                {
+                    Audit(run.ConversationId, $"Model usage: model={request.ModelName} request={report.Requests} "
+                        + $"input={report.SummedInputTokens - loggedInput} cached={report.SummedCachedInputTokens - loggedCached} "
+                        + $"outputTotal={report.OutputTokens} reasoningTotal={report.ReasoningTokens}");
+                    loggedRequests = report.Requests;
+                    loggedInput = report.SummedInputTokens;
+                    loggedCached = report.SummedCachedInputTokens;
+                }
                 run.NoteUsage(report);
                 NoteContextUsage(run.ConversationId, request.ModelName, report);
             },
@@ -5659,6 +5703,18 @@ public sealed class ChatWorkspace : IDisposable
                     ? ChatPipeline.ToChatMessages([turn], request.Images).FirstOrDefault()
                     : null;
             },
+            yieldForCompaction: !run.ContextYieldSuppressed,
+            canYieldForCompaction: () => ReadOnUiAsync(() =>
+            {
+                var conversation = _sessions.Peek(run.ConversationId);
+                if (conversation is null || conversation.ContextCompactionBlocked
+                    || conversation.Messages.Any(turn => turn.ApprovalState == ChatApprovalStates.Pending)) return false;
+                // A new run may not yet have any old prefix: declining an early handoff is not a failed
+                // compaction. Wait until a summary or an older result can actually free space.
+                return CanCompressContext(run.ConversationId)
+                    || ContextElider.ReclaimableTokens(conversation.Messages,
+                        ContextElider.Boundary(conversation.Messages)) > 0;
+            }),
             cancellationToken: run.Token);
     }
 

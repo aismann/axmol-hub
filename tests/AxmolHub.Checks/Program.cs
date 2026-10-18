@@ -3271,6 +3271,39 @@ if (args.Contains("--check-ai-context"))
             [new FunctionCallContent($"call-{index}", "read_file", new Dictionary<string, object?> { ["path"] = $"f{index}.cpp" })]));
         loopMessages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent($"call-{index}", new string('x', 4000))]));
     }
+    // A complete batch hands control back before a request can churn the old prefix. An owner that cannot
+    // compact may resume with the existing finite elision fallback; an initial request never yields forever.
+    var boundaryClient = new FakeChatClient(["ok"]);
+    var boundaryGuard = new ToolLoopContextGuard(boundaryClient, 1200) { YieldForCompaction = true };
+    await foreach (var _ in boundaryGuard.GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "short")])) { }
+    var firstSent = boundaryClient.LastMessages;
+    var yielded = false;
+    try { await foreach (var _ in boundaryGuard.GetStreamingResponseAsync(loopMessages)) { } }
+    catch (ToolLoopContextBoundaryException) { yielded = true; }
+    if (!yielded || !ReferenceEquals(firstSent, boundaryClient.LastMessages))
+        throw new Exception("A full tool boundary sent a prefix-changing request instead of yielding first.");
+    var youngClient = new FakeChatClient(["ok"]);
+    var youngGuard = new ToolLoopContextGuard(youngClient, 1200)
+        { YieldForCompaction = true, CanYieldForCompaction = () => Task.FromResult(false) };
+    await foreach (var _ in youngGuard.GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "short")])) { }
+    await foreach (var _ in youngGuard.GetStreamingResponseAsync(loopMessages)) { }
+    if (youngClient.LastMessages?.Count != loopMessages.Count)
+        throw new Exception("A boundary with no reclaimable history failed instead of allowing progress.");
+    var fallbackClient = new FakeChatClient(["ok"]);
+    var fallbackGuard = new ToolLoopContextGuard(fallbackClient, 1200) { YieldForCompaction = true };
+    await foreach (var _ in fallbackGuard.GetStreamingResponseAsync(loopMessages)) { }
+    if (fallbackClient.LastMessages is null) throw new Exception("An oversized first request could never resume.");
+    using (var cancelledBoundary = new CancellationTokenSource())
+    {
+        cancelledBoundary.Cancel();
+        var stopped = false;
+        try { await foreach (var _ in boundaryGuard.GetStreamingResponseAsync(loopMessages,
+            cancellationToken: cancelledBoundary.Token)) { } }
+        catch (OperationCanceledException) { stopped = true; }
+        if (!stopped) throw new Exception("Compaction masked a cancelled run.");
+    }
+    Console.WriteLine("PASS: complete tool batches yield before prefix churn, oversized initial requests have a finite fallback, and cancellation wins.");
+
     var elided = ToolLoopContextGuard.Elide(loopMessages, 1200);
     if (elided.Count != loopMessages.Count) throw new Exception("Elision removed messages instead of shrinking them.");
     if (!elided.SelectMany(message => message.Contents).OfType<FunctionCallContent>().Select(call => call.CallId)

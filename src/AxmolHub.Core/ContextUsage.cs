@@ -170,6 +170,10 @@ public sealed record ContextUsage
     /// character rule was, and the reason the window itself got corrected.</summary>
     public required int Estimated { get; init; }
 
+    /// <summary>All retained request context before sliding-window trimming. Compaction uses this rather than
+    /// a smaller, already-trimmed wire measurement, so reaching the window cannot silently move the prefix forever.</summary>
+    public int RetainedEstimate { get; init; }
+
     /// <summary>Room left for the conversation, never below zero. Zero with <see cref="Used"/> above
     /// <see cref="Room"/> is an overflowing session, which is a different fact from a full one and is the reason
     /// the meter no longer clamps its own reading.</summary>

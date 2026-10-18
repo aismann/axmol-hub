@@ -205,7 +205,8 @@ public partial class ChatPanel : UserControl
     /// the call it answers, which is an insert whenever other calls from the same response ran first. That shift
     /// used to paint the shifted tail twice and skip the inserted row entirely. The slot's own identity is enough:
     /// an insert anywhere before it moves a different turn into it.</summary>
-    private string _renderedTailKey = "";
+    private long _renderedTailKey;
+    private List<long> _renderedKeys = [];
 
     /// <summary>The activity group whose run is still going, when one is: the machine turns that arrive next
     /// belong to it, so it grows where it stands instead of the flow being rebuilt around it. See
@@ -232,10 +233,14 @@ public partial class ChatPanel : UserControl
     /// for turns from here to the end, which makes this the one number that says where the window starts.</summary>
     private int _paintedFrom;
 
-    /// <summary>Occurrence identity for the conversation on the page. Nothing consumes the keys yet: they are minted
-    /// here because the next step — fold memory and a virtualised view keyed by row instead of by visible index —
-    /// needs an identity that survives a `with` rewrite, and this is the one place that knows it.</summary>
-    private readonly TranscriptProjectionState _projection = new();
+    // Weak ownership follows the registry's live Conversation objects. Switching away does not reset identities;
+    // deleting or evicting a conversation does not leave a second strong copy of its history in this panel.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Conversation, TranscriptProjectionState>
+        _projectionStates = new();
+    private TranscriptProjectionState? _projection;
+
+    private string RowKey(int sourceIndex, string facet)
+        => facet + ":" + _projection!.KeyAt(sourceIndex).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>Set by <see cref="ExpandEarlierTurns"/> to ask for the next paint to lay the flow down again from
     /// a wider window. A flag rather than a sentinel in the fields above, because the teardown it requests must
@@ -261,6 +266,7 @@ public partial class ChatPanel : UserControl
         public required string ConversationId { get; init; }
         public List<Control> Rows { get; } = [];
         public List<ChatTurn> Turns { get; } = [];
+        public List<long> Keys { get; } = [];
         public List<PendingMarkdownRow> PendingMarkdown { get; } = [];
         public ActivityGroupView? OpenGroup { get; set; }
         public string ApprovalStamp { get; set; } = "";
@@ -279,8 +285,7 @@ public partial class ChatPanel : UserControl
         public required Panel Parent { get; init; }
         public required Control Row { get; init; }
         public required string ConversationId { get; init; }
-        public required int Index { get; init; }
-        public required ChatTurn Turn { get; init; }
+        public required long TurnKey { get; init; }
         public string? ToolName { get; init; }
         public bool IsLast { get; init; }
         public bool InGroup { get; init; }
@@ -325,9 +330,14 @@ public partial class ChatPanel : UserControl
         _parkedTranscripts.RemoveAll(parked => !alive.Contains(parked.ConversationId));
     }
 
-    private static string SlotKey(ChatTurn turn)
-        => turn.At.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture)
-           + ":" + turn.Role + ":" + (turn.ToolCallId ?? "") + ":" + turn.Text.Length;
+    private bool RenderedPrefixMatches(List<(int Index, ChatTurn Turn, string? ToolName)> visible)
+    {
+        if (_renderedKeys.Count != _renderedCount) return false;
+        for (var i = 0; i < _renderedCount; i++)
+            if (_renderedKeys[i] != _projection!.KeyAt(visible[i].Index)
+                || !_renderedTurns[i].Equals(visible[i].Turn)) return false;
+        return true;
+    }
 
     private static string ApprovalStamp(Conversation? conversation)
     {
@@ -2295,6 +2305,17 @@ public partial class ChatPanel : UserControl
         if (_chat is null) return;
         PruneFoldMemory();
         var conversation = _chat.ActiveConversation;
+        _projection = conversation is null ? null : _projectionStates.GetValue(conversation, _ => new());
+        var snapshot = conversation is null ? null
+            : _projection!.Build(conversation, _chat.ShowThinking, EagerMarkdownLimit);
+        if (conversation is not null)
+        {
+            foreach (var memory in new[] { _expandedGroups, _expandedRows })
+                if (memory.TryGetValue(conversation.Id, out var keys))
+                    keys.RemoveWhere(key => !long.TryParse(key.AsSpan(key.IndexOf(':') + 1),
+                        System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
+                        out var occurrence) || !_projection!.TryResolve(occurrence, out _));
+        }
         var run = conversation is null ? null : _chat.RunFor(conversation.Id);
 
         // The live bubble is not a stored turn. It comes off the flow before the stored rows are laid down and
@@ -2374,8 +2395,9 @@ public partial class ChatPanel : UserControl
             _renderedConversationId = returning.Id;
             _renderedCount = visible.Count;
             _paintedFrom = parked.PaintedFrom;
-            _renderedTailKey = SlotKey(visible[^1].Turn);
+            _renderedTailKey = _projection!.KeyAt(visible[^1].Index);
             _renderedTurns = parked.Turns;
+            _renderedKeys = parked.Keys;
             _pendingMarkdownRows = parked.PendingMarkdown;
             _openGroup = parked.OpenGroup;
             _parkedTranscripts.Remove(parked);
@@ -2404,8 +2426,9 @@ public partial class ChatPanel : UserControl
             _renderedConversationId = conversation?.Id;
             _renderedCount = 0;
             _paintedFrom = 0;
-            _renderedTailKey = "";
+            _renderedTailKey = 0;
             _renderedTurns = [];
+            _renderedKeys = [];
             _pendingMarkdownRows = [];
             _openGroup = null;
             EmptyState.IsVisible = run is not { IsStreaming: true };
@@ -2425,7 +2448,8 @@ public partial class ChatPanel : UserControl
         var aDifferentSession = _renderedConversationId != conversation!.Id;
         var historyShrank = visible.Count < _renderedCount;
         if (aDifferentSession || historyShrank || approvalChanged || showThinkingChanged || _paintFromScratch
-            || (_renderedCount > 0 && SlotKey(visible[_renderedCount - 1].Turn) != _renderedTailKey))
+            || (_renderedCount > 0 && _projection!.KeyAt(visible[_renderedCount - 1].Index) != _renderedTailKey
+                || !RenderedPrefixMatches(visible)))
         {
             // The session being left keeps its rows, and this is the call that makes coming back cheap: the next
             // visit to it is usually the very next thing the person does. Only on a switch — a teardown for a
@@ -2438,6 +2462,7 @@ public partial class ChatPanel : UserControl
             _renderedCount = 0;
             _paintedFrom = 0;
             _renderedTurns = [];
+            _renderedKeys = [];
             // The records die with the rows they pointed at: everything below lays the transcript down again,
             // and a record left over from the flow that was just thrown away would name a control nobody can
             // reach, which is a promotion that silently paints into a detached panel.
@@ -2454,7 +2479,7 @@ public partial class ChatPanel : UserControl
         // The transcript as rows, computed once and then painted. The loop below no longer decides where a piece
         // begins or ends: it reads that from the model, which is the point of having one — the boundaries are one
         // answer computed in one place instead of a predicate soup evaluated while drawing.
-        var snapshot = _projection.Build(conversation, _chat.ShowThinking, EagerMarkdownLimit);
+        // The snapshot was reconciled before cache lookup so parked rows and deferred work see current keys.
         // The window. A fresh flow starts at a *piece boundary* near the newest FirstPaintTurns turns, never inside
         // one: a cut between a call and its result paints a result whose call is above it. Only a fresh flow is
         // windowed — an append is a row at the end, and taking rows away to fit a window would be a teardown
@@ -2462,9 +2487,9 @@ public partial class ChatPanel : UserControl
         if (_renderedCount == 0 && visible.Count > _paintWindow)
         {
             var first = 0;
-            while (first < snapshot.Entries.Count
-                   && visible.Count - snapshot.Entries[first].FirstVisible > _paintWindow) first++;
-            _paintedFrom = first < snapshot.Entries.Count ? snapshot.Entries[first].FirstVisible : visible.Count;
+            while (first < snapshot!.Entries.Count
+                   && visible.Count - snapshot!.Entries[first].FirstVisible > _paintWindow) first++;
+            _paintedFrom = first < snapshot!.Entries.Count ? snapshot!.Entries[first].FirstVisible : visible.Count;
             _renderedCount = _paintedFrom;
             MessageFlow.Children.Add(BuildLoadEarlierRow(conversation.Id, _paintedFrom));
         }
@@ -2473,7 +2498,7 @@ public partial class ChatPanel : UserControl
             _paintedFrom = 0;
         }
 
-        foreach (var entry in snapshot.Entries)
+        foreach (var entry in snapshot!.Entries)
         {
             if (entry.FirstVisible >= visible.Count) break;
             switch (entry)
@@ -2536,11 +2561,12 @@ public partial class ChatPanel : UserControl
         // Where the painted prefix ends, in the conversation's own terms. The next render compares against this
         // rather than against the count, which is what lets a result filed beside its call — an insert, not an
         // append — rebuild the flow instead of drawing the shifted tail twice.
-        _renderedTailKey = SlotKey(visible[^1].Turn);
+        _renderedTailKey = _projection!.KeyAt(visible[^1].Index);
 
         // The turns these rows stand for, held by reference so that leaving the session keeps a way to ask
         // whether they still say what was drawn (see <see cref="RenderedTranscript"/>).
         _renderedTurns = [.. visible.Select(slot => slot.Turn)];
+        _renderedKeys = [.. visible.Select(slot => _projection!.KeyAt(slot.Index))];
 
         EmptyState.IsVisible = false;
         SyncRunningCommandRow(conversation.Id, run);
@@ -2614,9 +2640,8 @@ public partial class ChatPanel : UserControl
     {
         var parked = _parkedTranscripts.Find(candidate => candidate.ConversationId == conversationId);
         if (parked is null) return null;
-        // A parked transcript is rows over turns: everything inside it points back into the conversation by
-        // index, so it is reusable exactly while it still describes the same turns in the same order, wearing
-        // the same decisions, under the same answer to "is the thinking drawn".
+        // Parked controls are reusable only when occurrence keys and rendered values still agree in order,
+        // under the same decisions and thinking visibility. A disk reload must never inherit these controls.
         //
         // Identity first, value second, and the second half is not politeness: opening a session stamps
         // `ApprovalSeen` onto every pending card with `turn with { … }`, so a turn whose *content* is unchanged
@@ -2630,7 +2655,8 @@ public partial class ChatPanel : UserControl
         {
             var drawn = parked.Turns[i];
             var now = visible[i].Turn;
-            same = ReferenceEquals(drawn, now) || drawn.Equals(now);
+            same = parked.Keys[i] == _projection!.KeyAt(visible[i].Index)
+                   && (ReferenceEquals(drawn, now) || drawn.Equals(now));
         }
 
         if (same) return parked;
@@ -2670,6 +2696,7 @@ public partial class ChatPanel : UserControl
         };
         parked.Rows.AddRange(MessageFlow.Children);
         parked.Turns.AddRange(_renderedTurns);
+        parked.Keys.AddRange(_renderedKeys);
         parked.PendingMarkdown.AddRange(_pendingMarkdownRows);
         _parkedTranscripts.Insert(0, parked);
         while (_parkedTranscripts.Count > ParkedTranscriptDepth)
@@ -2719,7 +2746,9 @@ public partial class ChatPanel : UserControl
             // The row is gone: the piece it lived in was drawn again, or the flow was rebuilt around it. The
             // record goes with the control it named, which is what keeps this list from filling up with rows
             // nobody can reach.
-            if (position < 0)
+            if (position < 0 || _chat.ActiveConversation is not { } current
+                || current.Id != pending.ConversationId || _projection is null
+                || !_projection.TryResolve(pending.TurnKey, out var sourceIndex))
             {
                 _pendingMarkdownRows.RemoveAt(i);
                 continue;
@@ -2738,8 +2767,8 @@ public partial class ChatPanel : UserControl
             // way of being drawn, and a promotion that assembled a second one would be a second thing to keep
             // in step with the first.
             var staging = new StackPanel { Spacing = 8 };
-            AppendRenderedTurn(pending.ConversationId, pending.Index, pending.Turn, pending.ToolName,
-                pending.IsLast, markdown: true, target: staging, inGroup: pending.InGroup);
+            AppendRenderedTurn(pending.ConversationId, sourceIndex, current.Messages[sourceIndex], pending.ToolName,
+                sourceIndex == current.Messages.Count - 1, markdown: true, target: staging, inGroup: pending.InGroup);
             if (staging.Children.Count != 1) continue;
             var promotedRow = staging.Children[0];
             staging.Children.RemoveAt(0);
@@ -2865,8 +2894,7 @@ public partial class ChatPanel : UserControl
                     Parent = target,
                     Row = row,
                     ConversationId = conversationId,
-                    Index = index,
-                    Turn = turn,
+                    TurnKey = _projection!.KeyAt(index),
                     ToolName = toolName,
                     IsLast = isLast,
                     InGroup = inGroup,
@@ -2879,7 +2907,7 @@ public partial class ChatPanel : UserControl
         // the panel it renders into. Laid down before that call it would not sit under the answer, it would be
         // gone with everything else the panel held.
         if (!fromUser && !isPlanTurn && turn.Role != ChatRoles.Tool
-            && BuildThoughtRowForTurn(conversationId, turn, inGroup) is { } reasoning)
+            && BuildThoughtRowForTurn(conversationId, index, turn, inGroup) is { } reasoning)
             body.Children.Insert(0, reasoning);
 
         // The run's total, said once on the answer it belongs to. Always visible rather than hover-revealed: the
@@ -3041,7 +3069,7 @@ public partial class ChatPanel : UserControl
         // The turn a run starts on is the group's identity: it does not move while the run grows, and a rebuild
         // slices the same run out of the same turn — so keying the fold to it is what lets an opened head come
         // back open.
-        var foldKey = SlotKey(turns[0].Turn);
+        var foldKey = RowKey(turns[0].Index, "group");
         // Driven off IsCheckedChanged rather than Click: a real click flips IsChecked (which fires this), and so
         // does a check that sets IsChecked directly — a raised Click never reaches a ToggleButton's OnClick, so
         // wiring the fold to Click would leave it untestable and half-broken. Wired before the remembered state is
@@ -3119,7 +3147,7 @@ public partial class ChatPanel : UserControl
                 if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 } || IsNarratedCall(turn))
                     AppendRenderedTurn(conversationId, index, turn, toolName, isLast: index == lastIndex,
                         markdown: index >= visibleCount - EagerMarkdownLimit, target: inner, inGroup: true);
-                else if (BuildThoughtRowForTurn(conversationId, turn, inGroup: true) is { } silentThought)
+                else if (BuildThoughtRowForTurn(conversationId, index, turn, inGroup: true) is { } silentThought)
                     // A silent call renders no row of its own: its action row is drawn from the result below, so
                     // emitting one here would only be a gap. Thinking is the exception — it is content, and until
                     // now it was filed on a turn that painted nothing at all, which left a whole round of
@@ -3134,7 +3162,7 @@ public partial class ChatPanel : UserControl
             {
                 var call = calls.TryGetValue(answered, out var paired) ? paired : null;
                 if (call?.ToolName == ChatChanges.FileWriteTool) continue;
-                var exchange = BuildActivityRowShell(conversationId, call, turn);
+                var exchange = BuildActivityRowShell(conversationId, index, call, turn);
                 // The pairing this row was drawn from, kept as data: a result's name has two possible sources
                 // (the conversation-wide first call, the piece-local last call) and only the row knows which one
                 // it used. The shadow comparison reads it instead of guessing from a localised label.
@@ -3146,7 +3174,7 @@ public partial class ChatPanel : UserControl
             // A thinking-only turn <i>is</i> the row, not a row holding a fold. Routing it through the ordinary
             // turn renderer painted an empty prose block and then tucked the thinking inside a second collapsed
             // toggle — two clicks to reach one thing, beneath a group head that had already said 已思考 once.
-            if (BuildThoughtRowForTurn(conversationId, turn, inGroup: true) is { } thoughtRow)
+            if (BuildThoughtRowForTurn(conversationId, index, turn, inGroup: true) is { } thoughtRow)
                 inner.Children.Add(thoughtRow);
         }
 
@@ -3390,13 +3418,13 @@ public partial class ChatPanel : UserControl
             : HubStrings.Get("ActivityRowThought");
 
     /// <summary>The stored form of the row: this turn's thinking, folded as the reader left it.</summary>
-    private Control? BuildThoughtRowForTurn(string conversationId, ChatTurn turn, bool inGroup)
+    private Control? BuildThoughtRowForTurn(string conversationId, int index, ChatTurn turn, bool inGroup)
     {
         if (!_chat.ShowThinking || turn.Reasoning is not { Length: > 0 } thought) return null;
 
-        // The turn's own slot is stable across the group's rebuilds, so a row somebody opened does not collapse
-        // under the next tool call. No suffix any more: one row per turn, so nothing else can claim this key.
-        var foldKey = SlotKey(turn);
+        // The thought facet belongs to this occurrence, so a rebuild or an inserted result cannot hand its
+        // fold state to the turn that happens to occupy the old source index.
+        var foldKey = RowKey(index, "thought");
         var row = BuildThoughtRow(
             ThoughtLabel(turn.ReasoningElapsed, inGroup),
             expanded => RememberFold(_expandedRows, conversationId, foldKey, expanded));
@@ -3410,14 +3438,27 @@ public partial class ChatPanel : UserControl
     /// detail panel that grows downward in place. That panel is the operation's only readable surface: a hover is
     /// not one, because a trackpad cannot reach it, a check cannot read it, and a session transcript the model was
     /// handed is far too long to fit in one anyway.</summary>
-    private Control BuildActivityRowShell(string conversationId, ChatTurn? call, ChatTurn result)
+    private Control BuildActivityRowShell(string conversationId, int index, ChatTurn? call, ChatTurn result)
     {
         var toggle = new ToggleButton { Classes = { "activity-row-toggle" }, Content = BuildActivityRow(call, result) };
 
         var detail = BuildActivityRowDetail(call, result);
-        // The call is this row's identity, and it is the one thing a rebuild cannot move: the group re-derives its
-        // rows from the transcript, so an opened exchange stays open through it.
-        var foldKey = result.ToolCallId ?? "";
+        // Each landed result owns its fold, including orphan results and repeated results with the same call id.
+        var foldKey = RowKey(index, "exchange");
+        // Transfer an opened live command to its first landed result, once. Other results own their own folds.
+        if (call is not null && _chat.ActiveConversation is { } conversation)
+        {
+            var callIndex = conversation.Messages.FindIndex(turn => ReferenceEquals(turn, call));
+            if (callIndex >= 0)
+            {
+                var runningKey = RowKey(callIndex, "command");
+                if (IsFoldOpen(_expandedRows, conversationId, runningKey))
+                {
+                    RememberFold(_expandedRows, conversationId, foldKey, true);
+                    RememberFold(_expandedRows, conversationId, runningKey, false);
+                }
+            }
+        }
 
         // The fold is driven off IsChecked, never Click: a raised Click does not flip a ToggleButton, so wiring
         // Click would leave this both untestable and half-broken — the same reason the group head is wired this way.
@@ -3448,7 +3489,7 @@ public partial class ChatPanel : UserControl
     /// the tier table allows: a command changes state, so a second one waits for the first.
     ///
     /// <para>Its panel is shut until somebody opens it, and the <c>_expandedRows</c> memory it reads and writes is
-    /// the same one the finished row uses, under the same key. That is not a shortcut: it is what makes the two
+    /// transferred to the first finished result's occurrence key. That is what makes the two
     /// tenses one surface — a person who opened the output while the build ran finds it open in the transcript
     /// afterwards, and a person who left it alone gets the same one line the row would have drawn anyway.</para>
     /// </summary>
@@ -3502,7 +3543,7 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>Drops the card. What the person chose about its panel needs no work here: that decision lives in the
-    /// fold memory the finished row reads, under the call id, so an output opened while the command printed is
+    /// fold memory transferred to the finished result, so an output opened while the command printed is
     /// already open in the transcript afterwards — and one left shut stays the one line it always was.</summary>
     private void ForgetRunningCommand()
     {
@@ -3659,10 +3700,11 @@ public partial class ChatPanel : UserControl
         };
 
         var callId = call.ToolCallId!;
+        var foldKey = RowKey(_chat.ActiveConversation!.Messages.FindIndex(turn => ReferenceEquals(turn, call)), "command");
         // Shut by default, like every other activity row: the head says what is running and where, and the output is
         // there for whoever wants it. Opening it is the person's call, not the card's — a build that pushed its log
         // under the conversation as soon as it started was the card deciding for them.
-        var expanded = IsFoldOpen(_expandedRows, conversationId, callId);
+        var expanded = IsFoldOpen(_expandedRows, conversationId, foldKey);
         detail.IsVisible = expanded;
         toggle.IsChecked = expanded;
         // Driven off IsChecked, never Click, exactly as the finished row is: a raised Click does not flip a
@@ -3671,8 +3713,8 @@ public partial class ChatPanel : UserControl
         {
             var open = toggle.IsChecked == true;
             detail.IsVisible = open;
-            // The finished row's own memory, under the same key: one decision covers both tenses of the exchange.
-            RememberFold(_expandedRows, conversationId, callId, open);
+            // The first landed result consumes this command occurrence's choice when its row is built.
+            RememberFold(_expandedRows, conversationId, foldKey, open);
         };
 
         var card = new RunningCommandRow
@@ -5795,6 +5837,9 @@ public partial class ChatPanel : UserControl
     /// conversation has nothing to say about them. Identity is the only safe filter — the command card
     /// deliberately wears the same classes as the finished row it becomes, so a class-based filter would silently
     /// drop a real row one day.</para></summary>
+    internal long[] ProjectionKeysForCheck => _chat.ActiveConversation is { } conversation && _projection is not null
+        ? Enumerable.Range(0, conversation.Messages.Count).Select(_projection.KeyAt).ToArray() : [];
+
     internal IReadOnlyList<string> PaintedStructureForCheck => MessageFlow.Children
         .Where(child => !ReferenceEquals(child, _live?.Row) && !ReferenceEquals(child, _runningCommand?.Shell))
         .Select(PaintedToken)
@@ -5812,8 +5857,8 @@ public partial class ChatPanel : UserControl
 
         if (child.Classes.Contains("message-row"))
         {
-            var plan = child.GetLogicalDescendants().OfType<Border>()
-                .Any(border => border.Classes.Contains("plan-card"));
+            var plan = child.GetLogicalDescendants().OfType<Button>()
+                .Any(button => button.Classes.Contains("plan-card"));
             var kind = plan ? "plan" : child.Classes.Contains("user-row") ? "user" : "assistant";
             return "M:" + kind + (HoldsMarkdown(child) ? ":md" : "");
         }

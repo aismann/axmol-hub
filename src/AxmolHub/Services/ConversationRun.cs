@@ -27,6 +27,7 @@ internal enum RunPhase
 internal enum RunResult
 {
     Completed,
+    ContextBoundary,
     Cancelled,
     TimedOut,
     Failed,
@@ -105,6 +106,8 @@ internal sealed class ConversationRun : IDisposable
     private int _paintQueued;
     private int _compactionRequested;
     private int _wakesUsed;
+    // A compaction that cannot help must not turn a boundary handoff into an endless retry loop.
+    internal bool ContextYieldSuppressed { get; set; }
     private int _spawnsUsed;
     private volatile bool _parked;
     private int _toolRunning;

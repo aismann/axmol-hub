@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 
 namespace AxmolHub.Core;
 
@@ -8,20 +10,22 @@ namespace AxmolHub.Core;
 ///
 /// <para>A turn is an immutable record, so the shell hands back a <b>different object</b> for the same occurrence
 /// all the time: stamping <c>ApprovalSeen</c>, deciding an approval, spending an undo copy are all
-/// <c>turn with { … }</c>. Keys are allocated here so a row can survive that — same content in the same slot is the
-/// same occurrence, whatever object it arrives as.</para>
+/// <c>turn with { … }</c>. Keys preserve unambiguous occurrences across those rewrites without assigning a
+/// replacement the identity of the old source slot.</para>
 ///
-/// <para>Scope is deliberate. Keys live as long as this object, are never persisted, and a conversation reloaded
-/// from disk starts again at 1: neither the session file nor a rendered control may depend on them.</para>
+/// <para>Keys are process-unique and never persisted. A disk reload gets fresh identities. Unannounced edits
+/// cannot be distinguished from replacement through the public Messages list: only unambiguous matches retain
+/// identity. Consumers must tolerate a fresh key rather than inherit another occurrence's state.</para>
 /// </summary>
 public sealed class TranscriptProjectionState
 {
-    /// <summary>Below this share of content matches a rebuild is read as a wholesale rewrite rather than an edit.</summary>
-    private const double MatchFloor = 0.5;
-
     private List<ChatTurn> _seen = [];
     private List<long> _keys = [];
-    private long _next = 1;
+    private static long _next;
+    private readonly Dictionary<long, int> _indices = new();
+
+    public long KeyAt(int sourceIndex) => _keys[sourceIndex];
+    public bool TryResolve(long key, out int sourceIndex) => _indices.TryGetValue(key, out sourceIndex);
 
     /// <summary>The conversation this state belongs to; a different one starts from scratch.</summary>
     public string ConversationId { get; private set; } = "";
@@ -43,76 +47,75 @@ public sealed class TranscriptProjectionState
     {
         _seen = [];
         _keys = [];
-        _next = 1;
+        _indices.Clear();
     }
 
-    /// <summary>Allocates or carries one key per stored turn, then remembers this list as the next comparison's
-    /// starting point. Linear and deliberately conservative: the shell's mutations are append,
-    /// insert-beside-a-call, replace and remove.</summary>
+    private readonly record struct Signature(string Role, string Text, string? CallId, DateTimeOffset At)
+    {
+        internal static Signature Of(ChatTurn turn) => new(turn.Role, turn.Text, turn.ToolCallId, turn.At);
+    }
+
+    /// <summary>Unchanged sequences retain even duplicate occurrences. After a structural change, first match
+    /// unique object references, then unique content signatures (ignoring approval/undo/elapsed fields). Ambiguous
+    /// duplicates and unknown replacements get fresh keys, never the key of the nearest slot.</summary>
     private long[] Reconcile(List<ChatTurn> messages)
     {
+        if (messages.Count == _seen.Count && messages.Where((turn, at) => !ReferenceEquals(turn, _seen[at])).Any() == false)
+            return _keys.ToArray();
+
         var keys = new long[messages.Count];
-        var old = 0;
-        var matched = 0;
-        for (var index = 0; index < messages.Count; index++)
+        // Initial opens and the common append path need no content dictionaries. In particular, do not hash
+        // every Markdown body merely because a streaming reply added one turn to a long transcript.
+        if (messages.Count >= _seen.Count
+            && !_seen.Where((turn, at) => !ReferenceEquals(turn, messages[at])).Any())
         {
-            if (old < _seen.Count && Same(_seen[old], messages[index]))
-            {
-                keys[index] = _keys[old];
-                old++;
-                matched++;
-                continue;
-            }
-
-            // A result filed *beside* its call: everything already known is still where it was, on the far side of
-            // the insertion, so the new turn gets a fresh key and the walk does not advance.
-            if (old < _seen.Count && index + 1 < messages.Count && Same(_seen[old], messages[index + 1]))
-            {
-                keys[index] = _next++;
-                continue;
-            }
-
-            // A removal in front of us: step over the occurrence that is gone, then carry on.
-            if (old + 1 < _seen.Count && Same(_seen[old + 1], messages[index]))
-            {
-                old++;
-                keys[index] = _keys[old];
-                old++;
-                matched++;
-                continue;
-            }
-
-            // Same slot, different content: that occurrence was replaced — an edit, a regenerate, a rename. It keeps
-            // its key, which is what lets a row be repainted rather than thrown away and re-made. Deliberately not
-            // counted as a match: a rewrite that changes everything must end in the reset below, not keep keys.
-            if (old < _seen.Count)
-            {
-                keys[index] = _keys[old];
-                old++;
-                continue;
-            }
-
-            keys[index] = _next++;
+            _keys.CopyTo(keys);
+            for (var at = _seen.Count; at < messages.Count; at++) keys[at] = Interlocked.Increment(ref _next);
+            Remember(messages, keys);
+            return keys;
+        }
+        var oldRefs = UniqueIndices<ChatTurn>(_seen, turn => turn, ReferenceEqualityComparer.Instance);
+        var newRefs = UniqueIndices<ChatTurn>(messages, turn => turn, ReferenceEqualityComparer.Instance);
+        var used = new HashSet<int>();
+        for (var at = 0; at < messages.Count; at++)
+        {
+            if (newRefs[messages[at]] < 0 || !oldRefs.TryGetValue(messages[at], out var prior) || prior < 0) continue;
+            keys[at] = _keys[prior];
+            used.Add(prior);
         }
 
-        if (_seen.Count > 0 && messages.Count > 0
-            && matched < (double)Math.Min(_seen.Count, messages.Count) * MatchFloor)
+        var oldSignatures = UniqueIndices(_seen, Signature.Of, EqualityComparer<Signature>.Default);
+        var newSignatures = UniqueIndices(messages, Signature.Of, EqualityComparer<Signature>.Default);
+        for (var at = 0; at < messages.Count; at++)
         {
-            for (var index = 0; index < keys.Length; index++) keys[index] = _next++;
+            if (keys[at] != 0) continue;
+            var signature = Signature.Of(messages[at]);
+            if (newSignatures[signature] >= 0 && oldSignatures.TryGetValue(signature, out var prior)
+                && prior >= 0 && used.Add(prior)) keys[at] = _keys[prior];
+            else keys[at] = Interlocked.Increment(ref _next);
         }
 
-        _seen = [.. messages];
-        _keys = [.. keys];
+        Remember(messages, keys);
         return keys;
     }
 
-    /// <summary>Same occurrence: the same object, or the same content. The fields the shell rewrites in place —
-    /// approvals, undo state, elapsed time — are deliberately not part of this test: a turn that was decided is
-    /// still the same turn.</summary>
-    private static bool Same(ChatTurn candidate, ChatTurn other)
-        => ReferenceEquals(candidate, other)
-           || (candidate.Role == other.Role
-               && candidate.Text == other.Text
-               && candidate.ToolCallId == other.ToolCallId
-               && candidate.At == other.At);
+    private void Remember(List<ChatTurn> messages, long[] keys)
+    {
+        _seen = [.. messages];
+        _keys = [.. keys];
+        _indices.Clear();
+        for (var at = 0; at < keys.Length; at++) _indices.Add(keys[at], at);
+    }
+
+    private static Dictionary<T, int> UniqueIndices<T>(List<ChatTurn> turns, Func<ChatTurn, T> select,
+        IEqualityComparer<T> comparer) where T : notnull
+    {
+        var result = new Dictionary<T, int>(comparer);
+        for (var at = 0; at < turns.Count; at++)
+        {
+            var key = select(turns[at]);
+            if (!result.TryAdd(key, at)) result[key] = -1;
+        }
+        return result;
+    }
 }

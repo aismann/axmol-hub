@@ -156,6 +156,8 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         // answer was going, and the loop is where it belongs: see ToolLoopContextGuard.PendingInterjection.
         Func<Task<ChatMessage?>>? pendingInterjection = null,
         int? maxOutputTokens = null,
+        bool yieldForCompaction = false,
+        Func<Task<bool>>? canYieldForCompaction = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // The tool declarations ride every request, and nothing used to price them: seventeen functions of
@@ -199,6 +201,8 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                 reasoning is null ? client : new ReasoningHarvestClient(client, reasoning), budget)
             {
                 PendingInterjection = pendingInterjection,
+                YieldForCompaction = yieldForCompaction,
+                CanYieldForCompaction = canYieldForCompaction,
             };
             IChatClient sending = guard;
             var functionClient = new FunctionInvokingChatClient(sending, null, null)

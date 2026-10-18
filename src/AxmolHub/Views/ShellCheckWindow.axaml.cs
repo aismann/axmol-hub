@@ -157,6 +157,16 @@ public partial class ShellCheckWindow : Window
         await CheckCjkFontNoticeAsync();
         CheckEveryXamlResourceKeyResolves();
         var shell = CheckShell(scratchRoot);
+        if (Environment.GetEnvironmentVariable("AXMOL_COMPACTION_CHECK_ONLY") == "1")
+        {
+            var panel = shell.OpenAssistant();
+            var provider = shell.Chat.AddProvider("Compaction fixture", "https://offline.invalid/v1", "check-model", null)!;
+            await CheckAutoCompactionAsync(shell, panel, provider.Id);
+            await CheckContextBoundaryAsync(shell, panel);
+            CheckRequestStability(shell, panel);
+            shell.Close();
+            return;
+        }
         await CheckInstallsPageAsync(scratchRoot, shell);
         await CheckSettingsPageAsync(scratchRoot, shell);
         CheckSettingsOverlay(shell);
@@ -2058,6 +2068,7 @@ public partial class ShellCheckWindow : Window
         await CheckScrollAsync(shell, panel);
         await CheckThumbDragAsync(shell, panel);
         CheckTranscriptCost(shell, panel);
+        await CheckContextBoundaryAsync(shell, panel);
         await CheckActivityOrchestrationAsync(shell, panel);
         await CheckToolFloodAsync(shell, panel);
         await CheckInspectorAndSteerAsync(shell, panel);
@@ -9757,7 +9768,10 @@ public partial class ShellCheckWindow : Window
         };
         try
         {
-            chat.ClientOverride = (_, _) => client;
+            // A summary may now happen between tool rounds, while the tool script still has calls left.
+            chat.ClientOverride = (_, id) => chat.IsCompressingContext(id)
+                ? new ScriptedChatClient(["Summary: continue reading the remaining requested files."])
+                : client;
             chat.SetWorkspaceRoot(session.Id, workspace);
             chat.OpenConversation(session.Id);
             chat.TryEnqueueSend(session.Id, "把大文件读五次", null, out var refusal);
@@ -9779,6 +9793,20 @@ public partial class ShellCheckWindow : Window
                 + (copy?.ContextSummaryThroughMessageCount ?? -1) + "，共 " + (copy?.Messages.Count ?? -1)
                 + " 条，占用 " + used + "/" + budget + " tokens，首个工具结果「"
                 + firstResult[..Math.Min(160, firstResult.Length)] + "」）");
+            var logged = System.IO.File.Exists(logFile) ? System.IO.File.ReadAllText(logFile) : "";
+            // Mid-run summarization can archive a prefix before those results are old enough for tier one.
+            // Seed the retained transcript as an uncompressed history for the second run, so persisted elision
+            // is still checked independently, rather than requiring both tiers at the old end-of-run timing.
+            session.ContextSummary = "";
+            session.ContextSummaryThroughMessageCount = 0;
+            session.ContextCompactionBlocked = false;
+            session.ContextIneffectiveCompactions = 0;
+            chat.OpenConversation(session.Id);
+            chat.TryEnqueueSend(session.Id, "再处理保留的完整历史", null, out _);
+            await WaitForIdleAsync(chat);
+            copy = chat.StoredCopyForCheck(session.Id);
+            results = copy?.Messages.Where(turn => turn.Role == ChatRoles.Tool).ToList() ?? [];
+            cleared = results.Count(turn => turn.Text.StartsWith(ContextElider.Marker, StringComparison.Ordinal));
             // Tier one lands on the disk: the older results are rewritten where they are kept, the watermark says
             // how far the clear reached, and the ones the model is still working with keep their bodies. A tier
             // that only edited the outgoing copy would leave all three of those at zero.
@@ -9811,7 +9839,6 @@ public partial class ShellCheckWindow : Window
                   && notice != "ChatContextCompacted",
                 "自动压缩有一行用户可见的提示文案，而不是把键名显示出来");
 
-            var logged = System.IO.File.Exists(logFile) ? System.IO.File.ReadAllText(logFile) : "";
             Check(logged.Contains("read_file（允许）", StringComparison.Ordinal)
                   && logged.Contains("自动压缩了上下文", StringComparison.Ordinal)
                   && logged.Contains("## ", StringComparison.Ordinal),
@@ -9819,9 +9846,6 @@ public partial class ShellCheckWindow : Window
 
             // A second run appends to the same day's file. Overwriting instead would be silent: the log would
             // look right until the second session of a day erased the first.
-            chat.OpenConversation(session.Id);
-            chat.TryEnqueueSend(session.Id, "再读五次", null, out _);
-            await WaitForIdleAsync(chat);
             var twice = System.IO.File.ReadAllText(logFile);
             Check(twice.Split('\n').Count(line => line.StartsWith("## ", StringComparison.Ordinal)) == 2
                   && twice.Contains(logged.Split('\n').First(line => line.StartsWith("## ", StringComparison.Ordinal)),

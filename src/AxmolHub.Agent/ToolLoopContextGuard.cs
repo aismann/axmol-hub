@@ -16,6 +16,12 @@ namespace AxmolHub.Agent;
 /// </summary>
 public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetTokens) : DelegatingChatClient(innerClient)
 {
+    /// <summary>Lets a run owner compact and resume at a complete tool boundary instead of repeatedly rewriting
+    /// the cached prefix. Standalone callers retain the existing elision fallback unless they opt in.</summary>
+    public bool YieldForCompaction { get; init; }
+    public Func<Task<bool>>? CanYieldForCompaction { get; init; }
+    private int _requests;
+
     /// <summary>The newest results are the ones the model is reasoning about right now.</summary>
     public const int KeepRecentResults = 4;
 
@@ -41,6 +47,7 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
 
     public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var list = await WithInterjectionAsync(messages).ConfigureAwait(false);
         LastEstimatedInputTokens = EstimateTokens(list);
         return await base.GetResponseAsync(list, options, cancellationToken).ConfigureAwait(false);
@@ -48,6 +55,7 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
 
     public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var list = await WithInterjectionAsync(messages).ConfigureAwait(false);
         LastEstimatedInputTokens = EstimateTokens(list);
         await foreach (var update in base.GetStreamingResponseAsync(list, options, cancellationToken)
@@ -60,8 +68,16 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
     private async Task<List<ChatMessage>> WithInterjectionAsync(IEnumerable<ChatMessage> messages)
     {
         var list = messages.ToList();
-        if (PendingInterjection is { } ask && AtToolBoundary(list) && await ask().ConfigureAwait(false) is { } interjection)
+        var atToolBoundary = AtToolBoundary(list);
+        if (PendingInterjection is { } ask && atToolBoundary && await ask().ConfigureAwait(false) is { } interjection)
             list.Add(interjection);
+        // Never yield the first request: an owner whose compaction cannot shrink the prompt must still have
+        // a finite fallback. Later boundaries contain every result in the preceding batch, so no tool repeats.
+        if (YieldForCompaction && _requests > 0 && atToolBoundary
+            && ContextCompaction.ShouldCompact(EstimateTokens(list), budgetTokens)
+            && (CanYieldForCompaction is null || await CanYieldForCompaction().ConfigureAwait(false)))
+            throw new ToolLoopContextBoundaryException();
+        _requests++;
         var elided = Elide(list, budgetTokens);
         NoteElided(elided);
         return elided;
@@ -202,3 +218,6 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
         return tokens;
     }
 }
+
+/// <summary>A completed tool batch needs compaction before the next model request. No request was sent.</summary>
+public sealed class ToolLoopContextBoundaryException() : Exception("Tool-loop context reached the compaction boundary.");

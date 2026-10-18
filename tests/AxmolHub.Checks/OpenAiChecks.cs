@@ -296,6 +296,11 @@ internal static class OpenAiChecks
                 && !firstBody.RootElement.GetProperty("store").GetBoolean()
                 && secondBody.RootElement.GetProperty("input").EnumerateArray().Any(item => item.TryGetProperty("type", out var type) && type.GetString() == "function_call_output")
                 && sdkBodies[1].Contains("file contents") && sdkBodies[1].Contains("call1"), "SDK serializes stateless instructions and tool results on the second request");
+            Check(secondBody.RootElement.GetProperty("input").EnumerateArray().Any(item =>
+                item.TryGetProperty("type", out var type) && type.GetString() == "reasoning"
+                && item.TryGetProperty("encrypted_content", out var encrypted)
+                && encrypted.GetString() == "fixture-encrypted-reasoning"),
+                "stateless Codex tool rounds preserve encrypted reasoning output");
         }
         if (Directory.Exists(scratch)) Directory.Delete(scratch, true);
     }
@@ -306,26 +311,30 @@ internal static class OpenAiChecks
             ? JsonSerializer.SerializeToElement(new { id = "fc1", type = "function_call", call_id = "call1", name = "read_file", arguments = "{}", status = "completed" })
             : JsonSerializer.SerializeToElement(new { id = "msg1", type = "message", role = "assistant", status = "completed",
                 content = new[] { new { type = "output_text", text = "done", annotations = Array.Empty<object>() } } });
+        var reasoning = JsonSerializer.SerializeToElement(new { id = "rs1", type = "reasoning",
+            summary = Array.Empty<object>(), encrypted_content = "fixture-encrypted-reasoning" });
         object Response(string status, object[] output) => new { id = "resp1", @object = "response", created_at = 1, model = "fixture-model", status, output };
         var events = new List<object>
         {
             new { type = "response.created", response = Response("in_progress", []) },
-            new { type = "response.output_item.added", output_index = 0, item },
+            new { type = "response.output_item.added", output_index = 0, item = reasoning },
+            new { type = "response.output_item.done", output_index = 0, item = reasoning },
+            new { type = "response.output_item.added", output_index = 1, item },
         };
         if (tool)
         {
-            events.Add(new { type = "response.function_call_arguments.delta", item_id = "fc1", output_index = 0, delta = "{}" });
-            events.Add(new { type = "response.function_call_arguments.done", item_id = "fc1", output_index = 0, arguments = "{}" });
+            events.Add(new { type = "response.function_call_arguments.delta", item_id = "fc1", output_index = 1, delta = "{}" });
+            events.Add(new { type = "response.function_call_arguments.done", item_id = "fc1", output_index = 1, arguments = "{}" });
         }
         else
         {
-            events.Add(new { type = "response.content_part.added", item_id = "msg1", output_index = 0, content_index = 0,
+            events.Add(new { type = "response.content_part.added", item_id = "msg1", output_index = 1, content_index = 0,
                 part = new { type = "output_text", text = "", annotations = Array.Empty<object>() } });
-            events.Add(new { type = "response.output_text.delta", item_id = "msg1", output_index = 0, content_index = 0, delta = "done" });
-            events.Add(new { type = "response.output_text.done", item_id = "msg1", output_index = 0, content_index = 0, text = "done" });
+            events.Add(new { type = "response.output_text.delta", item_id = "msg1", output_index = 1, content_index = 0, delta = "done" });
+            events.Add(new { type = "response.output_text.done", item_id = "msg1", output_index = 1, content_index = 0, text = "done" });
         }
-        events.Add(new { type = "response.output_item.done", output_index = 0, item });
-        events.Add(new { type = "response.completed", response = Response("completed", [item]) });
+        events.Add(new { type = "response.output_item.done", output_index = 1, item });
+        events.Add(new { type = "response.completed", response = Response("completed", [reasoning, item]) });
         return string.Concat(events.Select(value =>
         {
             var json = JsonSerializer.Serialize(value);
