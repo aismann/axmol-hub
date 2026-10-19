@@ -488,15 +488,15 @@ public static class WorkspacePaths
     public static string ResultFor(WorkspacePathVerdict verdict, string detail) => verdict switch
     {
         WorkspacePathVerdict.NoWorkspace =>
-            "This session has no working directory, so a relative path has nothing to be relative to. Absolute "
+            "This session has no workspace directory, so a relative path has nothing to be relative to. Absolute "
             + "paths still work inside a directory the user granted this session. Ask the user to name one from the "
             + "workspace menu beside the composer — only they can set it. Do not guess a directory and do not retry "
             + "this call.",
         WorkspacePathVerdict.MissingWorkspace =>
-            $"This session's working directory '{detail}' no longer exists, or it has been renamed. Absolute paths "
-            + "still work inside a directory the user granted this session. Ask the user to name the directory "
-            + "again from the workspace menu beside the composer — only they can set it. Do not guess a directory "
-            + "and do not retry this call.",
+            $"The session workspace '{detail}' no longer exists, or it has been renamed. Absolute paths still work "
+            + "inside a directory the user granted this session. Ask the user to name the directory again from the "
+            + "workspace menu beside the composer — only they can set it. Do not guess a directory and do not retry "
+            + "this call.",
         WorkspacePathVerdict.EscapesWorkspace =>
             $"Refused: '{detail}' is not a workspace-relative path. Paths must be relative to the workspace and "
             + "must not use '..', a drive letter or a rooted path. Do not retry another spelling of this path; if "
