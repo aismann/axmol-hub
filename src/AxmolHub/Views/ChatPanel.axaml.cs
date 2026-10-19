@@ -734,12 +734,11 @@ public partial class ChatPanel : UserControl
             ? hint
             : hint + string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("ChatWorkspaceGrantedHintFormat"), granted.Count, string.Join(" · ", granted)));
-        // And it is on screen only while the choice is still open: no session, or one that has never received a
-        // message. The directory is what a session is born into, so after the first turn it is history —
-        // swapping it mid-conversation would leave every earlier reply about a different tree — and a control
-        // that can no longer act is a claim that it still can. A granted directory is the one thing that keeps it
-        // there afterwards: that permission was given mid-conversation, and revoking it is the only way back.
-        WorkspaceChip.IsVisible = _chat.ActiveConversation is not { Messages.Count: > 0 } || granted.Count > 0;
+        // And it is on screen whenever a session is. The directory is what a session works in, and both things the
+        // chip carries are needed for as long as the session lasts: reading out which folder the tools are confined
+        // to, and taking back a granted directory. Picking another one is the person's own move at any point —
+        // nothing about it is the model's — so there is no state where the control promises what it cannot do.
+        WorkspaceChip.IsVisible = _chat.ActiveConversation is not null;
     }
 
     private static string FolderNameOf(string path)

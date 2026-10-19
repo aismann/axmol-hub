@@ -18,8 +18,8 @@ namespace AxmolHub.Agent;
 /// <para>Two exemptions are what keep the refusal off correct work, and both are read from the transcript
 /// rather than from counters, so a restart, a steer or a replayed session sees the same history:</para>
 /// <list type="bullet">
-/// <item>A successful state-changing call (<c>file_write</c>, <c>run_command</c>, <c>set_workspace</c>,
-/// <c>request_directory</c>, <c>memory_write</c>) ends the walk. Re-reading a file you just edited is
+/// <item>A successful state-changing call (<c>file_write</c>, <c>run_command</c>, <c>request_directory</c>,
+/// <c>memory_write</c>) ends the walk. Re-reading a file you just edited is
 /// verification, not spinning.</item>
 /// <item>A result that <see cref="ToolLoopContextGuard.Elide"/> rewrote tells the model in so many words to
 /// call again if it still needs it — so a repeat after an elision is Hub asking for it, not a loop.</item>
@@ -43,7 +43,7 @@ public static class ToolSpinGuard
     /// by name alone. <c>request_directory</c> is here because its success is a grant recorded on the session —
     /// state a repeat would be asking for twice, and the answer to the second ask is "already granted".</summary>
     private static readonly string[] StateChangingTools =
-        ["file_write", "run_command", "set_workspace", "request_directory", "memory_write"];
+        ["file_write", "run_command", "request_directory", "memory_write"];
 
     /// <summary>The sentence a refused repeat hands back to the model. Matched on itself by the checks.</summary>
     public const string RefusalMarker = "has already run";

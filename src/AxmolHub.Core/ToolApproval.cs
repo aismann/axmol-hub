@@ -175,10 +175,10 @@ public static class ToolApprovalPolicy
 /// while still needing a card. What is asked here is whether two of them, or one of them beside a later call of the
 /// same response, can be in flight at once without either seeing the other's work half-done.
 ///
-/// <para>The read-only tier is the whole class, with one named exception: <c>set_workspace</c> reads nothing and
-/// moves the session's root, so a sibling resolving its own path next to it would be decided against a directory
-/// that stops being the one it runs in. A command, a write or a screen capture is out for the ordinary reason —
-/// two of them at once touch one build directory, one desktop, one peer session.</para>
+/// <para>The read-only tier is the whole class, with no exception left: the one that used to be — a call that moved
+/// the session's root — is gone, so a call that changes nothing may start beside its siblings. A command, a write or
+/// a screen capture is out for the ordinary reason — two of them at once touch one build directory, one desktop, one
+/// peer session.</para>
 ///
 /// <para><b>This set only loses members.</b> Adding a tool here is a claim that it touches no shared state, and the
 /// claim has to hold for whatever the tool grows later, not merely for what it does today — which is the same
@@ -193,13 +193,10 @@ public static class ToolApprovalPolicy
 /// </summary>
 public static class ToolConcurrency
 {
-    /// <summary>The read-only tier's one member that is not a read. Named because the tier is what the classifier
-    /// answers with, and the tier alone is not enough to decide this.</summary>
-    public const string SetWorkspaceTool = "set_workspace";
-
+    /// <summary>Whether a call of this tier may start beside its siblings. The name still rides along because the
+    /// question is asked per call at a site that already has one; no name is exempt any more.</summary>
     public static bool IsSafe(string? toolName, ToolRisk risk)
-        => risk == ToolRisk.ReadOnly
-           && !string.Equals(toolName, SetWorkspaceTool, StringComparison.Ordinal);
+        => risk == ToolRisk.ReadOnly;
 }
 
 /// <summary>

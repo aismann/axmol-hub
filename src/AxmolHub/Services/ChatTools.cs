@@ -37,8 +37,8 @@ internal static class ChatTools
     /// <summary>
     /// Risk by name, arguments and the sandbox the call runs in. The arguments decide two of them: a memory note
     /// inside the workspace is the assistant's own and never asks, while the same write to global memory lands in
-    /// Hub's data directory, outside every sandbox, and does; and moving the session's sandbox is judged by the
-    /// directory it names rather than by the verb. A command's tier comes from the root the request was built
+    /// Hub's data directory, outside every sandbox, and does; and asking for a directory is the one call that opens
+    /// a place this session did not hold. A command's tier comes from the root the request was built
     /// with — see <see cref="ChatWorkspace"/>'s gate, which passes that same scope to the tool body.
     ///
     /// An unknown name lands on the worst tier, and so does a call whose arguments cannot be parsed: a call this
@@ -47,7 +47,7 @@ internal static class ChatTools
     /// have to agree by habit instead of by construction.
     /// </summary>
     public static ToolRisk RiskOf(string name, string? argumentsJson, WorkspaceToolScope scope,
-        IReadOnlyList<string>? projectPaths = null, IReadOnlyList<string>? trustedCommands = null) => name switch
+        IReadOnlyList<string>? trustedCommands = null) => name switch
     {
         "get_projects" or "get_engines" or "get_toolchain_status" or "read_file" or "memory_read"
             or "list_sessions" or "read_session"
@@ -65,19 +65,8 @@ internal static class ChatTools
         // outbound switch, which no approval mode can open. Spelled out rather than left to the fallback arm, for
         // the standing reason: "unknown tool" and "this tool was thought about" must not read the same here.
         "web_fetch" => ToolRisk.WorkspaceCommand,
-        // Moving the sandbox is the one call whose risk is the *directory*, not the verb: narrowing it to a
-        // subfolder of where the session already works reaches nothing new (and writes inside it are already the
-        // auto tier's business), a registered project is a directory the user handed Hub on purpose, and anything
-        // else is the assistant choosing a place nobody agreed to — which is exactly what still costs a card.
-        "set_workspace" => WorkspacePaths.ClassifyWorkspaceTarget(
-            PathOf(argumentsJson), scope.WorkspaceRoot, projectPaths, scope.Guards) switch
-        {
-            WorkspaceTarget.SameAsSandbox or WorkspaceTarget.InsideSandbox => ToolRisk.ReadOnly,
-            WorkspaceTarget.RegisteredProject => ToolRisk.WorkspaceWrite,
-            _ => ToolRisk.SystemCommand,
-        },
-        // Asking for a directory is asking for a place nobody has agreed to yet, so it sits where `set_workspace`
-        // puts a directory nobody chose. It stays there whatever the path is: the card *is* the mechanism, and a
+        // Asking for a directory is asking for a place nobody has agreed to yet, so it sits on the tier that always
+        // asks. It stays there whatever the path is: the card *is* the mechanism, and a
         // call that fell through silently under 自动审批 would be a grant the person never saw. 「总是允许」 is not
         // offered — the same tier rule as the screen and another session — and here it would mean "open every
         // directory I ever name".
@@ -174,10 +163,10 @@ internal static class ChatTools
         var key = CommandTrust.KeyFor(verbs.First());
         if (key.Length == 0) return null;
         // Ask the same ladder twice: what the call is now, and what it would be with this one verb granted.
-        if (RiskOf(name, argumentsJson, scope, null, trustedCommands) != ToolRisk.SystemCommand) return null;
+        if (RiskOf(name, argumentsJson, scope, trustedCommands) != ToolRisk.SystemCommand) return null;
         var granted = new List<string>(trustedCommands ?? []);
         if (!CommandTrust.Add(granted, key)) return null;
-        return RiskOf(name, argumentsJson, scope, null, granted) == ToolRisk.WorkspaceCommand ? key : null;
+        return RiskOf(name, argumentsJson, scope, granted) == ToolRisk.WorkspaceCommand ? key : null;
     }
 
     /// <summary>Whether a granted command verb is the reason this call runs: the person's list, and not the built-in
@@ -214,26 +203,6 @@ internal static class ChatTools
             return document.RootElement.TryGetProperty("cwd", out var value) && value.ValueKind == JsonValueKind.String
                 ? value.GetString() ?? ""
                 : "";
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>The directory a <c>set_workspace</c> names. Nothing here decides whether it is a safe place — that
-    /// is <see cref="WorkspacePaths.ClassifyWorkspaceTarget"/>, in Core, where the same rule can be read back
-    /// without a window. An argument that will not parse answers <c>null</c>, which classifies as the tier that
-    /// asks.</summary>
-    private static string? PathOf(string? argumentsJson)
-    {
-        if (string.IsNullOrWhiteSpace(argumentsJson)) return null;
-        try
-        {
-            using var document = JsonDocument.Parse(argumentsJson);
-            return document.RootElement.TryGetProperty("path", out var value) && value.ValueKind == JsonValueKind.String
-                ? value.GetString()
-                : null;
         }
         catch (JsonException)
         {
@@ -323,7 +292,6 @@ internal static class ChatTools
             // WebFetch is the rules class in Core's namespace, and a method of that name would shadow it here.
             AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")),
             AIFunctionFactory.Create(tools.CaptureScreen, Options("capture_screen")),
-            AIFunctionFactory.Create(tools.SetWorkspace, Options("set_workspace")),
             AIFunctionFactory.Create(tools.RequestDirectory, Options("request_directory")),
             AIFunctionFactory.Create(tools.MemoryWrite, Options("memory_write")),
             AIFunctionFactory.Create(tools.SendToSession, Options("send_to_session")),

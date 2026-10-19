@@ -3682,6 +3682,15 @@ if (args.Contains("--check-ai-workspace"))
         if (sentence.Length == 0 || !sentence.Contains("retry", StringComparison.OrdinalIgnoreCase))
             throw new Exception($"The refusal for {verdict} does not tell the model to stop retrying.");
     }
+    // The two sentences that used to send the model at the tool this build deleted. The door is the person's own
+    // menu now, and a refusal that names a call the model cannot make is exactly the one it retries.
+    foreach (var verdict in new[] { WorkspacePathVerdict.NoWorkspace, WorkspacePathVerdict.MissingWorkspace })
+    {
+        var sentence = WorkspacePaths.ResultFor(verdict, "x");
+        if (sentence.Contains("set_workspace", StringComparison.Ordinal)
+            || !sentence.Contains("workspace menu", StringComparison.Ordinal))
+            throw new Exception($"The refusal for {verdict} still points at a tool the model no longer has.");
+    }
     Console.WriteLine("PASS: workspace paths stay inside the sandbox and refuse protected roots.");
 
     if (OperatingSystem.IsWindows())
@@ -4044,13 +4053,7 @@ if (args.Contains("--check-ai-tools"))
 
     var guards = new WorkspaceGuards(dataRoot, [toolEngineRoot]);
     var log = new HubLog(Path.Combine(toolRoot, "log"));
-    string? appliedRoot = null;
-    var scope = new WorkspaceToolScope(workspace, guards, dataRoot, "conversation-1", ["SUPERSECRET"], log,
-        path =>
-        {
-            appliedRoot = path;
-            return Task.FromResult($"Workspace set to {path}.");
-        });
+    var scope = new WorkspaceToolScope(workspace, guards, dataRoot, "conversation-1", ["SUPERSECRET"], log, null);
     var tools = new WorkspaceTools(scope);
     var homeless = new WorkspaceTools(new WorkspaceToolScope(null, guards, dataRoot, "c", [], null, null));
 
@@ -4622,19 +4625,11 @@ if (args.Contains("--check-ai-tools"))
     Console.WriteLine("PASS: a changing command takes the gate, refuses out loud when it cannot, gives it back on every "
                       + "road out including a stop, and a git read never asks for it.");
 
-    // ── set_workspace: choosing the sandbox is itself guarded ──
-    if (!(await tools.SetWorkspace("relative/path")).Contains("not an absolute path", StringComparison.Ordinal)
-        || !(await tools.SetWorkspace(Path.Combine(toolRoot, "nope"))).Contains("does not exist", StringComparison.Ordinal)
-        || !(await tools.SetWorkspace(toolEngineRoot)).Contains("protected location", StringComparison.Ordinal))
-        throw new Exception("set_workspace accepted a relative, a missing or a protected directory.");
-    if (!(await tools.SetWorkspace(workspace)).Contains("Workspace set to") || appliedRoot != Path.GetFullPath(workspace))
-        throw new Exception("A valid directory was not handed to the caller to persist.");
-
-    // ── set_workspace tiers: who picked this directory decides whether it has to ask ──
-    // The table that turns this into a ToolRisk lives in the app, but the rule it reads is Core's, so it is
-    // asserted here where no window is involved. The three answers are three answers to one question — has a
-    // person already agreed to this directory? — and a path this build cannot read falls to the strictest of them
-    // rather than to a guess.
+    // ── the directory classifier: whose directory a card is talking about ──
+    // The tiers it used to decide went with the tool that moved the sandbox, but a grant card's own facts are still
+    // read through it, so the rule is asserted here where no window is involved. The three answers answer one
+    // question — has a person already agreed to this directory? — and a path this build cannot read falls to the
+    // strictest of them rather than to a guess.
     var nestedTarget = Path.Combine(workspace, "deeper");
     var knownProject = Path.Combine(toolRoot, "registered-project");
     var elsewhere = Path.Combine(toolRoot, "somewhere-else");
@@ -4660,8 +4655,9 @@ if (args.Contains("--check-ai-tools"))
         || WorkspacePaths.ClassifyWorkspaceTarget(null, workspace, null, guards) != WorkspaceTarget.Unreadable
         || WorkspacePaths.ClassifyWorkspaceTarget("relative/path", workspace, null, guards) != WorkspaceTarget.Unreadable
         || WorkspacePaths.ClassifyWorkspaceTarget("   ", workspace, null, guards) != WorkspaceTarget.Unreadable)
-        throw new Exception("set_workspace's tier was decided by something other than who chose that directory.");
-    Console.WriteLine("PASS: set_workspace is classified by the directory it names, and fails closed on one it cannot read.");
+        throw new Exception("The directory classifier answered with something other than who chose that directory.");
+    Console.WriteLine("PASS: the directory classifier still answers by who chose that directory, and fails closed on "
+                      + "one it cannot read.");
 
     // ── granted directories: a session may hold more than its workspace, one card at a time ──
     // One sentence is the whole rule — a relative path is the workspace, an absolute path is graded against every
@@ -5174,20 +5170,24 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception("A command that touches no build output carried a build flag.");
     Console.WriteLine("PASS: a command that writes to git says so on its card, and a git read does not; a compile and "
         + "a cache break say their own different things, and a read that only names the build directory says neither.");
-    var workspacePreview = Preview("set_workspace", JsonSerializer.Serialize(new { path = workspace }));
-    if (!workspacePreview.Contains("exists"))
-        throw new Exception($"A workspace preview did not state the facts:{Environment.NewLine}{workspacePreview}");
-    // The card's "registered Hub project" fact is decided by the same classifier that decides the tier, so it is
-    // asserted against a project the session is *not* already inside. Naming the session's own directory a
+    // The facts a grant card prints are the ones a person decides on, so they are asserted on the tool that still
+    // draws one: the directory is there or it is not, and a path this build refuses says so before anybody clicks.
+    var grantFacts = Preview("request_directory", JsonSerializer.Serialize(new { path = workspace }));
+    if (!grantFacts.Contains("exists") || !grantFacts.Contains("already inside the session workspace",
+            StringComparison.Ordinal))
+        throw new Exception($"A grant preview did not state the facts:{Environment.NewLine}{grantFacts}");
+    // The card's "registered Hub project" fact is decided by the same classifier the card's other words come from,
+    // so it is asserted against a project the session is *not* already inside. Naming the session's own directory a
     // registered project would be a fact invented for the card: the honest answer there is "you are already
-    // working here", and the tier table reads it the same way.
+    // working here".
     var otherProject = Path.Combine(toolRoot, "registered-elsewhere");
     Directory.CreateDirectory(otherProject);
-    var projectPreview = ToolPreviews.PreviewFor("set_workspace", JsonSerializer.Serialize(new { path = otherProject }),
-        scope, [workspace, otherProject]);
+    var projectPreview = ToolPreviews.PreviewFor("request_directory",
+        JsonSerializer.Serialize(new { path = otherProject }), scope, [workspace, otherProject]);
     if (!projectPreview.Contains("registered Hub project", StringComparison.Ordinal))
         throw new Exception($"A registered project did not preview as one:{Environment.NewLine}{projectPreview}");
-    if (!Preview("set_workspace", JsonSerializer.Serialize(new { path = toolEngineRoot })).Contains("protected location"))
+    if (!Preview("request_directory", JsonSerializer.Serialize(new { path = toolEngineRoot }))
+            .Contains("protected location", StringComparison.Ordinal))
         throw new Exception("A protected directory did not preview as one.");
     if (!Preview("memory_write", """{"scope":"project","name":"a.md","mode":"append","content":"内容"}""")
             .Contains("memory_append · project · a.md"))
@@ -5217,12 +5217,12 @@ if (args.Contains("--check-ai-tools"))
     foreach (var (wireName, body) in new (string, Delegate)[]
              {
                  ("read_file", (Delegate)tools.ReadFile), ("file_write", tools.FileWrite),
-                 ("run_command", tools.RunCommand), ("set_workspace", tools.SetWorkspace),
+                 ("run_command", tools.RunCommand),
                  ("memory_read", tools.MemoryRead), ("memory_write", tools.MemoryWrite),
                  ("search_text", tools.SearchText), ("list_directory", tools.ListDirectory),
                  ("find_files", tools.FindFiles), ("capture_screen", tools.CaptureScreen),
                  ("workspace_map", tools.MapWorkspace),
-                 // web_fetch binds here too, but against a host that answers from memory: the twelve bodies this
+                 // web_fetch binds here too, but against a host that answers from memory: the eleven bodies this
                  // loop binds are the ones asserted without a network, and the page-fetch tool belongs to that set
                  // for exactly the reason the capture tool does — the decision is Core's, the socket is somebody
                  // else's, and the stub is what makes the branches reachable at all.
@@ -6234,10 +6234,9 @@ if (args.Contains("--check-ai-tool-policy"))
         throw new Exception("The follow-up request went out with the approval placeholder: " + parkClient.SecondRequest.Count + " messages.");
     Console.WriteLine("PASS: a parked call ends the turn with no result, and its placeholder never reaches the model.");
 
-    // Which calls of one response may be in flight together is decided by the tier, with one named exception — and
-    // the exception is why this is a table instead of a sample. A tool that reads nothing but moves the session's
-    // sandbox sits on the read-only tier, so starting it beside a read would let that read be decided against a
-    // directory that stops being the one it runs in the moment the move lands.
+    // Which calls of one response may be in flight together is decided by the tier — and every named row here is
+    // why this is a table instead of a sample: the tier answers for a whole class, and a tool whose reach does not
+    // follow from its verb has to be refused by name or the class quietly covers it.
     var concurrentTable = new (string Name, ToolRisk Risk, bool Expected)[]
     {
         ("read_file", ToolRisk.ReadOnly, true),
@@ -6249,9 +6248,7 @@ if (args.Contains("--check-ai-tool-policy"))
         ("get_projects", ToolRisk.ReadOnly, true),
         ("get_engines", ToolRisk.ReadOnly, true),
         ("list_sessions", ToolRisk.ReadOnly, true),
-        // The exception, spelled out because the tier says it is safe and the name says it is not.
-        ("set_workspace", ToolRisk.ReadOnly, false),
-        // A grant grows the same list of directories a move replaces, so a read started beside it would be graded
+        // A grant grows the list of directories the session holds, so a read started beside it would be graded
         // against a sandbox that stops being the one it runs in. Not a read-only tier at all — the card is the
         // mechanism — and listed here so the concurrency question is answered rather than left to the default.
         ("request_directory", ToolRisk.SystemCommand, false),
@@ -6274,8 +6271,7 @@ if (args.Contains("--check-ai-tool-policy"))
     if (concurrentTable.Count(cell => cell.Expected) != 9)
         throw new Exception($"The concurrency class holds {concurrentTable.Count(cell => cell.Expected)} tools, "
                             + "which is not the nine reads it was drawn to cover.");
-    Console.WriteLine("PASS: every read-only tool but the one that moves the sandbox may start beside its "
-        + "siblings, and nothing above that tier does.");
+    Console.WriteLine("PASS: the read-only tier may start beside its siblings, and nothing above that tier does.");
 
     // The proof that "may start beside" is not only a decision on paper. Two safe calls are put in one response and
     // each refuses to finish until <b>both</b> are inside: a serial executor deadlocks on that barrier and the cell

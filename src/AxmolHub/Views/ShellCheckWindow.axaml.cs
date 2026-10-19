@@ -7783,10 +7783,9 @@ public partial class ShellCheckWindow : Window
         // under the two modes that disagree about it.
         var autoRunSession = chat.StartConversation();
         var askRunSession = chat.StartConversation();
-        // One response, two calls: move the sandbox into a folder it already has, then run a command. The move is
-        // free, the command is not, and the only honest card is the one that names the directory the command will
-        // really start in — which is the root this request was built with, not the one the session file moved to
-        // while the response was being worked through.
+        // One response, two calls: a read, then a command. The read is free, the command is not, and the only honest
+        // card is the one that names the directory the command will really start in — the root this request was
+        // built with.
         var movedSession = chat.StartConversation();
         // Two more sessions for the other half of a grant: the one that makes it, and a peer that has never been
         // asked anything, which is the only way to tell an app-wide trust from a session note.
@@ -8139,15 +8138,15 @@ public partial class ShellCheckWindow : Window
                   // 授权表的那半，以及两表之间的边界：按动词授权后它自己落回沙箱档，但一张表必须覆盖整行——跨表的
                   // 复合行（本地表管 add、授权表管 push）和包在 shell 里的写都不吃这张授权，顺序格也一样：授权盖不过
                   // 前两级，没有沙箱根和删除已构建的东西都照旧。
-                  && ChatTools.RiskOf("run_command", Command("git push origin main"), sandbox, null, ["git push"]) == ToolRisk.WorkspaceCommand
-                  && ChatTools.RiskOf("run_command", Command("git add && git push"), sandbox, null, ["git push"]) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("run_command", Command("""pwsh -c "git push"""), sandbox, null, ["git push"]) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("run_command", Command("sudo git push"), sandbox, null, ["git push"]) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("run_command", Command("git fetch origin && git push"), sandbox, null, ["git fetch", "git push"]) == ToolRisk.WorkspaceCommand
-                  && ChatTools.RiskOf("run_command", Command("git lfs install"), sandbox, null, ["git lfs"]) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("run_command", Command("git clean -fdx"), sandbox, null, ["git clean"]) == ToolRisk.CacheBreak
-                  && ChatTools.RiskOf("run_command", Command("git commit -m x && rm -rf build"), sandbox, null, ["git commit"]) == ToolRisk.CacheBreak
-                  && ChatTools.RiskOf("run_command", Command("git push"), WorkspaceToolScope.Empty, null, ["git push"]) == ToolRisk.SystemCommand,
+                  && ChatTools.RiskOf("run_command", Command("git push origin main"), sandbox, trustedCommands: ["git push"]) == ToolRisk.WorkspaceCommand
+                  && ChatTools.RiskOf("run_command", Command("git add && git push"), sandbox, trustedCommands: ["git push"]) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("""pwsh -c "git push"""), sandbox, trustedCommands: ["git push"]) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("sudo git push"), sandbox, trustedCommands: ["git push"]) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("git fetch origin && git push"), sandbox, trustedCommands: ["git fetch", "git push"]) == ToolRisk.WorkspaceCommand
+                  && ChatTools.RiskOf("run_command", Command("git lfs install"), sandbox, trustedCommands: ["git lfs"]) == ToolRisk.SystemCommand
+                  && ChatTools.RiskOf("run_command", Command("git clean -fdx"), sandbox, trustedCommands: ["git clean"]) == ToolRisk.CacheBreak
+                  && ChatTools.RiskOf("run_command", Command("git commit -m x && rm -rf build"), sandbox, trustedCommands: ["git commit"]) == ToolRisk.CacheBreak
+                  && ChatTools.RiskOf("run_command", Command("git push"), WorkspaceToolScope.Empty, trustedCommands: ["git push"]) == ToolRisk.SystemCommand,
                 "git 写命令按子命令分档、读命令与读不出的参数留在沙箱档，包在 shell 里的写照旧升到最高档，认不出的子命令按写处理；"
                 + "留在仓库里、能撤回来的写（add、commit）自成一档：「自动审批」不问、「询问审批」仍要问，而 push、"
                 + "reset --hard、fetch 这些照旧是最高档；授权只认直接写出来的那个动词、一张表要么覆盖整行要么不覆盖，"
@@ -8166,36 +8165,9 @@ public partial class ShellCheckWindow : Window
                 "抓取网页与沙箱里的命令同一档：ask 问、auto 与 full 都不问——越不越界由 WebFetch 的地址策略和出网"
                 + "开关决定，档位不是那道闸");
 
-            // `set_workspace` is the one call whose tier is the directory rather than the verb: narrowing the
-            // sandbox to a folder it already contains reaches nothing the session could not already reach, a
-            // registered project is a directory the user handed Hub on purpose, and anything else is the assistant
-            // picking a place nobody agreed to — the click that decides it is the click that picks the guard.
-            var nested = System.IO.Path.Combine(workspace, "sandbox-nested");
-            var knownProject = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(workspace)!, "tier-map-project");
-            var elsewhere = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(workspace)!, "tier-map-outside");
-            string Target(string path) => System.Text.Json.JsonSerializer.Serialize(new { path });
-            Check(ChatTools.RiskOf("set_workspace", Target(workspace), sandbox) == ToolRisk.ReadOnly
-                  && ChatTools.RiskOf("set_workspace", Target(nested), sandbox) == ToolRisk.ReadOnly
-                  && ChatTools.RiskOf("set_workspace", Target(knownProject), sandbox, [knownProject]) == ToolRisk.WorkspaceWrite
-                  && ChatTools.RiskOf("set_workspace", Target(elsewhere), sandbox, [knownProject]) == ToolRisk.SystemCommand
-                  // Nothing readable in the arguments, and a root the sandbox would refuse anyway: both fall to the
-                  // tier that asks rather than to a guess about which directory the model meant.
-                  && ChatTools.RiskOf("set_workspace", null, sandbox) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("set_workspace", """{"path":"relative/only"}""", sandbox) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("set_workspace", "not json at all", sandbox) == ToolRisk.SystemCommand
-                  && ChatTools.RiskOf("set_workspace", Target(workspace), new WorkspaceToolScope(workspace,
-                      new WorkspaceGuards(workspace, []), workspace, "tier-map", [], null, null)) == ToolRisk.SystemCommand,
-                "换工作目录按它指向哪里分档：收到自己沙箱内免批、指向已登记工程算工作区写、指向别处或读不出路径或落在受保护根都要问");
-            // The tier asks for nothing, and the concurrency class still has to refuse it: this call reads nothing
-            // yet moves the directory its siblings resolve their paths against. Asserted beside the tier rather
-            // than only in the headless table, because the exception lives in the one place a reader would not
-            // expect it — a read-only call that is not safe to run next to another read-only call.
-            Check(!ToolConcurrency.IsSafe("set_workspace", ToolRisk.ReadOnly)
-                  && ToolConcurrency.IsSafe("read_file", ToolRisk.ReadOnly),
-                "收窄沙箱虽是免批档，也不与同批的读并发；真正的读才进得了并发类");
-            // The other half of that rule, and the one a later reader will be tempted to widen: the git subset of
-            // <c>run_command</c> reads, is graded as a read, and stays out. The evidence is local — Hub's own git
-            // reads pass <c>--no-optional-locks</c> precisely so a status never takes <c>index.lock</c>, and
+            // The one exclusion the class still has, and the one a later reader will be tempted to widen: the git
+            // subset of <c>run_command</c> reads, is graded as a read, and stays out. The evidence is local — Hub's
+            // own git reads pass <c>--no-optional-locks</c> precisely so a status never takes <c>index.lock</c>, and
             // concurrent repository asks are coalesced because two clicks must not start two gits. A read that has
             // to be told not to lock is a read that may lock. Tier and membership are asserted as one line so the
             // pair cannot be mistaken for an oversight: the first conjunct is what the classifier answers today, the
@@ -8278,6 +8250,15 @@ public partial class ShellCheckWindow : Window
                   && !schema.Contains("oldString") && !schema.Contains("ignoreCase"),
                 "Agent 档注册二十个工具、名字都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
                 + agentTools.Count + " 个）");
+
+            // The capability this build took away, pinned where the list itself is: the model may ask for a directory
+            // the task or the user named, and has no way at all to move the session's own root — a name that is gone
+            // from ChatTools' table but still registered (or the reverse) is exactly the drift a count cannot see.
+            Check(agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
+                      .All(tool => tool.Name != "set_workspace")
+                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
+                      .Any(tool => tool.Name == "request_directory"),
+                "模型拿到的工具表里没有 set_workspace——决定工作目录的能力只在人手里——而 request_directory 还在");
 
             // ask_user's own schema cell, kept out of the line above for the reason that line already gives: a
             // count assertion is the one every new tool trips, and a missing keyword hides behind the number that
@@ -8512,39 +8493,37 @@ public partial class ShellCheckWindow : Window
                 "拒绝那条命令后卡片退出，运行也不再挂在注册表里；卡片上的 Esc 就是那一声拒绝（认领 "
                 + escapeOnCardAnswered + "）");
 
-            // One response, two calls, and the sandbox moving between them. Narrowing it to a folder it already
-            // holds runs free; the command that follows still parks — and the whole response waits on that one
-            // card. Parking cancels the request's token, so a sibling that had already started would be running
-            // under a cancellation nobody granted: the call the mode lets through is held with the one that asked,
-            // the card names both, and the answer either starts the pair or stops it.
-            System.IO.Directory.CreateDirectory(nested);
+            // One response, two calls, the second of them asking. The read runs free and the command parks — and the
+            // whole response waits on that one card. Parking cancels the request's token, so a sibling that had
+            // already started would be running under a cancellation nobody granted: the call the mode lets through
+            // is held with the one that asked, the card names both, and the answer either starts the pair or stops
+            // it.
             movedClient.Batch =
             [
-                ("set_workspace", new Dictionary<string, object?> { ["path"] = nested }),
+                ("read_file", new Dictionary<string, object?> { ["path"] = "src/main.cpp" }),
                 ("run_command", new Dictionary<string, object?> { ["command"] = whereIAm }),
             ];
             movedClient.CallsRemaining = 0;
             chat.OpenConversation(movedSession.Id);
-            chat.TryEnqueueSend(movedSession.Id, "换个子目录再跑一次", null, out _);
+            chat.TryEnqueueSend(movedSession.Id, "读一眼再跑一次", null, out _);
             var movedCallId = await WaitForPendingCallAsync(movedSession);
             var movedTurn = movedSession.Messages.LastOrDefault(turn => turn.ToolCallId == movedCallId);
             Check(movedCallId is not null
                   && movedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 0
-                  && movedSession.Messages.All(turn => turn.ToolName != "set_workspace" || turn.ApprovalState is null)
+                  && movedSession.Messages.All(turn => turn.ToolName != "read_file" || turn.ApprovalState is null)
                   && movedTurn?.ApprovalState == ChatApprovalStates.Pending
                   && panel.PendingApprovalCardsForCheck == 1
-                  && panel.ApprovalCardTextForCheck.Contains("set_workspace", StringComparison.Ordinal)
+                  && panel.ApprovalCardTextForCheck.Contains("run_command", StringComparison.Ordinal)
                   && movedTurn.ApprovalPreview?.Contains(workspace, StringComparison.Ordinal) == true
-                  && movedTurn.ApprovalPreview?.Contains(nested, StringComparison.Ordinal) != true
                   // The read the mode let through opened its tool bracket on the way to this decision and then
                   // never ran, so the park has to hand it back: a run still holding one has its inactivity
                   // deadline disarmed around a tool that stopped existing when the card went up.
                   && chat.RunFor(movedSession.Id) is { IsToolRunning: false }
-                  // The directory has not moved yet, which is the other half of the pair this cell used to read:
-                  // the free call waits with the one that asked, so nothing has run and nothing has shifted.
+                  // Nothing has run, which is the other half of the pair: the free call waits with the one that
+                  // asked, so the directory every path in this response resolves against has not been touched.
                   && WorkspacePaths.CanonicalRoot(movedSession.WorkspaceRoot)
                      == WorkspacePaths.CanonicalRoot(workspace),
-                "同一段里先收窄沙箱再跑命令：两条一起挂起等一张卡，卡片点名两个调用，而沙箱还在原处（预览「"
+                "同一段里先读一眼再跑命令：两条一起挂起等一张卡，卡片点名两个调用，免批那条也没偷偷跑（预览「"
                 + (movedTurn?.ApprovalPreview ?? "").Replace('\n', '·') + "」，会话现根 "
                 + movedSession.WorkspaceRoot + "）");
             chat.TryResolveApproval(movedSession.Id, movedCallId ?? "", approved: false, alwaysAllow: false, out _);
@@ -10492,10 +10471,10 @@ public partial class ShellCheckWindow : Window
     /// <summary>
     /// The workspace picker: it reads out the directory the file and command tools are confined to, the menu
     /// changes it, and the memory index of a bound workspace reaches the system prompt. It sits under the
-    /// composer and only while the chat can still be aimed somewhere, so the whole group runs against an empty
-    /// session and the last two assertions are what prove it goes away afterwards. The folder dialog is a modal
-    /// and cannot be driven here, so the pick goes through <see cref="ChatWorkspace.SelectWorkspaceRoot"/> —
-    /// the same call the dialog ends in.
+    /// composer and stays on screen for as long as there is a session, so the whole group runs against one session
+    /// and the last two assertions are what prove it is still there once that session has messages. The folder
+    /// dialog is a modal and cannot be driven here, so the pick goes through
+    /// <see cref="ChatWorkspace.SelectWorkspaceRoot"/> — the same call the dialog ends in.
     /// </summary>
     private async Task CheckWorkspaceChipAsync(MainWindow shell, ChatPanel panel)
     {
@@ -10658,8 +10637,8 @@ public partial class ShellCheckWindow : Window
                 "文件夹附件按窗口体积封顶，超长文件留头留尾，每个文件仍留下自己的名字（实际 "
                 + attached.Length + " 字符 / " + TokenWeighing.Units(attached) + " 单位）");
 
-            // The guard the picker shares with set_workspace: Hub's own data directory is not a sandbox, and
-            // refusing it must leave the binding alone rather than clear it.
+            // The same guard the file and command tools run before they touch anything: Hub's own data directory is
+            // not a sandbox, and refusing it must leave the binding alone rather than clear it.
             var dataRoot = shell.Workspace.Store.Root;
             Check(chat.SelectWorkspaceRoot(dataRoot) == WorkspacePathVerdict.ProtectedRoot
                   && chat.WorkspaceRootFor(session.Id) == Path.GetFullPath(workspace),
@@ -10690,24 +10669,25 @@ public partial class ShellCheckWindow : Window
                 + plate.Y.ToString("0.#", CultureInfo.CurrentCulture) + "，框高 "
                 + plate.FrameHeight.ToString("0.#", CultureInfo.CurrentCulture) + "）");
 
-            // The choice is open only until the first message. Bound, seeded, hidden — but hidden, not cleared:
-            // the session keeps answering from the same directory it was born into.
+            // The chip is about the conversation being open, not about it being empty: a bound, seeded session keeps
+            // it, because the directory and the grants are read out there — and taken back there — for as long as
+            // the session lasts.
             chat.SelectWorkspaceRoot(workspace);
             var seeded = chat.SeedTurnForCheck(session.Id, "第一问");
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
-            Check(seeded && !panel.WorkspaceChipVisibleForCheck
+            Check(seeded && panel.WorkspaceChipVisibleForCheck
                   && chat.WorkspaceRootFor(session.Id) == Path.GetFullPath(workspace),
-                "发起聊天后选择器消失，会话的目录绑定原封不动");
+                "发过消息之后选择器还在（有会话就有它），会话的目录绑定原封不动");
 
-            // A fork already holds messages, so under that rule it could never pick a directory of its own —
-            // which is exactly why it inherits the source's instead.
+            // A fork holds the source's directory and is a session of its own, so the chip is there too — the rule
+            // is whether anything is on screen, not how many messages it already carries.
             var fork = chat.BranchFrom(session.Id, 0);
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
             Check(fork is not null && chat.WorkspaceRootFor(fork.Id) == Path.GetFullPath(workspace)
-                  && !panel.WorkspaceChipVisibleForCheck,
-                "分叉继承来源会话的工作目录，且它带着消息所以同样不再可选");
+                  && panel.WorkspaceChipVisibleForCheck,
+                "分叉继承来源会话的工作目录，并且作为一条会话同样带着选择器");
             if (fork is not null) chat.DeleteConversation(fork.Id);
         }
         finally

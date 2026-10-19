@@ -57,9 +57,10 @@ public sealed record WorkspaceGuards(string? DataRoot, IReadOnlyList<string> Eng
 /// pointed the session at, and the only one a relative path resolves against — plus the directories the person has
 /// granted this session, which are addressed absolutely.
 ///
-/// <para>A grant adds a place to work; it never moves the workspace. <c>set_workspace</c> keeps that job, because
-/// the directory a session is born into is what the sidebar groups it by, what the repository pane reads and what
-/// a command runs in by default — none of which a reference checkout two folders away should change.</para>
+/// <para>A grant adds a place to work; it never moves the workspace. Moving it stays the person's own move, made
+/// on the composer's chip, because the directory a session is born into is what the sidebar groups it by, what the
+/// repository pane reads and what a command runs in by default — none of which a reference checkout two folders
+/// away should change.</para>
 /// </summary>
 public sealed record WorkspaceSandbox(string? Primary, IReadOnlyList<string> Granted)
 {
@@ -83,7 +84,7 @@ public sealed record WorkspaceSandbox(string? Primary, IReadOnlyList<string> Gra
     }
 }
 
-/// <summary>What a <c>set_workspace</c> argument is pointing at, decided by
+/// <summary>What a path a card names is pointing at, decided by
 /// <see cref="WorkspacePaths.ClassifyWorkspaceTarget"/>. The names answer one question: has a person already
 /// agreed to this directory? <see cref="SameAsSandbox"/> and <see cref="InsideSandbox"/> have (the session is
 /// already working in or under it), <see cref="RegisteredProject"/> has (the user added it to Hub), and
@@ -305,10 +306,10 @@ public static class WorkspacePaths
     public static WorkspacePathVerdict VerifyCommandRoot(string? root, WorkspaceGuards guards)
         => VerifyCommandRoot(WorkspaceSandbox.For(root), root, guards);
 
-    /// <summary>Where a <c>set_workspace</c> call is pointing, read against the sandbox the session already has and
-    /// the projects Hub already knows. Parsing the arguments is the app's job; judging the path is Core's, so the
-    /// rule that decides whether the call costs a card is the same one a self-check can assert without a window.
-    /// The tiers are deliberately not three names for "how far away" the directory is — they are three names for
+    /// <summary>Where a directory a card names is pointing, read against the sandbox the session already has and
+    /// the projects Hub already knows. Parsing the arguments is the app's job; judging the path is Core's, so what a
+    /// card says about a directory can be asserted without a window. The tiers are deliberately not three names for
+    /// "how far away" the directory is — they are three names for
     /// <b>who chose it</b>: the session's own subdirectory (the user's choice, narrowed), a registered project
     /// (a directory the user already pointed Hub at), or nobody's.</summary>
     public static WorkspaceTarget ClassifyWorkspaceTarget(string? path, string? currentRoot,
@@ -487,12 +488,15 @@ public static class WorkspacePaths
     public static string ResultFor(WorkspacePathVerdict verdict, string detail) => verdict switch
     {
         WorkspacePathVerdict.NoWorkspace =>
-            "This session has no workspace directory, so a relative path has nothing to be relative to. Absolute "
-            + "paths still work inside a directory the user granted this session. Ask the user which directory to "
-            + "work in and call set_workspace with its absolute path. Do not retry this call.",
+            "This session has no working directory, so a relative path has nothing to be relative to. Absolute "
+            + "paths still work inside a directory the user granted this session. Ask the user to name one from the "
+            + "workspace menu beside the composer — only they can set it. Do not guess a directory and do not retry "
+            + "this call.",
         WorkspacePathVerdict.MissingWorkspace =>
-            $"The session workspace '{detail}' no longer exists. Ask the user for the correct directory and call "
-            + "set_workspace. Do not retry this call.",
+            $"This session's working directory '{detail}' no longer exists, or it has been renamed. Absolute paths "
+            + "still work inside a directory the user granted this session. Ask the user to name the directory "
+            + "again from the workspace menu beside the composer — only they can set it. Do not guess a directory "
+            + "and do not retry this call.",
         WorkspacePathVerdict.EscapesWorkspace =>
             $"Refused: '{detail}' is not a workspace-relative path. Paths must be relative to the workspace and "
             + "must not use '..', a drive letter or a rooted path. Do not retry another spelling of this path; if "

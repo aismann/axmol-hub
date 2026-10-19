@@ -28,8 +28,7 @@ public enum ChangeVerdict
 /// disagree with the session file.
 ///
 /// Only <c>file_write</c> is a change. <c>memory_write</c> is a note with no pre-image and its transcript line
-/// already says what it wrote; <c>set_workspace</c> moves the sandbox rather than touching a file. Do not
-/// "complete" this list later — those two have no before to diff against.
+/// already says what it wrote. Do not "complete" this list later — that one has no before to diff against.
 /// </summary>
 public sealed record ChangedFile(
     string RelativePath,

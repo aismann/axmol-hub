@@ -22,7 +22,6 @@ public static class ToolPreviews
         {
             "file_write" => WritePreview(arguments, scope),
             "run_command" => CommandPreview(arguments, scope),
-            "set_workspace" => WorkspacePreview(Text(arguments, "path"), scope, projectPaths),
             "request_directory" => GrantPreview(Text(arguments, "path"), scope, projectPaths),
             "capture_screen" => CapturePreview(arguments, scope),
             "web_fetch" => FetchPreview(arguments, scope),
@@ -118,16 +117,6 @@ public static class ToolPreviews
         return $"{head}{flag}\n{Text(arguments, "command")}";
     }
 
-    /// <summary>The facts needed to say yes to a new sandbox: does it exist, is it a repository, and is it
-    /// something Hub already owns. Choosing the workspace is choosing the guard, so it is shown, not assumed.
-    /// "Hub already owns it" is read through the same classifier that decides the tier, so a card can never
-    /// describe a directory differently than the gate graded it.</summary>
-    private static string WorkspacePreview(string path, WorkspaceToolScope scope, IReadOnlyList<string>? projectPaths)
-    {
-        if (string.IsNullOrWhiteSpace(path)) return "set_workspace · (no path given)";
-        return $"set_workspace · {path}\n{string.Join(" · ", DirectoryFacts(path, scope, projectPaths))}";
-    }
-
     /// <summary>
     /// What a grant card is asking for, in the terms the answer is given in: the directory, whether it is there,
     /// whether Hub already knows it — and, on the same line, what a yes would allow. "read and write · this session
@@ -148,8 +137,8 @@ public static class ToolPreviews
         return $"request_directory · {path}\n{string.Join(" · ", facts)}";
     }
 
-    /// <summary>The directory facts both cards show. One builder for the two, so the same directory cannot read
-    /// differently on one card than on the other — and both read the classifier that decides the tier.</summary>
+    /// <summary>The directory facts the grant card shows. Read through the classifier the tier table reads, so a
+    /// card can never describe a directory differently than the gate graded it.</summary>
     private static List<string> DirectoryFacts(string path, WorkspaceToolScope scope,
         IReadOnlyList<string>? projectPaths)
     {

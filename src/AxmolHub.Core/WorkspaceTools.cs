@@ -12,9 +12,9 @@ namespace AxmolHub.Core;
 /// restart apply to the same directory the card was shown for: the value is read from the persisted session, not
 /// re-derived from whatever is on screen now.
 /// </summary>
-/// <param name="ApplyWorkspaceRoot">Persists a new sandbox root and answers the model. Async because the caller
-/// owns a UI thread and a session registry; null when nothing can persist one, which is the case in a self-check
-/// that only exercises the guard.</param>
+/// <param name="ApplyWorkspaceRoot">Persists a new sandbox root and answers the model. Nothing calls it any more —
+/// the root is the person's to choose — and it is only still here so the positional construction of this record
+/// does not move under the assertions that build it; the next change takes it and its null away.</param>
 /// <param name="ApplyGrantedRoot">Persists one directory the person just approved on a <c>request_directory</c>
 /// card and answers the model. The same seam as <paramref name="ApplyWorkspaceRoot"/> and for the same reason: the
 /// tool body is in Core and cannot reach a session registry, and a check that only exercises the guard passes
@@ -537,46 +537,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         => $"{header} · exit: {(stalled.ExitCode.HasValue ? stalled.ExitCode.ToString() : "unknown (Hub could not read it)")}"
            + $"{Lf}{Shaped(final.Output, final.Error)}";
 
-    [Description("Set the directory this session's file and command tools are confined to. Nothing outside it can "
-                 + "be read, written or run in. Any folder works: it does not have to be a git repository, and it "
-                 + "does not have to be a project registered in Hub — those are attributes of a workspace, not "
-                 + "requirements for one.")]
-    public async Task<string> SetWorkspace(
-        [Description("Absolute path of the directory to work in, for example D:\\dev\\my-app")] string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-            return "Refused: set_workspace needs the absolute path of a directory. Do not retry it empty.";
-        if (!Path.IsPathRooted(path))
-            return $"Refused: '{path}' is not an absolute path. Ask the user for the full directory. Do not retry "
-                   + "a relative one.";
-
-        string full;
-        try
-        {
-            full = Path.GetFullPath(path);
-        }
-        catch (Exception ex) when (ex is ArgumentException or System.Security.SecurityException or NotSupportedException)
-        {
-            return $"Refused: '{path}' is not a usable path ({ex.Message}). Do not retry it.";
-        }
-
-        if (!Directory.Exists(full))
-            return $"Refused: '{full}' does not exist or is not a directory. Ask the user to confirm the path; do "
-                   + "not guess another one.";
-        if (WorkspacePaths.IsProtected(full, context.Guards))
-            return WorkspacePaths.ResultFor(WorkspacePathVerdict.ProtectedRoot, full);
-
-        return context.ApplyWorkspaceRoot is { } apply
-            ? await apply(full).ConfigureAwait(false)
-            : $"Workspace set to {full}.";
-    }
-
     [Description("Ask the user to grant this session read and write access to one directory outside the "
-                 + "workspace: another project, a reference checkout, a folder the task named. It shows one "
-                 + "approval card, and approving it adds that directory for the rest of this session — alongside "
-                 + "the workspace, not instead of it — after which read_file, file_write, list_directory, "
-                 + "search_text, find_files, workspace_map and run_command's cwd all take its absolute paths. Ask "
-                 + "only for a directory the user's own words named, ask once, and never guess a path to ask for.")]
+                 + "workspace: another project, a reference checkout, a folder the task or the user's own words "
+                 + "named. It shows one approval card, and approving it adds that directory for the rest of this "
+                 + "session — alongside the workspace, not instead of it — after which read_file, file_write, "
+                 + "list_directory, search_text, find_files, workspace_map and run_command's cwd all take its "
+                 + "absolute paths. Ask only for a directory the user's own words named, ask once, and never guess "
+                 + "a path to ask for.")]
     public async Task<string> RequestDirectory(
         [Description("Absolute path of the directory to grant, for example D:\\dev\\other-project")]
         string path)
