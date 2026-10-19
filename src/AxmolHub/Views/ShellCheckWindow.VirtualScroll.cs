@@ -109,6 +109,22 @@ public partial class ShellCheckWindow
             Check(panel.ViewAtBottomForCheck && tail.Covered,
                 "点回底板重新停在尾行且视口有内容（" + panel.TranscriptCoverageDetailForCheck + "）");
 
+            // Keyboard paging is the other way out of the follow. The ScrollViewer owns the scroll; the panel
+            // only has to stop treating the next streamed chunk as a reason to snap back to the bottom.
+            var pageUpBefore = scroller.Offset.Y;
+            var pageUp = new KeyEventArgs
+            {
+                RoutedEvent = InputElement.KeyDownEvent,
+                Key = Key.PageUp,
+                Source = scroller,
+            };
+            scroller.RaiseEvent(pageUp);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.TranscriptStickForCheck && scroller.Offset.Y < pageUpBefore - 1,
+                "键盘 PageUp 离开尾部并停掉跟随（stick " + panel.TranscriptStickForCheck
+                + "，offset " + Fmt(pageUpBefore) + "→" + Fmt(scroller.Offset.Y) + "）");
+
             // A host that was reset without moving the reading position leaves the virtualizer with a fresh
             // realization range. Covering the viewport again is the repair's whole contract.
             panel.ScrollTranscriptForCheck(Math.Max(0, (scroller.Extent.Height - scroller.Viewport.Height) / 2));

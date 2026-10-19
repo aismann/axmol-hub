@@ -160,6 +160,30 @@ public partial class ChatPanel
             RequestTranscriptRepair("wheel-bar");
             change.Handled = true;
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        // Keyboard paging is the other way to leave the tail. The ScrollViewer handles PageUp/PageDown itself,
+        // so this only records the intent; PageDown restores the follow only when the page actually lands at the
+        // bottom. Home/End are deliberately not handled: inside a selectable message they move the caret, not
+        // the transcript, and stopping the follow for a caret move would surprise the reader.
+        MessageScroller.AddHandler(KeyDownEvent, (_, key) =>
+        {
+            switch (key.Key)
+            {
+                case Key.PageUp:
+                    _transcriptGeneration++;
+                    _repairFailures = 0;
+                    _stickToBottom = false;
+                    _pendingTailFollow = false;
+                    break;
+                case Key.PageDown:
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (MessageScroller.Offset.Y + MessageScroller.Viewport.Height
+                            >= MessageScroller.Extent.Height - StickEpsilon)
+                            _stickToBottom = true;
+                    }, DispatcherPriority.Loaded);
+                    break;
+            }
+        }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         // The wheel over the transcript is the ScrollViewer's; this only records that a hand is driving it.
         // Wheel up is the person leaving the tail, so the follow stops; wheel down that lands at the bottom is
         // them returning to it, the same as clicking the plate. The offset is read after the ScrollViewer has
