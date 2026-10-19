@@ -538,6 +538,15 @@ public sealed class Conversation
     /// of its own — see <see cref="SessionGroupKey.Workspace"/>.</summary>
     public string? WorkspaceRoot { get; set; }
 
+    /// <summary>Directories this session was granted, beyond <see cref="WorkspaceRoot"/>, after a person approved a
+    /// <c>request_directory</c> card. Kept apart from the workspace on purpose: a grant adds a place to read and
+    /// write, it never moves the session — the sidebar still groups by the workspace, the repository pane still
+    /// reads it, and a command still runs there unless it names another root. Persisted for the same reason a
+    /// pending approval is: the grant outlives the window that made it, and a restart must not cost the person the
+    /// same card twice. Shape rules live in <see cref="WorkspacePaths.NormalizeRoots"/>, which every reader and
+    /// writer goes through.</summary>
+    public List<string> GrantedRoots { get; set; } = [];
+
     /// <summary>Longest auto-title before ellipsis; short enough to fit the session list.</summary>
     private const int MaxTitleLength = 48;
 

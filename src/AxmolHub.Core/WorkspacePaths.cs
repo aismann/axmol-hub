@@ -9,6 +9,10 @@ public enum WorkspacePathVerdict
     NoWorkspace,
     MissingWorkspace,
     EscapesWorkspace,
+    /// <summary>A path this build can resolve, that no directory of this session contains. Its own verdict rather
+    /// than a second meaning for <see cref="EscapesWorkspace"/> because the way out is different: the spelling was
+    /// fine and the place was not, so the remedy is a grant and not a rewritten path.</summary>
+    OutsideRoots,
     ProtectedRoot,
     ReparsePoint,
     ExtensionNotAllowed,
@@ -17,9 +21,22 @@ public enum WorkspacePathVerdict
     AlreadyExists,
 }
 
-public readonly record struct WorkspacePath(WorkspacePathVerdict Verdict, string Full, string Relative)
+public readonly record struct WorkspacePath(
+    WorkspacePathVerdict Verdict, string Full, string Relative, string Root = "", bool Granted = false)
 {
     public bool IsAllowed => Verdict == WorkspacePathVerdict.Allowed;
+
+    /// <summary>
+    /// The one spelling every surface uses for this path: the tool's own sentences, the transcript's change rows,
+    /// the undo copy's name, and what <c>find_files</c> hands back to <c>read_file</c>.
+    ///
+    /// Under the primary root it is the workspace-relative path — the spelling every session had before a
+    /// directory could be granted, which is what keeps an old transcript, an old pre-image and an old diff row
+    /// meaning what they meant. Under a granted root it is the absolute path, because two granted directories can
+    /// hold the same relative spelling and one of them would otherwise be addressable only by guessing. Nothing
+    /// outside this file builds that spelling by hand: the rule lives here so the four consumers cannot disagree.
+    /// </summary>
+    public string Display => Granted ? Full : Relative;
 
     public static WorkspacePath Refuse(WorkspacePathVerdict verdict, string relative = "") => new(verdict, "", relative);
 }
@@ -27,8 +44,44 @@ public readonly record struct WorkspacePath(WorkspacePathVerdict Verdict, string
 /// <summary>
 /// Roots the assistant never writes into, whatever the approval mode says. <see cref="ToolApprovalModes.Full"/>
 /// promises "nothing asks", not "anything goes": these stay closed.
+///
+/// <para>This is the list in the other direction from <see cref="WorkspaceSandbox.Granted"/>, and the two never
+/// meet: a grant says where the assistant may work because a person pointed at it, a guard says what no grant and
+/// no mode can open. The data directory and an engine installation are on it because Hub or the toolchain owns
+/// them, and <c>.git</c> because rewriting history is never what a coding request meant.</para>
 /// </summary>
 public sealed record WorkspaceGuards(string? DataRoot, IReadOnlyList<string> EngineRoots);
+
+/// <summary>
+/// Every directory one request's file and command tools may touch: the session's workspace — the root the person
+/// pointed the session at, and the only one a relative path resolves against — plus the directories the person has
+/// granted this session, which are addressed absolutely.
+///
+/// <para>A grant adds a place to work; it never moves the workspace. <c>set_workspace</c> keeps that job, because
+/// the directory a session is born into is what the sidebar groups it by, what the repository pane reads and what
+/// a command runs in by default — none of which a reference checkout two folders away should change.</para>
+/// </summary>
+public sealed record WorkspaceSandbox(string? Primary, IReadOnlyList<string> Granted)
+{
+    public static WorkspaceSandbox Empty { get; } = new(null, []);
+
+    /// <summary>The one-root sandbox. A caller that has exactly one directory — a session nobody granted anything
+    /// to, an assertion that names one folder — says so here rather than with a list of one.</summary>
+    public static WorkspaceSandbox For(string? root) => new(root, []);
+
+    /// <summary>Primary first, then the grants in the order they were approved. A path is graded against them in
+    /// this order, so a directory reached by both spellings resolves as the workspace and keeps the relative
+    /// spelling every older session knows it by.</summary>
+    public IReadOnlyList<string> Roots { get; } = RootsOf(Primary, Granted);
+
+    private static IReadOnlyList<string> RootsOf(string? primary, IReadOnlyList<string>? granted)
+    {
+        var roots = new List<string>();
+        if (primary is { Length: > 0 }) roots.Add(primary);
+        roots.AddRange(granted ?? []);
+        return roots;
+    }
+}
 
 /// <summary>What a <c>set_workspace</c> argument is pointing at, decided by
 /// <see cref="WorkspacePaths.ClassifyWorkspaceTarget"/>. The names answer one question: has a person already
@@ -46,10 +99,16 @@ public enum WorkspaceTarget
 }
 
 /// <summary>
-/// Confines the assistant's file tools to one workspace directory. Deliberately separate from the approval gate:
-/// the gate decides whether a call may run now, this decides whether the path is inside the sandbox at all.
-/// Containment reuses <see cref="PackageInstaller.SafePath"/>, which already rejects rooted paths, drive
-/// separators and <c>..</c> traversal; it does not resolve links, so the reparse-point walk is done here.
+/// Confines the assistant's file tools to the directories one session has: its workspace, and the directories a
+/// person granted that session. Deliberately separate from the approval gate: the gate decides whether a call may
+/// run now, this decides whether the path is inside the sandbox at all. Containment of a relative path reuses
+/// <see cref="PackageInstaller.SafePath"/>, which already rejects rooted paths, drive separators and <c>..</c>
+/// traversal; it does not resolve links, so the reparse-point walk is done here — and it walks up to whichever root
+/// the path resolved in, because that is the boundary the person agreed to.
+///
+/// <para>Two grammars, and the difference is deliberate. A relative path means "inside the workspace" and nothing
+/// else, so every session file, transcript sentence and undo record written before grants existed still means what
+/// it meant. An absolute path is graded against every root and is the only way to name a granted directory.</para>
 /// </summary>
 public static class WorkspacePaths
 {
@@ -125,56 +184,126 @@ public static class WorkspacePaths
         return OperatingSystem.IsWindows() ? trimmed.ToUpperInvariant() : trimmed;
     }
 
-    public static WorkspacePath ResolveRead(string? root, string relative, WorkspaceGuards guards)
+    /// <summary>
+    /// How many directories one session may hold beyond its workspace. A hand-sized number, the same shape as
+    /// <see cref="ToolTrust.Limit"/>: a grant is a person's decision, and a writer nobody is watching must not be
+    /// able to grow the session file without a bound.
+    /// </summary>
+    public const int MaxGrantedRoots = 8;
+
+    /// <summary>
+    /// The list a session's grants are read and written through, in one place because four callers touch it — the
+    /// session store on load and on save, the request that builds a sandbox, the tool that adds a directory, and
+    /// the UI that revokes one — and they must not disagree about what an entry means.
+    ///
+    /// <para>An entry has to be a directory this build can resolve and reach, and one the guards do not already
+    /// refuse: a list that kept the data directory would be a list every later reader has to re-check, and the
+    /// check would eventually be forgotten somewhere. The user's own spelling is what survives — the canonical key
+    /// only decides whether two entries are the same directory. <paramref name="guards"/> is optional because the
+    /// session store normalizes on load and on save without knowing the engine roots; every path is graded against
+    /// the guards again when it is used, which is the floor under both.</para>
+    /// </summary>
+    public static List<string> NormalizeRoots(IEnumerable<string>? roots, WorkspaceGuards? guards = null)
     {
-        var resolved = Resolve(root, relative, guards);
+        var kept = new List<string>();
+        if (roots is null) return kept;
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var root in roots)
+        {
+            if (kept.Count >= MaxGrantedRoots) break;
+            if (string.IsNullOrWhiteSpace(root)) continue;
+
+            string full;
+            try
+            {
+                full = Path.GetFullPath(root.Trim());
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
+            {
+                continue;
+            }
+
+            if (!Directory.Exists(full)) continue;
+            if (guards is not null && IsProtected(full, guards)) continue;
+            // Folded to compare and never to store: `D:\dev\ws` and `d:/DEV/ws` are one directory, and a list that
+            // showed them twice would offer the same revoke button twice.
+            if (CanonicalRoot(full) is not { } key || !seen.Add(key)) continue;
+            kept.Add(full);
+        }
+
+        return kept;
+    }
+
+    public static WorkspacePath ResolveRead(WorkspaceSandbox sandbox, string relative, WorkspaceGuards guards)
+    {
+        var resolved = Resolve(sandbox, relative, guards);
         if (!resolved.IsAllowed) return resolved;
-        if (!File.Exists(resolved.Full)) return WorkspacePath.Refuse(WorkspacePathVerdict.NotAFile, resolved.Relative);
+        if (!File.Exists(resolved.Full)) return WorkspacePath.Refuse(WorkspacePathVerdict.NotAFile, resolved.Display);
+        return resolved;
+    }
+
+    /// <summary>The single-root spelling: one workspace and nothing granted, which is what an assertion naming one
+    /// directory means. A request that has grants must hand the <see cref="WorkspaceSandbox"/> in — through this
+    /// overload every path outside the workspace would be graded against a list that does not have it.</summary>
+    public static WorkspacePath ResolveRead(string? root, string relative, WorkspaceGuards guards)
+        => ResolveRead(WorkspaceSandbox.For(root), relative, guards);
+
+    public static WorkspacePath ResolveWrite(WorkspaceSandbox sandbox, string relative, WorkspaceGuards guards)
+    {
+        var resolved = Resolve(sandbox, relative, guards);
+        if (!resolved.IsAllowed) return resolved;
+        if (Directory.Exists(resolved.Full)) return WorkspacePath.Refuse(WorkspacePathVerdict.NotAFile, resolved.Display);
+        if (!IsWritableText(Path.GetFileName(resolved.Full)))
+            return WorkspacePath.Refuse(WorkspacePathVerdict.ExtensionNotAllowed, resolved.Display);
         return resolved;
     }
 
     public static WorkspacePath ResolveWrite(string? root, string relative, WorkspaceGuards guards)
-    {
-        var resolved = Resolve(root, relative, guards);
-        if (!resolved.IsAllowed) return resolved;
-        if (Directory.Exists(resolved.Full)) return WorkspacePath.Refuse(WorkspacePathVerdict.NotAFile, resolved.Relative);
-        if (!IsWritableText(Path.GetFileName(resolved.Full)))
-            return WorkspacePath.Refuse(WorkspacePathVerdict.ExtensionNotAllowed, resolved.Relative);
-        return resolved;
-    }
+        => ResolveWrite(WorkspaceSandbox.For(root), relative, guards);
 
     /// <summary>A directory inside the sandbox, for the read-only listing, search and glob tools. An empty path or
     /// <c>"."</c> means the workspace itself: those tools start where the user pointed the session, and making the
-    /// model name the root again would only produce a refusal it cannot act on.</summary>
-    public static WorkspacePath ResolveDirectory(string? root, string? relative, WorkspaceGuards guards)
+    /// model name the root again would only produce a refusal it cannot act on. A granted directory has no
+    /// shorthand — "." would have more than one answer — so it is named absolutely.</summary>
+    public static WorkspacePath ResolveDirectory(WorkspaceSandbox sandbox, string? relative, WorkspaceGuards guards)
     {
-        if (string.IsNullOrWhiteSpace(root)) return WorkspacePath.Refuse(WorkspacePathVerdict.NoWorkspace, relative ?? "");
-        if (!Directory.Exists(root)) return WorkspacePath.Refuse(WorkspacePathVerdict.MissingWorkspace, relative ?? "");
-
-        var workspaceRoot = Path.GetFullPath(root);
-        if (IsProtected(workspaceRoot, guards)) return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, workspaceRoot);
-
         if (string.IsNullOrWhiteSpace(relative) || relative is "." or "./")
+        {
+            if (sandbox.Roots.Count == 0 || sandbox.Primary is not { } primary)
+                return WorkspacePath.Refuse(WorkspacePathVerdict.NoWorkspace, relative ?? "");
+            if (!Directory.Exists(primary))
+                return WorkspacePath.Refuse(WorkspacePathVerdict.MissingWorkspace, relative ?? "");
+
+            var workspaceRoot = Path.GetFullPath(primary);
+            if (IsProtected(workspaceRoot, guards))
+                return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, workspaceRoot);
             return ContainsReparsePoint(workspaceRoot, workspaceRoot)
                 ? WorkspacePath.Refuse(WorkspacePathVerdict.ReparsePoint, workspaceRoot)
-                : new WorkspacePath(WorkspacePathVerdict.Allowed, workspaceRoot, "");
+                : new WorkspacePath(WorkspacePathVerdict.Allowed, workspaceRoot, "", workspaceRoot);
+        }
 
-        var resolved = Resolve(root, relative, guards);
+        var resolved = Resolve(sandbox, relative, guards);
         if (!resolved.IsAllowed) return resolved;
-        if (!Directory.Exists(resolved.Full)) return WorkspacePath.Refuse(WorkspacePathVerdict.NotADirectory, resolved.Relative);
+        if (!Directory.Exists(resolved.Full))
+            return WorkspacePath.Refuse(WorkspacePathVerdict.NotADirectory, resolved.Display);
         return resolved;
     }
 
-    /// <summary>The workspace itself, checked before a command runs in it.</summary>
+    public static WorkspacePath ResolveDirectory(string? root, string? relative, WorkspaceGuards guards)
+        => ResolveDirectory(WorkspaceSandbox.For(root), relative, guards);
+
+    /// <summary>
+    /// The directory a command would run in, checked before the shell starts. It is the same resolution every
+    /// file tool goes through — so "this command stays inside a directory the person allowed" and "this command
+    /// costs a card" are one expression rather than two that can drift apart — asked of a directory argument that
+    /// is empty for the workspace itself.
+    /// </summary>
+    public static WorkspacePathVerdict VerifyCommandRoot(WorkspaceSandbox sandbox, string? root, WorkspaceGuards guards)
+        => ResolveDirectory(sandbox, root, guards).Verdict;
+
     public static WorkspacePathVerdict VerifyCommandRoot(string? root, WorkspaceGuards guards)
-    {
-        if (string.IsNullOrWhiteSpace(root)) return WorkspacePathVerdict.NoWorkspace;
-        if (!Directory.Exists(root)) return WorkspacePathVerdict.MissingWorkspace;
-        var full = Path.GetFullPath(root);
-        if (IsProtected(full, guards)) return WorkspacePathVerdict.ProtectedRoot;
-        if (ContainsReparsePoint(full, full)) return WorkspacePathVerdict.ReparsePoint;
-        return WorkspacePathVerdict.Allowed;
-    }
+        => VerifyCommandRoot(WorkspaceSandbox.For(root), root, guards);
 
     /// <summary>Where a <c>set_workspace</c> call is pointing, read against the sandbox the session already has and
     /// the projects Hub already knows. Parsing the arguments is the app's job; judging the path is Core's, so the
@@ -232,13 +361,22 @@ public static class WorkspacePaths
         return false;
     }
 
-    private static WorkspacePath Resolve(string? root, string relative, WorkspaceGuards guards)
+    private static WorkspacePath Resolve(WorkspaceSandbox sandbox, string relative, WorkspaceGuards guards)
     {
-        if (string.IsNullOrWhiteSpace(root)) return WorkspacePath.Refuse(WorkspacePathVerdict.NoWorkspace, relative ?? "");
-        if (!Directory.Exists(root)) return WorkspacePath.Refuse(WorkspacePathVerdict.MissingWorkspace, relative ?? "");
+        if (sandbox.Roots.Count == 0) return WorkspacePath.Refuse(WorkspacePathVerdict.NoWorkspace, relative ?? "");
         if (string.IsNullOrWhiteSpace(relative)) return WorkspacePath.Refuse(WorkspacePathVerdict.EscapesWorkspace, "");
 
-        var workspaceRoot = Path.GetFullPath(root);
+        // A rooted path is not a workspace-relative one: it is addressed against the directories this session
+        // has, and if none holds it the answer names the way out — a grant — rather than pretending the spelling
+        // was the problem.
+        if (Path.IsPathRooted(relative)) return ResolveAmongRoots(sandbox, relative, guards);
+
+        if (sandbox.Primary is not { } primary)
+            return WorkspacePath.Refuse(WorkspacePathVerdict.NoWorkspace, relative);
+        if (!Directory.Exists(primary))
+            return WorkspacePath.Refuse(WorkspacePathVerdict.MissingWorkspace, relative);
+
+        var workspaceRoot = Path.GetFullPath(primary);
         string full;
         try
         {
@@ -251,7 +389,69 @@ public static class WorkspacePaths
 
         if (IsProtected(full, guards)) return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, relative);
         if (ContainsReparsePoint(full, workspaceRoot)) return WorkspacePath.Refuse(WorkspacePathVerdict.ReparsePoint, relative);
-        return new WorkspacePath(WorkspacePathVerdict.Allowed, full, Path.GetRelativePath(workspaceRoot, full));
+        return new WorkspacePath(WorkspacePathVerdict.Allowed, full, Path.GetRelativePath(workspaceRoot, full), workspaceRoot);
+    }
+
+    /// <summary>
+    /// An absolute path, graded against every root this session has. The protected locations are asked first and
+    /// on their own: a grant must never open one, and a refusal that said "not one of your roots" about the Hub
+    /// data directory would send the model off to request a grant it can never be given.
+    ///
+    /// <para>The reparse walk stops at the root that matched rather than at the workspace, because the directory a
+    /// person granted is the boundary now: a link between it and the file is a way out of <i>that</i> directory,
+    /// which is exactly the thing the walk exists to refuse.</para>
+    /// </summary>
+    private static WorkspacePath ResolveAmongRoots(WorkspaceSandbox sandbox, string path, WorkspaceGuards guards)
+    {
+        string full;
+        try
+        {
+            full = Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return WorkspacePath.Refuse(WorkspacePathVerdict.EscapesWorkspace, path);
+        }
+
+        if (IsProtected(full, guards)) return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, path);
+
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (var root in sandbox.Roots)
+        {
+            bool inside;
+            try
+            {
+                inside = IsInside(full, root, comparison);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
+            {
+                // A root this build cannot resolve holds nothing; the next one still gets its turn.
+                continue;
+            }
+
+            if (!inside) continue;
+            if (ContainsReparsePoint(full, root)) return WorkspacePath.Refuse(WorkspacePathVerdict.ReparsePoint, path);
+            return new WorkspacePath(WorkspacePathVerdict.Allowed, full, Path.GetRelativePath(root, full), root,
+                !SameRoot(root, sandbox.Primary, comparison));
+        }
+
+        return WorkspacePath.Refuse(WorkspacePathVerdict.OutsideRoots, path);
+    }
+
+    /// <summary>Whether one root is the workspace itself. Only this decides which spelling a path is shown by: the
+    /// workspace keeps the relative one every older transcript uses, a grant has to carry its directory.</summary>
+    private static bool SameRoot(string root, string? primary, StringComparison comparison)
+    {
+        if (string.IsNullOrWhiteSpace(primary)) return false;
+        try
+        {
+            return string.Equals(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar),
+                Path.GetFullPath(primary).TrimEnd(Path.DirectorySeparatorChar), comparison);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Walks the existing ancestors of <paramref name="path"/> up to <paramref name="stopAt"/>, refusing
@@ -287,19 +487,26 @@ public static class WorkspacePaths
     public static string ResultFor(WorkspacePathVerdict verdict, string detail) => verdict switch
     {
         WorkspacePathVerdict.NoWorkspace =>
-            "This session has no workspace directory, so no file or command tool can run. Ask the user which "
-            + "directory to work in and call set_workspace with its absolute path. Do not retry this call.",
+            "This session has no workspace directory, so a relative path has nothing to be relative to. Absolute "
+            + "paths still work inside a directory the user granted this session. Ask the user which directory to "
+            + "work in and call set_workspace with its absolute path. Do not retry this call.",
         WorkspacePathVerdict.MissingWorkspace =>
             $"The session workspace '{detail}' no longer exists. Ask the user for the correct directory and call "
             + "set_workspace. Do not retry this call.",
         WorkspacePathVerdict.EscapesWorkspace =>
             $"Refused: '{detail}' is not a workspace-relative path. Paths must be relative to the workspace and "
-            + "must not use '..', a drive letter or a rooted path. Do not retry another spelling of this path; "
-            + "ask the user to widen the workspace instead.",
+            + "must not use '..', a drive letter or a rooted path. Do not retry another spelling of this path; if "
+            + "the user's own task named another directory, ask for it with request_directory, otherwise ask the "
+            + "user to widen the workspace.",
+        WorkspacePathVerdict.OutsideRoots =>
+            $"Refused: '{detail}' is outside the session workspace and outside every directory the user granted "
+            + "this session. If the user's own task named that directory, call request_directory with its "
+            + "absolute path — one approval card opens it for this session; if it did not, work inside the "
+            + "workspace. Do not retry another spelling of this path.",
         WorkspacePathVerdict.ProtectedRoot =>
             $"Refused: '{detail}' is inside a protected location (the Hub data directory, an engine installation "
-            + "or a .git directory). Those are read-only for the assistant in every approval mode. Do not retry; "
-            + "tell the user what you needed and let them do it.",
+            + "or a .git directory). Those are read-only for the assistant in every approval mode, and a granted "
+            + "directory does not open them. Do not retry; tell the user what you needed and let them do it.",
         WorkspacePathVerdict.ReparsePoint =>
             $"Refused: '{detail}' resolves through a symbolic link or junction, which could point outside the "
             + "workspace. Do not retry through the link; ask the user for the real path.",
@@ -310,7 +517,7 @@ public static class WorkspacePaths
             $"Refused: '{detail}' is not a readable file (it is missing or a directory). List the directory or "
             + "ask the user for the correct path; do not guess another spelling.",
         WorkspacePathVerdict.NotADirectory =>
-            $"Refused: '{detail}' is not a directory inside the session workspace (it is missing, or it is a "
+            $"Refused: '{detail}' is not a directory inside the session's directories (it is missing, or it is a "
             + "file). Call list_directory on its parent to see what is there; do not retry another spelling of it.",
         WorkspacePathVerdict.AlreadyExists =>
             $"Refused: '{detail}' already exists, so it cannot be created with an empty old_string. Call "

@@ -76,6 +76,12 @@ internal static class ChatTools
             WorkspaceTarget.RegisteredProject => ToolRisk.WorkspaceWrite,
             _ => ToolRisk.SystemCommand,
         },
+        // Asking for a directory is asking for a place nobody has agreed to yet, so it sits where `set_workspace`
+        // puts a directory nobody chose. It stays there whatever the path is: the card *is* the mechanism, and a
+        // call that fell through silently under 自动审批 would be a grant the person never saw. 「总是允许」 is not
+        // offered — the same tier rule as the screen and another session — and here it would mean "open every
+        // directory I ever name".
+        "request_directory" => ToolRisk.SystemCommand,
         // Reading the screen writes nothing, but it shows the desktop to a model that decided when to look, and
         // the frame leaves the machine in the next request. That is the SystemCommand tier's job: it asks in
         // every mode but full. Spelled out rather than left to the fallback arm, because "unknown tool" and "this
@@ -103,10 +109,12 @@ internal static class ChatTools
     /// where those two do not already decide it — which write verbs a person has said to stop asking about.
     ///
     /// <para>The root comes from the same check the tool body runs before it spawns the shell
-    /// (<see cref="WorkspacePaths.VerifyCommandRoot"/>, which <c>WorkspaceTools.RunCommand</c> calls first), so
-    /// "this call is exempt" and "this call stays in the sandbox" are one expression rather than two that can
-    /// drift apart. A missing, protected or link-ridden root is not a workspace command, and a command with no
-    /// sandbox asks in every tier but full.</para>
+    /// (<see cref="WorkspacePaths.VerifyCommandRoot"/>, asked of the <c>cwd</c> the call names — empty means the
+    /// workspace itself), so "this call is exempt" and "this call stays inside a directory the person allowed" are
+    /// one expression rather than two that can drift apart. A directory outside every root — no workspace, a
+    /// protected one, a link-ridden one, or a path the arguments do not spell — is not a workspace command, and a
+    /// command that runs nowhere this session holds asks in every mode. <c>run_command</c>'s own body refuses it
+    /// too; the tier is about whether it may run unasked, not about whether it may run.</para>
     ///
     /// <para>The verb is the second half, and it is the reason the arm is a method: two different things can make a
     /// command cost more than the sandbox, and the line between them is a ruling rather than a ranking.
@@ -140,7 +148,8 @@ internal static class ChatTools
     private static ToolRisk RunCommandRisk(WorkspaceToolScope scope, string? argumentsJson,
         IReadOnlyList<string>? trustedCommands)
     {
-        if (WorkspacePaths.VerifyCommandRoot(scope.WorkspaceRoot, scope.Guards) != WorkspacePathVerdict.Allowed)
+        if (CwdOf(argumentsJson) is not { } cwd) return ToolRisk.SystemCommand;
+        if (WorkspacePaths.VerifyCommandRoot(scope.Sandbox, cwd, scope.Guards) != WorkspacePathVerdict.Allowed)
             return ToolRisk.SystemCommand;
         if (BuildCommandGrades.CommandOf(argumentsJson) == BuildGrade.CacheBreak) return ToolRisk.CacheBreak;
         if (GitCommandGrades.LocalWritesOnly(argumentsJson)) return ToolRisk.RepositoryWrite;
@@ -190,6 +199,27 @@ internal static class ChatTools
     public static AIFunction? Find(string name, string mode, ChatToolScope scope)
         => CreateFor(mode, scope).OfType<AIFunction>()
             .FirstOrDefault(tool => string.Equals(tool.Name, name, StringComparison.Ordinal));
+
+    /// <summary>The directory a <c>run_command</c> call would run in, exactly as the model wrote it: empty when the
+    /// call names none, which is the workspace itself. <c>null</c> means the arguments cannot be read at all, and a
+    /// call this build cannot read is not one it can vouch for — the caller grades it as a reach past the sandbox
+    /// rather than as a command in the workspace.</summary>
+    private static string? CwdOf(string? argumentsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argumentsJson)) return "";
+        try
+        {
+            using var document = JsonDocument.Parse(argumentsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
+            return document.RootElement.TryGetProperty("cwd", out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? ""
+                : "";
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>The directory a <c>set_workspace</c> names. Nothing here decides whether it is a safe place — that
     /// is <see cref="WorkspacePaths.ClassifyWorkspaceTarget"/>, in Core, where the same rule can be read back
@@ -294,6 +324,7 @@ internal static class ChatTools
             AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")),
             AIFunctionFactory.Create(tools.CaptureScreen, Options("capture_screen")),
             AIFunctionFactory.Create(tools.SetWorkspace, Options("set_workspace")),
+            AIFunctionFactory.Create(tools.RequestDirectory, Options("request_directory")),
             AIFunctionFactory.Create(tools.MemoryWrite, Options("memory_write")),
             AIFunctionFactory.Create(tools.SendToSession, Options("send_to_session")),
             AIFunctionFactory.Create(tools.SpawnSession, Options("spawn_session")),

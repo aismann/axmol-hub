@@ -623,9 +623,15 @@ public partial class ChatSidebar : UserControl
     /// </summary>
     private void ReportWorkspaceRejection(WorkspacePathVerdict verdict, string path)
     {
-        var message = verdict == WorkspacePathVerdict.ProtectedRoot
-            ? HubStrings.Get("ChatWorkspaceProtected")
-            : HubStrings.Get("ChatWorkspaceRejected") + path;
+        // One verdict, one sentence, and the two the composer's chip already uses — so a failure reads the same
+        // wherever it happens. OutsideRoots is here so a verdict with its own fact (this directory is not one of
+        // the session's) cannot fall into the catch-all "that directory cannot be used".
+        var message = verdict switch
+        {
+            WorkspacePathVerdict.ProtectedRoot => HubStrings.Get("ChatWorkspaceProtected"),
+            WorkspacePathVerdict.OutsideRoots => HubStrings.Get("ChatWorkspaceOutside"),
+            _ => HubStrings.Get("ChatWorkspaceRejected") + path,
+        };
         StatusReporter?.Invoke(message);
     }
 

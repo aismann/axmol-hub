@@ -722,16 +722,24 @@ public partial class ChatPanel : UserControl
         // write to" has one answer and the folder name is it. When nothing is bound it says so, because that is
         // the state where every file tool refuses and the reason is still one click away.
         var root = _chat.ActiveWorkspaceRoot;
+        // The directories this session holds beyond its workspace. They ride on the chip because a grant is a
+        // permission a person gave and has to be able to take back: the tooltip names them, the menu revokes one.
+        var granted = _chat.ActiveGrantedRoots;
         WorkspaceChipLabel.Text = root is { Length: > 0 } ? FolderNameOf(root) : HubStrings.Get("ChatWorkspaceNone");
-        ToolTip.SetTip(WorkspaceChip, root is { Length: > 0 }
+        var hint = root is { Length: > 0 }
             ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("ChatWorkspaceChipHintFormat"), root)
-            : HubStrings.Get("ChatWorkspaceChipHint"));
+            : HubStrings.Get("ChatWorkspaceChipHint");
+        ToolTip.SetTip(WorkspaceChip, granted.Count == 0
+            ? hint
+            : hint + string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatWorkspaceGrantedHintFormat"), granted.Count, string.Join(" · ", granted)));
         // And it is on screen only while the choice is still open: no session, or one that has never received a
         // message. The directory is what a session is born into, so after the first turn it is history —
         // swapping it mid-conversation would leave every earlier reply about a different tree — and a control
-        // that can no longer act is a claim that it still can.
-        WorkspaceChip.IsVisible = _chat.ActiveConversation is not { Messages.Count: > 0 };
+        // that can no longer act is a claim that it still can. A granted directory is the one thing that keeps it
+        // there afterwards: that permission was given mid-conversation, and revoking it is the only way back.
+        WorkspaceChip.IsVisible = _chat.ActiveConversation is not { Messages.Count: > 0 } || granted.Count > 0;
     }
 
     private static string FolderNameOf(string path)
@@ -1009,8 +1017,11 @@ public partial class ChatPanel : UserControl
     private void ShowWorkspaceMenu() => ShowMenu(BuildWorkspaceMenu(), WorkspaceChip);
 
     /// <summary>
-    /// Pick a directory, and — only while one is bound — clear it. The bound path is not repeated as a row: the
-    /// chip reads it out and the tooltip gives it in full, so a third copy would be chrome saying a thing twice.
+    /// Pick a directory, clear it while one is bound, and take back a grant. The bound path is not repeated as a
+    /// row: the chip reads it out and the tooltip gives it in full, so a third copy would be chrome saying a thing
+    /// twice. A granted directory is repeated, because the row is the only way to revoke it — each item names the
+    /// folder and carries the whole path as its tooltip, so two grants with the same folder name are still two
+    /// different buttons.
     /// </summary>
     private MenuFlyout BuildWorkspaceMenu()
     {
@@ -1032,6 +1043,35 @@ public partial class ChatPanel : UserControl
                 menu.Hide();
             };
             menu.Items.Add(clear);
+        }
+
+        var granted = _chat.ActiveGrantedRoots;
+        if (granted.Count > 0)
+        {
+            menu.Items.Add(new MenuItem
+            {
+                Header = HubStrings.Get("ChatWorkspaceGrantedMenu"),
+                IsEnabled = false,
+            });
+            foreach (var directory in granted)
+            {
+                var revoke = new MenuItem
+                {
+                    Header = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                        HubStrings.Get("ChatWorkspaceRevokeFormat"), FolderNameOf(directory)),
+                    Tag = directory,
+                };
+                ToolTip.SetTip(revoke, directory);
+                var target = directory;
+                revoke.Click += (_, _) =>
+                {
+                    menu.Hide();
+                    if (_chat.ActiveConversation is not { } session) return;
+                    if (_chat.RevokeGrantedRoot(session.Id, target))
+                        AppendNotice(HubStrings.Get("ChatWorkspaceRevoked"), danger: false);
+                };
+                menu.Items.Add(revoke);
+            }
         }
 
         return menu;
@@ -1057,6 +1097,12 @@ public partial class ChatPanel : UserControl
                 return;
             case WorkspacePathVerdict.ProtectedRoot:
                 AppendNotice(HubStrings.Get("ChatWorkspaceProtected"), danger: true);
+                return;
+            // Named apart from the catch-all even though no picker produces it today: the panel and the gate must
+            // answer one verdict with one sentence, and a case that fell through here would read as "that directory
+            // cannot be used" for a fact that is about which directories this session holds.
+            case WorkspacePathVerdict.OutsideRoots:
+                AppendNotice(HubStrings.Get("ChatWorkspaceOutside"), danger: true);
                 return;
             default:
                 AppendNotice(HubStrings.Get("ChatWorkspaceRejected") + result.Path, danger: true);

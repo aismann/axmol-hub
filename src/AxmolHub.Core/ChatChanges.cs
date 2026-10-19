@@ -149,7 +149,7 @@ public static class ChatChanges
     /// </list>
     /// </summary>
     public static string? DiffFor(ChangedFile file, string conversationId, string? dataRoot,
-        string? workspaceRoot, WorkspaceGuards guards, DiffLimits? limits, out UndoCopyState state)
+        WorkspaceSandbox sandbox, WorkspaceGuards guards, DiffLimits? limits, out UndoCopyState state)
     {
         state = UndoCopyState.EvictedOrSpent;
         var capped = limits ?? InspectorLimits;
@@ -160,7 +160,7 @@ public static class ChatChanges
             return frozen;
         }
 
-        var resolved = WorkspacePaths.ResolveWrite(workspaceRoot, file.RelativePath, guards);
+        var resolved = WorkspacePaths.ResolveWrite(sandbox, file.RelativePath, guards);
         if (!resolved.IsAllowed)
         {
             state = UndoCopyState.RefusedPath;
@@ -172,7 +172,7 @@ public static class ChatChanges
         {
             var applied = FileEdit.Apply(pre, edit.Old, edit.New, edit.All);
             state = UndoCopyState.Read;
-            return FileDiff.Unified(pre, applied.Updated, resolved.Relative, capped);
+            return FileDiff.Unified(pre, applied.Updated, resolved.Display, capped);
         }
 
         if (copyState == UndoCopyState.CreatedFile || file.Verdict == ChangeVerdict.Created)
@@ -185,7 +185,7 @@ public static class ChatChanges
                 return null;
             }
             state = UndoCopyState.CreatedFile;
-            return FileDiff.Unified("", current, resolved.Relative, capped);
+            return FileDiff.Unified("", current, resolved.Display, capped);
         }
 
         state = copyState;

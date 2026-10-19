@@ -150,10 +150,10 @@ public static class ChatUndoStore
     /// it. The expected content is re-derived by replaying the recorded edit on the pre-image rather than stored
     /// a second time: the same anchor and the same replacement make the same file, and nothing else has to be
     /// kept in step.</summary>
-    /// <param name="relative">The path the write named, resolved again under the sandbox it was resolved in — a
-    /// directory that moved since is refused, not followed.</param>
+    /// <param name="sandbox">The directories the session holds now, which is where the recorded path is resolved
+    /// again: a directory that moved, or a grant that was revoked since, is refused rather than followed.</param>
     public static UndoVerdict Restore(string? dataRoot, string conversationId, string? name,
-        string? workspaceRoot, WorkspaceGuards guards, string? argumentsJson, out string relative)
+        WorkspaceSandbox sandbox, WorkspaceGuards guards, string? argumentsJson, out string relative)
     {
         relative = "";
         if (string.IsNullOrWhiteSpace(name) || DirectoryFor(dataRoot, conversationId) is not { } directory)
@@ -166,7 +166,7 @@ public static class ChatUndoStore
             return UndoVerdict.RefusedPath;
         relative = path;
 
-        var resolved = WorkspacePaths.ResolveWrite(workspaceRoot, path, guards);
+        var resolved = WorkspacePaths.ResolveWrite(sandbox, path, guards);
         if (!resolved.IsAllowed) return UndoVerdict.RefusedPath;
 
         string? original;
@@ -211,6 +211,14 @@ public static class ChatUndoStore
         catch (UnauthorizedAccessException) { }
         return UndoVerdict.Reverted;
     }
+
+    /// <summary>The single-root spelling: one workspace and nothing granted, which is what an assertion naming one
+    /// folder means. The app hands the sandbox in instead — a copy recorded against an absolute path in a granted
+    /// directory can only be put back while that grant is still held.</summary>
+    public static UndoVerdict Restore(string? dataRoot, string conversationId, string? name,
+        string? workspaceRoot, WorkspaceGuards guards, string? argumentsJson, out string relative)
+        => Restore(dataRoot, conversationId, name, WorkspaceSandbox.For(workspaceRoot), guards, argumentsJson,
+            out relative);
 
     /// <summary>The path one write named, read back out of the arguments the model chose. The record line shows
     /// it, so a view does not have to parse a tool's arguments for itself and get the shape wrong.</summary>

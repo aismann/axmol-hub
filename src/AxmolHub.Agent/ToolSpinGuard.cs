@@ -19,7 +19,8 @@ namespace AxmolHub.Agent;
 /// rather than from counters, so a restart, a steer or a replayed session sees the same history:</para>
 /// <list type="bullet">
 /// <item>A successful state-changing call (<c>file_write</c>, <c>run_command</c>, <c>set_workspace</c>,
-/// <c>memory_write</c>) ends the walk. Re-reading a file you just edited is verification, not spinning.</item>
+/// <c>request_directory</c>, <c>memory_write</c>) ends the walk. Re-reading a file you just edited is
+/// verification, not spinning.</item>
 /// <item>A result that <see cref="ToolLoopContextGuard.Elide"/> rewrote tells the model in so many words to
 /// call again if it still needs it — so a repeat after an elision is Hub asking for it, not a loop.</item>
 /// </list>
@@ -39,9 +40,10 @@ public static class ToolSpinGuard
     public const int WindowSize = 12;
 
     /// <summary>The tools whose success means the world moved. Read against their results below, not trusted
-    /// by name alone.</summary>
+    /// by name alone. <c>request_directory</c> is here because its success is a grant recorded on the session —
+    /// state a repeat would be asking for twice, and the answer to the second ask is "already granted".</summary>
     private static readonly string[] StateChangingTools =
-        ["file_write", "run_command", "set_workspace", "memory_write"];
+        ["file_write", "run_command", "set_workspace", "request_directory", "memory_write"];
 
     /// <summary>The sentence a refused repeat hands back to the model. Matched on itself by the checks.</summary>
     public const string RefusalMarker = "has already run";

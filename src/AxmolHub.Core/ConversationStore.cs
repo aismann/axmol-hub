@@ -140,11 +140,29 @@ public sealed class ConversationStore(string root)
         }
     }
 
-    /// <summary>Loads one conversation; <c>null</c> when the id is unknown.</summary>
+    /// <summary>
+    /// The guards this store can build by itself: its own data root, and no engine list — engines are an app fact
+    /// that lives above it. That is enough to keep the one directory that must never be granted out of a session
+    /// file; the engine roots are filtered where that list exists, and every path is graded against the full guards
+    /// again when a tool uses it.
+    /// </summary>
+    private WorkspaceGuards OwnGuards => new(root, []);
+
+    /// <summary>Loads one conversation; <c>null</c> when the id is unknown.
+    ///
+    /// <para>The granted directories go through their shape rules on the way out — see
+    /// <see cref="WorkspacePaths.NormalizeRoots"/>. A session file is user-editable data: one that grew past the
+    /// cap, named a directory twice in two spellings, or kept a folder that has since been deleted must arrive at
+    /// the guard as a list it can trust, or every later reader would have to re-check it and one of them would
+    /// eventually forget.</para></summary>
     public Conversation? Load(string id)
     {
         var path = ConversationPath(id);
-        return File.Exists(path) ? Read(path) : null;
+        if (!File.Exists(path)) return null;
+        var conversation = Read(path);
+        if (conversation is not null)
+            conversation.GrantedRoots = WorkspacePaths.NormalizeRoots(conversation.GrantedRoots, OwnGuards);
+        return conversation;
     }
 
     /// <summary>
@@ -170,9 +188,12 @@ public sealed class ConversationStore(string root)
         return File.Exists(path) ? File.ReadAllText(path) : null;
     }
 
-    /// <summary>Writes a conversation and refreshes its index entry, atomically.</summary>
+    /// <summary>Writes a conversation and refreshes its index entry, atomically. The granted directories are put
+    /// through their shape rules first: this is the one door every writer goes through, so a list that grew past
+    /// the cap or kept a spelling that no longer resolves cannot reach the disk from any caller.</summary>
     public void Save(Conversation conversation)
     {
+        conversation.GrantedRoots = WorkspacePaths.NormalizeRoots(conversation.GrantedRoots, OwnGuards);
         StateStore.WriteJson(ConversationPath(conversation.Id), conversation);
         lock (_indexGate)
         {

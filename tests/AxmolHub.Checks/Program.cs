@@ -3559,11 +3559,20 @@ if (args.Contains("--check-ai-workspace"))
     if (!WorkspacePaths.ResolveRead(workspace, "src/hello.cpp", guards).IsAllowed)
         throw new Exception("A forward-slash relative path was refused.");
 
-    foreach (var escaping in new[] { "../outside.cpp", "src/../../outside.cpp", "/etc/passwd", "C:\\Windows\\win.ini", "" })
+    // Two refusals, not one. A relative spelling that climbs out is a malformed path; an absolute one is a
+    // well-formed path in a place this session does not hold, and the way out differs — rewrite the path versus
+    // ask for the directory (request_directory) — so the model has to be told which of the two it hit.
+    foreach (var escaping in new[] { "../outside.cpp", "src/../../outside.cpp", "" })
     {
         var verdict = WorkspacePaths.ResolveWrite(workspace, escaping, guards).Verdict;
         if (verdict != WorkspacePathVerdict.EscapesWorkspace)
             throw new Exception($"'{escaping}' was answered with {verdict} instead of EscapesWorkspace.");
+    }
+    foreach (var outside in new[] { "/etc/passwd", "C:\\Windows\\win.ini" })
+    {
+        var verdict = WorkspacePaths.ResolveWrite(workspace, outside, guards).Verdict;
+        if (verdict != WorkspacePathVerdict.OutsideRoots)
+            throw new Exception($"'{outside}' was answered with {verdict} instead of OutsideRoots.");
     }
 
     // Protected roots are refused identically by every verb that reads: the one rule no approval mode relaxes.
@@ -3583,9 +3592,14 @@ if (args.Contains("--check-ai-workspace"))
         || WorkspacePaths.ResolveDirectory(Path.Combine(workspace, "engine-2.11.5"), "", guards)
             .Verdict != WorkspacePathVerdict.ProtectedRoot)
         throw new Exception("A protected directory was walkable by the read-only tools.");
-    foreach (var escaping in new[] { "../outside", "src/../../outside", "/etc", "C:\\Windows" })
+    foreach (var escaping in new[] { "../outside", "src/../../outside" })
         if (WorkspacePaths.ResolveDirectory(workspace, escaping, guards).Verdict != WorkspacePathVerdict.EscapesWorkspace)
             throw new Exception($"'{escaping}' was not refused as escaping the workspace by the directory verb.");
+    // …and an absolute path outside every root is its own answer for this verb too: the listing tools must say
+    // "ask for that directory" rather than "your path is malformed".
+    foreach (var outside in new[] { "/etc", "C:\\Windows" })
+        if (WorkspacePaths.ResolveDirectory(workspace, outside, guards).Verdict != WorkspacePathVerdict.OutsideRoots)
+            throw new Exception($"'{outside}' was not refused as outside every root by the directory verb.");
     // An empty path is not a traversal bug, it is the question "what is in my project" — and both spellings of
     // the root have to answer it the same way, or the model learns to probe.
     if (!WorkspacePaths.ResolveDirectory(workspace, "", guards).IsAllowed
@@ -3595,7 +3609,7 @@ if (args.Contains("--check-ai-workspace"))
     if (WorkspacePaths.ResolveDirectory(workspace, "src/hello.cpp", guards).Verdict != WorkspacePathVerdict.NotADirectory
         || WorkspacePaths.ResolveDirectory(workspace, "nowhere", guards).Verdict != WorkspacePathVerdict.NotADirectory)
         throw new Exception("A file, or nothing at all, was accepted as a directory to search.");
-    if (WorkspacePaths.ResolveDirectory(null, "src", guards).Verdict != WorkspacePathVerdict.NoWorkspace
+    if (WorkspacePaths.ResolveDirectory(WorkspaceSandbox.For(null), "src", guards).Verdict != WorkspacePathVerdict.NoWorkspace
         || WorkspacePaths.ResolveDirectory(Path.Combine(guardRoot, "nope"), "src", guards)
             .Verdict != WorkspacePathVerdict.MissingWorkspace)
         throw new Exception("The directory verb did not answer a missing workspace in words.");
@@ -3647,7 +3661,7 @@ if (args.Contains("--check-ai-workspace"))
         || WorkspacePaths.ResolveWrite(workspace, "android/new/api.aidl", guards).Verdict != WorkspacePathVerdict.Allowed)
         throw new Exception("A new file under a directory that does not exist yet was refused as a write target.");
 
-    if (WorkspacePaths.ResolveRead(null, "src/hello.cpp", guards).Verdict != WorkspacePathVerdict.NoWorkspace
+    if (WorkspacePaths.ResolveRead(WorkspaceSandbox.For(null), "src/hello.cpp", guards).Verdict != WorkspacePathVerdict.NoWorkspace
         || WorkspacePaths.ResolveRead(Path.Combine(guardRoot, "nope"), "a.cpp", guards).Verdict != WorkspacePathVerdict.MissingWorkspace)
         throw new Exception("A missing workspace was not reported as such.");
     if (WorkspacePaths.VerifyCommandRoot(null, guards) != WorkspacePathVerdict.NoWorkspace
@@ -3659,8 +3673,9 @@ if (args.Contains("--check-ai-workspace"))
     foreach (var verdict in new[]
              {
                  WorkspacePathVerdict.NoWorkspace, WorkspacePathVerdict.EscapesWorkspace,
-                 WorkspacePathVerdict.ProtectedRoot, WorkspacePathVerdict.ReparsePoint,
-                 WorkspacePathVerdict.ExtensionNotAllowed, WorkspacePathVerdict.NotADirectory,
+                 WorkspacePathVerdict.OutsideRoots, WorkspacePathVerdict.ProtectedRoot,
+                 WorkspacePathVerdict.ReparsePoint, WorkspacePathVerdict.ExtensionNotAllowed,
+                 WorkspacePathVerdict.NotADirectory,
              })
     {
         var sentence = WorkspacePaths.ResultFor(verdict, "x");
@@ -4647,6 +4662,172 @@ if (args.Contains("--check-ai-tools"))
         || WorkspacePaths.ClassifyWorkspaceTarget("   ", workspace, null, guards) != WorkspaceTarget.Unreadable)
         throw new Exception("set_workspace's tier was decided by something other than who chose that directory.");
     Console.WriteLine("PASS: set_workspace is classified by the directory it names, and fails closed on one it cannot read.");
+
+    // ── granted directories: a session may hold more than its workspace, one card at a time ──
+    // One sentence is the whole rule — a relative path is the workspace, an absolute path is graded against every
+    // root the session holds — and the rest of this block is what follows from it: the refusal that names the way
+    // out, the spelling every consumer keys on, the floor under the grant, and the pre-image that outlives it.
+    var grantedRoot = Path.Combine(toolRoot, "granted-project");
+    var outsiderRoot = Path.Combine(toolRoot, "outside-cwd");
+    Directory.CreateDirectory(Path.Combine(grantedRoot, "src"));
+    Directory.CreateDirectory(Path.Combine(grantedRoot, ".git"));
+    Directory.CreateDirectory(outsiderRoot);
+    var grantedFile = Path.Combine(grantedRoot, "src", "lib.cpp");
+    File.WriteAllText(grantedFile, "int lib() { return 1; }\n");
+
+    if (WorkspacePaths.ResolveRead(workspace, grantedFile, guards).Verdict != WorkspacePathVerdict.OutsideRoots
+        || !WorkspacePaths.ResultFor(WorkspacePathVerdict.OutsideRoots, grantedFile)
+            .Contains("request_directory", StringComparison.Ordinal))
+        throw new Exception("An absolute path outside the workspace was not refused as outside every root, or its "
+                            + "refusal did not name request_directory.");
+
+    var grantBox = new WorkspaceSandbox(workspace, [grantedRoot]);
+    var insideGrant = WorkspacePaths.ResolveRead(grantBox, grantedFile, guards);
+    if (!insideGrant.IsAllowed || !insideGrant.Granted || insideGrant.Full != grantedFile
+        || insideGrant.Root != grantedRoot)
+        throw new Exception($"An absolute path inside a granted directory was not resolved as one ({insideGrant.Verdict}).");
+    // The spelling every consumer keys on: a granted path is shown absolutely, and the workspace keeps the relative
+    // spelling it had before grants existed. That line is what keeps an old transcript, an old pre-image and an old
+    // diff row meaning what they meant.
+    var insideWorkspace = WorkspacePaths.ResolveRead(grantBox, "src/main.cpp", guards);
+    if (!insideWorkspace.IsAllowed || insideWorkspace.Granted
+        || insideWorkspace.Display != Path.Combine("src", "main.cpp"))
+        throw new Exception("A workspace-relative path stopped being relative once a directory was granted.");
+    if (WorkspacePaths.ResolveRead(grantBox, Path.Combine(workspace, "src", "main.cpp"), guards).Display
+        != Path.Combine("src", "main.cpp"))
+        throw new Exception("An absolute path inside the workspace lost the relative spelling older records use.");
+    // A relative path is the workspace and only the workspace: after a grant it must not start resolving against
+    // the second root, or "src/lib.cpp" would name two different files.
+    if (WorkspacePaths.ResolveRead(grantBox, "src/lib.cpp", guards).Verdict != WorkspacePathVerdict.NotAFile)
+        throw new Exception("A relative path resolved against a granted directory.");
+    // The floor under every grant: a protected location is refused even inside a directory a person granted,
+    // because the grant says "this folder" and the guard says "never these, whatever anybody approved".
+    if (WorkspacePaths.ResolveWrite(grantBox, Path.Combine(grantedRoot, ".git", "config"), guards).Verdict
+        != WorkspacePathVerdict.ProtectedRoot
+        || WorkspacePaths.ResolveWrite(new WorkspaceSandbox(workspace, [dataRoot]), Path.Combine(dataRoot, "state.json"),
+            guards).Verdict != WorkspacePathVerdict.ProtectedRoot)
+        throw new Exception("A grant opened a protected location.");
+    // A command's directory goes through the same resolution, so "this call stays inside a directory the person
+    // allowed" and "this call is exempt from a card" are one expression rather than two that can drift apart.
+    if (WorkspacePaths.VerifyCommandRoot(grantBox, grantedRoot, guards) != WorkspacePathVerdict.Allowed
+        || WorkspacePaths.VerifyCommandRoot(grantBox, "", guards) != WorkspacePathVerdict.Allowed
+        || WorkspacePaths.VerifyCommandRoot(grantBox, outsiderRoot, guards) != WorkspacePathVerdict.OutsideRoots
+        || WorkspacePaths.VerifyCommandRoot(grantBox, dataRoot, guards) != WorkspacePathVerdict.ProtectedRoot)
+        throw new Exception("A command's directory was not graded against every root the session holds.");
+
+    // ── request_directory: the card is the mechanism, so the body's own refusals are what it answers ──
+    if (!(await tools.RequestDirectory("relative/path")).Contains("not an absolute path", StringComparison.Ordinal)
+        || !(await tools.RequestDirectory(Path.Combine(toolRoot, "no-such-folder")))
+            .Contains("does not exist", StringComparison.Ordinal)
+        || !(await tools.RequestDirectory(dataRoot)).Contains("protected location", StringComparison.Ordinal)
+        || !(await tools.RequestDirectory(Path.Combine(workspace, "src")))
+            .Contains("inside the session workspace", StringComparison.Ordinal)
+        || !(await tools.RequestDirectory(toolRoot)).Contains("contains the session workspace", StringComparison.Ordinal))
+        throw new Exception("request_directory accepted a relative, missing, protected, internal or enclosing directory.");
+
+    var holdingTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "grant-ask", [], log,
+        _ => Task.FromResult("persisted"))
+    { Sandbox = grantBox });
+    if (!(await holdingTools.RequestDirectory(grantedRoot)).Contains("already granted", StringComparison.Ordinal)
+        || !(await holdingTools.RequestDirectory(Path.Combine(grantedRoot, "src")))
+            .Contains("already inside", StringComparison.Ordinal))
+        throw new Exception("request_directory asked again for a directory the session already holds.");
+
+    string? askedGrant = null;
+    var freshGrant = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "grant-fresh", [], log,
+        _ => Task.FromResult("persisted"),
+        ApplyGrantedRoot: path =>
+        {
+            askedGrant = path;
+            return Task.FromResult($"Granted: {path}.");
+        }));
+    var grantedAnswer = await freshGrant.RequestDirectory(grantedRoot);
+    if (askedGrant != grantedRoot || !grantedAnswer.Contains($"Granted: {grantedRoot}", StringComparison.Ordinal))
+        throw new Exception($"A directory nobody holds was not handed to the caller to persist:{Environment.NewLine}"
+                            + grantedAnswer);
+
+    // ── a write in a granted directory is a write: same pre-image, same revert, and the revert dies with the grant ──
+    var grantId = "grant-undo";
+    var grantTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, grantId, [], log,
+        _ => Task.FromResult("persisted"))
+    { Sandbox = grantBox });
+    var grantWrite = grantTools.FileWrite(grantedFile, "return 1", "return 2");
+    if (!grantWrite.StartsWith("Edited ", StringComparison.Ordinal)
+        || !grantWrite.Contains(grantedFile, StringComparison.Ordinal)
+        || WorkspaceTools.ReadAll(grantedFile) is not { } grantText || !grantText.Contains("return 2"))
+        throw new Exception($"A write in a granted directory did not land:{Environment.NewLine}{grantWrite}");
+
+    var grantArgs = JsonSerializer.Serialize(new { path = grantedFile, old_string = "return 1", new_string = "return 2" });
+    var grantCopy = ChatUndoStore.NameFromResult(grantWrite);
+    if (grantCopy is null
+        || ChatUndoStore.Restore(dataRoot, grantId, grantCopy, grantBox, guards, grantArgs, out _) != UndoVerdict.Reverted
+        || WorkspaceTools.ReadAll(grantedFile) is not { } grantReverted || grantReverted.Contains("return 2"))
+        throw new Exception("A write in a granted directory kept no pre-image, or its revert did not go back.");
+
+    var revokedFile = Path.Combine(grantedRoot, "src", "gone.cpp");
+    File.WriteAllText(revokedFile, "one\n");
+    var revokedWrite = grantTools.FileWrite(revokedFile, "one", "two");
+    var revokedArgs = JsonSerializer.Serialize(new { path = revokedFile, old_string = "one", new_string = "two" });
+    var revokedCopy = ChatUndoStore.NameFromResult(revokedWrite);
+    if (revokedCopy is null
+        || ChatUndoStore.Restore(dataRoot, grantId, revokedCopy, WorkspaceSandbox.For(workspace), guards, revokedArgs,
+            out _) != UndoVerdict.RefusedPath)
+        throw new Exception("A revert of a write in a directory no longer granted walked the recorded path anyway.");
+
+    // ── a command can be pointed at a granted directory, and the header says where it actually ran ──
+    var grantRun = await grantTools.RunCommand("echo mark > cwd-marker.txt", cwd: grantedRoot);
+    if (!grantRun.Contains($"cwd: {Path.GetFullPath(grantedRoot)}", StringComparison.Ordinal)
+        || !File.Exists(Path.Combine(grantedRoot, "cwd-marker.txt")))
+        throw new Exception($"A command aimed at a granted directory did not run there:{Environment.NewLine}{grantRun}");
+    var refusedRun = await grantTools.RunCommand("echo mark > cwd-marker.txt", cwd: outsiderRoot);
+    if (!refusedRun.Contains("outside every directory", StringComparison.Ordinal)
+        || File.Exists(Path.Combine(outsiderRoot, "cwd-marker.txt")))
+        throw new Exception($"A command aimed outside every root ran anyway:{Environment.NewLine}{refusedRun}");
+
+    // The line the decision is made on: the directory, and what a yes would allow — read and write, this session.
+    var cardScope = new WorkspaceToolScope(workspace, guards, dataRoot, "grant-card", [], log, _ => Task.FromResult("persisted"));
+    var grantCard = ToolPreviews.PreviewFor("request_directory", JsonSerializer.Serialize(new { path = grantedRoot }),
+        cardScope);
+    if (!grantCard.StartsWith("request_directory · ", StringComparison.Ordinal)
+        || !grantCard.Contains("exists", StringComparison.Ordinal)
+        || !grantCard.Contains("read and write", StringComparison.Ordinal)
+        || !grantCard.Contains("this session only", StringComparison.Ordinal))
+        throw new Exception($"A grant card did not say what approving it allows:{Environment.NewLine}{grantCard}");
+    if (!ToolPreviews.PreviewFor("request_directory", JsonSerializer.Serialize(new { path = dataRoot }), cardScope)
+            .Contains("protected location", StringComparison.Ordinal))
+        throw new Exception("A protected directory did not preview as one on a grant card.");
+    if (!ToolPreviews.PreviewFor("run_command", JsonSerializer.Serialize(new { command = "ls", cwd = grantedRoot }),
+            new WorkspaceToolScope(workspace, guards, dataRoot, "grant-card", [], log, _ => Task.FromResult("persisted"))
+            { Sandbox = grantBox })
+        .Contains(Path.GetFullPath(grantedRoot), StringComparison.Ordinal))
+        throw new Exception("A command card did not name the directory the command would run in.");
+
+    // ── the session file is user-editable data, so its grants come back through the same rules ──
+    var grantStoreRoot = Path.Combine(toolRoot, "grant-data");
+    var grantStore = new ConversationStore(grantStoreRoot);
+    var grantSession = Conversation.Create("provider");
+    grantSession.GrantedRoots = [grantedRoot, grantedRoot, "", "   ", grantStoreRoot, Path.Combine(toolRoot, "gone")];
+    grantStore.Save(grantSession);
+    var reloadedGrants = grantStore.Load(grantSession.Id)?.GrantedRoots;
+    if (reloadedGrants is null || reloadedGrants.Count != 1
+        || !string.Equals(reloadedGrants[0], grantedRoot, StringComparison.Ordinal))
+        throw new Exception($"A session file's granted directories were not normalized ({reloadedGrants?.Count} kept); "
+                            + "a duplicate, a blank, a missing folder and the data directory all survive this road.");
+    // …and the cap is the other half of the same rule: a loop that keeps asking cannot grow the file without bound.
+    var manyGrants = WorkspacePaths.NormalizeRoots(Enumerable.Range(0, WorkspacePaths.MaxGrantedRoots + 4).Select(index =>
+    {
+        var folder = Path.Combine(toolRoot, $"grant-{index}");
+        Directory.CreateDirectory(folder);
+        return folder;
+    }));
+    if (manyGrants.Count != WorkspacePaths.MaxGrantedRoots)
+        throw new Exception($"The granted-directory list grew past its cap ({manyGrants.Count}).");
+    // The dedupe key folds case on the host that does, so one directory spelled two ways is one revoke button.
+    if (OperatingSystem.IsWindows()
+        && WorkspacePaths.NormalizeRoots([grantedRoot, grantedRoot.ToUpperInvariant()]).Count != 1)
+        throw new Exception("One granted directory spelled two ways survived normalization.");
+    Console.WriteLine("PASS: a granted directory is read and written beside the workspace, its refusal names "
+                      + "request_directory, and the list is bounded, deduped and read back through the same rules.");
 
     // ── memory through the same tool surface ──
     if (!tools.MemoryWrite("project", "build-rules.md", "构建走 1kiss.ps1。", "构建约定", "改构建前先看", "project")
@@ -6070,6 +6251,10 @@ if (args.Contains("--check-ai-tool-policy"))
         ("list_sessions", ToolRisk.ReadOnly, true),
         // The exception, spelled out because the tier says it is safe and the name says it is not.
         ("set_workspace", ToolRisk.ReadOnly, false),
+        // A grant grows the same list of directories a move replaces, so a read started beside it would be graded
+        // against a sandbox that stops being the one it runs in. Not a read-only tier at all — the card is the
+        // mechanism — and listed here so the concurrency question is answered rather than left to the default.
+        ("request_directory", ToolRisk.SystemCommand, false),
         ("file_write", ToolRisk.WorkspaceWrite, false),
         ("send_to_session", ToolRisk.WorkspaceWrite, false),
         ("memory_write", ToolRisk.AssistantNote, false),

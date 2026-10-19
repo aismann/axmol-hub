@@ -15,6 +15,10 @@ namespace AxmolHub.Core;
 /// <param name="ApplyWorkspaceRoot">Persists a new sandbox root and answers the model. Async because the caller
 /// owns a UI thread and a session registry; null when nothing can persist one, which is the case in a self-check
 /// that only exercises the guard.</param>
+/// <param name="ApplyGrantedRoot">Persists one directory the person just approved on a <c>request_directory</c>
+/// card and answers the model. The same seam as <paramref name="ApplyWorkspaceRoot"/> and for the same reason: the
+/// tool body is in Core and cannot reach a session registry, and a check that only exercises the guard passes
+/// null.</param>
 /// <param name="Sessions">Where the other sessions live, for the cross-session tools. Null in a scope that has no
 /// session store to read — those tools then say so instead of inventing a peer.</param>
 /// <param name="CrossSession">Live run state and the write path for another session, both of which belong to the
@@ -74,11 +78,24 @@ public sealed record WorkspaceToolScope(
     // the scope rather than the result for the same reason the frames do: a tool body never learns its own call
     // id, so the app attributes what arrives here to the call it recorded as running.
     Action<string>? RecordCommandOutput = null,
-    Action<int>? RecordCommandExit = null)
+    Action<int>? RecordCommandExit = null,
+    // Last rather than beside ApplyWorkspaceRoot for a mechanical reason worth stating: this record is built
+    // positionally by a few dozen assertions, and a parameter in the middle would silently shift every one of them.
+    // Only the app builds it by hand.
+    Func<string, Task<string>>? ApplyGrantedRoot = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
     public static WorkspaceToolScope Empty { get; } = new(null, new WorkspaceGuards(null, []), null, "", [], null, null);
+
+    /// <summary>
+    /// Every directory this request may touch: the session's workspace plus the directories a person granted it.
+    /// Filled in by the app from the session's own record — so an approval granted before a restart applies to the
+    /// same directories afterwards — and defaulted from <see cref="WorkspaceRoot"/> so a scope an assertion builds
+    /// by naming one directory means exactly what it says. Every tool body reads it instead of the root, and so do
+    /// the previews: a card and the call it describes are graded against one list.
+    /// </summary>
+    public WorkspaceSandbox Sandbox { get; init; } = WorkspaceSandbox.For(WorkspaceRoot);
 }
 
 /// <summary>
@@ -148,17 +165,18 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     public const int MaxListedEntries = 300;
     public const int MaxFoundFiles = 500;
 
-    [Description("Read a text file from the session workspace. Lines come back without numbering so they can be "
-                 + "copied verbatim into file_write.")]
+    [Description("Read a text file from the session workspace, or from a directory the user granted this session. "
+                 + "Lines come back without numbering so they can be copied verbatim into file_write.")]
     public string ReadFile(
-        [Description("Path relative to the session workspace, for example src/main.cpp. Must not contain '..', "
-                     + "a drive letter or a leading separator.")]
+        [Description("Path relative to the session workspace, for example src/main.cpp, or an absolute path inside "
+                     + "a directory the user granted this session. A relative path must not contain '..', a drive "
+                     + "letter or a leading separator.")]
         string path,
         [Description("First line to return, counting from 1.")] int offset = 1,
         [Description("How many lines to return at most, up to 2000.")] int limit = DefaultReadLimit)
     {
-        var resolved = WorkspacePaths.ResolveRead(context.WorkspaceRoot, path, context.Guards);
-        if (!resolved.IsAllowed) return Refusal(resolved.Verdict, resolved.Relative, path);
+        var resolved = WorkspacePaths.ResolveRead(context.Sandbox, path, context.Guards);
+        if (!resolved.IsAllowed) return Refusal(resolved.Verdict, resolved.Display, path);
 
         long size;
         try
@@ -167,22 +185,22 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         }
         catch (IOException ex)
         {
-            return $"Could not read {resolved.Relative}: {ex.Message}";
+            return $"Could not read {resolved.Display}: {ex.Message}";
         }
 
         if (size > MaxReadFileBytes)
-            return $"Refused: {resolved.Relative} is {size / 1024} KiB, over the {MaxReadFileBytes / 1024} KiB read "
+            return $"Refused: {resolved.Display} is {size / 1024} KiB, over the {MaxReadFileBytes / 1024} KiB read "
                    + "limit. Read a window of it with offset and limit, or search it with run_command. Do not "
                    + "retry without a window.";
 
-        if (ReadAll(resolved.Full) is not { } text) return NotText(resolved.Relative);
+        if (ReadAll(resolved.Full) is not { } text) return NotText(resolved.Display);
 
         var lines = SplitLines(text);
         var from = Math.Clamp(offset, 1, Math.Max(1, lines.Count));
         var count = Math.Clamp(limit, 1, MaxReadLimit);
         var window = lines.Skip(from - 1).Take(count).ToList();
         var last = from - 1 + window.Count;
-        var header = $"{resolved.Relative} — lines {from}-{last} of {lines.Count} (UTF-8)";
+        var header = $"{resolved.Display} — lines {from}-{last} of {lines.Count} (UTF-8)";
         if (window.Count == 0) return $"{header}{Lf}(that window is empty)";
 
         var builder = new StringBuilder(header);
@@ -192,10 +210,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         return builder.ToString();
     }
 
-    [Description("Edit or create one text file in the session workspace by replacing an exact string. The file is "
-                 + "left untouched unless old_string matches, so a wrong anchor is a refusal rather than damage.")]
+    [Description("Edit or create one text file in the session workspace, or in a directory the user granted this "
+                 + "session, by replacing an exact string. The file is left untouched unless old_string matches, so "
+                 + "a wrong anchor is a refusal rather than damage.")]
     public string FileWrite(
-        [Description("Path relative to the session workspace.")] string path,
+        [Description("Path relative to the session workspace, or an absolute path inside a directory the user "
+                     + "granted this session.")]
+        string path,
         [Description("The exact text to replace, copied verbatim from read_file including indentation and line "
                      + "breaks. Leave empty only to create a file that does not exist yet.")]
         string old_string,
@@ -203,23 +224,23 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         [Description("Replace every occurrence instead of refusing when old_string matches more than one place.")]
         bool replace_all = false)
     {
-        var resolved = WorkspacePaths.ResolveWrite(context.WorkspaceRoot, path, context.Guards);
-        if (!resolved.IsAllowed) return Refusal(resolved.Verdict, resolved.Relative, path);
+        var resolved = WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards);
+        if (!resolved.IsAllowed) return Refusal(resolved.Verdict, resolved.Display, path);
 
         string? original = null;
         if (File.Exists(resolved.Full))
         {
-            if (ReadAll(resolved.Full) is not { } text) return NotText(resolved.Relative);
+            if (ReadAll(resolved.Full) is not { } text) return NotText(resolved.Display);
             original = text;
         }
 
         var edit = FileEdit.Apply(original, old_string, new_string, replace_all);
-        if (!edit.Changed) return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Relative);
+        if (!edit.Changed) return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display);
 
         // Pre-image before the write, never after: this is the only copy of what was there.
         var undo = original is null
             ? ChatUndoEntry.None
-            : ChatUndoStore.Store(context.DataRoot, context.ConversationId, resolved.Relative, original);
+            : ChatUndoStore.Store(context.DataRoot, context.ConversationId, resolved.Display, original);
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(resolved.Full)!);
@@ -227,7 +248,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return $"Could not write {resolved.Relative}: {ex.Message}";
+            return $"Could not write {resolved.Display}: {ex.Message}";
         }
 
         // After the bytes are on disk and nowhere earlier: a refused anchor, a sandbox refusal and a failed write
@@ -238,12 +259,12 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         context.RecordChangeLines?.Invoke(new ChangeLineCounts(moved.Added, moved.Removed));
 
         context.Log?.Write($"Assistant wrote {resolved.Full} ({edit.Verdict}, {edit.Matches} place(s))");
-        return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Relative) + ChatUndoStore.NoteFor(undo);
+        return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display) + ChatUndoStore.NoteFor(undo);
     }
 
-    [Description("Run one shell command in the session workspace and return its output. On Windows the shell is "
-                 + "PowerShell 7 when it is installed and Windows PowerShell otherwise; elsewhere pwsh, or "
-                 + "/bin/sh when pwsh is not installed.")]
+    [Description("Run one shell command in the session workspace, or in a directory the user granted this session, "
+                 + "and return its output. On Windows the shell is PowerShell 7 when it is installed and Windows "
+                 + "PowerShell otherwise; elsewhere pwsh, or /bin/sh when pwsh is not installed.")]
     public async Task<string> RunCommand(
         [Description("A single command line, for example: cmake --build build --config Debug")] string command,
         [Description("How many seconds of silence make Hub stop waiting and ask the user what to do with the "
@@ -251,11 +272,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                      + "that keeps printing may run far longer than this, and a quiet one is left running until the "
                      + "user says otherwise.")]
         int timeout_seconds = DefaultCommandTimeoutSeconds,
+        [Description("Directory to run in: relative to the session workspace, an absolute path inside a directory "
+                     + "the user granted this session, or empty for the workspace itself.")]
+        string cwd = "",
         CancellationToken cancellationToken = default)
     {
-        var verdict = WorkspacePaths.VerifyCommandRoot(context.WorkspaceRoot, context.Guards);
-        if (verdict != WorkspacePathVerdict.Allowed)
-            return WorkspacePaths.ResultFor(verdict, context.WorkspaceRoot ?? "");
+        var directory = WorkspacePaths.ResolveDirectory(context.Sandbox, cwd, context.Guards);
+        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Display, cwd);
         if (string.IsNullOrWhiteSpace(command)) return "Refused: the command is empty. Do not retry it.";
 
         // Anything but a git read holds Hub's one-change-at-a-time gate for its duration. What is being kept apart
@@ -274,7 +297,8 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
 
         try
         {
-            return await RunInShellAsync(command, timeout_seconds, cancellationToken).ConfigureAwait(false);
+            return await RunInShellAsync(command, directory.Full, timeout_seconds, cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -284,12 +308,15 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         }
     }
 
-    private async Task<string> RunInShellAsync(string command, int timeout_seconds, CancellationToken cancellationToken)
+    /// <summary>One shell run in <paramref name="cwd"/>, which the guard has already resolved — the workspace by
+    /// default, or a directory the person granted when the call named one. The directory is a parameter rather
+    /// than a field read here for one reason: the retry road of a stalled command has to land in the same place.</summary>
+    private async Task<string> RunInShellAsync(string command, string cwd, int timeout_seconds,
+        CancellationToken cancellationToken)
     {
         var shell = CommandShells.ForCurrent();
-        var root = Path.GetFullPath(context.WorkspaceRoot!);
         var seconds = Math.Clamp(timeout_seconds, 1, MaxCommandTimeoutSeconds);
-        var header = $"shell: {shell.Label} · cwd: {root}";
+        var header = $"shell: {shell.Label} · cwd: {cwd}";
         // A host that can ask is the only host that gets to leave a process alive: the runner's stall road forks on
         // this, so a scope with no seam behaves exactly as it always did and no command is ever left running with
         // nobody able to decide about it.
@@ -302,7 +329,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         try
         {
             result = await runner.RunAsync(
-                shell.Executable, shell.ArgumentsFor(command), root,
+                shell.Executable, shell.ArgumentsFor(command), cwd,
                 timeout: TimeSpan.FromSeconds(seconds),
                 sensitiveValues: context.SensitiveValues,
                 // The same redacted lines the log gets, handed out as they land: the card in the transcript is the
@@ -318,7 +345,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         }
         catch (StalledProcessException alive)
         {
-            return await DecideStalledAsync(command, header, alive, cancellationToken).ConfigureAwait(false);
+            return await DecideStalledAsync(command, cwd, header, alive, cancellationToken).ConfigureAwait(false);
         }
         catch (IdleTimeoutException stalled)
         {
@@ -380,8 +407,8 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     /// command that ends while the question is open has an answer, not a guess. Dropping it (<c>Release</c>) never
     /// touches the process — that is what "leave it running" means.</para>
     /// </summary>
-    private async Task<string> DecideStalledAsync(string command, string header, StalledProcessException error,
-        CancellationToken cancellationToken)
+    private async Task<string> DecideStalledAsync(string command, string cwd, string header,
+        StalledProcessException error, CancellationToken cancellationToken)
     {
         var stalled = new StalledProcess(error);
         var seconds = (int)stalled.SilentFor.TotalSeconds;
@@ -475,7 +502,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                     // looping here — every extra round costs a human click, which is what keeps it bounded.
                     var survived = !stalled.Stop();
                     stalled.Release();
-                    var again = await RunInShellAsync(command, seconds, cancellationToken).ConfigureAwait(false);
+                    var again = await RunInShellAsync(command, cwd, seconds, cancellationToken).ConfigureAwait(false);
                     return (survived
                         ? $"{header}{Lf}The user asked Hub to stop the silent command and run it "
                           + "again. It was still running after the kill, so the new run may be going alongside it; "
@@ -542,6 +569,87 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         return context.ApplyWorkspaceRoot is { } apply
             ? await apply(full).ConfigureAwait(false)
             : $"Workspace set to {full}.";
+    }
+
+    [Description("Ask the user to grant this session read and write access to one directory outside the "
+                 + "workspace: another project, a reference checkout, a folder the task named. It shows one "
+                 + "approval card, and approving it adds that directory for the rest of this session — alongside "
+                 + "the workspace, not instead of it — after which read_file, file_write, list_directory, "
+                 + "search_text, find_files, workspace_map and run_command's cwd all take its absolute paths. Ask "
+                 + "only for a directory the user's own words named, ask once, and never guess a path to ask for.")]
+    public async Task<string> RequestDirectory(
+        [Description("Absolute path of the directory to grant, for example D:\\dev\\other-project")]
+        string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return "Refused: request_directory needs the absolute path of a directory. Do not retry it empty.";
+        if (!Path.IsPathRooted(path))
+            return $"Refused: '{path}' is not an absolute path. Ask the user for the full directory. Do not retry "
+                   + "a relative one.";
+
+        string full;
+        try
+        {
+            full = Path.GetFullPath(path.Trim());
+        }
+        catch (Exception ex) when (ex is ArgumentException or System.Security.SecurityException or NotSupportedException)
+        {
+            return $"Refused: '{path}' is not a usable path ({ex.Message}). Do not retry it.";
+        }
+
+        if (!Directory.Exists(full))
+            return $"Refused: '{full}' does not exist or is not a directory. Ask the user to confirm the path; do "
+                   + "not guess another one.";
+        // The floor under every card: a person cannot approve what the guard would refuse in every mode, and a
+        // card that promised the Hub data directory or a .git would be a card that lies.
+        if (WorkspacePaths.IsProtected(full, context.Guards))
+            return WorkspacePaths.ResultFor(WorkspacePathVerdict.ProtectedRoot, full);
+
+        if (WorkspacePaths.CanonicalRoot(context.Sandbox.Primary) is { } workspace)
+        {
+            if (string.Equals(WorkspacePaths.CanonicalRoot(full), workspace, StringComparison.Ordinal))
+                return $"'{full}' already is this session's workspace, so it needs no grant. Work in it with "
+                       + "relative paths and do not retry this call.";
+            if (IsUnder(workspace, full))
+                return $"'{full}' is inside the session workspace, so a relative path already reaches it. Use one "
+                       + "like src/main.cpp; do not retry this call.";
+            if (IsUnder(full, workspace))
+                return $"Refused: '{full}' contains the session workspace '{workspace}', so a grant would open more "
+                       + "than the folder you asked about. Ask for the directory you actually need; do not retry "
+                       + "this one.";
+        }
+
+        if (context.Sandbox.Granted.Any(granted =>
+                string.Equals(WorkspacePaths.CanonicalRoot(granted), WorkspacePaths.CanonicalRoot(full),
+                    StringComparison.Ordinal)))
+            return $"'{full}' is already granted to this session. Name it by absolute path in read_file, "
+                   + "file_write, list_directory or run_command's cwd; do not ask again.";
+        // Nesting is named rather than merged: a request quietly covered by a grant already held, or one that
+        // would cover a grant on its own, is answered with which directory is in the way — a second, silently
+        // wider grant is a card promising one folder and a session holding two.
+        if (context.Sandbox.Granted.FirstOrDefault(granted => IsUnder(granted, full)) is { } alreadyHeld)
+            return $"'{full}' is already inside '{alreadyHeld}', which this session holds. Work there with absolute "
+                   + "paths; do not ask again.";
+        if (context.Sandbox.Granted.FirstOrDefault(granted => IsUnder(full, granted)) is { } underneath)
+            return $"Refused: '{full}' contains '{underneath}', which this session was granted on its own. Ask for "
+                   + "the directory you actually need; a grant covers one folder and what is under it.";
+
+        return context.ApplyGrantedRoot is { } apply
+            ? await apply(full).ConfigureAwait(false)
+            : $"Granted {full} to this session: read and write, alongside the workspace.";
+    }
+
+    /// <summary>Whether <paramref name="child"/> sits <b>strictly</b> under <paramref name="parent"/>. Compared in
+    /// the canonical spelling, so the answer is the same on a host that folds case, and kept apart from
+    /// <see cref="WorkspacePaths.IsProtected"/>'s containment test because that one counts a root as inside itself
+    /// — the one case a grant's nesting question has to exclude, or every directory would be inside the workspace
+    /// it is.</summary>
+    private static bool IsUnder(string? parent, string child)
+    {
+        if (WorkspacePaths.CanonicalRoot(parent) is not { } above) return false;
+        if (WorkspacePaths.CanonicalRoot(child) is not { } below) return false;
+        var prefix = above.EndsWith(Path.DirectorySeparatorChar) ? above : above + Path.DirectorySeparatorChar;
+        return below.StartsWith(prefix, StringComparison.Ordinal);
     }
 
     [Description("Fetch one web page over https and return its text with the scripts, styles and menus taken out. "
@@ -927,9 +1035,9 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             : null;
     }
 
-    [Description("Find text inside the session workspace with a regular expression and get back "
-                 + "path:line: content, ready to open with read_file at that offset. This is how to look around a "
-                 + "project without running a shell command.")]
+    [Description("Find text inside the session workspace, or inside a directory the user granted this session, "
+                 + "with a regular expression and get back path:line: content, ready to open with read_file at that "
+                 + "offset. This is how to look around a project without running a shell command.")]
     public string SearchText(
         [Description("Regular expression matched per line. Characters that are not operators must be escaped.")]
         string pattern,
@@ -937,13 +1045,14 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                      + "matches one directory deep. Patterns are matched inside 'path', not from the workspace root. "
                      + "Empty searches every text file.")]
         string glob = "",
-        [Description("Directory to search, relative to the workspace. Empty or \".\" means the whole workspace.")]
+        [Description("Directory to search: relative to the workspace, or an absolute path inside a directory the "
+                     + "user granted this session. Empty or \".\" means the whole workspace.")]
         string path = "",
         [Description("Match letters of either case.")] bool ignore_case = false,
         [Description("Stop after this many matches, up to 500.")] int max_matches = DefaultSearchMatches)
     {
-        var directory = WorkspacePaths.ResolveDirectory(context.WorkspaceRoot, path, context.Guards);
-        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Relative, path);
+        var directory = WorkspacePaths.ResolveDirectory(context.Sandbox, path, context.Guards);
+        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Display, path);
         if (string.IsNullOrWhiteSpace(pattern))
             return "Refused: search_text needs a pattern. Say what to look for, or call list_directory to see the "
                    + "shape of the project. Do not retry it empty.";
@@ -1016,16 +1125,18 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         return builder.ToString();
     }
 
-    [Description("List a directory in the session workspace — subdirectories first, then files with their size — "
-                 + "so the shape of a project is visible without running a shell command.")]
+    [Description("List a directory in the session workspace, or in a directory the user granted this session — "
+                 + "subdirectories first, then files with their size — so the shape of a project is visible without "
+                 + "running a shell command.")]
     public string ListDirectory(
-        [Description("Directory to list, relative to the workspace. Empty or \".\" means the workspace root.")]
+        [Description("Directory to list: relative to the workspace, or an absolute path inside a directory the user "
+                     + "granted this session. Empty or \".\" means the workspace root.")]
         string path = "",
         [Description("How many levels to include, 1 to 4. Depth costs output, so ask for one and repeat.")]
         int depth = DefaultListDepth)
     {
-        var directory = WorkspacePaths.ResolveDirectory(context.WorkspaceRoot, path, context.Guards);
-        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Relative, path);
+        var directory = WorkspacePaths.ResolveDirectory(context.Sandbox, path, context.Guards);
+        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Display, path);
 
         var levels = Math.Clamp(depth, 1, MaxListDepth);
         var builder = new StringBuilder();
@@ -1034,11 +1145,15 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var files = 0;
         var skipped = 0;
         var truncated = false;
-        // Flat workspace-relative paths, not an indented tree: the point of listing is to name something the next
-        // call can open, and "  note.md" under a header is a path no tool takes.
-        var fromRoot = directory.Relative.Length == 0
-            ? ""
-            : directory.Relative.Replace(Path.DirectorySeparatorChar, '/') + "/";
+        // Flat paths, not an indented tree: the point of listing is to name something the next call can open, and
+        // "  note.md" under a header is a path no tool takes. Under the workspace they are workspace-relative; under
+        // a granted directory they carry the directory, because a bare "src/main.cpp" means the workspace and would
+        // open a different file.
+        var fromRoot = directory.Granted
+            ? directory.Full.Replace(Path.DirectorySeparatorChar, '/') + "/"
+            : directory.Relative.Length == 0
+                ? ""
+                : directory.Relative.Replace(Path.DirectorySeparatorChar, '/') + "/";
 
         void Walk(string folder, string prefix, int level)
         {
@@ -1076,11 +1191,12 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     public string FindFiles(
         [Description("Glob to match: \"*.cpp\", \"CMakeLists.txt\", \"settings*.json\". A glob with no '/' matches "
                      + "the file name at any depth; one with '/' matches inside 'path'.")] string glob,
-        [Description("Directory to search from, relative to the workspace. Empty or \".\" means the whole workspace.")]
+        [Description("Directory to search from: relative to the workspace, or an absolute path inside a directory "
+                     + "the user granted this session. Empty or \".\" means the whole workspace.")]
         string path = "")
     {
-        var directory = WorkspacePaths.ResolveDirectory(context.WorkspaceRoot, path, context.Guards);
-        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Relative, path);
+        var directory = WorkspacePaths.ResolveDirectory(context.Sandbox, path, context.Guards);
+        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Display, path);
         if (GlobMatcher(glob) is not { } wants)
             return $"Refused: '{glob}' is not a usable glob. Use a name pattern like \"*.cpp\", or a path one like "
                    + "\"src/*.h\". Do not retry another spelling.";
@@ -1113,15 +1229,16 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                  + "Make this the first call in a tree you have not seen; use search_text and read_file for "
                  + "questions about contents.")]
     public async Task<string> MapWorkspace(
-        [Description("Directory to map, relative to the workspace. Empty or \".\" means the workspace itself.")]
+        [Description("Directory to map: relative to the workspace, or an absolute path inside a directory the user "
+                     + "granted this session. Empty or \".\" means the workspace itself.")]
         string path = "",
         CancellationToken cancellationToken = default)
     {
         // Inside the same guard as the listing tools: a map walks directories the session may already list, so it
         // reaches nowhere new in any approval mode, and it is registered as ReadOnly for the reason search_text
         // is — exploration that costs a card gets replaced by a grep inside a command that costs nothing.
-        var directory = WorkspacePaths.ResolveDirectory(context.WorkspaceRoot, path, context.Guards);
-        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Relative, path);
+        var directory = WorkspacePaths.ResolveDirectory(context.Sandbox, path, context.Guards);
+        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Display, path);
         return await WorkspaceMap.ReadAsync(context, directory.Full, cancellationToken).ConfigureAwait(false);
     }
 
@@ -1263,11 +1380,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     private static string RelativeOf(string root, string full)
         => Path.GetRelativePath(root, full).Replace(Path.DirectorySeparatorChar, '/');
 
-    /// <summary>A found file as the next call needs it. read_file resolves against the workspace root, so a scoped
-    /// search still has to print <c>probe/app.cpp</c>: the bare <c>app.cpp</c> is true inside the directory that
-    /// was searched and a dead end everywhere else.</summary>
+    /// <summary>A found file as the next call needs it. read_file resolves a relative path against the workspace
+    /// root, so a scoped search still has to print <c>probe/app.cpp</c>: the bare <c>app.cpp</c> is true inside the
+    /// directory that was searched and a dead end everywhere else — and under a granted directory the path has to
+    /// carry the directory itself, or it would name a file in the workspace instead.</summary>
     private static string WorkspaceRelativeOf(WorkspacePath directory, string file)
     {
+        if (directory.Granted) return file.Replace(Path.DirectorySeparatorChar, '/');
         var inside = RelativeOf(directory.Full, file);
         return directory.Relative.Length == 0
             ? inside
@@ -1275,7 +1394,9 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     }
 
     private static string LabelOf(WorkspacePath directory)
-        => directory.Relative.Length > 0 ? $"'{directory.Relative}/'" : "the workspace root";
+        => directory.Granted
+            ? $"'{directory.Full}'"
+            : directory.Relative.Length > 0 ? $"'{directory.Relative}/'" : "the workspace root";
 
     private static string Clipped(string line)
     {

@@ -23,6 +23,7 @@ public static class ToolPreviews
             "file_write" => WritePreview(arguments, scope),
             "run_command" => CommandPreview(arguments, scope),
             "set_workspace" => WorkspacePreview(Text(arguments, "path"), scope, projectPaths),
+            "request_directory" => GrantPreview(Text(arguments, "path"), scope, projectPaths),
             "capture_screen" => CapturePreview(arguments, scope),
             "web_fetch" => FetchPreview(arguments, scope),
             "send_to_session" => SendPreview(arguments),
@@ -46,9 +47,10 @@ public static class ToolPreviews
     private static string WritePreview(IReadOnlyDictionary<string, JsonElement> arguments, WorkspaceToolScope scope)
     {
         var path = Text(arguments, "path");
-        var resolved = WorkspacePaths.ResolveWrite(scope.WorkspaceRoot, path, scope.Guards);
+        var resolved = WorkspacePaths.ResolveWrite(scope.Sandbox, path, scope.Guards);
         if (!resolved.IsAllowed)
-            return WorkspacePaths.ResultFor(resolved.Verdict, resolved.Relative.Length > 0 ? resolved.Relative : path);
+            return WorkspacePaths.ResultFor(resolved.Verdict,
+                resolved.Display.Length > 0 ? resolved.Display : path);
 
         string? original = null;
         if (File.Exists(resolved.Full))
@@ -59,15 +61,15 @@ public static class ToolPreviews
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                return $"Cannot preview {resolved.Relative}: {ex.Message}";
+                return $"Cannot preview {resolved.Display}: {ex.Message}";
             }
         }
 
         var edit = FileEdit.Apply(original, Text(arguments, "old_string"), Text(arguments, "new_string"),
             Flag(arguments, "replace_all"));
         return edit.Changed
-            ? FileDiff.Unified(original ?? "", edit.Updated, resolved.Relative)
-            : FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Relative);
+            ? FileDiff.Unified(original ?? "", edit.Updated, resolved.Display)
+            : FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display);
     }
 
     /// <summary>
@@ -83,9 +85,16 @@ public static class ToolPreviews
     private static string CommandPreview(IReadOnlyDictionary<string, JsonElement> arguments, WorkspaceToolScope scope)
     {
         var shell = CommandShells.ForCurrent();
-        var root = string.IsNullOrWhiteSpace(scope.WorkspaceRoot)
-            ? "(no workspace)"
-            : Path.GetFullPath(scope.WorkspaceRoot);
+        // The card names the directory the command would actually run in, resolved through the same guard the tool
+        // body runs before it spawns a shell. Showing the workspace for a command the model pointed at a granted
+        // directory would describe a different run, and promising one the guard refuses would be a card that lies.
+        var asked = Text(arguments, "cwd");
+        var directory = WorkspacePaths.ResolveDirectory(scope.Sandbox, asked, scope.Guards);
+        if (!directory.IsAllowed)
+            return $"{shell.Label} · {WorkspacePaths.ResultFor(directory.Verdict,
+                directory.Display.Length > 0 ? directory.Display : asked)}";
+
+        var root = directory.Full;
         var timeout = arguments.TryGetValue("timeout_seconds", out var seconds) && seconds.TryGetInt32(out var value)
             ? value
             : WorkspaceTools.DefaultCommandTimeoutSeconds;
@@ -116,13 +125,40 @@ public static class ToolPreviews
     private static string WorkspacePreview(string path, WorkspaceToolScope scope, IReadOnlyList<string>? projectPaths)
     {
         if (string.IsNullOrWhiteSpace(path)) return "set_workspace · (no path given)";
+        return $"set_workspace · {path}\n{string.Join(" · ", DirectoryFacts(path, scope, projectPaths))}";
+    }
 
+    /// <summary>
+    /// What a grant card is asking for, in the terms the answer is given in: the directory, whether it is there,
+    /// whether Hub already knows it — and, on the same line, what a yes would allow. "read and write · this session
+    /// only" is part of the card rather than a footnote, because the scope of the yes is the thing being decided: a
+    /// grant that quietly outlived the session, or quietly covered writing, would be an approval nobody gave.
+    /// </summary>
+    private static string GrantPreview(string path, WorkspaceToolScope scope, IReadOnlyList<string>? projectPaths)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "request_directory · (no path given)";
+
+        var facts = DirectoryFacts(path, scope, projectPaths);
+        if (Path.IsPathRooted(path)
+            && WorkspacePaths.ClassifyWorkspaceTarget(path, scope.WorkspaceRoot, projectPaths, scope.Guards)
+            is WorkspaceTarget.SameAsSandbox or WorkspaceTarget.InsideSandbox)
+            facts.Add("already inside the session workspace");
+        facts.Add("read and write");
+        facts.Add("this session only");
+        return $"request_directory · {path}\n{string.Join(" · ", facts)}";
+    }
+
+    /// <summary>The directory facts both cards show. One builder for the two, so the same directory cannot read
+    /// differently on one card than on the other — and both read the classifier that decides the tier.</summary>
+    private static List<string> DirectoryFacts(string path, WorkspaceToolScope scope,
+        IReadOnlyList<string>? projectPaths)
+    {
         var facts = new List<string> { Directory.Exists(path) ? "exists" : "does not exist" };
         if (Directory.Exists(Path.Combine(path, ".git"))) facts.Add("git repository");
         if (WorkspacePaths.ClassifyWorkspaceTarget(path, scope.WorkspaceRoot, projectPaths, scope.Guards)
             == WorkspaceTarget.RegisteredProject) facts.Add("registered Hub project");
         if (WorkspacePaths.IsProtected(path, scope.Guards)) facts.Add("protected location — will be refused");
-        return $"set_workspace · {path}\n{string.Join(" · ", facts)}";
+        return facts;
     }
 
     /// <summary>Who is being written to, and whether that session is being started up to answer: a person

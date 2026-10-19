@@ -651,6 +651,14 @@ public static class HubTexts
         ["ChatWorkspaceCleared"] = ("已清除工作目录，文件与命令工具将拒答。", "Workspace cleared. The file and command tools will now refuse."),
         ["ChatWorkspaceRejected"] = ("这个目录不能用作工作目录：", "That directory cannot be used as a workspace: "),
         ["ChatWorkspaceProtected"] = ("这是 Hub 的数据目录、引擎安装目录或 .git，助手在任何审批档位下都不能写它。", "That is Hub's data directory, an engine installation or a .git directory. The assistant cannot write there in any approval mode."),
+        // The directories beyond the workspace that this session was granted on a card. Their own words, because a
+        // grant is a permission the user gave and must be able to take back — and the count is on the line so the
+        // chip's tooltip answers "how much did I open" without being read to the end.
+        ["ChatWorkspaceGrantedHintFormat"] = ("\n另有 {0} 个已授权目录：{1}", "\nAlso granted to this session ({0}): {1}"),
+        ["ChatWorkspaceGrantedMenu"] = ("已授权的目录", "Granted to this session"),
+        ["ChatWorkspaceRevokeFormat"] = ("撤销对 {0} 的授权", "Revoke access to {0}"),
+        ["ChatWorkspaceRevoked"] = ("已撤销该目录的授权，助手不再读写它。", "That directory is no longer granted; the assistant cannot read or write there now."),
+        ["ChatWorkspaceOutside"] = ("这个目录不在本会话允许的范围内（工作目录或已授权目录）。", "That directory is not inside this session's allowed directories — its workspace or one granted to it."),
         ["ChatAttachmentFailed"] = ("读取聊天上下文失败：", "Could not read chat context: "),
         ["ChatFolderPrefix"] = ("文件夹：", "Folder: "),
         ["ChatFilePrefix"] = ("文件：", "File: "),
