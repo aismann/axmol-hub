@@ -376,7 +376,14 @@ public partial class ChatPanel : UserControl
             var wasAtBottom = MessageScroller.Offset.Y - change.OffsetDelta.Y
                 + MessageScroller.Viewport.Height - change.ViewportDelta.Y
                 >= MessageScroller.Extent.Height - change.ExtentDelta.Y - StickEpsilon;
-            if (!_thumbDragging && Math.Abs(change.ViewportDelta.Y) > 0.1 && wasAtBottom) QueueVirtualFollow();
+            // Only a viewport change (a resize, the band rising) re-follows. An event that also moved the
+            // offset is a deliberate reading move or a follow of its own, and snapping it back to the bottom
+            // would overrule whoever asked for it.
+            if (!_thumbDragging && Math.Abs(change.OffsetDelta.Y) < 0.01
+                && Math.Abs(change.ViewportDelta.Y) > 0.1 && wasAtBottom) QueueVirtualFollow();
+            // Stickiness is decided by gestures, never here: ScrollIntoView's BringIntoView can land a frame
+            // after the call that asked for it, so an offset change is not proof that a hand is driving. The
+            // wheel and thumb handlers clear it; the follow and the plate set it.
             UpdateMessageColumnWidth();
             UpdateScrollAffordance();
             // The transcript of a long session is largely plain until this runs, and a scroll is exactly the
@@ -2291,6 +2298,9 @@ public partial class ChatPanel : UserControl
     /// </summary>
     private void PromoteMarkdownInView()
     {
+        // A held thumb owns the reading position and the column's geometry: promoting a row changes its
+        // height and re-maps the Track under the hand. The release schedules the pass again.
+        if (_thumbDragging || _heldItems is not null) return;
         if (_pendingMarkdownRows.Count == 0) return;
         var offset = 0d;
         var reach = MessageScroller.Viewport.Height;
@@ -4624,6 +4634,8 @@ public partial class ChatPanel : UserControl
     private void ScrollToEnd()
     {
         _stickToBottom = true;
+        _pendingTailFollow = true;
+        _repairFailures = 0;
         QueueVirtualFollow();
     }
 
@@ -4637,7 +4649,9 @@ public partial class ChatPanel : UserControl
         var extent = MessageScroller.Extent.Height;
         var viewport = MessageScroller.Viewport.Height;
         var atBottom = MessageScroller.Offset.Y + viewport >= extent - StickEpsilon && TranscriptTailVisible();
-        if (!_reconcilingTranscript && !_virtualOpening) _stickToBottom = atBottom;
+        // Stickiness belongs to the person, not to the extent: a reply growing the transcript while they are at
+        // the bottom must not read as "they scrolled away". Gestures set it in their own handlers; a real scroll
+        // change is interpreted by the ScrollChanged handler above.
         var scrollable = TranscriptActuallyScrollable();
         ScrollToBottomButton.IsVisible = scrollable && !atBottom;
         // The band's height is reserved by whether the transcript <i>can</i> scroll, never by where the reading
@@ -4663,10 +4677,19 @@ public partial class ChatPanel : UserControl
 
         var width = Math.Min(MessageColumn.MaxWidth,
             Math.Max(0, viewportWidth - (2 * HubMetrics.ScrollBarThickness)));
+        if (width <= 0)
+        {
+            // A zero-width column is an invisible transcript. Keep the last usable width and let the coverage
+            // repair re-measure once the real viewport is back.
+            RequestTranscriptRepair("width-zero");
+            return;
+        }
         if (double.IsNaN(MessageColumn.Width) || Math.Abs(MessageColumn.Width - width) > 0.1)
         {
             MessageColumn.Width = width;
             foreach (var row in _realizedTranscript.Values) row.Host.Width = width;
+            // Re-wrapping every row changes their heights; the tail may now sit below where the viewport stopped.
+            RequestTranscriptRepair("width");
         }
     }
 
@@ -6162,7 +6185,10 @@ public partial class ChatPanel : UserControl
     internal void ScrollTranscriptForCheck(double offset)
     {
         _transcriptGeneration++;
+        _stickToBottom = false;
+        _pendingTailFollow = false;
         MessageScroller.Offset = new Point(0, offset);
+        MessageFlow.UpdateLayout();
         UpdateScrollAffordance();
     }
 

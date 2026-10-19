@@ -96,7 +96,25 @@ public partial class ChatPanel
 
     private void InitializeVirtualTranscript()
     {
-        MessageScroller.LayoutUpdated += (_, _) => UpdateTranscriptScrollMapping();
+        MessageScroller.LayoutUpdated += (_, _) =>
+        {
+            UpdateTranscriptScrollMapping();
+            if (TranscriptTailVisible()) _tailFollowMisses = 0;
+            var wantsTail = _pendingTailFollow;
+            if (wantsTail && !_thumbDragging && !_repairQueued && _transcriptItems.Count > 0
+                && !TranscriptTailVisible() && _tailFollowMisses < 4)
+            {
+                // Realizing the tail revises the panel's estimated extent, so one ScrollToEnd lands at the
+                // bottom the estimate believed in, not the one the content really has. Keep one follow queued
+                // while the person is at the bottom and the tail is not in view; it stops the moment it is.
+                _tailFollowMisses++;
+                QueueVirtualFollow();
+            }
+            else if (_pendingTailFollow && !_repairQueued)
+            {
+                RequestTranscriptRepair("pending-tail");
+            }
+        };
         TranscriptScrollBar.AddHandler(PointerPressedEvent, (_, change) => PressTranscriptTrack(change),
             Avalonia.Interactivity.RoutingStrategies.Tunnel);
         TranscriptScrollBar.PropertyChanged += (_, change) =>
@@ -123,16 +141,47 @@ public partial class ChatPanel
         {
             _bottomMappingKnown = false;
             RestoreTranscriptAnchor(CaptureTranscriptAnchor());
+            RequestTranscriptRepair("resize");
         };
         TranscriptScrollBar.AddHandler(PointerWheelChangedEvent, (_, change) =>
         {
             _transcriptGeneration++;
-            _stickToBottom = false;
-            MessageScroller.Offset = MessageScroller.Offset.WithY(Math.Max(0,
-                MessageScroller.Offset.Y - change.Delta.Y * MessageScroller.SmallChange.Height));
+            _repairFailures = 0;
+            _pendingTailFollow = false;
+            _programmaticScroll = true;
+            try
+            {
+                MessageScroller.Offset = MessageScroller.Offset.WithY(Math.Max(0,
+                    MessageScroller.Offset.Y - change.Delta.Y * MessageScroller.SmallChange.Height));
+            }
+            finally { _programmaticScroll = false; }
+            _stickToBottom = MessageScroller.Offset.Y + MessageScroller.Viewport.Height
+                >= MessageScroller.Extent.Height - StickEpsilon && TranscriptTailVisible();
+            RequestTranscriptRepair("wheel-bar");
             change.Handled = true;
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
-        MessageScroller.AddHandler(PointerWheelChangedEvent, (_, _) => { _transcriptGeneration++; _stickToBottom = false; }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        // The wheel over the transcript is the ScrollViewer's; this only records that a hand is driving it.
+        // Wheel up is the person leaving the tail, so the follow stops; wheel down that lands at the bottom is
+        // them returning to it, the same as clicking the plate. The offset is read after the ScrollViewer has
+        // applied the notch, hence the posted check rather than the delta alone.
+        MessageScroller.AddHandler(PointerWheelChangedEvent, (_, change) =>
+        {
+            _transcriptGeneration++;
+            _repairFailures = 0;
+            if (change.Delta.Y > 0)
+            {
+                _stickToBottom = false;
+                _pendingTailFollow = false;
+                return;
+            }
+            if (change.Delta.Y >= 0) return;
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (MessageScroller.Offset.Y + MessageScroller.Viewport.Height
+                        >= MessageScroller.Extent.Height - StickEpsilon && TranscriptTailVisible())
+                    _stickToBottom = true;
+            }, DispatcherPriority.Loaded);
+        }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
     }
 
     private Control RealizeTranscriptItem(VirtualTranscriptItem item)
@@ -312,6 +361,10 @@ public partial class ChatPanel
                 EndTranscriptThumbDrag(restorePosition: false, flush: false);
             }
             _virtualOpening = true;
+            _pendingTailFollow = true;
+            _tailFollowMisses = 0;
+            _repairFailures = 0;
+            _lastReadingOrdinal = -1;
             ParkVirtualTranscript();
             _realizedTranscript.Clear();
             _pendingMarkdownRows.Clear();
@@ -411,16 +464,23 @@ public partial class ChatPanel
         VirtualWorkForCheck = (projectionMs, itemsMs, phase.Elapsed.TotalMilliseconds);
         if (switched)
         {
-            // Reset the native realization state before landing in the incoming conversation.
-            MessageFlow.ItemsPanel = new FuncTemplate<Panel?>(() => new VirtualizingStackPanel { CacheLength = 0 });
-            // The native infinite offset is re-coerced as the extent becomes known. Set it before the first
-            // layout so the oldest page is never fully materialized just to jump away from it again.
-            MessageScroller.ScrollToEnd();
+            // Reset the native realization state before landing in the incoming conversation. The position is
+            // not set here: a ScrollToEnd written before the new panel has measured is computed against the old
+            // extent and can land where the panel has realized nothing. The queued follow (which is now allowed
+            // to ask the coverage repair for more passes) owns the landing instead.
+            MessageFlow.ItemsPanel = new FuncTemplate<Panel?>(() => new TranscriptRowsPanel());
         }
         EmptyState.IsVisible = conversation is null || items.Count == 0;
         _stickToBottom = following;
         if (following) ScrollToEndIfSticky();
         else RestoreTranscriptAnchor(anchor);
+        // A reconcile that removed every realized row (a compaction, a fold, a streaming tail swap) leaves the
+        // viewport uncovered until something asks for a layout. Ask here, once per render, rather than waiting
+        // for a gesture that may never come. A render with rows still realized is left alone: the scroll
+        // handlers and the mapping own that case, and a repair that fires on every repaint would fight a
+        // deliberate ScrollIntoView.
+        if (!switched && _transcriptItems.Count > 0 && _realizedTranscript.Count == 0)
+            RequestTranscriptRepair("reconcile-empty");
         ScheduleMarkdownPromotion();
     }
 
@@ -504,13 +564,20 @@ public partial class ChatPanel
                   ?? anchor.Order.Take(anchor.Index).Reverse().Where(keys.Contains).Select(key => (TranscriptItemKey?)key).FirstOrDefault();
             if (key is null) return;
             var index = _transcriptItems.Select((item, at) => (item, at)).First(pair => pair.item.Key == key).at;
-            if (!_realizedTranscript.ContainsKey(key.Value))
+            _lastReadingOrdinal = index;
+            _repairFailures = 0;
+            _programmaticScroll = true;
+            try
             {
-                MessageFlow.ScrollIntoView(index);
-                MessageFlow.UpdateLayout();
+                if (!_realizedTranscript.ContainsKey(key.Value))
+                {
+                    MessageFlow.ScrollIntoView(index);
+                    MessageFlow.UpdateLayout();
+                }
+                if (_realizedTranscript.TryGetValue(key.Value, out var row) && row.Host.TranslatePoint(default, MessageScroller) is { } point)
+                    MessageScroller.Offset = MessageScroller.Offset.WithY(Math.Max(0, MessageScroller.Offset.Y + point.Y - anchor.Top));
             }
-            if (_realizedTranscript.TryGetValue(key.Value, out var row) && row.Host.TranslatePoint(default, MessageScroller) is { } point)
-                MessageScroller.Offset = MessageScroller.Offset.WithY(Math.Max(0, MessageScroller.Offset.Y + point.Y - anchor.Top));
+            finally { _programmaticScroll = false; }
         }, DispatcherPriority.Loaded);
     }
 
@@ -527,21 +594,20 @@ public partial class ChatPanel
         var attempts = 0;
         void AlignBottom()
         {
+            _followRuns++;
             if (_thumbDragging || _virtualFollowSession != _renderedConversationId
-                || _virtualFollowGeneration != _transcriptGeneration || _transcriptItems.Count == 0)
+                || _virtualFollowGeneration != _transcriptGeneration || _transcriptItems.Count == 0
+                || (!_stickToBottom && !_pendingTailFollow))
             {
                 _virtualFollowQueued = false;
                 _virtualOpening = false;
                 return;
             }
-            MessageFlow.ScrollIntoView(_transcriptItems.Count - 1);
-            if (MessageFlow.ContainerFromIndex(_transcriptItems.Count - 1) is not null)
-                MessageScroller.ScrollToEnd();
+            AlignTailOnce();
             UpdateScrollAffordance();
-            _stickToBottom = true;
             // Realizing the tail can revise the native extent on the next layout. Bound the correction instead
             // of following every extent event, which feeds the virtual panel's estimates back into layout.
-            if (++attempts < 3 && (!TranscriptTailVisible()
+            if (++attempts < 6 && (!TranscriptTailVisible()
                 || MessageScroller.Offset.Y + MessageScroller.Viewport.Height < MessageScroller.Extent.Height - StickEpsilon))
             {
                 Dispatcher.UIThread.Post(AlignBottom, DispatcherPriority.Loaded);
@@ -549,6 +615,8 @@ public partial class ChatPanel
             }
             _virtualFollowQueued = false;
             _virtualOpening = false;
+            _pendingTailFollow = !TranscriptTailVisible();
+            if (_pendingTailFollow) RequestTranscriptRepair("follow-exhausted");
         }
         Dispatcher.UIThread.Post(AlignBottom, DispatcherPriority.Loaded);
     }
@@ -625,7 +693,12 @@ public partial class ChatPanel
     {
         _transcriptGeneration++;
         _stickToBottom = false;
+        _pendingTailFollow = false;
         MessageFlow.ScrollIntoView(Math.Clamp(index, 0, Math.Max(0, _transcriptItems.Count - 1)));
+        // The scroll has only been requested at this point; a render before the layout pass would capture an
+        // anchor from the previous realized geometry (still at the old screen position) and restore that stale
+        // position over the move. Lay out first so the reading position the check asks for is the real one.
+        MessageFlow.UpdateLayout();
     }
     internal bool VirtualIndexRealizedForCheck(int index) => index >= 0 && index < _transcriptItems.Count
         && _realizedTranscript.ContainsKey(_transcriptItems[index].Key);

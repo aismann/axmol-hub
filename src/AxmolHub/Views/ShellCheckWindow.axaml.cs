@@ -124,7 +124,7 @@ public partial class ShellCheckWindow : Window
     /// <summary>How long the whole check run may take before it is called stuck, rather than merely slow. Three
     /// times the slowest completed run on record; raise it with the suite, because a ceiling the suite can brush
     /// produces a failure that names the wrong cause.</summary>
-    private static readonly TimeSpan SuiteCeiling = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan SuiteCeiling = TimeSpan.FromSeconds(180);
 
     private void Check(bool ok, string message)
     {

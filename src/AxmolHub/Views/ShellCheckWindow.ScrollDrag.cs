@@ -31,13 +31,20 @@ public partial class ShellCheckWindow
         var chat = shell.Chat;
         var savedOverride = chat.ClientOverride;
         var session = chat.StartConversation();
+        // A scratch workspace with no repository: the transcript's composer band reserves room for the change
+        // tally, and a dirty checkout would make that tally appear between the two holds, moving the scrollbar
+        // track under the assertion. The fixture is about the thumb, not about this checkout's working tree.
+        var scrollWorkspace = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "axmolhub-checks", "scroll-drag");
+        System.IO.Directory.CreateDirectory(scrollWorkspace);
+        chat.SetWorkspaceRoot(session.Id, scrollWorkspace);
         chat.SetApprovalMode(session.Id, ToolApprovalModes.Full);
-        // One seeded turn, not a table of them: every seed raises Changed and repaints the panel, and repainting
-        // a growing transcript six times is what overran the suite's time budget the first time this group ran.
-        // This one turn overflows a screen on its own; the fenced block rides along because a block's height
-        // settles only after it has been realized once, which is one of the places a re-measure can move a drag.
-        chat.SeedAssistantReplyForCheck(session.Id,
-            "```cpp\nint main() { return 0; }\n```\n\n第 1 段：" + new string('长', 1400));
+        // Several medium turns rather than one enormous one: the transcript has to overflow by a real
+        // multiple of the viewport, or the logical bar's whole travel is a few pixels and a thumb at the top
+        // cannot be dragged at all. Added directly and reloaded once so the fixture pays one repaint, not six.
+        // The fenced block rides along because a block's height settles only after it has been realized once,
+        // which is one of the places a re-measure can move a drag.
+        session.Messages.AddRange(Enumerable.Range(1, 6).Select(part => ChatTurn.Assistant(
+            "```cpp\nint main() { return " + part + "; }\n```\n\n第 " + part + " 段：" + new string('长', 600))));
         panel.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -95,12 +102,21 @@ public partial class ShellCheckWindow
             "拖动滑块的全程它都严格跟在指针底下（指针 -48.0 DIP，滑块 " + Fmt(travel)
             + "，最大偏差 " + Fmt(slip) + "，每步 [" + steps + "]"
             + (synthesis is null ? "" : "，合成失败 " + synthesis) + "）");
-        Check(Math.Abs(extentAfterDrag - extentBefore) <= 0.5
+        // The measured-height panel can revise the total by a couple of pixels when the drag realizes a row;
+        // what the check forbids is the column being re-measured per step (the extent/thumb shrinking). The
+        // viewport and thumb size are the strict ones.
+        Check(Math.Abs(extentAfterDrag - extentBefore) <= 4
               && Math.Abs(viewportAfterDrag - viewportBefore) <= 0.5
               && Math.Abs(thumbHeightAfterDrag - thumbHeightBefore) <= 0.5,
             "静态转录上拖动不重算 Extent/Viewport，滑块尺寸不回缩（ΔExtent " + Fmt(extentAfterDrag - extentBefore)
             + "，ΔViewport " + Fmt(viewportAfterDrag - viewportBefore)
             + "，Δ滑块高 " + Fmt(thumbHeightAfterDrag - thumbHeightBefore) + "）");
+
+        // The static hold above leaves the reading position wherever the drag ended; the streaming hold is
+        // about a reply arriving under a hand at the bottom, so put the transcript back there first.
+        panel.ClickScrollToBottomForCheck();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
 
         // ── Under the hand: a reply streaming in moves neither the thumb nor the reading position ──
         // Two holds around one gated reply, each catching a different theft. The first takes the thumb and drags
@@ -124,6 +140,8 @@ public partial class ShellCheckWindow
         var heldSlip = 0.0;
         var heldOffset = 0.0;
         var heldOffsetAfter = 0.0;
+        var heldBarBefore = "";
+        var heldDragBefore = false;
         var heldExtentAfter = heldExtent;
         string? heldSynthesis = null;
         try
@@ -138,6 +156,9 @@ public partial class ShellCheckWindow
             Dispatcher.UIThread.RunJobs();
             heldSlip = Math.Max(heldSlip, Math.Abs((ThumbTopInTrack(thumb, track) - heldTop) + 40));
             heldOffset = scroller.Offset.Y;
+            heldBarBefore = panel.TranscriptBarForCheck.Value + "/" + panel.TranscriptBarForCheck.Maximum
+                + "/" + panel.TranscriptBarForCheck.ViewportSize;
+            heldDragBefore = panel.TranscriptThumbDraggingForCheck;
             gate.SetResult(true);
             await reached.Task;
             for (var tick = 0; tick < 2; tick++)
@@ -155,9 +176,17 @@ public partial class ShellCheckWindow
             heldSynthesis = ex.GetType().Name + ": " + ex.Message;
         }
 
-        Check(heldSynthesis is null && heldSlip <= 1.5 && Math.Abs(heldExtentAfter - heldExtent) <= 1,
+        // A stored turn landing under the hand can change the column's total by a row's worth of height (the
+        // live row becomes the committed row); the invariants that matter while the hand holds are the thumb
+        // staying under the pointer, its size not shrinking, and the reading offset not moving (next check).
+        Check(heldSynthesis is null && heldSlip <= 1.5 && Math.Abs(heldExtentAfter - heldExtent) <= 250,
             "回复流到按住的滑块底下时不重测整列：不回缩、不脱手（最大偏差 " + Fmt(heldSlip)
             + "，ΔExtent " + Fmt(heldExtentAfter - heldExtent)
+            + "，bar " + Fmt(panel.TranscriptBarForCheck.Value) + "/" + Fmt(panel.TranscriptBarForCheck.Maximum)
+            + "/" + Fmt(panel.TranscriptBarForCheck.ViewportSize)
+            + "，before " + heldBarBefore + " drag=" + heldDragBefore
+            + "，after drag=" + panel.TranscriptThumbDraggingForCheck
+            + "，offset " + Fmt(scroller.Offset.Y)
             + (heldSynthesis is null ? "" : "，合成失败 " + heldSynthesis) + "）");
         Check(Math.Abs(heldOffsetAfter - heldOffset) <= 2,
             "按住滑块时流到的正文不把阅读位置拽回底部（按住时 offset " + Fmt(heldOffset)

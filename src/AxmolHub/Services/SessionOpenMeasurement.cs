@@ -39,6 +39,10 @@ internal sealed class SessionOpenMeasurement(string conversationId, string origi
     internal int FlowChildren { get; set; }
     internal int MarkdownDocuments { get; set; }
     internal int Editors { get; set; }
+    /// <summary>How many coverage repairs this open needed before its observation completed. Zero is the healthy
+    /// case: the first follow landed and no host had to be reset.</summary>
+    internal int Repairs { get; set; }
+    internal string LastRepairTrigger { get; set; } = "";
     internal bool ObservationQueued { get; set; }
     internal bool Completed { get; set; }
     internal double ObservedMs { get; private set; }
@@ -56,6 +60,7 @@ internal sealed class SessionOpenMeasurement(string conversationId, string origi
             + FormattableString.Invariant($" · render={RenderMs:0.0}ms reload={ReloadMs:0.0}ms rows={(Reused ? "reused" : "drawn")}")
             + FormattableString.Invariant($" · syntax={SyntaxMs:0.0}ms markdown={MarkdownMs:0.0}ms highlightObserved={HighlightMs:0.0}ms")
             + FormattableString.Invariant($" · openToLoaded={ElapsedMs:0.0}ms reloads={Reloads} stillViewed={stillViewed} presentation=unavailable")
+            + FormattableString.Invariant($" · repairs={Repairs}{(LastRepairTrigger.Length > 0 ? " last=" + LastRepairTrigger : "")}")
             + FormattableString.Invariant($" · allocatedProcessBytes={GC.GetTotalAllocatedBytes(false) - _allocated}")
             + FormattableString.Invariant($" gc={GC.CollectionCount(0) - _collections[0]}/{GC.CollectionCount(1) - _collections[1]}/{GC.CollectionCount(2) - _collections[2]}");
     }

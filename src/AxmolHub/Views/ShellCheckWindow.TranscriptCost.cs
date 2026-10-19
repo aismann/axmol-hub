@@ -69,7 +69,9 @@ public partial class ShellCheckWindow
             panel.ScrollVirtualItemForCheck(index);
             Relayout(shell, panel, measure: true);
             visited.UnionWith(panel.RealizedKeysForCheck);
-            Check(panel.VirtualIndexRealizedForCheck(index), $"连续滚动可到达历史位置 {index}（往返 {pass}）");
+            Check(panel.VirtualIndexRealizedForCheck(index),
+                $"连续滚动可到达历史位置 {index}（往返 {pass}，{panel.TranscriptCoverageDetailForCheck}"
+                + $"；repairs={panel.TranscriptRepairCountForCheck} last={panel.LastTranscriptRepairForCheck}）");
             Check(panel.RealizedItemCountForCheck is > 0 and < 150,
                 $"往返滚动后离屏控件回收（{panel.RealizedItemCountForCheck}）");
         }
@@ -159,6 +161,8 @@ public partial class ShellCheckWindow
             "收起大型组后子行和详情控件退出列表");
         chat.DeleteConversation(machine.Id);
         CheckVariableTranscriptScroll(shell, panel);
+        CheckLongToolDenseTranscript(shell, panel);
+        CheckRealSessionIfRequested(shell, panel);
         CheckRetainedContext(shell);
         CheckProjectionIdentity(shell, panel);
         CheckTranscriptProjection(shell, panel);
