@@ -1,18 +1,12 @@
+using System;
 using System.Linq;
 using Avalonia.Threading;
+using Avalonia.Controls;
+using Avalonia.LogicalTree;
 using AxmolHub.Core;
 
 namespace AxmolHub;
 
-/// <summary>What opening a long session costs, pinned as a shape rather than as a clock.
-///
-/// <para>Kept in its own file the way <c>ShellCheckWindow.ModelSwitch.cs</c> is, because the file this check
-/// would otherwise grow is already the largest in the repository.</para>
-///
-/// <para>No stopwatch anywhere. "Renders in under 200 ms" is a check that fails on a slow machine, and this
-/// suite has said so before (<c>ChatSidebar</c>'s layout-timing note). Every number below is a count of controls,
-/// which comes out the same on a laptop and on a CI runner — and each of them is a claim the renderer can only
-/// keep by doing the work proportionally, so a stopwatch would be measuring the same thing less reliably.</para></summary>
 public partial class ShellCheckWindow
 {
     private void CheckRetainedContext(MainWindow shell)
@@ -45,161 +39,134 @@ public partial class ShellCheckWindow
         }
     }
 
-    /// <summary>
-    /// Three claims about one twenty-answer session: it opens with a bounded number of Markdown documents, the
-    /// plain rows near the reader are promoted once the dispatcher runs, and leaving it and coming back
-    /// re-attaches the rows it had rather than drawing them again.
-    ///
-    /// <para>The first is read <b>before</b> anything pumps the dispatcher, because the promotion pass is posted
-    /// rather than run inline: what this counts is exactly what the render laid down, which is the only moment
-    /// the eager window is observable as a number.</para>
-    /// </summary>
     private void CheckTranscriptCost(MainWindow shell, ChatPanel panel)
     {
-        const int turns = 20;
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
         var longSession = chat.StartConversation();
-        for (var i = 0; i < turns; i++)
-            chat.SeedAssistantReplyForCheck(longSession.Id, $"第 {i + 1} 条回答，带 `代码` 与 **粗体**。");
-
-        panel.Reload();
-        var documents = panel.MarkdownDocumentCountForCheck;
-        var plain = panel.PlainTurnRowCountForCheck;
-        var limit = ChatPanel.EagerMarkdownLimitForCheck;
-        Check(documents == limit && plain == turns - documents,
-            $"长会话按屏幕开，不按会话长度开：{turns} 条回答里只画 {documents} 篇 Markdown"
-            + $"（上限 {limit}），其余 {plain} 条先给可选纯文本");
-
-        // The rows in reach are the ones that get their Markdown: a session nobody can read is not a saving, so
-        // the held-back ones have to arrive as they are looked at.
-        Relayout(shell, panel, measure: true);
-        var promoted = panel.PlainTurnRowCountForCheck;
-        var firstRow = panel.FirstTranscriptRowForCheck;
-        Check(promoted < plain,
-            $"滚到眼前的纯文本补成 Markdown：{plain} 条降到 {promoted} 条");
-
-        // Leaving for another session and coming back: the same controls have to come back, and the promotion
-        // state with them. A red cell here means the second visit paid for the first visit's work again.
         var other = chat.StartConversation();
-        chat.SeedTurnForCheck(other.Id, "另一个会话");
-        Relayout(shell, panel);
+        chat.SeedTurnForCheck(other.Id, "alternate");
         chat.OpenConversation(longSession.Id);
-        Relayout(shell, panel);
-        Check(ReferenceEquals(panel.FirstTranscriptRowForCheck, firstRow)
-              && panel.PlainTurnRowCountForCheck == promoted,
-            "回到刚离开的会话是接回原来的行，不是重画一遍：首行仍是同一个控件，"
-            + $"纯文本行数不变（{promoted} 条）");
-
-        // ── A window edge that lands inside a machine exchange ──
-        // The cut is chosen by turn count, and a count knows nothing about which turns belong together. This
-        // fixture puts a tool result exactly at the edge, so a naive cut would paint a result whose call is above
-        // the window: the answer has to move the edge back over the call instead.
-        var edgeSession = chat.StartConversation();
-        for (var i = 0; i < 3; i++)
-            chat.SeedAssistantReplyForCheck(edgeSession.Id, $"前置回答 {i + 1}");
-        // Two turns appended straight to the live conversation, the way the tool-flood fixture builds a call and
-        // its result: there is no seed that writes a result, and what this check reads is how the window cuts a
-        // stored exchange rather than how one was stored.
-        var edgeTurns = chat.ActiveConversation!.Messages;
-        edgeTurns.Add(ChatTurn.FunctionCall("call_edge", "run_command", "{\"command\":\"git status\"}"));
-        edgeTurns.Add(ChatTurn.FunctionResult("call_edge", "ok"));
-        for (var i = 0; i < 29; i++)
-            chat.SeedAssistantReplyForCheck(edgeSession.Id, $"后续回答 {i + 1}");
-        chat.OpenConversation(longSession.Id);
-        chat.OpenConversation(edgeSession.Id);
+        chat.SeedTurnForCheck(longSession.Id, "virtualized session");
+        longSession.Messages.Clear();
+        longSession.Messages.AddRange(Enumerable.Range(0, 1_000).Select(i => ChatTurn.Assistant($"reply-{i} **body**")));
         panel.Reload();
-        var edgePainted = panel.PaintedTurnCountForCheck;
-        // The window lands on a piece boundary, so a call and its result are both in or both out: what is painted
-        // is what remains after stepping back over the whole exchange, not the budget plus one.
-        Check(edgePainted == ChatPanel.FirstPaintTurnsForCheck - 1,
-            $"窗口边落在工具调用中间时按段边界落地，不切开一次调用：{ChatPanel.FirstPaintTurnsForCheck} 条变成 "
-            + $"{edgePainted} 条");
-        chat.DeleteConversation(edgeSession.Id);
-
-        // ── A session carrying a pending decision, longer than one window ──
-        // Opening a session used to write it unconditionally: a `turn with { … }` per pending card to flip
-        // ApprovalSeen, plus a whole-file save whether or not anything needed stamping. That rewrite is also what
-        // stopped the rows being re-attached, because the stamped turn comes back as a different object. This
-        // pins all three halves: the flag is still stamped, a later open with nothing to stamp rewrites no turn,
-        // and the rows come back either way.
-        var decided = chat.StartConversation();
-        for (var i = 0; i < 3; i++)
-            chat.SeedAssistantReplyForCheck(decided.Id, $"待定的回答 {i + 1}");
-        chat.ActiveConversation!.Messages.Add(ChatTurn.FunctionCall("call_wait", "run_command",
-            "{\"command\":\"git status\"}") with { ApprovalState = ChatApprovalStates.Pending });
-        for (var i = 0; i < 36; i++)
-            chat.SeedAssistantReplyForCheck(decided.Id, $"后续回答 {i + 1}");
-        var pendingBefore = chat.ActiveConversation!.Messages.Single(turn => turn.ToolCallId == "call_wait");
-
-        chat.OpenConversation(longSession.Id);
-        chat.OpenConversation(decided.Id);
-        panel.Reload();
-        var stamped = !ReferenceEquals(pendingBefore,
-            chat.ActiveConversation!.Messages.Single(turn => turn.ToolCallId == "call_wait"));
-        var rowBefore = panel.FirstTranscriptRowForCheck;
-        var paintedBefore = panel.PaintedTurnCountForCheck;
-
-        chat.OpenConversation(longSession.Id);
-        Relayout(shell, panel);
-        chat.OpenConversation(decided.Id);
-        Relayout(shell, panel);
-        Check(stamped && ReferenceEquals(panel.FirstTranscriptRowForCheck, rowBefore)
-              && panel.PaintedTurnCountForCheck == paintedBefore,
-            "带待决卡片的会话：首次打开写下 ApprovalSeen（这一条 turn 被换成新对象），"
-            + "离开再回来仍然接回原来的行，窗口位置也一样（写入 " + stamped
-            + "，行复用 " + ReferenceEquals(panel.FirstTranscriptRowForCheck, rowBefore)
-            + "，窗口 " + paintedBefore + "→" + panel.PaintedTurnCountForCheck + "）");
-
-        // Nothing left to stamp, so this open must not rewrite the conversation at all.
-        var quietBefore = chat.ActiveConversation!.Messages.ToArray();
-        chat.OpenConversation(decided.Id);
-        var quietAfter = chat.ActiveConversation!.Messages;
-        Check(quietBefore.Length == quietAfter.Count
-              && quietBefore.Zip(quietAfter).All(pair => ReferenceEquals(pair.First, pair.Second)),
-            "没有待决卡片时再打开一次，一条 turn 都不会被重写（" + quietBefore.Length + " 条）");
-        chat.DeleteConversation(decided.Id);
-
-        // ── A session longer than one window ──
-        // What the window claims: the first frame costs what a screen costs, not what the session costs. Counted
-        // before anything pumps the dispatcher, because afterwards only the line at the top is left as evidence.
-        var windowed = chat.StartConversation();
-        for (var i = 0; i < 120; i++)
-            chat.SeedAssistantReplyForCheck(windowed.Id, $"第 {i + 1} 条回答，带 `代码` 与 **粗体**。");
-        chat.OpenConversation(longSession.Id);
-        chat.OpenConversation(windowed.Id);
-        panel.Reload();
-        var firstPaint = panel.PaintedTurnCountForCheck;
-        Check(firstPaint == ChatPanel.FirstPaintTurnsForCheck && panel.HasLoadEarlierRowForCheck,
-            $"长会话先只画最新的一段：120 条回答里画 {firstPaint} 条"
-            + $"（窗口 {ChatPanel.FirstPaintTurnsForCheck}），更早的用一行代替");
-
-        // Laid out, not merely present: a row whose style resolved to nothing would still be counted above.
         Relayout(shell, panel, measure: true);
-        Check(panel.LoadEarlierRowHeightForCheck > 0,
-            "「加载更早的」真的画出来了，高 " + Fmt(panel.LoadEarlierRowHeightForCheck) + "px");
-
-        // Each press widens the window by a step, and the line goes away once the whole history is in the flow.
-        var presses = 0;
-        while (panel.HasLoadEarlierRowForCheck && presses < 10 && panel.ClickLoadEarlierForCheck()) presses++;
+        Check(panel.VirtualItemCountForCheck == 1_000 && !panel.HasLoadEarlierRowForCheck,
+            "完整历史进入虚拟列表，不再显示加载更早按钮");
+        Check(panel.RealizedItemCountForCheck is > 0 and < 150,
+            $"千条转录只创建视口附近控件（{panel.RealizedItemCountForCheck}）");
+        chat.OpenConversation(other.Id);
         Relayout(shell, panel, measure: true);
-        Check(!panel.HasLoadEarlierRowForCheck && panel.PaintedTurnCountForCheck == 120,
-            $"点「加载更早的」一次给一批，点到底把整段都给出来：按了 {presses} 次，现在画 "
-            + $"{panel.PaintedTurnCountForCheck} 条，头上那行{(panel.HasLoadEarlierRowForCheck ? "还在" : "没了")}");
+        chat.OpenConversation(longSession.Id);
+        Relayout(shell, panel, measure: true);
+        Check(panel.ReusedVirtualRowsForCheck, "切回同一稳定历史复用有限的已实现控件");
+        var baseline = panel.RealizedItemCountForCheck;
+        var visited = panel.RealizedKeysForCheck.ToHashSet();
+        for (var pass = 0; pass < 3; pass++)
+        foreach (var index in new[] { 0, 500, 999 })
+        {
+            panel.ScrollVirtualItemForCheck(index);
+            Relayout(shell, panel, measure: true);
+            visited.UnionWith(panel.RealizedKeysForCheck);
+            Check(panel.VirtualIndexRealizedForCheck(index), $"连续滚动可到达历史位置 {index}（往返 {pass}）");
+            Check(panel.RealizedItemCountForCheck is > 0 and < 150,
+                $"往返滚动后离屏控件回收（{panel.RealizedItemCountForCheck}）");
+        }
+        Check(visited.Count > baseline && panel.MarkdownDocumentCountForCheck < 150,
+            "历史消息按需补全 Markdown，已访问消息不累计保留为控件");
+        panel.ScrollVirtualItemForCheck(500);
+        Relayout(shell, panel, measure: true);
+        var anchor = panel.VirtualAnchorForCheck;
+        longSession.Messages.Insert(0, ChatTurn.User("inserted"));
+        panel.Reload();
+        Relayout(shell, panel, measure: true);
+        Check(anchor.Key == panel.VirtualAnchorForCheck.Key && Math.Abs(anchor.Top - panel.VirtualAnchorForCheck.Top) <= 2,
+            "前方插入消息后保持出现键和像素阅读位置");
+        var deleteKey = panel.VirtualAnchorForCheck.Key;
+        longSession.Messages.RemoveAt(panel.VirtualAnchorSourceForCheck);
+        panel.Reload();
+        Relayout(shell, panel, measure: true);
+        Check(panel.VirtualAnchorForCheck.Key != deleteKey && panel.RealizedItemCountForCheck > 0,
+            "阅读锚点被删除后定位到存活的邻近消息");
+        chat.OpenConversation(other.Id);
+        Relayout(shell, panel, measure: true);
+        chat.OpenConversation(longSession.Id);
+        Relayout(shell, panel, measure: true);
+        Check(panel.VirtualIndexRealizedForCheck(panel.VirtualItemCountForCheck - 1) && panel.ParkedVirtualRowsForCheck <= 400,
+            "切回会话定位最新消息，停放控件保持两个会话各 200 行的上限");
 
-        chat.DeleteConversation(windowed.Id);
+        var editable = chat.StartConversation();
+        chat.SeedTurnForCheck(editable.Id, "editable question");
+        editable.Messages.AddRange(Enumerable.Range(0, 1_000).Select(i => ChatTurn.Assistant("editing fixture " + i)));
+        panel.Reload();
+        Relayout(shell, panel, measure: true);
+        panel.ScrollVirtualItemForCheck(0);
+        Relayout(shell, panel, measure: true);
+        Check(panel.ClickBubbleAction(0, "EditMessage"), "虚拟消息通过现有操作条进入原地编辑");
+        var editor = panel.BubbleEditorForCheck(0);
+        if (editor is not null) editor.Text = "draft survives recycling";
+        panel.ScrollVirtualItemForCheck(999);
+        Relayout(shell, panel, measure: true);
+        panel.ScrollVirtualItemForCheck(0);
+        Relayout(shell, panel, measure: true);
+        Check(panel.BubbleEditorForCheck(0)?.Text == "draft survives recycling",
+            "正在编辑的消息离屏往返后保留输入草稿");
+        panel.ClickBubbleAction(0, "Cancel");
+        Relayout(shell, panel, measure: true);
+        var selected = panel.SelectFirstUserTextForCheck();
+        panel.ScrollVirtualItemForCheck(999);
+        Relayout(shell, panel, measure: true);
+        panel.ScrollVirtualItemForCheck(0);
+        Relayout(shell, panel, measure: true);
+        Check(selected is not null && selected.SelectedText == "editable" && panel.RealizedItemCountForCheck < 150,
+            $"文本选择所在控件在离屏往返期间保留，其他行仍正常回收（选择 {selected?.SelectedText}，行 {panel.RealizedItemCountForCheck}）");
+        panel.ReleaseVirtualSelectionForCheck();
+        var widthAnchor = panel.VirtualAnchorForCheck;
+        var oldWidth = shell.Width;
+        shell.Width = Math.Max(900, oldWidth - 120);
+        Relayout(shell, panel, measure: true);
+        shell.Width = oldWidth;
+        Relayout(shell, panel, measure: true);
+        Check(panel.RealizedItemCountForCheck is > 0 and < 150 && widthAnchor.Key == panel.VirtualAnchorForCheck.Key,
+            "改变窗口宽度后保留阅读锚点并重新测量已实现行");
+        chat.DeleteConversation(editable.Id);
+
+        var machine = chat.StartConversation();
+        chat.SeedTurnForCheck(machine.Id, "large activity group");
+        for (var i = 0; i < 5_000; i++)
+        {
+            machine.Messages.Add(ChatTurn.FunctionCall("large-" + i, "read_file", "{}"));
+            machine.Messages.Add(ChatTurn.FunctionResult("large-" + i, "result " + i));
+        }
+        panel.Reload();
+        Relayout(shell, panel, measure: true);
+        Check(panel.VirtualItemCountForCheck == 2 && panel.ActivityRowToggleCountForCheck == 0,
+            "万条工具转录收起时只创建组头，不创建隐藏子控件");
+        panel.SetActivityGroupExpandedForCheck(0, true);
+        Relayout(shell, panel, measure: true);
+        Check(panel.VirtualItemCountForCheck == 5_002 && panel.RealizedItemCountForCheck is > 0 and < 150,
+            "展开大型活动组也逐行虚拟化，不一次创建全部工具行");
+        panel.ScrollVirtualItemForCheck(1_000);
+        Relayout(shell, panel, measure: true);
+        Check(panel.VirtualIndexRealizedForCheck(1_000) && panel.ActivityRowToggleCountForCheck > 0,
+            "展开组内可连续滚动到远处工具结果");
+        panel.ScrollVirtualItemForCheck(1);
+        Relayout(shell, panel, measure: true);
+        panel.SetActivityGroupExpandedForCheck(0, false);
+        Relayout(shell, panel, measure: true);
+        Check(panel.VirtualItemCountForCheck == 2 && panel.ActivityRowToggleCountForCheck == 0,
+            "收起大型组后子行和详情控件退出列表");
+        chat.DeleteConversation(machine.Id);
         CheckRetainedContext(shell);
         CheckProjectionIdentity(shell, panel);
         CheckTranscriptProjection(shell, panel);
         CheckSessionOpenMeasurements(shell, panel, longSession.Id, other.Id);
-        // Last, and opt-in: the benchmark switches sessions hundreds of times, and the assertions above read the
-        // view's own position and promotion state.
         CheckRequestStability(shell, panel);
         RunTranscriptBenchmark(shell, panel);
         chat.DeleteConversation(other.Id);
         chat.DeleteConversation(longSession.Id);
-        if (before is { Length: > 0 } && chat.Conversations.Any(summary => summary.Id == before))
-            chat.OpenConversation(before);
+        if (before is not null && chat.Conversations.Any(summary => summary.Id == before)) chat.OpenConversation(before);
         panel.Reload();
         Dispatcher.UIThread.RunJobs();
     }

@@ -27,14 +27,12 @@ namespace AxmolHub;
 
 public partial class ChatPanel : UserControl
 {
-    /// <summary>How many of the newest assistant turns are rendered as full Markdown when a transcript is laid
-    /// down. Older turns fall back to plain selectable text and are promoted the moment a reader scrolls one
-    /// into reach (<see cref="PromoteMarkdownInView"/>). Every Markdown turn carries a MarkdownScrollViewer, a
-    /// Markdig pass and an AvaloniaEdit highlighter, so the count that matters is the one on screen rather than
-    /// the one in the session; bounding it keeps the heavy controls proportional to what a person actually reads
-    /// rather than to the session's total length. The limit is high enough that short sessions (all of the
-    /// self-check fixtures) render everything without a promotion pass.</summary>
-    private const int EagerMarkdownLimit = 12;
+    // Virtual rows use their final Markdown shape from the first measure. A history-dependent plain/Markdown
+    // boundary makes variable-height virtualization oscillate when a measured row is recycled across that boundary.
+    private const int EagerMarkdownLimit = int.MaxValue;
+    private readonly Button ForkNotice = new() { Classes = { "fork-notice" }, IsVisible = false,
+        MaxWidth = 820, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 12, 0, 0) };
+    private readonly StackPanel NoticeHost = new();
 
     /// <summary>How many plain rows one promotion pass may upgrade. A scroll arrives as a burst and a pass that
     /// swallowed the whole burst would stall the very frame it exists to keep smooth, so the rest wait for the
@@ -49,17 +47,6 @@ public partial class ChatPanel : UserControl
     /// <summary>The class a row wears while its Markdown is still held back. It is also what makes such a row
     /// findable without a side table, so a check can count what a session opened with from outside.</summary>
     private const string PlainTurnClass = "plain-turn";
-
-    /// <summary>
-    /// How many of the newest turns a transcript paints when it is laid down.
-    ///
-    /// <para>The rest of a long session is reachable through the line at the top of the flow instead of being
-    /// paid for up front: building and measuring a row is nearly all of what an open costs, and a session of four
-    /// hundred turns painted in full holds the window for about three quarters of a second before the first thing
-    /// can be read. The number is above every self-check fixture — the longest is 18 turns — so the suite keeps
-    /// exercising the ordinary full paint, and only <c>CheckTranscriptCost</c> meets the window.</para>
-    /// </summary>
-    private const int FirstPaintTurns = 30;
 
     /// <summary>How many rows a transcript may park when it is left. A row holds its whole Markdown document, its
     /// editors and its decoded pictures, so a session somebody expanded all the way to the top is a session whose
@@ -182,56 +169,13 @@ public partial class ChatPanel : UserControl
         public bool ShowedText { get; set; }
     }
 
-    /// <summary>The conversation whose turns <see cref="MessageFlow"/> currently shows, and how many of its
-    /// visible turns have already been laid down. Together they let <see cref="RenderMessages"/> append only what
-    /// is new instead of tearing down and rebuilding the whole flow on every change. The prefix is counted in
-    /// <i>turns</i>, not in rows: a group of machine turns paints fewer rows than it consumes — a plain call
-    /// draws none, its result draws one between them — and a row count cannot point back into the transcript.</summary>
+    /// <summary>The conversation whose virtual display items currently own the reading surface.</summary>
     private string? _renderedConversationId;
-    private int _renderedCount;
-
-    /// <summary>The per-turn states as they were when the flow was laid down. An approval decision — and a spent
-    /// undo copy — rewrite what a turn that is already on screen looks like without changing how many turns there
-    /// are, which is precisely what counting cannot see.</summary>
-    private string _renderedApprovalStamp = "";
-
-    /// <summary>The last answer to "is the thinking drawn", held beside the stamp above because it invalidates the
-    /// flow for the same reason. Seeded to the shipped default so opening a session never tears down a transcript
-    /// that has not been painted yet.</summary>
-    private bool _renderedShowThinking = true;
-
-    /// <summary>Which turn was sitting in the last painted slot. Counting can see a tail append and can see the
-    /// history shrink, but it cannot see a turn <i>inserted</i> before the end — and a tool result is filed beside
-    /// the call it answers, which is an insert whenever other calls from the same response ran first. That shift
-    /// used to paint the shifted tail twice and skip the inserted row entirely. The slot's own identity is enough:
-    /// an insert anywhere before it moves a different turn into it.</summary>
-    private long _renderedTailKey;
-    private List<long> _renderedKeys = [];
-
-    /// <summary>The activity group whose run is still going, when one is: the machine turns that arrive next
-    /// belong to it, so it grows where it stands instead of the flow being rebuilt around it. See
-    /// <see cref="DeriveActivityGroup"/>.</summary>
-    private ActivityGroupView? _openGroup;
-
-    /// <summary>The visible turns the flow was laid down from. Held so that leaving a session keeps a way to ask
-    /// whether its rows still say what was drawn (see <see cref="RenderedTranscript"/>); the comparison itself
-    /// lives in <see cref="TakeParked"/>, which accepts a turn that came back as an equal object — stamping
-    /// <c>ApprovalSeen</c> at open does exactly that.</summary>
-    private List<ChatTurn> _renderedTurns = [];
 
     /// <summary>The rows that were drawn as plain text although their turn holds Markdown, waiting for a reader
     /// to scroll them into reach. Panel-wide rather than per control for the same reason the fold memory is: a
     /// rebuild can put a row somewhere else, and the record has to survive that or follow it.</summary>
     private List<PendingMarkdownRow> _pendingMarkdownRows = [];
-
-    /// <summary>How many turns a full paint may lay down, newest first. Doubles when a person asks for the ones
-    /// above, so each click's pause has a bound; panel-wide rather than per conversation, because somebody who
-    /// once wanted the earlier messages does not want to be asked again in every session they open.</summary>
-    private int _paintWindow = FirstPaintTurns;
-
-    /// <summary>The first visible turn the flow holds, or 0 when it holds the whole transcript. Rows exist only
-    /// for turns from here to the end, which makes this the one number that says where the window starts.</summary>
-    private int _paintedFrom;
 
     // Weak ownership follows the registry's live Conversation objects. Switching away does not reset identities;
     // deleting or evicting a conversation does not leave a second strong copy of its history in this panel.
@@ -242,40 +186,10 @@ public partial class ChatPanel : UserControl
     private string RowKey(int sourceIndex, string facet)
         => facet + ":" + _projection!.KeyAt(sourceIndex).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    /// <summary>Set by <see cref="ExpandEarlierTurns"/> to ask for the next paint to lay the flow down again from
-    /// a wider window. A flag rather than a sentinel in the fields above, because the teardown it requests must
-    /// <b>not</b> be read as a switch of session: nothing is parked, and the reading position does not move.</summary>
-    private bool _paintFromScratch;
-
-    /// <summary>Transcripts that were on screen before and whose rows are still worth keeping — the answer to
-    /// "the person is going back and forth between two sessions". Reusing the rows is what makes the second
-    /// visit cheap: the Markdig pass, the AvaloniaEdit editors and the syntax highlighting behind them are
-    /// exactly the work a rebuild would repeat, and a control that was only detached does not need it again.
-    /// Ordered most recently left first, bounded by <see cref="ParkedTranscriptDepth"/>.</summary>
-    private readonly List<RenderedTranscript> _parkedTranscripts = [];
-
     /// <summary>The current operation stays alive until its own Loaded observation, even if another session
     /// replaces it in this panel. Callback closures own their measurements, never the next session's fields.</summary>
     private SessionOpenMeasurement? _panelOpen;
     private bool _openReusedRows;
-
-    /// <summary>One transcript's rows, detached but alive, with everything needed to tell whether they still
-    /// describe the conversation they were drawn from.</summary>
-    private sealed class RenderedTranscript
-    {
-        public required string ConversationId { get; init; }
-        public List<Control> Rows { get; } = [];
-        public List<ChatTurn> Turns { get; } = [];
-        public List<long> Keys { get; } = [];
-        public List<PendingMarkdownRow> PendingMarkdown { get; } = [];
-        public ActivityGroupView? OpenGroup { get; set; }
-        public string ApprovalStamp { get; set; } = "";
-        public bool ShowThinking { get; set; }
-
-        /// <summary>Where this transcript's window started, so that coming back to it restores the same edge
-        /// rather than displaying rows as if the whole history were in the flow.</summary>
-        public int PaintedFrom { get; set; }
-    }
 
     /// <summary>A row drawn as plain text although its turn holds Markdown, with everything needed to draw it
     /// properly in place: the panel it sits in and the control itself, because a transcript that grew a group
@@ -321,42 +235,16 @@ public partial class ChatPanel : UserControl
     /// and none of them outlives the conversations they name.</summary>
     private void PruneFoldMemory()
     {
-        if (_expandedGroups.Count == 0 && _expandedRows.Count == 0 && _parkedTranscripts.Count == 0) return;
+        if (_expandedGroups.Count == 0 && _expandedRows.Count == 0) return;
         var alive = _chat!.Conversations.Select(summary => summary.Id).ToHashSet(StringComparer.Ordinal);
+        if (_chat.ActiveConversation is { } current) alive.Add(current.Id);
         foreach (var gone in _expandedGroups.Keys.Where(id => !alive.Contains(id)).ToArray()) _expandedGroups.Remove(gone);
         foreach (var gone in _expandedRows.Keys.Where(id => !alive.Contains(id)).ToArray()) _expandedRows.Remove(gone);
-        // Parked rows are the same kind of debris and a heavier one: a transcript of a deleted session keeps its
-        // Markdown viewers, their editors and their decoded pictures alive for a session nobody can open again.
-        _parkedTranscripts.RemoveAll(parked => !alive.Contains(parked.ConversationId));
     }
 
-    private bool RenderedPrefixMatches(List<(int Index, ChatTurn Turn, string? ToolName)> visible)
-    {
-        if (_renderedKeys.Count != _renderedCount) return false;
-        for (var i = 0; i < _renderedCount; i++)
-            if (_renderedKeys[i] != _projection!.KeyAt(visible[i].Index)
-                || !_renderedTurns[i].Equals(visible[i].Turn)) return false;
-        return true;
-    }
-
-    private static string ApprovalStamp(Conversation? conversation)
-    {
-        if (conversation is null) return "";
-        var stamp = new StringBuilder();
-        foreach (var turn in conversation.Messages)
-        {
-            if (turn.ApprovalState is null && turn.UndoName is null && turn.PlanApprovalState is null) continue;
-            stamp.Append(turn.ToolCallId).Append(':').Append(turn.ApprovalState ?? "")
-                .Append('/').Append(turn.UndoName ?? "")
-                .Append('/').Append(turn.PlanApprovalState ?? "").Append(';');
-        }
-
-        return stamp.ToString();
-    }
-
-    /// <summary>Raised when the active conversation or its title may have changed, so the shell can update
-    /// its top-bar title (the panel no longer owns a title of its own).</summary>
     internal event Action? ConversationStateChanged;
+
+    private bool _markdownPassQueued;
 
     public ChatPanel()
     {
@@ -479,10 +367,15 @@ public partial class ChatPanel : UserControl
             _ = SendAsync();
             InputBox.Focus();
         };
+        InitializeVirtualTranscript();
         ScrollToBottomButton.Click += (_, _) => ScrollToEnd();
         MessageScroller.SizeChanged += (_, _) => UpdateMessageColumnWidth();
-        MessageScroller.ScrollChanged += (_, _) =>
+        MessageScroller.ScrollChanged += (_, change) =>
         {
+            var wasAtBottom = MessageScroller.Offset.Y - change.OffsetDelta.Y
+                + MessageScroller.Viewport.Height - change.ViewportDelta.Y
+                >= MessageScroller.Extent.Height - change.ExtentDelta.Y - StickEpsilon;
+            if (Math.Abs(change.ViewportDelta.Y) > 0.1 && wasAtBottom && !_thumbDragging) QueueVirtualFollow();
             UpdateMessageColumnWidth();
             UpdateScrollAffordance();
             // The transcript of a long session is largely plain until this runs, and a scroll is exactly the
@@ -494,7 +387,7 @@ public partial class ChatPanel : UserControl
         // held-back paint flushes. Both drag events bubble out of the ScrollBar's template (Thumb's drag events
         // are Bubble routed events), so the wiring survives a template re-apply and stays out of the template.
         MessageScroller.AddHandler(Thumb.DragStartedEvent,
-            (_, _) => { _thumbDragging = true; _stickToBottom = false; });
+            (_, _) => { _transcriptGeneration++; _thumbDragging = true; _stickToBottom = false; });
         MessageScroller.AddHandler(Thumb.DragCompletedEvent,
             (_, _) => { _thumbDragging = false; FlushLiveRepaintIfPending(); });
         InputBox.PropertyChanged += (_, e) =>
@@ -683,18 +576,24 @@ public partial class ChatPanel : UserControl
     private void NoteSessionOpen(SessionOpenMeasurement measurement)
     {
         measurement.TotalTurns = _chat.ActiveConversation?.Messages.Count ?? 0;
-        measurement.PaintedTurns = _renderedCount - _paintedFrom;
-        measurement.Rows = MessageRows.Count();
-        measurement.ActivityRows = MessageFlow.GetLogicalDescendants().OfType<Control>()
-            .Count(control => control.Classes.Contains("activity-row"));
-        measurement.MarkdownDocuments = MarkdownDocumentCountForCheck;
-        measurement.Editors = MessageFlow.GetVisualDescendants().OfType<AvaloniaEdit.TextEditor>().Count();
-        measurement.FlowChildren = MessageFlow.Children.Count;
         if (measurement.ObservationQueued) return;
         measurement.ObservationQueued = true;
         var chat = _chat;
         Dispatcher.UIThread.Post(() =>
         {
+            if (chat.ViewedConversationId == measurement.ConversationId)
+            {
+                measurement.PaintedTurns = RealizedItemCountForCheck;
+                measurement.Rows = MessageRows.Count();
+                measurement.ActivityRows = RealizedTranscriptRows
+                    .SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Control>()
+                    .Count(control => control.Classes.Contains("activity-row"));
+                measurement.MarkdownDocuments = MarkdownDocumentCountForCheck;
+                measurement.Editors = RealizedTranscriptRows
+                    .SelectMany(row => new Visual[] { row }.Concat(row.GetVisualDescendants())).OfType<TextEditor>().Count();
+                measurement.FlowChildren = RealizedTranscriptRows.Count;
+                measurement.Reused = _openReusedRows;
+            }
             var line = measurement.Complete(chat.ViewedConversationId == measurement.ConversationId);
             chat.LogProvider?.Invoke()?.Write(line);
         }, DispatcherPriority.Loaded);
@@ -2353,412 +2252,18 @@ public partial class ChatPanel : UserControl
 
     private void RenderMessages()
     {
-        if (_chat is null) return;
-        PruneFoldMemory();
-        var conversation = _chat.ActiveConversation;
-        _projection = conversation is null ? null : _projectionStates.GetValue(conversation, _ => new());
-        var snapshot = conversation is null ? null
-            : _projection!.Build(conversation, _chat.ShowThinking, EagerMarkdownLimit);
-        if (conversation is not null)
-        {
-            foreach (var memory in new[] { _expandedGroups, _expandedRows })
-                if (memory.TryGetValue(conversation.Id, out var keys))
-                    keys.RemoveWhere(key => !long.TryParse(key.AsSpan(key.IndexOf(':') + 1),
-                        System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
-                        out var occurrence) || !_projection!.TryResolve(occurrence, out _));
-        }
-        var run = conversation is null ? null : _chat.RunFor(conversation.Id);
-
-        // The live bubble is not a stored turn. It comes off the flow before the stored rows are laid down and
-        // goes back on the end afterwards, so a repaint in the middle of a reply cannot bury it mid-transcript.
-        // A bubble belonging to another session is closed for good: its run keeps going, and coming back to it
-        // rebuilds the bubble from what arrived while it was out of sight — text, tools and elapsed time alike,
-        // because all three are read off the run and none of them is a number this view was keeping.
-        // A bubble that outlives its run would keep animating a reply that has already been written to the
-        // transcript, where it now belongs — so the absence of a streaming run for this session closes it,
-        // whoever happened to ask for a repaint.
-        if (_live is { } attached && (run is not { IsStreaming: true } || attached.Run != run))
-            CloseLive();
-        if (_live is { } held) MessageFlow.Children.Remove(held.Row);
-        // The command card comes off for the same reason and goes back on at the foot, after the stored rows: a
-        // command printing while the transcript is rebuilt must not leave its card stranded above the rows that
-        // explain it. The object survives the removal, so an opened panel and a scroll position survive it too.
-        if (_runningCommand is { } printing) MessageFlow.Children.Remove(printing.Shell);
-
-        var visible = new List<(int Index, ChatTurn Turn, string? ToolName)>();
-        if (conversation is not null)
-        {
-            // A tool result prints the name its call carried, and the result turn does not keep it. Gathered in
-            // one pass rather than looked up per result: `IndexOfToolCall` is a linear scan, so asking it once
-            // per result is quadratic in the session's length — and an agent session is exactly where both the
-            // length and the number of results are large. First call wins, which is the scan's own rule, so a
-            // transcript with a duplicated id reads the same as it always did.
-            var callNames = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var earlier in conversation.Messages)
-            {
-                if (earlier.Role != ChatRoles.Assistant || earlier.ToolCallId is not { Length: > 0 } id) continue;
-                if (earlier.ToolName is { } named && !callNames.ContainsKey(id)) callNames[id] = named;
-            }
-
-            for (var i = 0; i < conversation.Messages.Count; i++)
-            {
-                var turn = conversation.Messages[i];
-                // A system turn is context the model was given, not something anybody said. A tool result stays
-                // in the flow but not as a bubble — see <see cref="ToolResultLine"/> — and the name it prints is
-                // the one its call carried, because the result turn itself does not keep it.
-                if (turn.Role == ChatRoles.System) continue;
-                visible.Add((i, turn, turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 } answered
-                    ? callNames.GetValueOrDefault(answered)
-                    : null));
-            }
-        }
-
-        // A decision changes what an already-rendered turn looks like without changing how many turns there
-        // are, which is precisely the case incremental rendering cannot see: the stamp is what lets a card
-        // collapse into its one-line record instead of keeping buttons that no longer mean anything.
-        //
-        // Captured before the two stamps move forward: parking the session being left files its rows under *its*
-        // decisions, and reading the fields afterwards filed them under the incoming session's — which is why a
-        // switch between two sessions whose cards differed threw the rows away on the way back.
-        var priorApprovalStamp = _renderedApprovalStamp;
-        var priorShowThinking = _renderedShowThinking;
-        var approvalStamp = ApprovalStamp(conversation);
-        var approvalChanged = approvalStamp != _renderedApprovalStamp;
-        _renderedApprovalStamp = approvalStamp;
-
-        // Whether the thinking is drawn is a fact about how a turn looks, not about how many turns there are, so
-        // an append cannot carry it: every turn already on screen would keep wearing the old answer. The same
-        // shape as the approval stamp just above, and for the same reason.
-        var showThinkingChanged = _renderedShowThinking != _chat.ShowThinking;
-        _renderedShowThinking = _chat.ShowThinking;
-
-        // Coming back to a session whose rows are still parked re-attaches them instead of drawing them again.
-        // None of the conditions above can see this case — it is another session by definition, which is exactly
-        // what a teardown fires on — so it is answered here, before the teardown below pays for Markdig and
-        // AvaloniaEdit a second time over the same turns.
-        if (conversation is { } returning
-            && !string.Equals(returning.Id, _renderedConversationId, StringComparison.Ordinal)
-            && TakeParked(returning.Id, visible, approvalStamp) is { } parked)
-        {
-            ParkCurrentTranscript(priorApprovalStamp, priorShowThinking);
-            MessageFlow.Children.Clear();
-            foreach (var row in parked.Rows) MessageFlow.Children.Add(row);
-            _renderedConversationId = returning.Id;
-            _renderedCount = visible.Count;
-            _paintedFrom = parked.PaintedFrom;
-            _renderedTailKey = _projection!.KeyAt(visible[^1].Index);
-            _renderedTurns = parked.Turns;
-            _renderedKeys = parked.Keys;
-            _pendingMarkdownRows = parked.PendingMarkdown;
-            _openGroup = parked.OpenGroup;
-            _parkedTranscripts.Remove(parked);
-            // The rows came back, not the reading position: a session opens on its newest message exactly as it
-            // does the first time, which is what a person who clicked it in the sidebar asked for.
-            _stickToBottom = true;
-            _openReusedRows = true;
-            EmptyState.IsVisible = false;
-            SyncRunningCommandRow(conversation.Id, run);
-            if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
-            RenderNotice();
-            ScrollToEndIfSticky();
-            UpdateScrollAffordance();
-            // The rows that came back carry the promotions they never got: which of them are within reach is a
-            // question about where the view lands, so it is asked after the landing has been queued.
-            ScheduleMarkdownPromotion();
-            return;
-        }
-
-        if (visible.Count == 0)
-        {
-            // Whatever was on screen is still worth keeping: leaving a session for the empty state is the same
-            // errand as leaving it for another one.
-            ParkCurrentTranscript(priorApprovalStamp, priorShowThinking);
-            MessageFlow.Children.Clear();
-            _renderedConversationId = conversation?.Id;
-            _renderedCount = 0;
-            _paintedFrom = 0;
-            _renderedTailKey = 0;
-            _renderedTurns = [];
-            _renderedKeys = [];
-            _pendingMarkdownRows = [];
-            _openGroup = null;
-            EmptyState.IsVisible = run is not { IsStreaming: true };
-            SyncRunningCommandRow(conversation?.Id, run);
-            if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
-            RenderNotice();
-            UpdateScrollAffordance();
-            return;
-        }
-
-        // A teardown is for the cases an append cannot express: another session's turns, a history that shrank
-        // under an edit or a regenerate, a decision that rewrote what an already-painted turn looks like, a display
-        // switch that did the same, a turn that has moved into a slot it did not occupy when the flow was laid
-        // down, and a window the person just widened. A growing activity run is none of those: its new turns extend
-        // the group that is already the last row, which is what keeps a head the person had opened from being
-        // swapped out for a fresh collapsed one.
-        var aDifferentSession = _renderedConversationId != conversation!.Id;
-        var historyShrank = visible.Count < _renderedCount;
-        if (aDifferentSession || historyShrank || approvalChanged || showThinkingChanged || _paintFromScratch
-            || (_renderedCount > 0 && _projection!.KeyAt(visible[_renderedCount - 1].Index) != _renderedTailKey
-                || !RenderedPrefixMatches(visible)))
-        {
-            // The session being left keeps its rows, and this is the call that makes coming back cheap: the next
-            // visit to it is usually the very next thing the person does. Only on a switch — a teardown for a
-            // decision or a shrunken history is this same session being redrawn, and its own rows are exactly
-            // what is about to be wrong.
-            if (aDifferentSession) ParkCurrentTranscript(priorApprovalStamp, priorShowThinking);
-            _paintFromScratch = false;
-            MessageFlow.Children.Clear();
-            _renderedConversationId = conversation.Id;
-            _renderedCount = 0;
-            _paintedFrom = 0;
-            _renderedTurns = [];
-            _renderedKeys = [];
-            // The records die with the rows they pointed at: everything below lays the transcript down again,
-            // and a record left over from the flow that was just thrown away would name a control nobody can
-            // reach, which is a promotion that silently paints into a detached panel.
-            _pendingMarkdownRows = [];
-            _openGroup = null;
-            // A session opens on its newest message. The scroll offset belongs to the viewer rather than to the
-            // conversation, so without this a switch inherits wherever the previous one had been read up to.
-            // Revalidating the same transcript is not a switch, though: whoever had scrolled up to read something
-            // stays where they put it — and neither is a window the person just widened while reading the top.
-            if (aDifferentSession || historyShrank) _stickToBottom = true;
-        }
-
-        var lastIndex = conversation.Messages.Count - 1;
-        // The transcript as rows, computed once and then painted. The loop below no longer decides where a piece
-        // begins or ends: it reads that from the model, which is the point of having one — the boundaries are one
-        // answer computed in one place instead of a predicate soup evaluated while drawing.
-        // The snapshot was reconciled before cache lookup so parked rows and deferred work see current keys.
-        // The window. A fresh flow starts at a *piece boundary* near the newest FirstPaintTurns turns, never inside
-        // one: a cut between a call and its result paints a result whose call is above it. Only a fresh flow is
-        // windowed — an append is a row at the end, and taking rows away to fit a window would be a teardown
-        // wearing a different hat.
-        if (_renderedCount == 0 && visible.Count > _paintWindow)
-        {
-            var first = 0;
-            while (first < snapshot!.Entries.Count
-                   && visible.Count - snapshot!.Entries[first].FirstVisible > _paintWindow) first++;
-            _paintedFrom = first < snapshot!.Entries.Count ? snapshot!.Entries[first].FirstVisible : visible.Count;
-            _renderedCount = _paintedFrom;
-            MessageFlow.Children.Add(BuildLoadEarlierRow(conversation.Id, _paintedFrom));
-        }
-        else if (_renderedCount == 0)
-        {
-            _paintedFrom = 0;
-        }
-
-        foreach (var entry in snapshot!.Entries)
-        {
-            if (entry.FirstVisible >= visible.Count) break;
-            switch (entry)
-            {
-                case TranscriptActivity activity:
-                {
-                    var piece = activity.Piece;
-                    // Everything up to _renderedCount is already on the page: the window's prefix, or the piece
-                    // that has not grown since the last paint.
-                    if (piece.EndVisible <= _renderedCount) continue;
-                    // Re-sliced from where the run began, not the turns that just arrived: a row is drawn from a
-                    // call <i>and</i> the result that answered it, so handing the group only the new second half
-                    // would draw every result as a call nobody had asked for. A piece that grew is the open group
-                    // still last in the flow, which is what keeps a head somebody expanded from being replaced.
-                    var slice = visible.GetRange(piece.FirstVisible, piece.EndVisible - piece.FirstVisible);
-                    if (piece.FirstVisible < _renderedCount && _openGroup is { } prior
-                        && ReferenceEquals(MessageFlow.Children[^1], prior.Group))
-                    {
-                        prior.Turns = slice;
-                        prior.EndVisible = piece.EndVisible;
-                        DeriveActivityGroup(prior, conversation.Id, lastIndex, visible.Count);
-                    }
-                    else
-                    {
-                        _openGroup = CreateActivityGroup(conversation.Id, piece.FirstVisible, slice, piece.Folded);
-                        DeriveActivityGroup(_openGroup, conversation.Id, lastIndex, visible.Count);
-                    }
-
-                    _renderedCount = piece.EndVisible;
-                    continue;
-                }
-
-                case TranscriptMessage message:
-                {
-                    if (message.FirstVisible < _renderedCount) continue;
-                    // Prose closes the piece: the next piece of machine work is a different exchange.
-                    _openGroup = null;
-                    var (index, turn, toolName) = visible[message.FirstVisible];
-                    AppendRenderedTurn(conversation.Id, index, turn, toolName, isLast: index == lastIndex,
-                        markdown: message.Markdown, target: MessageFlow, inGroup: false);
-                    _renderedCount = message.FirstVisible + 1;
-                    continue;
-                }
-
-                case TranscriptNotice notice:
-                {
-                    if (notice.FirstVisible < _renderedCount) continue;
-                    // A notice is a line about the conversation rather than something anybody said, so it gets the
-                    // notice row this same flow already uses at its bottom — centered in the column, which is what
-                    // makes a model switch read as a divider rather than as a reply that happened to be short.
-                    _openGroup = null;
-                    MessageFlow.Children.Add(BuildNoticeRow(visible[notice.FirstVisible].Turn.Text, danger: false,
-                        onRetry: null));
-                    _renderedCount = notice.FirstVisible + 1;
-                    continue;
-                }
-            }
-        }
-
-        // Where the painted prefix ends, in the conversation's own terms. The next render compares against this
-        // rather than against the count, which is what lets a result filed beside its call — an insert, not an
-        // append — rebuild the flow instead of drawing the shifted tail twice.
-        _renderedTailKey = _projection!.KeyAt(visible[^1].Index);
-
-        // The turns these rows stand for, held by reference so that leaving the session keeps a way to ask
-        // whether they still say what was drawn (see <see cref="RenderedTranscript"/>).
-        _renderedTurns = [.. visible.Select(slot => slot.Turn)];
-        _renderedKeys = [.. visible.Select(slot => _projection!.KeyAt(slot.Index))];
-
-        EmptyState.IsVisible = false;
-        SyncRunningCommandRow(conversation.Id, run);
-        if (run is { IsStreaming: true }) MessageFlow.Children.Add(AttachLive(run).Row);
-        RenderNotice();
-        // The rows that just went in have not been measured yet, so this is posted: a view that was following
-        // the reply keeps following it, and one the person had scrolled away from is left where they put it.
-        ScrollToEndIfSticky();
-        UpdateScrollAffordance();
-        ScheduleMarkdownPromotion();
+        if (_reconcilingTranscript) return;
+        _reconcilingTranscript = true;
+        try { RenderVirtualTranscript(); }
+        finally { _reconcilingTranscript = false; }
     }
 
-    /// <summary>Forces a full rebuild on the next <see cref="RenderMessages"/> — used after an edit or a
-    /// regenerate shortened the history, where the visible prefix no longer matches the stored turns.</summary>
+    /// <summary>Reconciles display items after an edit or regeneration changed the stored history.</summary>
     private void ForceRebuildMessages()
     {
-        _renderedConversationId = null;
-        _renderedCount = 0;
         RenderMessages();
     }
 
-    /// <summary>
-    /// The line a windowed transcript opens with, standing for every turn above it.
-    ///
-    /// <para>Not a message row and not a machine panel — it carries neither class, so nothing in the transcript's
-    /// row accounting, its fold memory or its checks can mistake it for something somebody said. What it does
-    /// carry is the count, because "earlier messages" alone gives a reader no way to tell whether the click buys
-    /// forty rows or four thousand.</para>
-    /// </summary>
-    private Control BuildLoadEarlierRow(string conversationId, int hidden)
-    {
-        var button = new Button
-        {
-            Classes = { "load-earlier" },
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Content = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ChatLoadEarlier"), hidden),
-        };
-        button.Click += (_, _) => ExpandEarlierTurns(conversationId);
-        return new Border { Classes = { "load-earlier-row" }, Child = button };
-    }
-
-    /// <summary>
-    /// Widens the window and lays the transcript down again from further up.
-    ///
-    /// <para>The click is a person saying they want the earlier messages, so the work is paid once, on their word,
-    /// rather than guessed at while they read: a background pass that kept laying the flow down again would tear
-    /// the transcript apart under the eye for content nobody had asked for yet. Doubling rather than "everything"
-    /// keeps each click's pause bounded — 30, 60, 120 — and on any real session the last click lands on the whole
-    /// history, because the window has passed the transcript's length.</para>
-    ///
-    /// <para>Nothing scrolls. The person is at the top by definition, since that is where the line they clicked
-    /// was, and the content that arrives is the content they asked for.</para>
-    /// </summary>
-    private void ExpandEarlierTurns(string conversationId)
-    {
-        if (!string.Equals(_chat.ActiveConversation?.Id, conversationId, StringComparison.Ordinal)) return;
-        _paintWindow = _paintWindow > int.MaxValue / 2 ? int.MaxValue : _paintWindow * 2;
-        _paintFromScratch = true;
-        RenderMessages();
-    }
-
-    /// <summary>
-    /// The parked transcript for <paramref name="conversationId"/>, if its rows still describe the conversation
-    /// about to be drawn. One that does not is dropped here rather than left to be re-examined on every later
-    /// visit: the test is one reference comparison per turn, and the rows behind it are the expensive thing to
-    /// keep alive.
-    /// </summary>
-    private RenderedTranscript? TakeParked(string conversationId,
-        List<(int Index, ChatTurn Turn, string? ToolName)> visible, string approvalStamp)
-    {
-        var parked = _parkedTranscripts.Find(candidate => candidate.ConversationId == conversationId);
-        if (parked is null) return null;
-        // Parked controls are reusable only when occurrence keys and rendered values still agree in order,
-        // under the same decisions and thinking visibility. A disk reload must never inherit these controls.
-        //
-        // Identity first, value second, and the second half is not politeness: opening a session stamps
-        // `ApprovalSeen` onto every pending card with `turn with { … }`, so a turn whose *content* is unchanged
-        // comes back as a different object. Asking by identity alone threw away the rows of every session that
-        // had ever raised a card — which in practice was every long one — and the log said so plainly: opens of a
-        // 483-turn session read `drawn`, never `re-attached rows`.
-        var same = parked.Turns.Count == visible.Count
-                   && parked.ApprovalStamp == approvalStamp
-                   && parked.ShowThinking == _chat.ShowThinking;
-        for (var i = 0; same && i < parked.Turns.Count; i++)
-        {
-            var drawn = parked.Turns[i];
-            var now = visible[i].Turn;
-            same = parked.Keys[i] == _projection!.KeyAt(visible[i].Index)
-                   && (ReferenceEquals(drawn, now) || drawn.Equals(now));
-        }
-
-        if (same) return parked;
-        _parkedTranscripts.Remove(parked);
-        return null;
-    }
-
-    /// <summary>
-    /// Puts the transcript on screen aside — rows and all — so that coming back to it re-attaches instead of
-    /// drawing again. Called on the way out of a session, before the flow is cleared for the next one; the rows
-    /// stay alive detached, which is what a control that was only removed already is.
-    ///
-    /// <para>Nothing is parked while the flow holds no turns: rows are the whole of what this saves, and a
-    /// transcript with none costs nothing to draw again.</para>
-    ///
-    /// <para>The two stamps arrive as arguments rather than being read here, and that is the whole of a bug this
-    /// had: by the time this runs, <see cref="RenderMessages"/> has already moved both fields forward to the
-    /// <i>incoming</i> session's values, so reading them filed the outgoing rows under the wrong decisions and
-    /// every switch between two sessions whose cards differed lost its rows on the way back.</para>
-    /// </summary>
-    private void ParkCurrentTranscript(string approvalStamp, bool showThinking)
-    {
-        if (_renderedConversationId is not { Length: > 0 } id) return;
-        if (_renderedTurns.Count == 0 || MessageFlow.Children.Count == 0) return;
-        // A transcript somebody widened all the way to the top is a transcript with every row in it, and a row
-        // holds its whole Markdown document, its editors and its decoded pictures. Past this, drawing it again is
-        // cheaper than keeping it — and the window means the ordinary case never comes near the limit.
-        if (MessageFlow.Children.Count > ParkedRowLimit) return;
-        _parkedTranscripts.RemoveAll(parked => parked.ConversationId == id);
-        var parked = new RenderedTranscript
-        {
-            ConversationId = id,
-            ApprovalStamp = approvalStamp,
-            ShowThinking = showThinking,
-            OpenGroup = _openGroup,
-            PaintedFrom = _paintedFrom,
-        };
-        parked.Rows.AddRange(MessageFlow.Children);
-        parked.Turns.AddRange(_renderedTurns);
-        parked.Keys.AddRange(_renderedKeys);
-        parked.PendingMarkdown.AddRange(_pendingMarkdownRows);
-        _parkedTranscripts.Insert(0, parked);
-        while (_parkedTranscripts.Count > ParkedTranscriptDepth)
-            _parkedTranscripts.RemoveAt(_parkedTranscripts.Count - 1);
-    }
-
-    /// <summary>Set while a promotion pass is queued for the end of the frame.</summary>
-    private bool _markdownPassQueued;
-
-    /// <summary>Queues one promotion pass for the end of the frame. Queued rather than run inline because both
-    /// callers — a render, and a scroll — are already inside a frame that has to stay responsive.</summary>
     private void ScheduleMarkdownPromotion()
     {
         if (_markdownPassQueued || _pendingMarkdownRows.Count == 0) return;
@@ -2786,9 +2291,9 @@ public partial class ChatPanel : UserControl
     private void PromoteMarkdownInView()
     {
         if (_pendingMarkdownRows.Count == 0) return;
-        var offset = MessageScroller.Offset.Y;
+        var offset = 0d;
         var reach = MessageScroller.Viewport.Height;
-        var ceiling = offset + (2 * reach);
+        var ceiling = 2 * reach;
         var promoted = 0;
         for (var i = 0; i < _pendingMarkdownRows.Count && promoted < MarkdownPromotionsPerPass;)
         {
@@ -2805,7 +2310,7 @@ public partial class ChatPanel : UserControl
                 continue;
             }
 
-            var top = pending.Row.TranslatePoint(new Point(0, 0), MessageFlow)?.Y;
+            var top = pending.Row.TranslatePoint(new Point(0, 0), MessageScroller)?.Y;
             if (top is not { } y || !pending.Row.IsEffectivelyVisible
                 || y + pending.Row.Bounds.Height < offset || y > ceiling)
             {
@@ -2814,6 +2319,7 @@ public partial class ChatPanel : UserControl
             }
 
             _pendingMarkdownRows.RemoveAt(i);
+            _promotedTranscriptKeys.Add(pending.TurnKey);
             // Drawn the ordinary way into a panel of its own and then moved into place: a turn has exactly one
             // way of being drawn, and a promotion that assembled a second one would be a second thing to keep
             // in step with the first.
@@ -2933,11 +2439,11 @@ public partial class ChatPanel : UserControl
         // so, and is filed with what a later pass needs to draw it properly once a reader scrolls to it.
         if (!fromUser && !isPlanTurn && turn.Role != ChatRoles.Tool && turn.Text.Length > 0)
         {
-            if (markdown)
+            if (markdown && !IsLiteralTranscriptProse(turn.Text))
             {
                 MarkdownMessageRenderer.RenderInto(body, turn.Text, QuoteIntoComposer);
             }
-            else
+            else if (!markdown)
             {
                 row.Classes.Add(PlainTurnClass);
                 _pendingMarkdownRows.Add(new PendingMarkdownRow
@@ -3053,186 +2559,6 @@ public partial class ChatPanel : UserControl
                                                          && turn.ApprovalState is null && turn.UndoName is null;
 
     /// <summary>
-    /// <summary>
-    /// The shell of one collapsible activity group: its head, the panel its rows live in, and the stretch of the
-    /// transcript it stands for. Keeping those together is what lets a machine run that is still arriving grow the
-    /// group it opened instead of replacing it — the head is the control a person may well have expanded to read,
-    /// and a rebuilt group answers them with a collapsed one.
-    /// </summary>
-    private sealed class ActivityGroupView
-    {
-        public required string ConversationId { get; init; }
-
-        /// <summary>Where the run begins in the visible turns, and where it has reached so far. A next turn whose
-        /// index is exactly <see cref="EndVisible"/> continues this run; anything else is a different piece of
-        /// work and opens its own fold.</summary>
-        public required int FirstVisible { get; init; }
-
-        public int EndVisible { get; set; }
-
-        public required List<(int Index, ChatTurn Turn, string? ToolName)> Turns { get; set; }
-
-        /// <summary>Whether this piece is a collapsible fold. A flat piece (<see cref="IsNarratedCall"/> opened
-        /// it) has no head and nothing to expand: it is the sentence and the one action under it.</summary>
-        public required bool Folded { get; init; }
-
-        public required Control Group { get; init; }
-
-        /// <summary>The expandable head, or null for a flat piece. Only a fold has a sentence to keep current.</summary>
-        public ToggleButton? Head { get; init; }
-
-        public required StackPanel Inner { get; init; }
-    }
-
-    /// <summary>Lays down an empty piece over the first stretch of a machine run and puts it at the end of the
-    /// flow. Its rows and its sentence come from <see cref="DeriveActivityGroup"/>. A folded piece is a head over a
-    /// body the person opens; a flat one is a bare column of rows — the same drawing target, minus the chrome —
-    /// because a call that came with its own sentence has nothing here worth hiding.</summary>
-    private ActivityGroupView CreateActivityGroup(string conversationId, int firstVisible,
-        List<(int Index, ChatTurn Turn, string? ToolName)> turns, bool folded)
-    {
-        if (!folded)
-        {
-            // Hugging its own rows the way the fold's body does, and taking the flow's spacing only on the
-            // outside: the sentence and the action under it are one exchange, not two entries in the transcript.
-            var plain = new StackPanel
-            {
-                Classes = { "activity-plain" },
-                Spacing = 2,
-            };
-            MessageFlow.Children.Add(plain);
-            return new ActivityGroupView
-            {
-                ConversationId = conversationId,
-                FirstVisible = firstVisible,
-                EndVisible = firstVisible + turns.Count,
-                Turns = turns,
-                Folded = false,
-                Group = plain,
-                Inner = plain,
-            };
-        }
-
-        var head = new ToggleButton { Classes = { "activity-group-head" } };
-        var inner = new StackPanel { Spacing = 2 };
-        var body = new StackPanel { Name = "ActivityGroupBody", Spacing = 0, IsVisible = false, Margin = new Thickness(0, 2, 0, 2) };
-        body.Children.Add(inner);
-        // The turn a run starts on is the group's identity: it does not move while the run grows, and a rebuild
-        // slices the same run out of the same turn — so keying the fold to it is what lets an opened head come
-        // back open.
-        var foldKey = RowKey(turns[0].Index, "group");
-        // Driven off IsCheckedChanged rather than Click: a real click flips IsChecked (which fires this), and so
-        // does a check that sets IsChecked directly — a raised Click never reaches a ToggleButton's OnClick, so
-        // wiring the fold to Click would leave it untestable and half-broken. Wired before the remembered state is
-        // applied, because the panel's visibility has to keep exactly one source.
-        head.IsCheckedChanged += (_, _) =>
-        {
-            var expanded = head.IsChecked == true;
-            body.IsVisible = expanded;
-            RememberFold(_expandedGroups, conversationId, foldKey, expanded);
-            // A fold the person just opened is the one place where a plain row becomes readable without any
-            // scrolling at all, and the rows inside it were drawn plain while it was shut.
-            if (expanded) ScheduleMarkdownPromotion();
-        };
-        head.IsChecked = IsFoldOpen(_expandedGroups, conversationId, foldKey);
-
-        var group = new Border { Classes = { "activity-group" }, Child = new StackPanel { Spacing = 2, Children = { head, body } } };
-        MessageFlow.Children.Add(group);
-        return new ActivityGroupView
-        {
-            ConversationId = conversationId,
-            FirstVisible = firstVisible,
-            EndVisible = firstVisible + turns.Count,
-            Turns = turns,
-            Folded = true,
-            Group = group,
-            Head = head,
-            Inner = inner,
-        };
-    }
-
-    /// <summary>
-    /// Redraws one group from the turns it holds: every row inside it, then the full-width sentence over them.
-    /// The head names the work (the first action, and how many followed) rather than a bare count, so a tools-only
-    /// turn is a line of content and not a lonely pill. Collapsed by default: the charter hides secondary things.
-    ///
-    /// Inside, each tool exchange is folded into a single row. A read/search/list/find/command becomes one
-    /// descriptive <c>activity-row</c> built from its call and result (the raw payload moves to the tooltip), so
-    /// the AI lane reads as actions rather than a stack of result fragments. A write keeps its existing record
-    /// line with the undo — that line is the write's one exit and its approval trace, and it is asserted
-    /// elsewhere — so the group is a container that routes each turn to the row shape that fits it, not a
-    /// re-implementation of the per-turn surfaces.
-    ///
-    /// The rows are re-derived rather than appended because a result is filed <i>beside</i> the call it answers
-    /// (<see cref="Conversation.AppendFunctionResult"/>): the turn that just arrived is not always the new thing at
-    /// the end, and rebuilding the slice from the transcript as it now stands is the only way the rows come out in
-    /// the order the conversation holds. Only this group's own children move, so an opened head and the reading
-    /// position are left alone — which is the whole point of extending rather than rebuilding.
-    /// </summary>
-    private void DeriveActivityGroup(ActivityGroupView view, string conversationId, int lastIndex,
-        int visibleCount)
-    {
-        var turns = view.Turns;
-        // Pair each call with the result that answered it, so one row can say what was done and how it went.
-        var calls = new Dictionary<string, ChatTurn>(StringComparer.Ordinal);
-        foreach (var (_, turn, _) in turns)
-        {
-            if (turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 } id) calls[id] = turn;
-        }
-
-        var inner = view.Inner;
-        // The rows inside this piece are about to be thrown away and drawn again, so the promotions that named
-        // them go first: a record pointing at a control nobody can reach is a promotion that paints into a panel
-        // that is no longer in the flow.
-        _pendingMarkdownRows.RemoveAll(pending => ReferenceEquals(pending.Parent, inner));
-        inner.Children.Clear();
-        foreach (var (index, turn, toolName) in turns)
-        {
-            // A call that owed a decision, or a write that left a copy, keeps its own surface (signpost / record
-            // with undo) — those are functional and asserted, so route them through the ordinary turn renderer.
-            // The prose this call rode in on belongs to that surface too, so it is painted through the Markdown
-            // layer rather than left as raw source text — and a call that only asked for a read or a command gets
-            // its sentence painted the same way, because there it was, until now, drawn by nobody.
-            if (turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 } callId)
-            {
-                if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 } || IsNarratedCall(turn))
-                    AppendRenderedTurn(conversationId, index, turn, toolName, isLast: index == lastIndex,
-                        markdown: index >= visibleCount - EagerMarkdownLimit, target: inner, inGroup: true);
-                else if (BuildThoughtRowForTurn(conversationId, index, turn, inGroup: true) is { } silentThought)
-                    // A silent call renders no row of its own: its action row is drawn from the result below, so
-                    // emitting one here would only be a gap. Thinking is the exception — it is content, and until
-                    // now it was filed on a turn that painted nothing at all, which left a whole round of
-                    // reasoning on the record and nowhere on screen.
-                    inner.Children.Add(silentThought);
-                continue;
-            }
-
-            // A tool result folds into its call's row — except a write, whose record line above already speaks
-            // for the exchange.
-            if (turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 } answered)
-            {
-                var call = calls.TryGetValue(answered, out var paired) ? paired : null;
-                if (call?.ToolName == ChatChanges.FileWriteTool) continue;
-                var exchange = BuildActivityRowShell(conversationId, index, call, turn);
-                // The pairing this row was drawn from, kept as data: a result's name has two possible sources
-                // (the conversation-wide first call, the piece-local last call) and only the row knows which one
-                // it used. The shadow comparison reads it instead of guessing from a localised label.
-                exchange.Tag = call?.ToolName ?? "";
-                inner.Children.Add(exchange);
-                continue;
-            }
-
-            // A thinking-only turn <i>is</i> the row, not a row holding a fold. Routing it through the ordinary
-            // turn renderer painted an empty prose block and then tucked the thinking inside a second collapsed
-            // toggle — two clicks to reach one thing, beneath a group head that had already said 已思考 once.
-            if (BuildThoughtRowForTurn(conversationId, index, turn, inGroup: true) is { } thoughtRow)
-                inner.Children.Add(thoughtRow);
-        }
-
-        // A flat piece has no head to caption: its sentence is the prose row already painted above it.
-        if (view.Head is { } head) head.Content = BuildActivityGroupHead(turns, calls.Count);
-    }
-
     /// <summary>
     /// The head's row: a chevron, a sentence naming the first action (and how many followed), and an aggregate
     /// <c>+N −M</c> that trails that sentence. Naming the work rather than counting it is what keeps a tools-only
@@ -3590,7 +2916,7 @@ public partial class ChatPanel : UserControl
         }
 
         RefreshRunningCommand(card, run);
-        MessageFlow.Children.Add(card.Shell);
+        SyncVirtualTails();
     }
 
     /// <summary>Drops the card. What the person chose about its panel needs no work here: that decision lives in the
@@ -3600,7 +2926,7 @@ public partial class ChatPanel : UserControl
     {
         if (_runningCommand is not { } card) return;
         _runningCommand = null;
-        MessageFlow.Children.Remove(card.Shell);
+        SyncVirtualTails();
     }
 
     /// <summary>The command this conversation is running right now, or null.
@@ -4314,6 +3640,23 @@ public partial class ChatPanel : UserControl
 
     private Control BuildActionBar(int index, string role, string text, bool isLast, DateTimeOffset? at, StackPanel body)
     {
+        var actionSession = _chat.ViewedConversationId;
+        var actionKey = _projection!.KeyAt(index);
+        int CurrentIndex() => actionSession == _chat.ViewedConversationId && _projection is not null
+            && _projection.TryResolve(actionKey, out var current) ? current : -1;
+        void CopyCurrent()
+        {
+            var current = CurrentIndex();
+            if (current < 0 || _chat.ActiveConversation is not { } conversation) return;
+            var turn = conversation.Messages[current];
+            CopyToClipboard(turn.PlanApprovalState is not null ? _chat.PlanBody(turn, out _) ?? "" : turn.Text);
+        }
+        void RegenerateCurrent()
+        {
+            var current = CurrentIndex();
+            if (current >= 0 && _chat.ActiveConversation is { } conversation && current == conversation.Messages.Count - 1)
+                RegenerateAsync();
+        }
         var bar = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -4334,24 +3677,33 @@ public partial class ChatPanel : UserControl
 
         if (role == ChatRoles.User)
         {
-            bar.Children.Add(IconActionButton("CopyMessage", "Hub.Icon.Copy", () => CopyToClipboard(text)));
-            bar.Children.Add(IconActionButton("EditMessage", "Hub.Icon.Edit", () => BeginInlineEdit(index, body, bar)));
+            bar.Children.Add(IconActionButton("CopyMessage", "Hub.Icon.Copy", CopyCurrent));
+            bar.Children.Add(IconActionButton("EditMessage", "Hub.Icon.Edit", () => { if (CurrentIndex() is var current && current >= 0) BeginInlineEdit(current, body, bar); }));
             // A question that never got an answer is otherwise stuck: the notice that explained the failure is
             // not written to the transcript, and resubmitting the same text is refused as an unchanged edit. The
             // same ↻ that re-answers a reply re-asks this one, because Regenerate drops nothing when the
             // trailing turn is the question. It stops being the trailing turn the moment an answer lands, so
             // the button leaves on its own.
             if (isLast && ViewedRun is null)
-                bar.Children.Add(IconActionButton("RetryMessage", "Hub.Icon.Refresh", RegenerateAsync));
+                bar.Children.Add(IconActionButton("RetryMessage", "Hub.Icon.Refresh", RegenerateCurrent));
         }
         else
         {
-            bar.Children.Add(IconActionButton("CopyMessage", "Hub.Icon.Copy", () => CopyToClipboard(text)));
+            bar.Children.Add(IconActionButton("CopyMessage", "Hub.Icon.Copy", CopyCurrent));
             if (isLast)
-                bar.Children.Add(IconActionButton("RegenerateMessage", "Hub.Icon.Refresh", RegenerateAsync));
-            bar.Children.Add(IconActionButton("BranchFromHere", "Hub.Icon.Branch", () => BranchFromHere(index)));
+                bar.Children.Add(IconActionButton("RegenerateMessage", "Hub.Icon.Refresh", RegenerateCurrent));
+            bar.Children.Add(IconActionButton("BranchFromHere", "Hub.Icon.Branch", () => { if (CurrentIndex() is var current && current >= 0) BranchFromHere(current); }));
         }
 
+        if (role == ChatRoles.User && actionSession is not null && _inlineDrafts.ContainsKey((actionSession, actionKey)))
+        {
+            bar.AttachedToVisualTree += (_, _) => Dispatcher.UIThread.Post(() =>
+            {
+                if (_inlineDrafts.ContainsKey((actionSession, actionKey)) && CurrentIndex() is var current && current >= 0
+                    && body.Children.FirstOrDefault() is not TextBox)
+                    BeginInlineEdit(current, body, bar);
+            }, DispatcherPriority.Loaded);
+        }
         return bar;
     }
 
@@ -4459,6 +3811,7 @@ public partial class ChatPanel : UserControl
     {
         RenderStoredNotice();
         RenderCompactingRow();
+        SyncVirtualTails();
     }
 
     /// <summary>Adds the line a compaction owns, while one runs and no bubble is on screen. Read from the workspace
@@ -4539,7 +3892,7 @@ public partial class ChatPanel : UserControl
     /// whichever check needs to measure one. The turn is what the conversation stores; this is what the flow drew
     /// from it, which is the thing with a size and a position.</summary>
     internal IReadOnlyList<Grid> NoticeTurnRowsForCheck
-        => MessageFlow.Children.OfType<Grid>().Where(row => row.Classes.Contains("notice")).ToList();
+        => RealizedTranscriptRows.OfType<Grid>().Where(row => row.Classes.Contains("notice")).ToList();
 
     /// <summary>Where the newest in-flow notice row sits inside the flow, in the flow's own coordinates —
     /// (left, width, flow width) — which is what turns "it is centered" into numbers a check can hold.</summary>
@@ -4859,22 +4212,31 @@ public partial class ChatPanel : UserControl
     {
         if (IsViewedStreaming || body.Children.FirstOrDefault() is not TextBlock original) return;
 
+        var editSession = _chat.ViewedConversationId;
+        var editKey = _projection!.KeyAt(index);
         var untouched = original.Text ?? "";
+        var draftId = (editSession!, editKey);
         var normalActions = bar.Children.ToList();
         var closed = false;
         var editor = new TextBox
         {
-            Text = untouched,
+            Text = _inlineDrafts.GetValueOrDefault(draftId) ?? untouched,
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
             FontSize = original.FontSize,
         };
         editor.Classes.Add("message-edit");
+        _inlineDrafts[draftId] = editor.Text ?? "";
+        editor.PropertyChanged += (_, change) =>
+        {
+            if (!closed && change.Property == TextBox.TextProperty) _inlineDrafts[draftId] = editor.Text ?? "";
+        };
 
         void Close()
         {
             if (closed) return;
             closed = true;
+            _inlineDrafts.Remove(draftId);
             body.Children.Remove(editor);
             body.Children.Insert(0, original);
             bar.Children.Clear();
@@ -4884,10 +4246,12 @@ public partial class ChatPanel : UserControl
         void Commit()
         {
             if (closed) return;
-            var edited = editor.Text.Trim();
+            var edited = (editor.Text ?? "").Trim();
             var conversation = _chat.ActiveConversation;
             if (edited.Length == 0 || edited == untouched
-                || IsViewedStreaming || conversation is null || !_chat.EditAndResend(conversation.Id, index, edited))
+                || IsViewedStreaming || conversation is null || conversation.Id != editSession || _projection is null
+                || !_projection.TryResolve(editKey, out var currentIndex)
+                || !_chat.EditAndResend(conversation.Id, currentIndex, edited))
             {
                 Close();
                 return;
@@ -4895,6 +4259,7 @@ public partial class ChatPanel : UserControl
 
             // The rebuild throws this whole subtree away, so there is nothing left to restore.
             closed = true;
+            _inlineDrafts.Remove(draftId);
             ForceRebuildMessages();
             if (!_chat.TryEnqueueContinuation(conversation.Id, out var refusalKey))
                 AppendNotice(HubStrings.Get(refusalKey ?? "ChatFailed"), danger: true);
@@ -4906,7 +4271,7 @@ public partial class ChatPanel : UserControl
         bar.Children.Add(CloseActionButton(Close));
         bar.Children.Add(IconActionButton("ConfirmEdit", "Hub.Icon.Tick", Commit));
         editor.Focus();
-        editor.CaretIndex = editor.Text.Length;
+        editor.CaretIndex = editor.Text?.Length ?? 0;
 
         // Registered on the tunnel for the same reason the composer is: a TextBox with AcceptsReturn marks
         // Enter handled in order to insert a newline, so a plain subscriber never sees the key.
@@ -5041,8 +4406,8 @@ public partial class ChatPanel : UserControl
         live.Timer = null;
         // The bubble is about to be the only record of what streaming cost, and it is thrown away here.
         _lastLiveBuilds = live.Builds;
-        MessageFlow.Children.Remove(live.Row);
         _live = null;
+        SyncVirtualTails();
         _liveRepaintPending = false;
         UpdateSendState();
     }
@@ -5258,33 +4623,12 @@ public partial class ChatPanel : UserControl
     private void ScrollToEnd()
     {
         _stickToBottom = true;
-        Dispatcher.UIThread.Post(
-            () =>
-            {
-                // Tested here as well as at the call sites: the post runs after a hand may already be on the
-                // thumb, and a queued jump is exactly the scroll that used to pull the thumb out from under the
-                // mouse mid-drag.
-                if (_thumbDragging) return;
-                MessageScroller.ScrollToEnd();
-                UpdateScrollAffordance();
-            },
-            DispatcherPriority.Background);
+        QueueVirtualFollow();
     }
 
     private void ScrollToEndIfSticky()
     {
-        if (!_stickToBottom || _thumbDragging) return;
-        Dispatcher.UIThread.Post(
-            () =>
-            {
-                // Only the hand may veto a queued landing. The stick flag itself is recomputed from the view's
-                // position on every ScrollChanged, so testing it here would cancel the very "land on the newest
-                // line" this posts: the switch that queued it has already moved the view, and the flag reads
-                // false until the landing lands.
-                if (_thumbDragging) return;
-                MessageScroller.ScrollToEnd();
-            },
-            DispatcherPriority.Background);
+        if (_stickToBottom && !_thumbDragging) QueueVirtualFollow();
     }
 
     private void UpdateScrollAffordance()
@@ -5292,8 +4636,9 @@ public partial class ChatPanel : UserControl
         var extent = MessageScroller.Extent.Height;
         var viewport = MessageScroller.Viewport.Height;
         var atBottom = MessageScroller.Offset.Y + viewport >= extent - StickEpsilon;
-        _stickToBottom = atBottom;
+        if (!_reconcilingTranscript) _stickToBottom = atBottom;
         var scrollable = extent > viewport + StickEpsilon;
+        UpdateVirtualOverscan();
         ScrollToBottomButton.IsVisible = scrollable && !atBottom;
         // The band's height is reserved by whether the transcript <i>can</i> scroll, never by where the reading
         // position happens to have stopped. The plate inside it does appear and disappear with the reading position,
@@ -5319,7 +4664,10 @@ public partial class ChatPanel : UserControl
         var width = Math.Min(MessageColumn.MaxWidth,
             Math.Max(0, viewportWidth - (2 * HubMetrics.ScrollBarThickness)));
         if (double.IsNaN(MessageColumn.Width) || Math.Abs(MessageColumn.Width - width) > 0.1)
+        {
             MessageColumn.Width = width;
+            foreach (var row in _realizedTranscript.Values) row.Host.Width = width;
+        }
     }
 
     // ───────────────────────── Self-check hooks ─────────────────────────
@@ -5332,7 +4680,7 @@ public partial class ChatPanel : UserControl
         => child.Classes.Contains("activity-group") || child.Classes.Contains("activity-plain");
 
     private IEnumerable<Control> MessageRows
-        => MessageFlow.Children.SelectMany(child => IsMachinePanel(child)
+        => RealizedTranscriptRows.SelectMany(child => IsMachinePanel(child)
             ? child.GetLogicalDescendants().OfType<Control>().Where(row => row.Classes.Contains("message-row"))
             : Enumerable.Repeat(child, 1).Where(row => row.Classes.Contains("message-row")));
 
@@ -5374,7 +4722,7 @@ public partial class ChatPanel : UserControl
     /// in the flow, and the rows of a flat piece. Rows inside a fold are absent by design, which is what makes this
     /// the read that separates "the model said it" from "the model said it, then hid it behind a chevron" — the
     /// second of those used to be indistinguishable from returning nothing at all.</summary>
-    internal IReadOnlyList<string> UnfoldedRowTextsForCheck => MessageFlow.Children
+    internal IReadOnlyList<string> UnfoldedRowTextsForCheck => RealizedTranscriptRows
         .Where(child => !child.Classes.Contains("activity-group"))
         .SelectMany(child => child.Classes.Contains("activity-plain")
             ? child.GetLogicalDescendants().OfType<Control>().Where(row => row.Classes.Contains("message-row"))
@@ -5387,7 +4735,7 @@ public partial class ChatPanel : UserControl
     /// <summary>How many activity runs the transcript folded into a collapsible group. One run of tool calls and
     /// thinking is one head, so this counts heads, not turns.</summary>
     internal int ActivityGroupCountForCheck
-        => MessageFlow.Children.Count(child => child.Classes.Contains("activity-group"));
+        => RealizedTranscriptRows.Count(child => child.Classes.Contains("activity-group"));
 
     /// <summary>The Nth group's head sentence: the tool count when there were calls, otherwise the measured
     /// thinking duration — "执行工具 0 次" is a count of nothing, so a thought-only run says how long it thought.</summary>
@@ -5397,12 +4745,13 @@ public partial class ChatPanel : UserControl
             ?.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault()?.Text ?? "";
 
     internal bool ActivityGroupExpandedForCheck(int index)
-        => ActivityGroupBodyAt(index) is { IsVisible: true };
+        => ActivityGroupAt(index)?.GetLogicalDescendants().OfType<ToggleButton>()
+            .FirstOrDefault(head => head.Classes.Contains("activity-group-head"))?.IsChecked == true;
 
     /// <summary>How many of the flow's aggregate counts are pressable. Zero would mean the number is back to
     /// being decoration — the state the pane existed to escape and no build error would ever report.</summary>
     internal int RunDiffChipCountForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Button>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>()
             .Count(button => button.Classes.Contains("file-chip-action"));
 
     /// <summary>Whether every chip hangs under a group head. This is the fact that makes "pressing the count does
@@ -5412,7 +4761,7 @@ public partial class ChatPanel : UserControl
     {
         get
         {
-            var chips = MessageFlow.GetLogicalDescendants().OfType<Button>()
+            var chips = RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>()
                 .Where(button => button.Classes.Contains("file-chip-action")).ToList();
             return chips.Count > 0 && chips.All(chip => chip.GetLogicalAncestors()
                 .OfType<ToggleButton>().Any(head => head.Classes.Contains("activity-group-head")));
@@ -5522,7 +4871,7 @@ public partial class ChatPanel : UserControl
     /// explained by the wiring — not by a check that never touched the head.</summary>
     internal bool ClickRunDiffChipForCheck(int index)
     {
-        if (MessageFlow.GetLogicalDescendants().OfType<Button>()
+        if (RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>()
                 .Where(button => button.Classes.Contains("file-chip-action"))
                 .ElementAtOrDefault(index) is not { } chip)
             return false;
@@ -5533,7 +4882,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The text a chip carries, joined: the two counts the reader pressed. Read as text so a cell can
     /// prove the pane opened from <i>this</i> run's number rather than from some other group's.</summary>
     internal string RunDiffChipTextForCheck(int index)
-        => MessageFlow.GetLogicalDescendants().OfType<Button>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>()
             .Where(button => button.Classes.Contains("file-chip-action"))
             .ElementAtOrDefault(index) is { } chip
             ? string.Join(" ", chip.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? ""))
@@ -5551,7 +4900,7 @@ public partial class ChatPanel : UserControl
     /// <c>activity-row</c> (not a message-row), so this — not <c>PaintedRowsForCheck</c> — is what a check reads to
     /// prove each call produced exactly one row and a late-inserted result rebuilt rather than duplicated it.</summary>
     internal string[] ActivityRowsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Grid>()
             .Where(grid => grid.Classes.Contains("activity-row"))
             .Select(grid => grid.GetLogicalDescendants().OfType<TextBlock>()
                 .FirstOrDefault(text => text.Classes.Contains("activity-row-text"))?.Text ?? "")
@@ -5561,7 +4910,7 @@ public partial class ChatPanel : UserControl
     /// unless a search was reported — which is what makes the negative case assertable: an answer nobody looked
     /// anything up for must not grow a source line.</summary>
     internal string[] SearchChipsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("source-chip"))
             .Select(border => border.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault()?.Text ?? "")
             .ToArray();
@@ -5569,7 +4918,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The full addresses behind those chips, in the same order — the chip shows a host and the tooltip
     /// carries the URL, and a check has to be able to tell "shows the host" from "sent the wrong address".</summary>
     internal string[] SearchChipTargetsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("source-chip"))
             .Select(border => ToolTip.GetTip(border) as string ?? "")
             .ToArray();
@@ -5577,7 +4926,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The queries the reply reports, from the tooltip on its source line — the part of the record that
     /// is deliberately one hover away rather than a paragraph over the answer.</summary>
     internal string[] SearchTooltipsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<StackPanel>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<StackPanel>()
             .Where(panel => panel.GetLogicalChildren().OfType<TextBlock>()
                 .Any(text => text.Classes.Contains("muted")
                              && text.Text == HubStrings.Get("MessageSources")))
@@ -5587,7 +4936,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The addresses the source line could not afford, read off its 「+N」 fold's tooltip. A check that
     /// wants to prove folding loses nothing has to read the folded list rather than count chips and hope.</summary>
     internal string SearchOverflowTipForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>()
             .Where(text => text.Classes.Contains("source-fold"))
             .Select(text => ToolTip.GetTip(text) as string ?? "")
             .FirstOrDefault() ?? "";
@@ -5595,7 +4944,7 @@ public partial class ChatPanel : UserControl
     /// <summary>How many buttons live inside action rows — must stay zero: a tool exchange is not a readable
     /// message, and acting on one half of a call/result pair orphans the other, so the folded row carries none.</summary>
     internal int ActivityRowActionCountForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Grid>()
             .Where(grid => grid.Classes.Contains("activity-row"))
             .Sum(grid => grid.GetLogicalDescendants().OfType<Button>().Count());
 
@@ -5605,7 +4954,7 @@ public partial class ChatPanel : UserControl
     // expanded state is read off the panel rather than guessed from the button.
 
     internal int ActivityRowToggleCountForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<ToggleButton>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<ToggleButton>()
             .Count(button => button.Classes.Contains("activity-row-toggle"));
 
     internal bool ActivityRowExpandedForCheck(int index)
@@ -5615,7 +4964,7 @@ public partial class ChatPanel : UserControl
     /// the IsCheckedChanged wiring reads. A raised Click never flips a ToggleButton, so a check must not use one.</summary>
     internal void SetActivityRowExpandedForCheck(int index, bool expanded)
     {
-        var toggle = MessageFlow.GetLogicalDescendants().OfType<ToggleButton>()
+        var toggle = RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<ToggleButton>()
             .Where(button => button.Classes.Contains("activity-row-toggle"))
             .ElementAtOrDefault(index);
         if (toggle is not null) toggle.IsChecked = expanded;
@@ -5630,7 +4979,7 @@ public partial class ChatPanel : UserControl
             : "";
 
     private Border? ActivityRowDetailAt(int index)
-        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("activity-detail"))
             .ElementAtOrDefault(index);
 
@@ -5638,7 +4987,7 @@ public partial class ChatPanel : UserControl
     /// whole tool payload there, which for a session transcript is tens of thousands of characters no tooltip can
     /// show. The detail panel below is that payload's only surface.</summary>
     internal string ActivityRowTooltipForCheck(int index)
-        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Grid>()
             .Where(grid => grid.Classes.Contains("activity-row"))
             .ElementAtOrDefault(index) is { } row
             ? ToolTip.GetTip(row) as string ?? ""
@@ -5655,7 +5004,7 @@ public partial class ChatPanel : UserControl
     // ── the left-slot expander arrow: where it sits, what glyph it is, and the status it swaps with ──
 
     private IEnumerable<Avalonia.Controls.Shapes.Path> ActivityRowChevronsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Avalonia.Controls.Shapes.Path>()
             .Where(path => path.Classes.Contains("activity-row-chevron"));
 
     /// <summary>One arrow per action row — the affordance lives on the left, not stranded on the right edge.</summary>
@@ -5675,13 +5024,13 @@ public partial class ChatPanel : UserControl
     /// <summary>The first row's status glyph size — asserted small so the ✓/✕ stay quiet beside the 10px
     /// expander arrow that shares their slot.</summary>
     internal double ActivityRowStatusSizeForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Avalonia.Controls.Shapes.Path>()
             .FirstOrDefault(path => path.Classes.Contains("activity-status"))?.Width ?? -1;
 
     /// <summary>The status marks on rows that have no verdict yet. The <c>running</c> class is what says so: a
     /// finished row carries the same slot with a tick or a cross in it.</summary>
     private IEnumerable<Avalonia.Controls.Shapes.Path> RunningRowStatusPathsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Grid>()
             .Where(grid => grid.Classes.Contains("activity-row") && grid.Classes.Contains("running"))
             .SelectMany(grid => grid.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>())
             .Where(path => path.Classes.Contains("activity-status"));
@@ -5704,7 +5053,7 @@ public partial class ChatPanel : UserControl
     // ── where a row's trailing piece sits: beside its sentence, or pinned to the column's right edge ──
 
     private Grid? ActivityRowGridAt(int index)
-        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Grid>()
             .Where(grid => grid.Classes.Contains("activity-row"))
             .ElementAtOrDefault(index);
 
@@ -5721,7 +5070,7 @@ public partial class ChatPanel : UserControl
     // read it through the panel rather than through the transcript.
 
     internal bool RunningCommandRowShownForCheck
-        => _runningCommand is { } card && MessageFlow.Children.Contains(card.Shell);
+        => _runningCommand is { } card && RealizedTranscriptRows.Contains(card.Shell);
 
     /// <summary>Everything the row's collapsed line says, joined: the verb, the command chip, the state and the
     /// clock, in the order they read.</summary>
@@ -5742,7 +5091,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The exit code a finished command reports, in the order the rows were drawn. Empty unless a command
     /// ended by itself and the number reached the turn.</summary>
     internal string[] ActivityRowExitChipsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("exit-chip"))
             .Select(border => border.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault()?.Text ?? "")
             .ToArray();
@@ -5750,7 +5099,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The small trailing facts a row carries beside its sentence — a running command's state and clock,
     /// a finished one's duration — in document order.</summary>
     internal string[] ActivityRowMetaForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>()
             .Where(text => text.Classes.Contains("activity-row-meta"))
             .Select(text => text.Text ?? "")
             .ToArray();
@@ -5797,7 +5146,7 @@ public partial class ChatPanel : UserControl
     {
         get
         {
-            var head = MessageFlow.GetLogicalDescendants().OfType<ToggleButton>()
+            var head = RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<ToggleButton>()
                 .FirstOrDefault(button => button.Classes.Contains("activity-group-head"));
             if (head?.Theme is null) return false;
             var app = Application.Current;
@@ -5814,15 +5163,12 @@ public partial class ChatPanel : UserControl
         var head = ActivityGroupAt(index)?.GetLogicalDescendants().OfType<ToggleButton>()
             .FirstOrDefault(button => button.Classes.Contains("activity-group-head"));
         if (head is not null) head.IsChecked = expanded;
+        MessageFlow.UpdateLayout();
     }
 
     private Control? ActivityGroupAt(int index)
-        => MessageFlow.Children.Where(child => child.Classes.Contains("activity-group"))
+        => RealizedTranscriptRows.Where(child => child.Classes.Contains("activity-group"))
             .ElementAtOrDefault(index);
-
-    private StackPanel? ActivityGroupBodyAt(int index)
-        => ActivityGroupAt(index)?.GetLogicalDescendants().OfType<StackPanel>()
-            .FirstOrDefault(panel => panel.Name == "ActivityGroupBody");
 
     /// <summary>The live bubble's glyph: which phase it is morphing through and whether its clock is running.
     /// A glyph stuck in one shape while a tool runs is the bug these read.</summary>
@@ -5838,7 +5184,7 @@ public partial class ChatPanel : UserControl
     internal bool LiveGlyphVisibleForCheck => _live?.Glyph.IsVisible ?? false;
 
     internal bool HasVisibleMarkdownCodeBlock(string code)
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(viewer => viewer.Markdown?.Contains(code, StringComparison.Ordinal) == true
                            && viewer.Bounds.Width > 0
                            && viewer.Bounds.Height > 0);
@@ -5851,55 +5197,23 @@ public partial class ChatPanel : UserControl
     /// speed but shape: the expensive viewers have to be proportional to what a person can see, not to how long
     /// the session has been going.</summary>
     internal int MarkdownDocumentCountForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>().Count();
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>().Count();
 
     /// <summary>Rows drawn as plain text although their turn holds Markdown — the ones no promotion pass has
     /// reached yet.</summary>
     internal int PlainTurnRowCountForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Count(border => border.Classes.Contains(PlainTurnClass));
 
     /// <summary>The first control in the flow, as an object. Identity rather than content, because what a check
     /// wants to say about coming back to a session is that the rows it left came back — not that new ones were
     /// drawn to look the same.</summary>
-    internal object? FirstTranscriptRowForCheck => MessageFlow.Children.FirstOrDefault();
+    internal object? FirstTranscriptRowForCheck => RealizedTranscriptRows.FirstOrDefault();
 
-    /// <summary>How many turns a fresh paint lays down, so a check can assert against the number the renderer uses
-    /// rather than against a copy of it that would drift.</summary>
-    internal static int FirstPaintTurnsForCheck => FirstPaintTurns;
+    /// <summary>Only realized rows contribute to the rendered-control metrics.</summary>
+    internal int PaintedTurnCountForCheck => RealizedItemCountForCheck;
+    internal bool HasLoadEarlierRowForCheck => RealizedTranscriptRows.Any(row => row.Classes.Contains("load-earlier-row"));
 
-    /// <summary>Pins the window for a benchmark run, which otherwise inherits whatever width earlier samples or
-    /// checks left behind and makes its own summaries incomparable.</summary>
-    internal void SetPaintWindowForCheck(int turns)
-    {
-        _paintWindow = Math.Max(1, turns);
-        _paintFromScratch = true;
-        RenderMessages();
-    }
-
-    /// <summary>How many turns the flow is holding: the whole transcript when nobody is windowed, the newest
-    /// stretch of it otherwise.</summary>
-    internal int PaintedTurnCountForCheck => _renderedCount - _paintedFrom;
-
-    /// <summary>Whether the flow opens with the line that stands for the turns above it.</summary>
-    internal bool HasLoadEarlierRowForCheck => LoadEarlierRowForCheck() is not null;
-
-    /// <summary>How tall that line is on screen. A count says the control is in the flow; this says it was laid
-    /// out, which is the difference between a row and a style that resolved to nothing.</summary>
-    internal double LoadEarlierRowHeightForCheck => LoadEarlierRowForCheck()?.Bounds.Height ?? 0;
-
-    /// <summary>Presses that line the way a hand does, and answers whether there was one to press.</summary>
-    internal bool ClickLoadEarlierForCheck()
-    {
-        if (LoadEarlierRowForCheck() is not Border { Child: Button button }) return false;
-        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        return true;
-    }
-
-    /// <summary>The line itself, found by its class. It is deliberately not a message row, so nothing that counts
-    /// rows sees it — which is also why it has to be looked up by name rather than by position.</summary>
-    /// <summary>The conversation the shadow comparison reads: the projection is built from data, never from
-    /// controls.</summary>
     internal Conversation? ActiveConversationForCheck => _chat?.ActiveConversation;
 
     internal bool ShowThinkingForCheck => _chat?.ShowThinking ?? false;
@@ -5917,21 +5231,9 @@ public partial class ChatPanel : UserControl
     internal long[] ProjectionKeysForCheck => _chat.ActiveConversation is { } conversation && _projection is not null
         ? Enumerable.Range(0, conversation.Messages.Count).Select(_projection.KeyAt).ToArray() : [];
 
-    internal IReadOnlyList<string> PaintedStructureForCheck => MessageFlow.Children
-        .Where(child => !ReferenceEquals(child, _live?.Row) && !ReferenceEquals(child, _runningCommand?.Shell))
-        .Select(PaintedToken)
-        .ToArray();
-
     private static string PaintedToken(Control child)
     {
         if (child.Classes.Contains("load-earlier-row")) return "earlier";
-        if (IsMachinePanel(child))
-        {
-            var rows = PaintedPieceRows(child).Select(PaintedChildToken);
-            return (child.Classes.Contains("activity-group") ? "P:folded{" : "P:flat{")
-                   + string.Join(",", rows) + "}";
-        }
-
         if (child.Classes.Contains("message-row"))
         {
             var plan = child.GetLogicalDescendants().OfType<Button>()
@@ -5942,17 +5244,6 @@ public partial class ChatPanel : UserControl
 
         if (child.Classes.Contains("notice")) return "N";
         return "other:" + string.Join("|", child.Classes);
-    }
-
-    /// <summary>The rows of one piece, in order, off the container they were laid into: a flat piece is its own
-    /// panel, a folded one keeps them one level down inside its body.</summary>
-    private static IEnumerable<Control> PaintedPieceRows(Control piece)
-    {
-        if (piece is StackPanel plain) return plain.Children;
-        var body = piece.GetLogicalDescendants().OfType<StackPanel>()
-            .FirstOrDefault(panel => panel.Name == "ActivityGroupBody");
-        if (body is null) return [];
-        return body.Children.OfType<StackPanel>().FirstOrDefault()?.Children ?? body.Children;
     }
 
     private static string PaintedChildToken(Control row)
@@ -5972,20 +5263,20 @@ public partial class ChatPanel : UserControl
     /// <summary>The line itself, found by its class. It is deliberately not a message row, so nothing that counts
     /// rows sees it — which is also why it has to be looked up by name rather than by position.</summary>
     private Control? LoadEarlierRowForCheck()
-        => MessageFlow.Children.FirstOrDefault(child => child.Classes.Contains("load-earlier-row"));
+        => RealizedTranscriptRows.FirstOrDefault(child => child.Classes.Contains("load-earlier-row"));
 
     /// <summary>The left indent a rendered list actually gets, or -1 when no document on screen held one.
     /// GithubLike stamps 40 onto every list grid and a nested list pays it again, so this is the only reading
     /// that tells the winning layer's answer from a style setter that silently did nothing.</summary>
     internal double MarkdownListIndentForCheck()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .SelectMany(viewer => viewer.GetVisualDescendants().OfType<Grid>())
             .FirstOrDefault(grid => grid.Classes.Contains("List"))?.Margin.Left ?? -1;
 
     /// <summary>The raw asterisks still drawn across every rendered answer on screen, as the reader sees them.
     /// Empty is the pass condition; anything in it names the case the engine failed to parse.</summary>
     internal IReadOnlyList<string> MarkdownLeakedEmphasisForCheck()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .SelectMany(MarkdownMessageRenderer.LeakedEmphasisRuns)
             .ToArray();
 
@@ -5993,27 +5284,27 @@ public partial class ChatPanel : UserControl
     /// tool call has to reach the reader as plain text, and the one proof of that is that no viewer ever took
     /// it — because a viewer is exactly where its pipes turn into a table.</summary>
     internal bool HasMarkdownHolding(string text)
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(viewer => viewer.Markdown?.Contains(text, StringComparison.Ordinal) == true);
 
     /// <summary>Whether a plain <c>turn-text</c> block still carries this text. Read as the negative it is: a body
     /// the Markdown pass took shows its source through a viewer's Tag, never as raw source text, so a
     /// <c>turn-text</c> block holding it is the proof that body never went through the pass.</summary>
     internal bool PlainTurnHoldsForCheck(string text)
-        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>()
             .Any(block => block.Classes.Contains("turn-text")
                           && (block.Text?.Contains(text, StringComparison.Ordinal) ?? false));
 
     internal bool HasRenderedMarkdownLink(string url)
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(viewer => MarkdownMessageRenderer.HasLinkHandler(viewer, url));
 
     internal bool HasThemedMarkdownLink()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasThemedLink);
 
     internal bool HasSyntaxHighlightedCode(string language)
-        => MessageFlow.GetLogicalDescendants().OfType<TextEditor>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextEditor>()
             .Any(editor => string.Equals(editor.Tag?.ToString(), language, StringComparison.OrdinalIgnoreCase)
                            && editor.SyntaxHighlighting is not null);
 
@@ -6022,7 +5313,7 @@ public partial class ChatPanel : UserControl
     /// at all — and the second one is fine, while the first is the bug this reads for.</summary>
     internal (bool Found, bool Resolved, bool Adapted, string Definition) DarkSyntaxForCheck(string language)
     {
-        foreach (var editor in MessageFlow.GetLogicalDescendants().OfType<TextEditor>())
+        foreach (var editor in RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextEditor>())
         {
             if (!string.Equals(editor.Tag?.ToString(), language, StringComparison.OrdinalIgnoreCase)) continue;
             return editor.SyntaxHighlighting is { } definition
@@ -6034,32 +5325,32 @@ public partial class ChatPanel : UserControl
     }
 
     internal bool HasMarkdownCopyToolbar()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasCopyToolbar);
 
     internal bool HasScrollableMarkdownTable()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasScrollableTable);
 
     internal bool HasThemedMarkdownTable()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasThemedTable);
 
     internal bool HasThemedMarkdownDocument()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasThemedDocument);
 
     /// <summary>Whether a rendered answer paints its selection band from the Hub token. Read per block, because
     /// that is where the band is drawn (inside <c>CTextBlock.Render</c>), and the library's fallback there is a
     /// hardcoded <c>Brushes.Cyan</c> — the colour this reading exists to rule out.</summary>
     internal bool HasThemedMarkdownSelection()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(MarkdownMessageRenderer.HasThemedSelection);
 
     /// <summary>Exercises click, internal drag and cross-boundary drag on the first inline code in the actual
     /// transcript, rather than substituting a renderer-only fixture for the message the reader sees.</summary>
     internal MarkdownMessageRenderer.InlineCodeProbe ProbeMarkdownChipSelection()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Select(MarkdownMessageRenderer.ProbeChipSelectionForCheck)
             .FirstOrDefault(probe => probe.Found);
 
@@ -6068,7 +5359,7 @@ public partial class ChatPanel : UserControl
     internal bool MarkdownSelectionMenuForCheck()
     {
         var expected = new[] { HubStrings.Get("CopyMessage"), HubStrings.Get("QuoteSelection") };
-        return MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        return RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Any(viewer => SelectionMenu.HeadersForCheck(viewer).SequenceEqual(expected));
     }
 
@@ -6076,7 +5367,7 @@ public partial class ChatPanel : UserControl
     internal bool UserTurnSelectionMenuForCheck()
     {
         var expected = new[] { HubStrings.Get("CopyMessage"), HubStrings.Get("QuoteSelection") };
-        return MessageFlow.GetLogicalDescendants().OfType<Border>()
+        return RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("user-pill"))
             .SelectMany(pill => pill.GetLogicalDescendants().OfType<SelectableTextBlock>())
             .Any(text => text.Classes.Contains("turn-text")
@@ -6086,13 +5377,13 @@ public partial class ChatPanel : UserControl
     /// <summary>The rows the reply on screen would offer, as text — the diagnosis half of the check above, so a
     /// red cell says which surface lost its menu rather than only that one of them did.</summary>
     internal string MarkdownSelectionMenuRowsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>()
             .Select(SelectionMenu.DescribeForCheck)
             .FirstOrDefault(rows => rows.Length > 0) ?? "";
 
     /// <summary>The same for the person's own message.</summary>
     internal string UserTurnSelectionMenuRowsForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("user-pill"))
             .SelectMany(pill => pill.GetLogicalDescendants().OfType<SelectableTextBlock>())
             .Where(text => text.Classes.Contains("turn-text"))
@@ -6113,7 +5404,7 @@ public partial class ChatPanel : UserControl
     /// quoted draft, rather than the quoting rule on its own.</summary>
     internal string QuoteSelectionForCheck()
     {
-        foreach (var viewer in MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>())
+        foreach (var viewer in RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>())
         {
             if (MarkdownMessageRenderer.SelectAcrossChip(viewer).Length == 0) continue;
             if (SelectionMenu.ItemForCheck(viewer, HubStrings.Get("QuoteSelection")) is not { } quote) return "";
@@ -6128,7 +5419,7 @@ public partial class ChatPanel : UserControl
     /// band from the same token as everything else. A bare <see cref="TextBlock"/> answers false to both, which
     /// is what the row used to be.</summary>
     internal bool UserTurnTextIsSelectableForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("user-pill"))
             .SelectMany(pill => pill.GetLogicalDescendants().OfType<SelectableTextBlock>())
             .Any(text => text.Classes.Contains("turn-text")
@@ -6153,11 +5444,11 @@ public partial class ChatPanel : UserControl
     /// </summary>
     internal UserPillSelectionProbe ProbeUserPillSelectionForCheck()
     {
-        var block = MessageFlow.GetLogicalDescendants().OfType<Border>()
+        var block = RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("user-pill"))
             .SelectMany(pill => pill.GetLogicalDescendants().OfType<SelectableTextBlock>())
             .FirstOrDefault(text => text.Classes.Contains("turn-text") && (text.Text ?? "").Length > 0);
-        if (block is null) return default;
+        if (block is null) return new(false, "", "", "", "");
 
         var composerHadFocus = InputBox.IsKeyboardFocusWithin;
         var picked = block.Text ?? "";
@@ -6210,7 +5501,7 @@ public partial class ChatPanel : UserControl
 
     internal void ApplyMarkdownSyntaxHighlightingForCheck()
     {
-        foreach (var viewer in MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>())
+        foreach (var viewer in RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>())
         {
             MarkdownMessageRenderer.ApplySyntaxHighlighting(viewer);
         }
@@ -6231,7 +5522,7 @@ public partial class ChatPanel : UserControl
 
     internal int BubbleCount => MessageRows.Count();
 
-    internal int MessageActionCount => MessageFlow.GetLogicalDescendants().OfType<Button>()
+    internal int MessageActionCount => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>()
         .Count(button => button.Classes.Contains("message-action"));
 
     internal bool ScrollToBottomVisible => ScrollToBottomButton.IsVisible;
@@ -6274,7 +5565,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The old walk, kept as the negative half of "the card moved": a transcript that still paints an
     /// actionable approval card is a regression this number catches.</summary>
     internal int FlowApprovalCardCountForCheck
-        => MessageFlow.Children.SelectMany(row => row.GetLogicalDescendants().OfType<Border>())
+        => RealizedTranscriptRows.SelectMany(row => row.GetLogicalDescendants().OfType<Border>())
             .Count(card => card.Classes.Contains("approval-card"));
 
     /// <summary>How many calls are asking. A request the user has to answer is never hover-gated — a hidden
@@ -6385,12 +5676,12 @@ public partial class ChatPanel : UserControl
            && card.Bounds is { Width: > 0, Height: > 0 };
 
     internal string PlanApprovalMessageTextForCheck
-        => string.Join(" ", MessageFlow.Children
+        => string.Join(" ", RealizedTranscriptRows
             .SelectMany(row => row.GetLogicalDescendants().OfType<MarkdownScrollViewer>())
             .Select(viewer => viewer.Tag as string ?? ""));
 
     internal bool PlanApprovalMarkdownOnScreenForCheck
-        => MessageFlow.Children
+        => RealizedTranscriptRows
             .SelectMany(row => row.GetLogicalDescendants().OfType<MarkdownScrollViewer>())
             .FirstOrDefault(viewer => (viewer.Tag as string)?.Contains("Reviewed plan", StringComparison.Ordinal) == true)
             is { IsVisible: true, Bounds: { Width: > 0, Height: > 0 } };
@@ -6613,7 +5904,7 @@ public partial class ChatPanel : UserControl
     /// leave one muted line behind; if those lines say the same thing, the person scrolling back cannot tell
     /// whether their answer was a decision or a permission.</summary>
     internal string[] TranscriptWaitingLinesForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<Border>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
             .Where(border => border.Classes.Contains("approval-pending-line"))
             .SelectMany(border => border.GetLogicalDescendants().OfType<TextBlock>())
             .Select(text => text.Text ?? "").ToArray();
@@ -6706,7 +5997,7 @@ public partial class ChatPanel : UserControl
 
     /// <summary>The one-line records of calls already decided, in the order they appear.</summary>
     internal string[] ApprovalRecordsForCheck
-        => MessageFlow.Children.SelectMany(row => row.GetLogicalDescendants().OfType<Border>())
+        => RealizedTranscriptRows.SelectMany(row => row.GetLogicalDescendants().OfType<Border>())
             .Where(record => record.Classes.Contains("approval-record"))
             .Select(record => record.GetLogicalDescendants().OfType<TextBlock>()
                 .FirstOrDefault()?.Text ?? "")
@@ -6714,7 +6005,7 @@ public partial class ChatPanel : UserControl
 
     // ── the undo on a write's record line ──
     private IEnumerable<Button> UndoButtons
-        => MessageFlow.Children.SelectMany(row => row.GetLogicalDescendants().OfType<Button>())
+        => RealizedTranscriptRows.SelectMany(row => row.GetLogicalDescendants().OfType<Button>())
             .Where(button => button.Classes.Contains("undo-action"));
 
     /// <summary>How many writes still have a copy behind them. One per spent revert is the whole design: the
@@ -6774,7 +6065,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The elapsed lines the transcript is drawing, in document order. Empty is the pass condition for a
     /// turn that recorded no total: an older session has to show nothing, not a confident 本次共 0s.</summary>
     internal IReadOnlyList<string> RunElapsedLinesForCheck()
-        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>()
             .Where(block => block.Classes.Contains("run-elapsed"))
             .Select(block => block.Text ?? "")
             .ToArray();
@@ -6873,6 +6164,7 @@ public partial class ChatPanel : UserControl
     /// asks where a session reopens has to be able to leave it somewhere first.</summary>
     internal void ScrollTranscriptForCheck(double offset)
     {
+        _transcriptGeneration++;
         MessageScroller.Offset = new Point(0, offset);
         UpdateScrollAffordance();
     }
@@ -6964,7 +6256,7 @@ public partial class ChatPanel : UserControl
 
     /// <summary>Pictures painted into the message flow, counted by the frame each one sits in.</summary>
     internal int RenderedPictureCountForCheck
-        => MessageFlow.GetVisualDescendants().OfType<Border>().Count(border => border.Classes.Contains("turn-picture"));
+        => RealizedTranscriptRows.SelectMany(row => new Visual[] { row }.Concat(row.GetVisualDescendants())).OfType<Border>().Count(border => border.Classes.Contains("turn-picture"));
 
     /// <summary>Chips in the composer that carry a thumbnail rather than only a name. Read off the shape of the
     /// chip rather than its visual descendants: a chip built a moment ago has not been through a layout pass
@@ -7056,7 +6348,7 @@ public partial class ChatPanel : UserControl
     /// proves the click routes.</summary>
     internal void ClickRenderedPictureForCheck(int index)
     {
-        var faces = MessageFlow.GetVisualDescendants().OfType<Button>()
+        var faces = RealizedTranscriptRows.SelectMany(row => new Visual[] { row }.Concat(row.GetVisualDescendants())).OfType<Button>()
             .Where(button => button.Classes.Contains("picture-face"))
             .ToList();
         if (index < faces.Count) faces[index].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -7529,7 +6821,7 @@ public partial class ChatPanel : UserControl
     /// <summary>The head text of every thinking row the transcript is drawing. Compared against what the live row
     /// said, this is the whole handoff in one assertion.</summary>
     internal IReadOnlyList<string> ThoughtRowLabelsForCheck()
-        => MessageFlow.GetLogicalDescendants().OfType<Grid>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Grid>()
             .Where(grid => grid.Classes.Contains("thought"))
             .Select(grid => grid.Children.OfType<TextBlock>()
                 .FirstOrDefault(block => block.Classes.Contains("activity-row-text"))?.Text ?? "")
@@ -7541,7 +6833,7 @@ public partial class ChatPanel : UserControl
     internal int GroupThoughtRowNestingForCheck()
     {
         var deepest = 0;
-        foreach (var shell in MessageFlow.GetLogicalDescendants().OfType<Border>()
+        foreach (var shell in RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>()
                      .Where(shell => shell.Classes.Contains("activity-row-shell")
                                      && shell.GetLogicalDescendants().OfType<Grid>()
                                          .Any(grid => grid.Classes.Contains("thought"))))
@@ -7586,7 +6878,7 @@ public partial class ChatPanel : UserControl
     /// <summary>Every thinking block the transcript is painting, as its own text. Empty is the pass condition
     /// for "off means off"; a count is what says a fold hid the words without removing the turn.</summary>
     internal IReadOnlyList<string> ReasoningTextsForCheck()
-        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>()
             .Where(block => block.Classes.Contains("turn-reasoning"))
             .Select(block => block.Text ?? "")
             .ToArray();
@@ -7740,12 +7032,12 @@ public partial class ChatPanel : UserControl
     /// <summary>The turn the plain path paints — the first body block, whether or not it became Markdown. The
     /// size, line pitch and ink checks below all read it, so the lookup lives once.</summary>
     private TextBlock? PlainTurnForCheck()
-        => MessageFlow.GetLogicalDescendants().OfType<TextBlock>()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>()
             .FirstOrDefault(block => block.Classes.Contains("turn-text"));
 
     /// <summary>The paragraph a rendered answer paints its prose with: the body block, not a heading.</summary>
     private ColorTextBlock.Avalonia.CTextBlock? MarkdownBodyForCheck()
-        => MessageFlow.GetLogicalDescendants().OfType<MarkdownScrollViewer>().FirstOrDefault() is { } viewer
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<MarkdownScrollViewer>().FirstOrDefault() is { } viewer
             ? viewer.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>()
                 .FirstOrDefault(text => !text.Classes.Any(name =>
                     name.StartsWith("Heading", StringComparison.Ordinal)))
@@ -7771,7 +7063,7 @@ public partial class ChatPanel : UserControl
     /// The fenced block becomes a text editor rather than a text block, so this is the element that answers the
     /// question a person can see the answer to.</summary>
     internal string MarkdownCodeFontFamilyForCheck
-        => MessageFlow.GetLogicalDescendants().OfType<TextEditor>().FirstOrDefault()
+        => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextEditor>().FirstOrDefault()
             ?.FontFamily?.ToString() ?? "";
 
     /// <summary>Who a bubble says wrote it — the peer label when the message came from another session, null when
@@ -7783,6 +7075,6 @@ public partial class ChatPanel : UserControl
 
     /// <summary>How many bubbles on screen are labelled as another session's. Counted rather than sampled: a
     /// label on a turn nobody sent is the same bug as one that never appears.</summary>
-    internal int PeerOriginCountForCheck => MessageFlow.GetLogicalDescendants()
+    internal int PeerOriginCountForCheck => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants()))
         .OfType<TextBlock>().Count(block => block.Classes.Contains("peer-origin"));
 }

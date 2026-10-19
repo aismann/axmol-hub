@@ -50,28 +50,6 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.Link}" />
     </Style>
 
-    <!-- The line a windowed transcript opens with: the newest stretch is painted and this stands for everything
-         above it. Quiet and centered like the fork notice above, because both are a line *about* the transcript
-         rather than something in it — and a button that looks like a button here would read as an action of the
-         same weight as sending a message. -->
-    <Style Selector="Border.load-earlier-row">
-      <Setter Property="Margin" Value="0,2,0,9" />
-    </Style>
-    <Style Selector="Button.load-earlier">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Padding" Value="8,3" />
-      <Setter Property="MinHeight" Value="0" />
-      <Setter Property="CornerRadius" Value="4" />
-      <Setter Property="FontSize" Value="12" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
-      <Setter Property="Cursor" Value="Hand" />
-    </Style>
-    <Style Selector="Button.load-earlier:pointerover">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.Link}" />
-    </Style>
-
     <!-- Assistant message: no frame at all, plain text on the background. -->
     <Style Selector="Border.assistant-msg">
       <Setter Property="Background" Value="Transparent" />
@@ -1262,20 +1240,16 @@
              chip, the end of a code line — behind the track. The inset is on both sides rather than the right
              alone so the column between them keeps the centre the composer shares with it, and
              UpdateMessageColumnWidth makes the same subtraction from HubMetrics.ScrollBarThickness. -->
-        <StackPanel Margin="10,0,10,0">
-          <!-- Fork provenance: one quiet line above the transcript, doubling as the jump back to the source. -->
-          <Button x:Name="ForkNotice" Classes="fork-notice" IsVisible="False"
-                  MaxWidth="820" HorizontalAlignment="Center" Margin="0,12,0,0" />
-          <Border x:Name="MessageColumn"
-                  MaxWidth="820" HorizontalAlignment="Center" Margin="0,16,0,16">
-            <StackPanel x:Name="MessageFlow"
-                        HorizontalAlignment="Stretch" Spacing="10" />
-          </Border>
-          <!-- What the app last had to say about a run, kept out of the flow: a row inside MessageFlow is not
-               counted as a turn, so every rebuild of the transcript either erased it or left it sitting between
-               two messages that arrived after it. -->
-          <StackPanel x:Name="NoticeHost" Margin="0,0,0,12" />
-        </StackPanel>
+        <Border x:Name="MessageColumn" MaxWidth="820" HorizontalAlignment="Center"
+                Margin="10,16,10,16" ClipToBounds="True">
+          <ItemsControl x:Name="MessageFlow" HorizontalAlignment="Stretch">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <VirtualizingStackPanel CacheLength="1" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+          </ItemsControl>
+        </Border>
       </ScrollViewer>
 
       <!-- Empty state: centered greeting without prefilled prompts. -->

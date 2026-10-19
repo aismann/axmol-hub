@@ -1211,7 +1211,13 @@ public partial class ChatPanel
         // than that. The card's affordance is a hand cursor and a brightening frame; a "click to open" line would
         // be the charter's second telling, since 「查看计划」 in the composer is the one place that invites.
         ToolTip.SetTip(card, title);
-        card.Click += (_, _) => OpenInspector?.Invoke("plan", turnIndex);
+        var session = _chat.ViewedConversationId;
+        var key = _projection!.KeyAt(turnIndex);
+        card.Click += (_, _) =>
+        {
+            if (session == _chat.ViewedConversationId && _projection is not null
+                && _projection.TryResolve(key, out var current)) OpenInspector?.Invoke("plan", current);
+        };
         return card;
     }
 

@@ -96,7 +96,7 @@ public partial class ShellCheckWindow : Window
             }
             catch (Exception ex)
             {
-                Check(false, "验证过程抛出异常: " + ex.GetType().Name + ": " + ex.Message);
+                Check(false, "验证过程抛出异常: " + ex);
             }
 
             Finish();
@@ -128,6 +128,7 @@ public partial class ShellCheckWindow : Window
 
     private void Check(bool ok, string message)
     {
+        if (Environment.GetEnvironmentVariable("AXMOL_SHELL_TRACE") == "1") Console.Error.WriteLine((ok ? "PASS " : "FAIL ") + message);
         if (ok)
         {
             _passed++;
@@ -158,6 +159,16 @@ public partial class ShellCheckWindow : Window
         await CheckCjkFontNoticeAsync();
         CheckEveryXamlResourceKeyResolves();
         var shell = CheckShell(scratchRoot);
+        if (Environment.GetEnvironmentVariable("AXMOL_VIRTUAL_CHECK_ONLY") == "1")
+        {
+            var panel = shell.OpenAssistant();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            if (Environment.GetEnvironmentVariable("AXMOL_VIRTUAL_BENCHMARK_ONLY") == "1") RunTranscriptBenchmark(shell, panel);
+            else CheckTranscriptCost(shell, panel);
+            shell.Close();
+            return;
+        }
         if (Environment.GetEnvironmentVariable("AXMOL_COMPACTION_CHECK_ONLY") == "1")
         {
             var panel = shell.OpenAssistant();
@@ -557,6 +568,10 @@ public partial class ShellCheckWindow : Window
             "助手页发送后真实渲染出非空白帧（distinct=" + drawerStats.DistinctColors
             + "，variance=" + drawerStats.LuminanceVariance.ToString("F2", CultureInfo.InvariantCulture) + "）");
 
+        Check(panel.VirtualIndexRealizedForCheck(panel.VirtualItemCountForCheck - 1),
+            "长回复默认定位最新消息，离屏用户消息可通过滚动重新实现");
+        panel.ScrollVirtualItemForCheck(0);
+        Relayout(shell, panel, measure: true);
         Check(panel.BubbleCount == before + 2, "一次发送追加了「用户 + 助手」两个气泡（实际新增 " + (panel.BubbleCount - before) + "）");
         Check(panel.FlowText.Contains("测试提问", StringComparison.Ordinal),
             "用户消息出现在消息流里");
@@ -1538,6 +1553,8 @@ public partial class ShellCheckWindow : Window
         panel.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
+        panel.ExpandVirtualGroupsForCheck();
+        Relayout(shell, panel, measure: true);
         var genericRow = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ActivityRowGeneric"), "get_projects");
         Check(panel.ActivityRowsForCheck.Contains(genericRow) && panel.ActivityRowActionCountForCheck == 0,
             "工具调用与结果折成一条动作行，且这条行里没有任何操作按钮（实际行 "
@@ -3321,6 +3338,8 @@ public partial class ShellCheckWindow : Window
         panel.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
+        panel.ExpandVirtualGroupsForCheck();
+        Relayout(shell, panel, measure: true);
         var rowsBefore = panel.ActivityRowsForCheck.Length;
         // The decision was already painted, so nothing else about the transcript's shape changes here: this is
         // purely an insert at index 1's neighbour, which is the case counting cannot see.
@@ -4317,6 +4336,8 @@ public partial class ShellCheckWindow : Window
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
             var painted = panel.ReasoningTextsForCheck();
             Check(painted.Contains(proseThought) && painted.Contains(onlyThought),
                 "落库之后的思考真的被画出来：带正文的挂在它自己那一行下，只有思考的填掉了原来那个空行（实际 "
@@ -4378,6 +4399,8 @@ public partial class ShellCheckWindow : Window
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
             Check(panel.ReasoningTextsForCheck().Contains(silentThought),
                 "不弹审批卡也不留撤销副本的静默调用，它那一轮的思考也有落点（屏上思考块 "
                 + panel.ReasoningTextsForCheck().Count + " 个）");
@@ -4610,7 +4633,7 @@ public partial class ShellCheckWindow : Window
             Check(panel.NoticeVisibleForCheck && paintedNotice != 0
                   && panel.LastNoticeTextForCheck == "这条提示要在重建之后还在",
                 "夹具：提示行已经落在会话末尾");
-            Check(panel.ClickBubbleAction(1, "RegenerateMessage"), "重新生成按钮在最后一次回复上");
+            Check(panel.ClickBubbleAction(panel.BubbleCount - 1, "RegenerateMessage"), "重新生成按钮在最后一次回复上");
             await panel.WaitForRunToFinishForCheck();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
@@ -4847,6 +4870,8 @@ public partial class ShellCheckWindow : Window
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
+            panel.SetActivityGroupExpandedForCheck(0, true);
+            Relayout(shell, panel, measure: true);
             Check(panel.ActivityGroupCountForCheck == 1 && panel.ActivityRowToggleCountForCheck == 1,
                 "每条工具行自带一个可点开的展开器（组 " + panel.ActivityGroupCountForCheck
                 + "，展开器 " + panel.ActivityRowToggleCountForCheck + "）");
@@ -5093,8 +5118,9 @@ public partial class ShellCheckWindow : Window
             _ = panel.SendComposerForCheck();
             await WaitForSignalAsync(liveArrived.Task);
             // One call answered is one row inside one group, and the stream is now held at the park.
-            await WaitUntilAsync(() => panel.ActivityRowsForCheck.Length == 1);
             panel.SetActivityGroupExpandedForCheck(0, true);
+            Relayout(shell, panel, measure: true);
+            await WaitUntilAsync(() => panel.ActivityRowsForCheck.Length == 1);
             panel.SetActivityRowExpandedForCheck(0, true);
             panel.ScrollTranscriptForCheck(40);
             shell.UpdateLayout();
@@ -5107,6 +5133,7 @@ public partial class ShellCheckWindow : Window
                 "夹具：组与其第一行都展开了、转录读到中间，回底板的按钮升起来了（组 "
                 + panel.ActivityGroupCountForCheck + "，行 " + panel.ActivityRowsForCheck.Length + "）");
 
+            var liveAnchor = panel.VirtualAnchorForCheck;
             livePark.SetResult(true);
             // Signalled from the fixture rather than polled off a row count. Counting rows stopped meaning "the
             // second call landed" once a thinking row was one of them, and polling for the second verb row raced
@@ -5130,11 +5157,14 @@ public partial class ShellCheckWindow : Window
             Check(panel.ActivityGroupInstanceTokenForCheck(0) == openedToken,
                 "组是就地长出来的同一个控件，而不是整段重建后再恢复成展开（展开前 " + openedToken
                 + "，现在 " + panel.ActivityGroupInstanceTokenForCheck(0) + "）");
-            Check(panel.ActivityRowsForCheck.Count(row => row == listVerb) == 2,
-                "两次调用各出一行，第二次没有把第一行的结果再画一遍（实际行 "
+            Check(panel.VirtualExchangeIdsForCheck.Length == 2
+                  && panel.VirtualExchangeIdsForCheck.Distinct().Count() == 2
+                  && panel.ActivityRowsForCheck.Count(row => row == listVerb) <= 2,
+                "两次调用各有一个稳定结果项，离屏行无需保留控件（当前已实现行 "
                 + string.Join(" / ", panel.ActivityRowsForCheck) + "）");
             Check(!panel.ViewAtBottomForCheck && panel.ScrollToBottomVisible
-                  && Math.Abs(panel.FlowOffsetForCheck - 40) < 1,
+                  && panel.VirtualAnchorForCheck.Key == liveAnchor.Key
+                  && Math.Abs(panel.VirtualAnchorForCheck.Top - liveAnchor.Top) <= 2,
                 "跑着的工具调用不再把读数位置拽回底部，也没有因为整段清空而被夹到 0（offset 现在是 "
                 + panel.FlowOffsetForCheck + "，在底部 " + panel.ViewAtBottomForCheck + "，回底板 "
                 + panel.ScrollToBottomVisible + "；此刻仍在运行 "
@@ -5466,6 +5496,8 @@ public partial class ShellCheckWindow : Window
                 "作曲栏与转录共用同一条留白：输入框右沿与消息列右沿是同一条线（输入框 "
                 + Fmt(panel.ComposerFrameRightForCheck) + "，消息列 "
                 + Fmt(panel.MessageColumnRightForCheck) + "）");
+            panel.ClickScrollToBottomForCheck();
+            Relayout(shell, panel, measure: true);
             var frameAtBottom = panel.ComposerFrameTopForCheck;
             var bandAtBottom = panel.ChangesPillRowHeightForCheck;
             Check(panel.TranscriptScrollableForCheck && panel.ViewAtBottomForCheck
@@ -7582,6 +7614,8 @@ public partial class ShellCheckWindow : Window
                 "把答案行清空之后继续又禁用了，选中项还停在这一行");
             Check(panel.QuestionOffersAlwaysAllowForCheck == false,
                 "提问卡上没有「以后都不问」：一次点击不该把后来所有的问题都消音");
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
             Check(panel.TranscriptWaitingLinesForCheck.Any(
                       line => line.Contains("等你回答", StringComparison.Ordinal))
                   && !panel.TranscriptWaitingLinesForCheck.Any(
@@ -9199,6 +9233,8 @@ public partial class ShellCheckWindow : Window
                 + (afterApprove?.Messages.FirstOrDefault(turn => turn.Role == ChatRoles.Tool)?.Text ?? "无") + "」）");
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
             Check(panel.PendingApprovalCardsForCheck == 0
                   && panel.ApprovalRecordsForCheck.Any(line =>
                       line.Contains(HubStrings.Get("ChatApprovalResolvedApproved"), StringComparison.Ordinal)),
@@ -9235,6 +9271,8 @@ public partial class ShellCheckWindow : Window
             Dispatcher.UIThread.RunJobs();
             // A write's copy is recorded in the same dispatcher step that ends its run, so the row offering the
             // undo can arrive one job later than "idle" — wait for it instead of reading the flow once.
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
             await WaitUntilAsync(() => panel.UndoButtonsForCheck == 2);
             var wroteLine = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatWriteRecordFormat"), "note.txt");
             // Which write recorded which copy, read at the moment each assertion speaks: a missing button can
@@ -9259,6 +9297,8 @@ public partial class ShellCheckWindow : Window
             // The newest copy belongs to the newest write, so undoing it is that write's undo — not a reset to
             // wherever the session started.
             panel.ClickUndoForCheck(1);
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
             await WaitUntilAsync(() => panel.UndoButtonsForCheck == 1);
             var afterNewest = chat.StoredCopyForCheck(parkSession.Id);
             var stillUndoable = afterNewest?.Messages.Count(turn => turn.UndoName is { Length: > 0 }) ?? -1;
@@ -9288,6 +9328,8 @@ public partial class ShellCheckWindow : Window
             await WaitForIdleAsync(chat);
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
             await WaitUntilAsync(() => panel.UndoButtonsForCheck == 1);
             System.IO.File.AppendAllText(target, "手工加的一行\n");
             var toldBefore = parkSession.Messages.Count(turn => turn.Role == ChatRoles.User);
@@ -9390,6 +9432,8 @@ public partial class ShellCheckWindow : Window
                 "取代后的会话可重放：每个调用都有配对结果（否则 provider 会整段拒收）");
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
             Check(panel.PendingApprovalCardsForCheck == 0
                   && panel.ApprovalRecordsForCheck.Any(line => line.Contains(
                       HubStrings.Get("ChatApprovalResolvedSuperseded"), StringComparison.Ordinal)),

@@ -114,9 +114,10 @@ public partial class ShellCheckWindow
             Check(!panel.ActivityRowExpandedForCheck(0), "删除已展开结果后，同 call id 的剩余结果保持关闭");
 
             // Queue promotions, then replace and insert before the dispatcher runs. No old payload may return.
-            panel.SetPaintWindowForCheck(100);
             session.Messages = Enumerable.Range(0, 40).Select(i => ChatTurn.Assistant($"old-{i} **body**")).ToList();
             panel.Reload();
+            var pendingPromotions = panel.QueueMarkdownPromotionForCheck(10);
+            Check(pendingPromotions > 0, "夹具确实排入延迟 Markdown 补全，随后才替换和插入消息");
             session.Messages[10] = ChatTurn.Assistant("replacement **current body**");
             session.Messages.Insert(0, ChatTurn.User("shift"));
             panel.Reload();
@@ -124,7 +125,6 @@ public partial class ShellCheckWindow
             Check(!panel.PlainTurnHoldsForCheck("old-10 **body**")
                   && panel.ProjectionKeysForCheck.Length == session.Messages.Count,
                 "排队的 Markdown 补全在插入和替换后不恢复旧 turn");
-            panel.SetPaintWindowForCheck(ChatPanel.FirstPaintTurnsForCheck);
         }
         finally
         {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -19,25 +20,24 @@ public partial class ShellCheckWindow
     {
         if (Environment.GetEnvironmentVariable("AXMOL_TRANSCRIPT_BENCHMARK") != "1") return;
         var report = new StringBuilder();
-        report.AppendLine("Transcript UI baseline v1; process-warm; registry-cached; Loaded proxy, not presentation");
+        report.AppendLine("Transcript UI benchmark v2; process-warm; registry-cached; Loaded proxy, not presentation");
 #if DEBUG
         report.AppendLine("configuration=Debug (use Release for performance comparisons)");
 #else
         report.AppendLine("configuration=Release");
 #endif
         report.AppendLine($"os={RuntimeInformation.OSDescription}; runtime={RuntimeInformation.FrameworkDescription}; arch={RuntimeInformation.ProcessArchitecture}; cpus={Environment.ProcessorCount}");
-        report.AppendLine("percentile=nearest-rank; samples=5; storage, scrolling and cold startup are NOT measured");
+        report.AppendLine("percentile=nearest-rank; samples=5; storage and cold startup are NOT measured; scrolling uses synchronous layout plus dispatcher jobs");
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
         var alternate = chat.StartConversation();
-        // Pinned for every sample: the window is panel state, and inheriting a width an earlier check grew would
-        // make the summaries incomparable between runs.
-        panel.SetPaintWindowForCheck(ChatPanel.FirstPaintTurnsForCheck);
         try
         {
             foreach (var count in new[] { 1_000, 10_000, 100_000 })
             foreach (var shape in new[] { "plain", "tools", "code-table", "huge-result" })
             {
+                if (Environment.GetEnvironmentVariable("AXMOL_BENCHMARK_COUNT") is { } countFilter && count.ToString() != countFilter) continue;
+                if (Environment.GetEnvironmentVariable("AXMOL_BENCHMARK_SHAPE") is { } selected && selected != shape) continue;
                 var session = chat.StartConversation();
                 try
                 {
@@ -62,13 +62,42 @@ public partial class ShellCheckWindow
                     {
                         chat.OpenConversation(alternate.Id);
                         Dispatcher.UIThread.RunJobs();
+                        var realizedBefore = panel.VirtualRealizationsForCheck;
+                        var allocated = GC.GetTotalAllocatedBytes(false);
                         chat.OpenConversation(session.Id);
                         var operation = chat.CurrentSessionOpen!;
                         shell.UpdateLayout();
                         Dispatcher.UIThread.RunJobs();
                         samples.Add(operation);
-                        report.AppendLine(FormattableString.Invariant($"shape={shape} turns={count} sample={sample} operation={operation.Id} completed={operation.Completed} reused={operation.Reused} painted={operation.PaintedTurns} messageRows={operation.Rows} activityRows={operation.ActivityRows} flowChildren={operation.FlowChildren} markdown={operation.MarkdownDocuments} render={operation.RenderMs:0.00}ms openToLoaded={operation.ObservedMs:0.00}ms"));
+                        var openAllocation = GC.GetTotalAllocatedBytes(false) - allocated;
+                        report.AppendLine(FormattableString.Invariant($"shape={shape} turns={count} sample={sample} operation={operation.Id} completed={operation.Completed} reused={operation.Reused} painted={operation.PaintedTurns} messageRows={operation.Rows} activityRows={operation.ActivityRows} flowChildren={operation.FlowChildren} markdown={operation.MarkdownDocuments} render={operation.RenderMs:0.00}ms openToLoaded={operation.ObservedMs:0.00}ms allocatedProcessBytes={openAllocation} realized={panel.RealizedItemCountForCheck} editors={panel.RealizedEditorCountForCheck} parked={panel.ParkedVirtualRowsForCheck} built={panel.VirtualRealizationsForCheck - realizedBefore}"));
                     }
+                    if (shape == "tools")
+                    {
+                        panel.SetActivityGroupExpandedForCheck(0, true);
+                        shell.UpdateLayout();
+                        Dispatcher.UIThread.RunJobs();
+                    }
+                    var firstRealized = new Dictionary<int, int>();
+                    var scrollsReached = true;
+                    var retainedBounded = true;
+                    for (var pass = 0; pass < 3; pass++)
+                    foreach (var index in new[] { 0, panel.VirtualItemCountForCheck / 2, panel.VirtualItemCountForCheck - 1 })
+                    {
+                        var allocation = GC.GetTotalAllocatedBytes(false);
+                        var scrolling = Stopwatch.StartNew();
+                        panel.ScrollVirtualItemForCheck(index);
+                        shell.UpdateLayout();
+                        Dispatcher.UIThread.RunJobs();
+                        scrolling.Stop();
+                        scrollsReached &= panel.VirtualIndexRealizedForCheck(index);
+                        retainedBounded &= panel.RealizedItemCountForCheck is > 0 and < 150;
+                        if (pass == 0) firstRealized[index] = panel.RealizedItemCountForCheck;
+                        else if (pass == 2) retainedBounded &= panel.RealizedItemCountForCheck <= firstRealized[index] + 2;
+                        report.AppendLine(FormattableString.Invariant($"scroll shape={shape} turns={count} pass={pass} index={index} elapsed={scrolling.Elapsed.TotalMilliseconds:0.00}ms realized={panel.RealizedItemCountForCheck} markdown={panel.MarkdownDocumentCountForCheck} editors={panel.RealizedEditorCountForCheck} allocatedProcessBytes={GC.GetTotalAllocatedBytes(false) - allocation} reached={panel.VirtualIndexRealizedForCheck(index)}"));
+                    }
+                    Check(scrollsReached && retainedBounded,
+                        $"基准往返可达且回收稳定「{shape}/{count}」");
                     static double Percentile(IEnumerable<double> values, double percentile)
                     {
                         var ordered = values.OrderBy(value => value).ToArray();
