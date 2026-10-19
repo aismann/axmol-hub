@@ -608,7 +608,6 @@ public sealed class ChatWorkspace : IDisposable
                 conversationId,
                 SensitiveValues(),
                 LogProvider?.Invoke(),
-                path => ApplyWorkspaceRootAsync(conversationId, path),
                 _sessions.Store,
                 new CrossSessionBridge(CrossSessionRunStateAsync, CrossSessionDeliverAsync, SpawnChildSessionAsync),
                 // The screen belongs to the host, not to Core: this is the one capability that has to know which
@@ -1064,25 +1063,6 @@ public sealed class ChatWorkspace : IDisposable
         return true;
     }
 
-    private async Task<string> ApplyWorkspaceRootAsync(string conversationId, string path)
-    {
-        var registered = "";
-        await ApplyOnUiAsync(() =>
-        {
-            if (_sessions.TryUpdate(conversationId, opened => opened.WorkspaceRoot = path))
-            {
-                // This door bypasses SetWorkspaceRoot, so it designates for itself: a directory the assistant was
-                // told to work in is a place the user approved on a card.
-                RegisterWorkspace(path);
-                Changed?.Invoke();
-            }
-            // Read inside the UI hop because ScopeFor touches the session state the lambda above just moved.
-            registered = RegisteredProjectClause(conversationId, path);
-        }).ConfigureAwait(false);
-        Audit(conversationId, $"Workspace root: {path}");
-        return $"Workspace set to {path}. File and command tools are confined to it.{registered}";
-    }
-
     /// <summary>
     /// The other half of the sandbox: one directory a person approved on a <c>request_directory</c> card. Recorded
     /// on the session rather than held for the run, because a grant a restart forgot would cost the same card
@@ -1147,21 +1127,6 @@ public sealed class ChatWorkspace : IDisposable
         Audit(conversationId, $"Revoked directory: {path}");
         Changed?.Invoke();
         return true;
-    }
-
-    /// <summary>What Hub additionally knows about the directory just bound, as the attribute it is. A game project
-    /// is a workspace with a locked engine and a build target, so the sentence is a clause on the same directory —
-    /// and a plain folder gets no clause at all, because an ordinary directory is a complete answer, not a missing
-    /// one.</summary>
-    private string RegisteredProjectClause(string conversationId, string path)
-    {
-        var named = ScopeFor(conversationId).Snapshot?.Projects.FirstOrDefault(candidate =>
-            string.Equals(WorkspacePaths.CanonicalRoot(candidate.Path), WorkspacePaths.CanonicalRoot(path),
-                StringComparison.Ordinal));
-        return named is { } project
-            ? $" It is also a registered Hub project ({project.Name}, engine {project.EngineVersion}, target "
-              + $"{project.Platform}/{project.Configuration})."
-            : "";
     }
 
     /// <summary>

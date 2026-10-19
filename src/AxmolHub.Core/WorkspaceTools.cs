@@ -12,13 +12,9 @@ namespace AxmolHub.Core;
 /// restart apply to the same directory the card was shown for: the value is read from the persisted session, not
 /// re-derived from whatever is on screen now.
 /// </summary>
-/// <param name="ApplyWorkspaceRoot">Persists a new sandbox root and answers the model. Nothing calls it any more —
-/// the root is the person's to choose — and it is only still here so the positional construction of this record
-/// does not move under the assertions that build it; the next change takes it and its null away.</param>
 /// <param name="ApplyGrantedRoot">Persists one directory the person just approved on a <c>request_directory</c>
-/// card and answers the model. The same seam as <paramref name="ApplyWorkspaceRoot"/> and for the same reason: the
-/// tool body is in Core and cannot reach a session registry, and a check that only exercises the guard passes
-/// null.</param>
+/// card and answers the model. The seam exists because the tool body is in Core and cannot reach a session
+/// registry, and a check that only exercises the guard passes null.</param>
 /// <param name="Sessions">Where the other sessions live, for the cross-session tools. Null in a scope that has no
 /// session store to read — those tools then say so instead of inventing a peer.</param>
 /// <param name="CrossSession">Live run state and the write path for another session, both of which belong to the
@@ -63,7 +59,6 @@ public sealed record WorkspaceToolScope(
     string ConversationId,
     IReadOnlyList<string> SensitiveValues,
     HubLog? Log,
-    Func<string, Task<string>>? ApplyWorkspaceRoot,
     ConversationStore? Sessions = null,
     CrossSessionBridge? CrossSession = null,
     ScreenCaptureBridge? Screen = null,
@@ -79,14 +74,13 @@ public sealed record WorkspaceToolScope(
     // id, so the app attributes what arrives here to the call it recorded as running.
     Action<string>? RecordCommandOutput = null,
     Action<int>? RecordCommandExit = null,
-    // Last rather than beside ApplyWorkspaceRoot for a mechanical reason worth stating: this record is built
-    // positionally by a few dozen assertions, and a parameter in the middle would silently shift every one of them.
-    // Only the app builds it by hand.
+    // Last for a mechanical reason worth stating: this record is built positionally by a few dozen assertions, and a
+    // parameter in the middle would silently shift every one of them. Only the app builds it by hand.
     Func<string, Task<string>>? ApplyGrantedRoot = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
-    public static WorkspaceToolScope Empty { get; } = new(null, new WorkspaceGuards(null, []), null, "", [], null, null);
+    public static WorkspaceToolScope Empty { get; } = new(null, new WorkspaceGuards(null, []), null, "", [], null);
 
     /// <summary>
     /// Every directory this request may touch: the session's workspace plus the directories a person granted it.

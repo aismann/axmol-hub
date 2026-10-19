@@ -8327,14 +8327,14 @@ public partial class ShellCheckWindow : Window
                     + (selfFrame?.Stats.IsBlank() == true ? "空白帧：这条窗口的内容 GDI 读不到" : "有内容") + "，"
                     + selfFrame?.Png.Length + " 字节）");
                 var card = ToolPreviews.PreviewFor("capture_screen", """{"fullscreen":true}""",
-                    new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "capture-check", [], null, null,
-                        null, null, WindowsScreenCapture.Bridge()));
+                    new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "capture-check", [], null,
+                        null, null, Screen: WindowsScreenCapture.Bridge()));
                 Check(card.Contains("capture_screen · fullscreen", StringComparison.Ordinal)
                       && card.Contains("PrintWindow", StringComparison.Ordinal),
                     "抓屏的审批卡先说是整屏，再说是哪个后端（实际「" + card + "」）");
                 var titled = ToolPreviews.PreviewFor("capture_screen", """{"target":"P5 shell"}""",
-                    new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "capture-check", [], null, null,
-                        null, null, WindowsScreenCapture.Bridge()));
+                    new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "capture-check", [], null,
+                        null, null, Screen: WindowsScreenCapture.Bridge()));
                 Check(titled.Contains("window \"P5 shell", StringComparison.Ordinal),
                     "审批卡点名了目标命中的那条窗口，而不是一句「要截屏」（实际「" + titled + "」）");
             }

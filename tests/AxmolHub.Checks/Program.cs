@@ -4137,7 +4137,7 @@ if (args.Contains("--check-ai-tools"))
     // output lines when it does. The write is the one moment both sides of it are in memory.
     var tallies = new List<ChangeLineCounts>();
     var tallyTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "tally-1", [], log,
-        _ => Task.FromResult("unused"), RecordChangeLines: tallies.Add));
+        RecordChangeLines: tallies.Add));
     Directory.CreateDirectory(Path.Combine(workspace, "tally"));
     File.WriteAllText(Path.Combine(workspace, "tally", "a.txt"), "one\ntwo\nthree\n");
     File.WriteAllText(Path.Combine(workspace, "tally", "twice.txt"), "a\nb\na\n");
@@ -4452,7 +4452,6 @@ if (args.Contains("--check-ai-tools"))
     var stallGateTaken = 0;
     var stallGateReleased = 0;
     var stallTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "stalled", [], log,
-        _ => Task.FromResult(""),
         // The one-change gate rides along on purpose: every road out of a stalled command — waited out, walked away
         // from, stopped, or finished on its own — has to hand it back, or Hub reports itself busy with a process
         // nobody is holding.
@@ -4571,7 +4570,7 @@ if (args.Contains("--check-ai-tools"))
     var gateTaken = 0;
     var gateReleased = 0;
     var refusedTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "gated", [], log,
-        _ => Task.FromResult(""), TakeChangeGate: _ => null));
+        TakeChangeGate: _ => null));
     var gateRefused = await refusedTools.RunCommand($"echo marker > '{gateMarker}'");
     if (gateRefused != ToolApprovalResults.Busy || File.Exists(gateMarker))
         throw new Exception($"A command refused the gate either did not say so or ran anyway:{Environment.NewLine}{gateRefused}");
@@ -4579,7 +4578,7 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception("The busy refusal did not tell the model what not to do, which is a retry loop waiting to happen.");
 
     var openTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "gated", [], log,
-        _ => Task.FromResult(""), TakeChangeGate: _ =>
+        TakeChangeGate: _ =>
         {
             gateTaken++;
             return new GateHandoff(() => gateReleased++);
@@ -4613,7 +4612,7 @@ if (args.Contains("--check-ai-tools"))
     // tree. With a host that hands out no gate at all, the read still reaches the shell.
     var gitGateAsked = 0;
     var gitTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "gated", [], log,
-        _ => Task.FromResult(""), TakeChangeGate: _ =>
+        TakeChangeGate: _ =>
         {
             gitGateAsked++;
             return null;
@@ -4721,8 +4720,7 @@ if (args.Contains("--check-ai-tools"))
         || !(await tools.RequestDirectory(toolRoot)).Contains("contains the session workspace", StringComparison.Ordinal))
         throw new Exception("request_directory accepted a relative, missing, protected, internal or enclosing directory.");
 
-    var holdingTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "grant-ask", [], log,
-        _ => Task.FromResult("persisted"))
+    var holdingTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "grant-ask", [], log)
     { Sandbox = grantBox });
     if (!(await holdingTools.RequestDirectory(grantedRoot)).Contains("already granted", StringComparison.Ordinal)
         || !(await holdingTools.RequestDirectory(Path.Combine(grantedRoot, "src")))
@@ -4731,7 +4729,6 @@ if (args.Contains("--check-ai-tools"))
 
     string? askedGrant = null;
     var freshGrant = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "grant-fresh", [], log,
-        _ => Task.FromResult("persisted"),
         ApplyGrantedRoot: path =>
         {
             askedGrant = path;
@@ -4744,8 +4741,7 @@ if (args.Contains("--check-ai-tools"))
 
     // ── a write in a granted directory is a write: same pre-image, same revert, and the revert dies with the grant ──
     var grantId = "grant-undo";
-    var grantTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, grantId, [], log,
-        _ => Task.FromResult("persisted"))
+    var grantTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, grantId, [], log)
     { Sandbox = grantBox });
     var grantWrite = grantTools.FileWrite(grantedFile, "return 1", "return 2");
     if (!grantWrite.StartsWith("Edited ", StringComparison.Ordinal)
@@ -4781,7 +4777,7 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception($"A command aimed outside every root ran anyway:{Environment.NewLine}{refusedRun}");
 
     // The line the decision is made on: the directory, and what a yes would allow — read and write, this session.
-    var cardScope = new WorkspaceToolScope(workspace, guards, dataRoot, "grant-card", [], log, _ => Task.FromResult("persisted"));
+    var cardScope = new WorkspaceToolScope(workspace, guards, dataRoot, "grant-card", [], log);
     var grantCard = ToolPreviews.PreviewFor("request_directory", JsonSerializer.Serialize(new { path = grantedRoot }),
         cardScope);
     if (!grantCard.StartsWith("request_directory · ", StringComparison.Ordinal)
@@ -4793,7 +4789,7 @@ if (args.Contains("--check-ai-tools"))
             .Contains("protected location", StringComparison.Ordinal))
         throw new Exception("A protected directory did not preview as one on a grant card.");
     if (!ToolPreviews.PreviewFor("run_command", JsonSerializer.Serialize(new { command = "ls", cwd = grantedRoot }),
-            new WorkspaceToolScope(workspace, guards, dataRoot, "grant-card", [], log, _ => Task.FromResult("persisted"))
+            new WorkspaceToolScope(workspace, guards, dataRoot, "grant-card", [], log)
             { Sandbox = grantBox })
         .Contains(Path.GetFullPath(grantedRoot), StringComparison.Ordinal))
         throw new Exception("A command card did not name the directory the command would run in.");
@@ -5309,7 +5305,7 @@ if (args.Contains("--check-ai-tools"))
                         : new FrameStats(window?.Width ?? 3840, window?.Height ?? 2160, 240, 182.4));
         });
     var grabbing = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, session.Id, [], log,
-        null, shots, null, host, frames => landed.AddRange(frames)));
+        shots, Screen: host, RecordFrames: frames => landed.AddRange(frames)));
 
     // One target, several hits: the refusal lists the candidates and the host is never asked to draw. Guessing
     // between two windows would send back a frame the model cannot tell apart from the one it asked for.
@@ -5351,12 +5347,12 @@ if (args.Contains("--check-ai-tools"))
 
     // The card says which window is about to leave the machine, in the same words the tool will act on.
     var card = ToolPreviews.PreviewFor("capture_screen", """{"target":"Outlook"}""",
-        new WorkspaceToolScope(workspace, guards, dataRoot, session.Id, [], null, null, null, null, host));
+        new WorkspaceToolScope(workspace, guards, dataRoot, session.Id, [], null, Screen: host));
     if (!card.Contains("window \"Outlook\"", StringComparison.Ordinal) || !card.Contains("pid 300", StringComparison.Ordinal)
         || !card.Contains("1000×700", StringComparison.Ordinal))
         throw new Exception($"The approval card does not name the window: {card}");
     var both = ToolPreviews.PreviewFor("capture_screen", """{"target":"Demo","fullscreen":true}""",
-        new WorkspaceToolScope(workspace, guards, dataRoot, session.Id, [], null, null, null, null, host));
+        new WorkspaceToolScope(workspace, guards, dataRoot, session.Id, [], null, Screen: host));
     if (!both.Contains("window \"Axmol Demo\"", StringComparison.Ordinal))
         throw new Exception($"Fullscreen did not defer to the named target: {both}");
 
@@ -5387,7 +5383,7 @@ if (args.Contains("--check-ai-tools"))
                 new FrameStats(window?.Width ?? 1, window?.Height ?? 1, 240, 182.4));
         });
     var twinHost = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, twinSession.Id, [], log,
-        null, twinShots, null, twins, frames => twinLanded.AddRange(frames)));
+        twinShots, Screen: twins, RecordFrames: frames => twinLanded.AddRange(frames)));
     var twinRefusal = twinHost.CaptureScreen("Axmol Hub");
     if (!twinRefusal.Contains("matches 2 windows", StringComparison.Ordinal)
         || !twinRefusal.Contains("process_id", StringComparison.Ordinal) || twinAsked.Count != 0)
@@ -5414,7 +5410,7 @@ if (args.Contains("--check-ai-tools"))
     // A card that shows a bare number is a card nobody can approve: the pid is how the model addresses the window,
     // the title is what the person is agreeing to let leave the machine.
     var pidCard = ToolPreviews.PreviewFor("capture_screen", """{"process_id":201}""",
-        new WorkspaceToolScope(workspace, guards, dataRoot, twinSession.Id, [], null, null, null, null, twins));
+        new WorkspaceToolScope(workspace, guards, dataRoot, twinSession.Id, [], null, Screen: twins));
     if (!pidCard.Contains("window \"Axmol Hub v0.9.3\"", StringComparison.Ordinal)
         || !pidCard.Contains("pid 201", StringComparison.Ordinal))
         throw new Exception($"A capture by process id alone put no window on the card: {pidCard}");
@@ -5438,7 +5434,7 @@ if (args.Contains("--check-ai-tools"))
         return Task.FromResult(scripted(request));
     });
     var browsing = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "fetch-1",
-        ["SUPERSECRET"], log, null, null, null, null, null, web));
+        ["SUPERSECRET"], log, Web: web));
     // A page as the stub serves it: the body arrives as bytes, which is also what makes the byte-cap cell
     // something the host cannot cheat by returning a short string.
     void QueuePage(int status, string type, string body, Uri? redirect = null)
@@ -5576,7 +5572,7 @@ if (args.Contains("--check-ai-tools"))
     Console.WriteLine("PASS: max_characters cuts where it says, a stored secret is hidden in the page and in the row.");
 
     var cardFetch = ToolPreviews.PreviewFor("web_fetch", """{"url":"https://docs.example.com/build?token=SUPERSECRET"}""",
-        new WorkspaceToolScope(workspace, guards, dataRoot, "fetch-5", ["SUPERSECRET"], null, null, null, null, null, null, web));
+        new WorkspaceToolScope(workspace, guards, dataRoot, "fetch-5", ["SUPERSECRET"], null, Web: web));
     if (!cardFetch.Contains("docs.example.com/build", StringComparison.Ordinal)
         || !cardFetch.Contains("token=[REDACTED]", StringComparison.Ordinal)
         || cardFetch.Contains("SUPERSECRET", StringComparison.Ordinal)
@@ -5584,10 +5580,10 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception($"The fetch card does not name the host, cap the read or hide the token:{Environment.NewLine}{cardFetch}");
     allowed = false;
     var cardOff = ToolPreviews.PreviewFor("web_fetch", """{"url":"https://docs.example.com/build"}""",
-        new WorkspaceToolScope(workspace, guards, dataRoot, "fetch-6", [], null, null, null, null, null, null, web));
+        new WorkspaceToolScope(workspace, guards, dataRoot, "fetch-6", [], null, Web: web));
     allowed = true;
     var cardBad = ToolPreviews.PreviewFor("web_fetch", """{"url":"http://docs.example.com/build"}""",
-        new WorkspaceToolScope(workspace, guards, dataRoot, "fetch-7", [], null, null, null, null, null, null, web));
+        new WorkspaceToolScope(workspace, guards, dataRoot, "fetch-7", [], null, Web: web));
     if (!cardOff.Contains("outbound fetching turned off", StringComparison.Ordinal)
         || !cardBad.Contains("is not https", StringComparison.Ordinal))
         throw new Exception($"A card promised an action the tool would refuse:{Environment.NewLine}{cardOff}{Environment.NewLine}{cardBad}");
@@ -6902,7 +6898,7 @@ if (args.Contains("--check-ai-cross-session"))
             return Task.FromResult(delivers);
         });
     var peerScope = new WorkspaceToolScope(null, new WorkspaceGuards(bodiesRoot, []), bodiesRoot, talker.Id,
-        [], null, null, bodiesStore, peerBridge);
+        [], null, bodiesStore, peerBridge);
     var peerTools = new WorkspaceTools(peerScope);
     var echoTools = new WorkspaceTools(peerScope with { ConversationId = echoer.Id });
     var selfTools = new WorkspaceTools(peerScope with { ConversationId = shaderPeer.Id });
