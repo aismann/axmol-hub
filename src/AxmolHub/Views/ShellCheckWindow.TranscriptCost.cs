@@ -158,6 +158,7 @@ public partial class ShellCheckWindow
         Check(panel.VirtualItemCountForCheck == 2 && panel.ActivityRowToggleCountForCheck == 0,
             "收起大型组后子行和详情控件退出列表");
         chat.DeleteConversation(machine.Id);
+        CheckVariableTranscriptScroll(shell, panel);
         CheckRetainedContext(shell);
         CheckProjectionIdentity(shell, panel);
         CheckTranscriptProjection(shell, panel);

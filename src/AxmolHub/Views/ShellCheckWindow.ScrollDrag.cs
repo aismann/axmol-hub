@@ -43,7 +43,7 @@ public partial class ShellCheckWindow
         Dispatcher.UIThread.RunJobs();
 
         var scroller = panel.TranscriptScrollerForCheck;
-        var track = scroller.GetVisualDescendants().OfType<Track>()
+        var track = panel.TranscriptBarForCheck.GetVisualDescendants().OfType<Track>()
             .FirstOrDefault(candidate => candidate.Orientation == Orientation.Vertical);
         var thumb = track?.Thumb;
         Check(thumb is { Bounds.Height: > 1 } && panel.TranscriptScrollableForCheck && panel.ViewAtBottomForCheck,

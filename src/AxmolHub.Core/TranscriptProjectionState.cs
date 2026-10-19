@@ -20,7 +20,7 @@ namespace AxmolHub.Core;
 public sealed class TranscriptProjectionState
 {
     private List<ChatTurn> _seen = [];
-    private List<long> _keys = [];
+    private long[] _keys = [];
     private static long _next;
     private readonly Dictionary<long, int> _indices = new();
 
@@ -61,7 +61,7 @@ public sealed class TranscriptProjectionState
     private long[] Reconcile(List<ChatTurn> messages)
     {
         if (messages.Count == _seen.Count && messages.Where((turn, at) => !ReferenceEquals(turn, _seen[at])).Any() == false)
-            return _keys.ToArray();
+            return _keys;
 
         var keys = new long[messages.Count];
         // Initial opens and the common append path need no content dictionaries. In particular, do not hash
@@ -69,7 +69,7 @@ public sealed class TranscriptProjectionState
         if (messages.Count >= _seen.Count
             && !_seen.Where((turn, at) => !ReferenceEquals(turn, messages[at])).Any())
         {
-            _keys.CopyTo(keys);
+            _keys.CopyTo(keys, 0);
             for (var at = _seen.Count; at < messages.Count; at++) keys[at] = Interlocked.Increment(ref _next);
             Remember(messages, keys);
             return keys;
@@ -102,8 +102,9 @@ public sealed class TranscriptProjectionState
     private void Remember(List<ChatTurn> messages, long[] keys)
     {
         _seen = [.. messages];
-        _keys = [.. keys];
+        _keys = keys;
         _indices.Clear();
+        _indices.EnsureCapacity(keys.Length);
         for (var at = 0; at < keys.Length; at++) _indices.Add(keys[at], at);
     }
 

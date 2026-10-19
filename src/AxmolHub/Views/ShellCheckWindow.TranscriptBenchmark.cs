@@ -28,6 +28,8 @@ public partial class ShellCheckWindow
 #endif
         report.AppendLine($"os={RuntimeInformation.OSDescription}; runtime={RuntimeInformation.FrameworkDescription}; arch={RuntimeInformation.ProcessArchitecture}; cpus={Environment.ProcessorCount}");
         report.AppendLine("percentile=nearest-rank; samples=5; storage and cold startup are NOT measured; scrolling uses synchronous layout plus dispatcher jobs");
+        var settleHeap = Environment.GetEnvironmentVariable("AXMOL_BENCHMARK_SETTLE_HEAP") == "1";
+        report.AppendLine($"fixtureHeapSettled={settleHeap}; collection is outside all timed samples and never between opens");
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
         var alternate = chat.StartConversation();
@@ -57,6 +59,17 @@ public partial class ShellCheckWindow
                             _ => new ChatTurn(ChatRoles.Assistant, "A short deterministic reply.", DateTimeOffset.UnixEpoch),
                         });
                     }
+                    if (settleHeap)
+                    {
+                        // Fixture setup creates a large transient heap. Isolate its cleanup from open timings.
+                        chat.OpenConversation(alternate.Id);
+                        shell.UpdateLayout();
+                        Dispatcher.UIThread.RunJobs();
+                        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+                        GC.WaitForPendingFinalizers();
+                        Dispatcher.UIThread.RunJobs();
+                        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+                    }
                     var samples = new List<SessionOpenMeasurement>();
                     for (var sample = 0; sample < 5; sample++)
                     {
@@ -64,13 +77,18 @@ public partial class ShellCheckWindow
                         Dispatcher.UIThread.RunJobs();
                         var realizedBefore = panel.VirtualRealizationsForCheck;
                         var allocated = GC.GetTotalAllocatedBytes(false);
+                        var collections = new[] { GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2) };
+                        var openClock = Stopwatch.StartNew();
                         chat.OpenConversation(session.Id);
+                        var openReturnMs = openClock.Elapsed.TotalMilliseconds;
+                        var work = panel.VirtualWorkForCheck;
                         var operation = chat.CurrentSessionOpen!;
                         shell.UpdateLayout();
                         Dispatcher.UIThread.RunJobs();
                         samples.Add(operation);
+                        var layoutAndJobsMs = openClock.Elapsed.TotalMilliseconds - openReturnMs;
                         var openAllocation = GC.GetTotalAllocatedBytes(false) - allocated;
-                        report.AppendLine(FormattableString.Invariant($"shape={shape} turns={count} sample={sample} operation={operation.Id} completed={operation.Completed} reused={operation.Reused} painted={operation.PaintedTurns} messageRows={operation.Rows} activityRows={operation.ActivityRows} flowChildren={operation.FlowChildren} markdown={operation.MarkdownDocuments} render={operation.RenderMs:0.00}ms openToLoaded={operation.ObservedMs:0.00}ms allocatedProcessBytes={openAllocation} realized={panel.RealizedItemCountForCheck} editors={panel.RealizedEditorCountForCheck} parked={panel.ParkedVirtualRowsForCheck} built={panel.VirtualRealizationsForCheck - realizedBefore}"));
+                        report.AppendLine(FormattableString.Invariant($"shape={shape} turns={count} sample={sample} operation={operation.Id} completed={operation.Completed} reused={operation.Reused} painted={operation.PaintedTurns} messageRows={operation.Rows} activityRows={operation.ActivityRows} flowChildren={operation.FlowChildren} markdown={operation.MarkdownDocuments} render={operation.RenderMs:0.00}ms openToLoaded={operation.ObservedMs:0.00}ms allocatedProcessBytes={openAllocation} realized={panel.RealizedItemCountForCheck} editors={panel.RealizedEditorCountForCheck} parked={panel.ParkedVirtualRowsForCheck} built={panel.VirtualRealizationsForCheck - realizedBefore} projection={work.ProjectionMs:0.00}ms items={work.ItemsMs:0.00}ms reconcile={work.ReconcileMs:0.00}ms openReturn={openReturnMs:0.00}ms layoutAndJobs={layoutAndJobsMs:0.00}ms gc0={GC.CollectionCount(0) - collections[0]} gc1={GC.CollectionCount(1) - collections[1]} gc2={GC.CollectionCount(2) - collections[2]}"));
                     }
                     if (shape == "tools")
                     {

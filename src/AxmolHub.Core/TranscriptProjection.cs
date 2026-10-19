@@ -99,12 +99,18 @@ public static class TranscriptProjection
     public static TranscriptSnapshot Build(Conversation conversation, bool showThinking,
         int eagerMarkdownLimit = int.MaxValue, long[]? turnKeys = null)
     {
-        var visible = new List<(int Source, ChatTurn Turn, long Key)>();
+        var visible = new List<(int Source, ChatTurn Turn, long Key)>(conversation.Messages.Count);
+        var proseCount = 0;
         for (var at = 0; at < conversation.Messages.Count; at++)
             if (conversation.Messages[at].Role != ChatRoles.System)
-                visible.Add((at, conversation.Messages[at], turnKeys is null ? 0 : turnKeys[at]));
+            {
+                var turn = conversation.Messages[at];
+                visible.Add((at, turn, turnKeys is null ? 0 : turnKeys[at]));
+                if (!IsActivityTurn(turn)) proseCount++;
+            }
 
-        var entries = new List<TranscriptEntry>();
+        // Prose contributes one entry per turn; a long activity run normally contributes a single piece.
+        var entries = new List<TranscriptEntry>(proseCount + Math.Min(16, visible.Count - proseCount));
         var index = 0;
         while (index < visible.Count)
         {

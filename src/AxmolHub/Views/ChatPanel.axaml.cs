@@ -372,10 +372,11 @@ public partial class ChatPanel : UserControl
         MessageScroller.SizeChanged += (_, _) => UpdateMessageColumnWidth();
         MessageScroller.ScrollChanged += (_, change) =>
         {
+            if (_mappingTranscriptBar) return;
             var wasAtBottom = MessageScroller.Offset.Y - change.OffsetDelta.Y
                 + MessageScroller.Viewport.Height - change.ViewportDelta.Y
                 >= MessageScroller.Extent.Height - change.ExtentDelta.Y - StickEpsilon;
-            if (Math.Abs(change.ViewportDelta.Y) > 0.1 && wasAtBottom && !_thumbDragging) QueueVirtualFollow();
+            if (!_thumbDragging && Math.Abs(change.ViewportDelta.Y) > 0.1 && wasAtBottom) QueueVirtualFollow();
             UpdateMessageColumnWidth();
             UpdateScrollAffordance();
             // The transcript of a long session is largely plain until this runs, and a scroll is exactly the
@@ -386,10 +387,10 @@ public partial class ChatPanel : UserControl
         // holds and the streamed reply must not re-measure the column under it; the moment it lets go, the
         // held-back paint flushes. Both drag events bubble out of the ScrollBar's template (Thumb's drag events
         // are Bubble routed events), so the wiring survives a template re-apply and stays out of the template.
-        MessageScroller.AddHandler(Thumb.DragStartedEvent,
-            (_, _) => { _transcriptGeneration++; _thumbDragging = true; _stickToBottom = false; });
-        MessageScroller.AddHandler(Thumb.DragCompletedEvent,
-            (_, _) => { _thumbDragging = false; FlushLiveRepaintIfPending(); });
+        TranscriptScrollBar.AddHandler(Thumb.DragStartedEvent,
+            (_, change) => BeginTranscriptThumbDrag(change));
+        TranscriptScrollBar.AddHandler(Thumb.DragCompletedEvent,
+            (_, _) => EndTranscriptThumbDrag());
         InputBox.PropertyChanged += (_, e) =>
         {
             if (e.Property == TextBox.TextProperty)
@@ -4635,10 +4636,9 @@ public partial class ChatPanel : UserControl
     {
         var extent = MessageScroller.Extent.Height;
         var viewport = MessageScroller.Viewport.Height;
-        var atBottom = MessageScroller.Offset.Y + viewport >= extent - StickEpsilon;
-        if (!_reconcilingTranscript) _stickToBottom = atBottom;
-        var scrollable = extent > viewport + StickEpsilon;
-        UpdateVirtualOverscan();
+        var atBottom = MessageScroller.Offset.Y + viewport >= extent - StickEpsilon && TranscriptTailVisible();
+        if (!_reconcilingTranscript && !_virtualOpening) _stickToBottom = atBottom;
+        var scrollable = TranscriptActuallyScrollable();
         ScrollToBottomButton.IsVisible = scrollable && !atBottom;
         // The band's height is reserved by whether the transcript <i>can</i> scroll, never by where the reading
         // position happens to have stopped. The plate inside it does appear and disappear with the reading position,
@@ -6084,10 +6084,7 @@ public partial class ChatPanel : UserControl
     /// InspectorPanel / MarkdownMessageRenderer / ChatSidebar each clear it in their own way). Zero when no bar
     /// is on screen, because a transcript that fits under its viewport loses nothing to one.</summary>
     internal double TranscriptScrollBarWidthForCheck
-        => MessageScroller.GetVisualDescendants().OfType<ScrollBar>()
-            .Where(bar => bar.Orientation == Orientation.Vertical && bar.IsVisible)
-            .Select(bar => bar.Bounds.Width)
-            .FirstOrDefault();
+        => TranscriptScrollBar.IsVisible ? TranscriptScrollBar.Bounds.Width : 0;
 
     internal double MessageScrollerViewportWidthForCheck => MessageScroller.Viewport.Width;
 

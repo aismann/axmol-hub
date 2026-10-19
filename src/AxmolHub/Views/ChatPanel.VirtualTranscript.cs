@@ -12,17 +12,41 @@ using Avalonia.LogicalTree;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AxmolHub.Core;
+using Markdown.Avalonia;
 
 namespace AxmolHub;
 
 public partial class ChatPanel
 {
+    // Finish Markdown decorations before returning the height to the virtual panel. Doing it in LayoutUpdated
+    // makes recycled rows change height on every realization and can prevent mixed-height layout from settling.
+    private sealed class TranscriptRowHost : StackPanel
+    {
+        private bool _prepared;
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            var result = base.MeasureOverride(availableSize);
+            if (_prepared) return result;
+            _prepared = true;
+            foreach (var viewer in this.GetVisualDescendants().OfType<MarkdownScrollViewer>().ToArray())
+                MarkdownMessageRenderer.ApplySyntaxHighlighting(viewer);
+            return base.MeasureOverride(availableSize);
+        }
+    }
+
+    private readonly record struct TranscriptItemKey(long Occurrence, string Kind)
+    {
+        public static implicit operator TranscriptItemKey(string special) => new(0, special);
+        public override string ToString() => Occurrence == 0 ? Kind
+            : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{Kind}:{Occurrence}");
+    }
+
     // Items contain transcript data only. A visited row must not keep its Markdown tree alive after recycling.
     private sealed class VirtualTranscriptItem
     {
-        public required string Key { get; init; }
+        public required TranscriptItemKey Key { get; init; }
         public required string Session { get; init; }
-        public required string Kind { get; init; }
+        public string Kind => Key.Kind;
         public int Source { get; set; } = -1;
         public int Ordinal { get; set; }
         public ChatTurn? Turn { get; init; }
@@ -46,14 +70,14 @@ public partial class ChatPanel
     }
 
     private readonly AvaloniaList<VirtualTranscriptItem> _transcriptItems = [];
-    private readonly Dictionary<string, (VirtualTranscriptItem Item, StackPanel Host)> _realizedTranscript = new();
-    private readonly LinkedList<(string Session, Dictionary<string, (VirtualTranscriptItem Item, StackPanel Host)> Rows)>
+    private readonly Dictionary<TranscriptItemKey, (VirtualTranscriptItem Item, StackPanel Host)> _realizedTranscript = new();
+    private readonly LinkedList<(string Session, Dictionary<TranscriptItemKey, (VirtualTranscriptItem Item, StackPanel Host)> Rows)>
         _virtualParked = new();
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Conversation, HashSet<long>> _promotedByConversation = new();
     private HashSet<long> _promotedTranscriptKeys = [];
     private readonly Dictionary<(string Session, long Key), string> _inlineDrafts = new();
-    private readonly Dictionary<string, (VirtualTranscriptItem Item, StackPanel Host)> _interactionRows = new();
-    private string? _selectionPinnedKey;
+    private readonly Dictionary<TranscriptItemKey, (VirtualTranscriptItem Item, StackPanel Host)> _interactionRows = new();
+    private TranscriptItemKey? _selectionPinnedKey;
     private readonly List<(SelectableTextBlock Block, int Start, int End)> _pinnedTextSelection = [];
     private bool _reconcilingTranscript;
     private bool _virtualOpening;
@@ -72,6 +96,16 @@ public partial class ChatPanel
 
     private void InitializeVirtualTranscript()
     {
+        MessageScroller.LayoutUpdated += (_, _) => UpdateTranscriptScrollMapping();
+        TranscriptScrollBar.AddHandler(PointerPressedEvent, (_, change) => PressTranscriptTrack(change),
+            Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        TranscriptScrollBar.PropertyChanged += (_, change) =>
+        {
+            if (_mappingTranscriptBar || _thumbDragging || _discardTranscriptDrag || change.Property != RangeBase.ValueProperty) return;
+            _stickToBottom = false;
+            _transcriptGeneration++;
+            ScrollTranscriptToLogical(TranscriptScrollBar.Value);
+        };
         MessageFlow.ItemsSource = _transcriptItems;
         MessageFlow.ItemTemplate = new FuncDataTemplate<VirtualTranscriptItem>((item, _) => item is null ? new Border() : RealizeTranscriptItem(item), false);
         MessageFlow.ContainerClearing += (_, args) =>
@@ -85,8 +119,20 @@ public partial class ChatPanel
             foreach (var key in _interactionRows.Keys.ToArray())
                 if (!_interactionRows[key].Host.IsKeyboardFocusWithin) _interactionRows.Remove(key);
         }, Avalonia.Interactivity.RoutingStrategies.Bubble, true);
-        MessageScroller.SizeChanged += (_, _) => RestoreTranscriptAnchor(CaptureTranscriptAnchor());
-        MessageScroller.AddHandler(PointerWheelChangedEvent, (_, _) => _transcriptGeneration++, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        MessageScroller.SizeChanged += (_, _) =>
+        {
+            _bottomMappingKnown = false;
+            RestoreTranscriptAnchor(CaptureTranscriptAnchor());
+        };
+        TranscriptScrollBar.AddHandler(PointerWheelChangedEvent, (_, change) =>
+        {
+            _transcriptGeneration++;
+            _stickToBottom = false;
+            MessageScroller.Offset = MessageScroller.Offset.WithY(Math.Max(0,
+                MessageScroller.Offset.Y - change.Delta.Y * MessageScroller.SmallChange.Height));
+            change.Handled = true;
+        }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        MessageScroller.AddHandler(PointerWheelChangedEvent, (_, _) => { _transcriptGeneration++; _stickToBottom = false; }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
     }
 
     private Control RealizeTranscriptItem(VirtualTranscriptItem item)
@@ -106,7 +152,7 @@ public partial class ChatPanel
             host = saved.Host;
             _openReusedRows = true;
         }
-        host ??= new StackPanel { Spacing = 0, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+        host ??= new TranscriptRowHost { Spacing = 0, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
             Margin = new Thickness(0, 0, 0, item.InGroup ? 2 : 10), ClipToBounds = true };
         host.Width = double.IsNaN(MessageColumn.Width) ? 780 : MessageColumn.Width;
         if (host.Children.Count == 0) PaintVirtualTranscriptItem(item, host);
@@ -158,7 +204,7 @@ public partial class ChatPanel
             if (_selectionPinnedKey == item.Key) CapturePinnedSelection(realized.Host);
             if (realized.Host.IsKeyboardFocusWithin || _selectionPinnedKey == item.Key
                 || (item.Turn is not null && item.Source >= 0 && _projection is not null
-                    && _inlineDrafts.ContainsKey((item.Session, long.Parse(item.Key[(item.Key.IndexOf(':') + 1)..])))))
+                    && _inlineDrafts.ContainsKey((item.Session, item.Key.Occurrence))))
                 _interactionRows[item.Key] = realized;
             _realizedTranscript.Remove(item.Key);
             _pendingMarkdownRows.RemoveAll(pending => ReferenceEquals(pending.Parent, realized.Host));
@@ -186,7 +232,7 @@ public partial class ChatPanel
             return;
         }
         if (_chat.ActiveConversation is not { } conversation || conversation.Id != item.Session
-            || _projection is null || !_projection.TryResolve(long.Parse(item.Key[(item.Key.IndexOf(':') + 1)..]), out var index))
+            || _projection is null || !_projection.TryResolve(item.Key.Occurrence, out var index))
             return;
         var turn = conversation.Messages[index];
         switch (item.Kind)
@@ -226,7 +272,7 @@ public partial class ChatPanel
     private void ParkVirtualTranscript()
     {
         if (_renderedConversationId is not { } session || _realizedTranscript.Count == 0) return;
-        var cached = new Dictionary<string, (VirtualTranscriptItem Item, StackPanel Host)>();
+        var cached = new Dictionary<TranscriptItemKey, (VirtualTranscriptItem Item, StackPanel Host)>();
         foreach (var (key, value) in _realizedTranscript.Take(ParkedRowLimit).ToArray())
         {
             // Keep only realized rows, detached from their old item presenter. The wrapper is never reused.
@@ -249,6 +295,8 @@ public partial class ChatPanel
         while (_virtualParked.Count > ParkedTranscriptDepth) _virtualParked.RemoveLast();
     }
 
+    internal (double ProjectionMs, double ItemsMs, double ReconcileMs) VirtualWorkForCheck { get; private set; }
+
     private void RenderVirtualTranscript()
     {
         if (_chat is null) return;
@@ -258,6 +306,11 @@ public partial class ChatPanel
         var following = switched || _stickToBottom;
         if (switched)
         {
+            if (_heldItems is not null)
+            {
+                _discardTranscriptDrag = true;
+                EndTranscriptThumbDrag(restorePosition: false, flush: false);
+            }
             _virtualOpening = true;
             ParkVirtualTranscript();
             _realizedTranscript.Clear();
@@ -278,7 +331,10 @@ public partial class ChatPanel
         }
         _promotedTranscriptKeys = conversation is null ? [] : _promotedByConversation.GetValue(conversation, _ => []);
         _projection = conversation is null ? null : _projectionStates.GetValue(conversation, _ => new());
+        var phase = System.Diagnostics.Stopwatch.StartNew();
         _virtualSnapshot = conversation is null ? null : _projection!.Build(conversation, _chat.ShowThinking, int.MaxValue);
+        var projectionMs = phase.Elapsed.TotalMilliseconds;
+        phase.Restart();
         if (_projection is not null)
         {
             foreach (var memory in new[] { _expandedGroups, _expandedRows })
@@ -291,20 +347,20 @@ public partial class ChatPanel
         }
         _renderedConversationId = conversation?.Id;
         if (_live is { } live && (conversation is null || _chat.RunFor(conversation.Id) is not { IsStreaming: true } run || live.Run != run)) CloseLive();
-        var items = new List<VirtualTranscriptItem>();
+        var items = new List<VirtualTranscriptItem>((_virtualSnapshot?.Entries.Count ?? 0) + 4);
         if (conversation is not null)
         {
-            string Key(int source, string kind) => kind + ":" + _projection!.KeyAt(source);
+            TranscriptItemKey Key(int source, string kind) => new(_projection!.KeyAt(source), kind);
             var names = TranscriptProjection.CallNames(conversation);
-            if (ForkNotice.IsVisible) items.Add(new() { Key = "fork", Kind = "special", Session = conversation.Id, Special = ForkNotice });
+            if (ForkNotice.IsVisible) items.Add(new() { Key = "fork", Session = conversation.Id, Special = ForkNotice });
             foreach (var entry in _virtualSnapshot!.Entries)
             {
                 if (entry is TranscriptMessage message)
-                    items.Add(new() { Key = Key(message.SourceIndex, "message"), Kind = "message", Session = conversation.Id,
+                    items.Add(new() { Key = Key(message.SourceIndex, "message"), Session = conversation.Id,
                         Source = message.SourceIndex, Turn = conversation.Messages[message.SourceIndex], Markdown = message.Markdown,
                         Last = message.SourceIndex == conversation.Messages.Count - 1, Thinking = _chat.ShowThinking });
                 else if (entry is TranscriptNotice notice)
-                    items.Add(new() { Key = Key(notice.SourceIndex, "notice"), Kind = "notice", Session = conversation.Id,
+                    items.Add(new() { Key = Key(notice.SourceIndex, "notice"), Session = conversation.Id,
                         Source = notice.SourceIndex, Turn = conversation.Messages[notice.SourceIndex] });
                 else if (entry is TranscriptActivity activity)
                 {
@@ -326,7 +382,7 @@ public partial class ChatPanel
                     if (piece.Folded)
                     {
                         var summary = GroupSummary(slice, calls.Count);
-                        items.Add(new() { Key = Key(first, "group"), Kind = "group", Session = conversation.Id,
+                        items.Add(new() { Key = Key(first, "group"), Session = conversation.Id,
                             Source = first, Turn = conversation.Messages[first], GroupTurns = slice, GroupKey = groupKey,
                             GroupCalls = calls.Count, GroupStamp = summary.ToString() + ":" + IsFoldOpen(_expandedGroups, conversation.Id, groupKey) });
                         if (!IsFoldOpen(_expandedGroups, conversation.Id, groupKey)) continue;
@@ -336,7 +392,7 @@ public partial class ChatPanel
                         var turn = conversation.Messages[row.SourceIndex];
                         var kind = row.Kind == TranscriptRowKind.ToolExchange ? "exchange" : row.Kind == TranscriptRowKind.Thought ? "thought" : "message";
                         var call = turn.ToolCallId is { } id ? calls.GetValueOrDefault(id) : null;
-                        items.Add(new() { Key = Key(row.SourceIndex, kind), Kind = kind, Session = conversation.Id,
+                        items.Add(new() { Key = Key(row.SourceIndex, kind), Session = conversation.Id,
                             Source = row.SourceIndex, Turn = turn, Call = call, ToolName = row.ToolName, Markdown = row.Markdown,
                             InGroup = true, GroupKey = piece.Folded ? groupKey : null, Thinking = _chat.ShowThinking,
                             Last = row.SourceIndex == conversation.Messages.Count - 1 });
@@ -349,10 +405,13 @@ public partial class ChatPanel
             RenderNotice();
             AddVirtualTails(items);
         }
+        var itemsMs = phase.Elapsed.TotalMilliseconds;
+        phase.Restart();
         ReconcileTranscriptItems(items);
+        VirtualWorkForCheck = (projectionMs, itemsMs, phase.Elapsed.TotalMilliseconds);
         if (switched)
         {
-            // Enable the viewport buffers after landing, avoiding transient rows during the initial jump.
+            // Reset the native realization state before landing in the incoming conversation.
             MessageFlow.ItemsPanel = new FuncTemplate<Panel?>(() => new VirtualizingStackPanel { CacheLength = 0 });
             // The native infinite offset is re-coerced as the extent becomes known. Set it before the first
             // layout so the oldest page is never fully materialized just to jump away from it again.
@@ -368,9 +427,9 @@ public partial class ChatPanel
     private void AddVirtualTails(List<VirtualTranscriptItem> items)
     {
         var session = _renderedConversationId ?? "";
-        if (_runningCommand is { } command) items.Add(new() { Key = "command", Kind = "special", Session = session, Special = command.Shell });
-        if (_live is { } live) items.Add(new() { Key = "live", Kind = "special", Session = session, Special = live.Row });
-        if (NoticeHost.Children.Count > 0) items.Add(new() { Key = "status", Kind = "special", Session = session, Special = NoticeHost });
+        if (_runningCommand is { } command) items.Add(new() { Key = "command", Session = session, Special = command.Shell });
+        if (_live is { } live) items.Add(new() { Key = "live", Session = session, Special = live.Row });
+        if (NoticeHost.Children.Count > 0) items.Add(new() { Key = "status", Session = session, Special = NoticeHost });
     }
 
     private void SyncVirtualTails()
@@ -415,7 +474,7 @@ public partial class ChatPanel
         if (added > 0) _transcriptItems.InsertRange(prefix, incoming.GetRange(prefix, added));
     }
 
-    private sealed record TranscriptAnchor(string Session, string Key, double Top, int Index, string[] Order);
+    private sealed record TranscriptAnchor(string Session, TranscriptItemKey Key, double Top, int Index, TranscriptItemKey[] Order);
 
     private TranscriptAnchor? CaptureTranscriptAnchor()
     {
@@ -440,34 +499,19 @@ public partial class ChatPanel
         {
             if (generation != _transcriptGeneration || anchor.Session != _renderedConversationId || _thumbDragging || _stickToBottom) return;
             var keys = _transcriptItems.Select(item => item.Key).ToHashSet();
-            var key = keys.Contains(anchor.Key) ? anchor.Key : anchor.Order.Skip(anchor.Index + 1).FirstOrDefault(keys.Contains)
-                ?? anchor.Order.Take(anchor.Index).Reverse().FirstOrDefault(keys.Contains);
+            TranscriptItemKey? key = keys.Contains(anchor.Key) ? anchor.Key
+                : anchor.Order.Skip(anchor.Index + 1).Where(keys.Contains).Select(key => (TranscriptItemKey?)key).FirstOrDefault()
+                  ?? anchor.Order.Take(anchor.Index).Reverse().Where(keys.Contains).Select(key => (TranscriptItemKey?)key).FirstOrDefault();
             if (key is null) return;
             var index = _transcriptItems.Select((item, at) => (item, at)).First(pair => pair.item.Key == key).at;
-            if (!_realizedTranscript.ContainsKey(key))
+            if (!_realizedTranscript.ContainsKey(key.Value))
             {
                 MessageFlow.ScrollIntoView(index);
                 MessageFlow.UpdateLayout();
             }
-            if (_realizedTranscript.TryGetValue(key, out var row) && row.Host.TranslatePoint(default, MessageScroller) is { } point)
+            if (_realizedTranscript.TryGetValue(key.Value, out var row) && row.Host.TranslatePoint(default, MessageScroller) is { } point)
                 MessageScroller.Offset = MessageScroller.Offset.WithY(Math.Max(0, MessageScroller.Offset.Y + point.Y - anchor.Top));
         }, DispatcherPriority.Loaded);
-    }
-
-    private void UpdateVirtualOverscan()
-    {
-        if (MessageFlow.ItemsPanelRoot is not VirtualizingStackPanel panel || MessageScroller.Viewport.Height <= 0) return;
-        if (_virtualOpening)
-        {
-            panel.CacheLength = 0;
-            return;
-        }
-        var viewport = MessageScroller.Viewport.Height;
-        var range = Math.Max(0, MessageScroller.Extent.Height - viewport);
-        var nearestEdge = Math.Max(0, Math.Min(MessageScroller.Offset.Y, range - MessageScroller.Offset.Y));
-        // The framework transfers an unavailable buffer at either end to the other side. Compensate so
-        // the tail opens with one extra viewport above it, while the middle keeps one on either side.
-        panel.CacheLength = 0.5 * (1 + Math.Min(1, nearestEdge / viewport));
     }
 
     private bool _virtualFollowQueued;
@@ -480,22 +524,33 @@ public partial class ChatPanel
         _virtualFollowGeneration = _transcriptGeneration;
         if (_virtualFollowQueued) return;
         _virtualFollowQueued = true;
-        Dispatcher.UIThread.Post(() =>
+        var attempts = 0;
+        void AlignBottom()
         {
-            _virtualFollowQueued = false;
             if (_thumbDragging || _virtualFollowSession != _renderedConversationId
                 || _virtualFollowGeneration != _transcriptGeneration || _transcriptItems.Count == 0)
             {
+                _virtualFollowQueued = false;
                 _virtualOpening = false;
                 return;
             }
             MessageFlow.ScrollIntoView(_transcriptItems.Count - 1);
-            if (MessageFlow.ContainerFromIndex(_transcriptItems.Count - 1) is { } tail)
-                tail.BringIntoView(new Rect(0, Math.Max(0, tail.Bounds.Height - 1), 1, 17));
+            if (MessageFlow.ContainerFromIndex(_transcriptItems.Count - 1) is not null)
+                MessageScroller.ScrollToEnd();
             UpdateScrollAffordance();
+            _stickToBottom = true;
+            // Realizing the tail can revise the native extent on the next layout. Bound the correction instead
+            // of following every extent event, which feeds the virtual panel's estimates back into layout.
+            if (++attempts < 3 && (!TranscriptTailVisible()
+                || MessageScroller.Offset.Y + MessageScroller.Viewport.Height < MessageScroller.Extent.Height - StickEpsilon))
+            {
+                Dispatcher.UIThread.Post(AlignBottom, DispatcherPriority.Loaded);
+                return;
+            }
+            _virtualFollowQueued = false;
             _virtualOpening = false;
-            UpdateVirtualOverscan();
-        }, DispatcherPriority.Loaded);
+        }
+        Dispatcher.UIThread.Post(AlignBottom, DispatcherPriority.Loaded);
     }
 
     internal void ClickScrollToBottomForCheck() => ScrollToBottomButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
@@ -533,6 +588,31 @@ public partial class ChatPanel
         ScheduleMarkdownPromotion();
         return _pendingMarkdownRows.Count;
     }
+    internal ScrollBar TranscriptBarForCheck => TranscriptScrollBar;
+
+    internal (double Gap, int Visible, string Detail) VirtualCoverageForCheck
+    {
+        get
+        {
+            var height = MessageScroller.Viewport.Height;
+            var spans = _realizedTranscript.Values.Where(row => row.Host.IsAttachedToVisualTree())
+                .SelectMany(row => row.Host.Children)
+                .Where(row => row.IsEffectivelyVisible && row.Bounds.Height > 0)
+                .Select(row => (Y: row.TranslatePoint(default, MessageScroller)?.Y ?? double.NaN, H: row.Bounds.Height))
+                .Where(span => !double.IsNaN(span.Y) && span.Y < height && span.Y + span.H > 0)
+                .OrderBy(span => span.Y).ToArray();
+            var edge = 0d;
+            var gap = 0d;
+            foreach (var span in spans)
+            {
+                gap = Math.Max(gap, span.Y - edge);
+                edge = Math.Max(edge, span.Y + span.H);
+            }
+            gap = Math.Max(gap, height - edge);
+            return (gap, spans.Length, $"offset={MessageScroller.Offset.Y:0.0}, extent={MessageScroller.Extent.Height:0.0}, visible={spans.Length}, gap={gap:0.0}, spans={string.Join(';', spans.Select(span => $"{span.Y:0.0}/{span.H:0.0}"))}");
+        }
+    }
+
     internal bool ReusedVirtualRowsForCheck => _openReusedRows;
     internal int VirtualRealizationsForCheck => _virtualRealizations;
     internal int RealizedEditorCountForCheck => RealizedTranscriptRows.Sum(row => row.GetVisualDescendants().OfType<AvaloniaEdit.TextEditor>().Count());
@@ -540,7 +620,7 @@ public partial class ChatPanel
     internal int VirtualItemCountForCheck => _transcriptItems.Count;
     internal int RealizedItemCountForCheck => _realizedTranscript.Count;
     internal int ParkedVirtualRowsForCheck => _virtualParked.Sum(entry => entry.Rows.Count);
-    internal string[] RealizedKeysForCheck => _transcriptItems.Where(item => _realizedTranscript.ContainsKey(item.Key)).Select(item => item.Key).ToArray();
+    internal string[] RealizedKeysForCheck => _transcriptItems.Where(item => _realizedTranscript.ContainsKey(item.Key)).Select(item => item.Key.ToString()).ToArray();
     internal void ScrollVirtualItemForCheck(int index)
     {
         _transcriptGeneration++;
@@ -551,7 +631,7 @@ public partial class ChatPanel
         && _realizedTranscript.ContainsKey(_transcriptItems[index].Key);
     internal (string? Key, double Top) VirtualAnchorForCheck
     {
-        get { var anchor = CaptureTranscriptAnchor(); return (anchor?.Key, anchor?.Top ?? 0); }
+        get { var anchor = CaptureTranscriptAnchor(); return (anchor?.Key.ToString(), anchor?.Top ?? 0); }
     }
     internal int VirtualAnchorSourceForCheck => CaptureTranscriptAnchor() is { } anchor
         ? _transcriptItems.First(item => item.Key == anchor.Key).Source : -1;
@@ -563,7 +643,7 @@ public partial class ChatPanel
     }
     internal IReadOnlyDictionary<string, string> RealizedStructureForCheck => _realizedTranscript.Values
         .Where(row => row.Item.Special is null && row.Host.Children.Count > 0)
-        .ToDictionary(row => row.Item.Key, row => row.Item.Kind switch
+        .ToDictionary(row => row.Item.Key.ToString(), row => row.Item.Kind switch
         {
             "group" => row.Host.Children[0].Classes.Contains("activity-group") ? "G" : "invalid",
             "thought" => PaintedChildToken(row.Host.Children[0]),

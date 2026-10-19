@@ -390,7 +390,8 @@ internal static class MarkdownMessageRenderer
         var foundTable = false;
         foreach (var border in viewer.GetVisualDescendants().OfType<Border>().ToArray())
         {
-            if (!border.Classes.Contains("Table") || border.Classes.Contains("hub-table-scroll")) continue;
+            if (border.Classes.Contains("hub-table-scroll")) { foundTable = true; continue; }
+            if (!border.Classes.Contains("Table")) continue;
             if (border.Child is not Grid { Classes: var classes } table
                 || !classes.Contains("Table")) continue;
 

@@ -35,16 +35,24 @@ public partial class ShellCheckWindow
             : new[] { 100, 300, 600, source.Messages.Count - 4, source.Messages.Count - 2, source.Messages.Count };
         var factories = 0;
         var priorClient = chat.ClientOverride;
+        string? fixtureProvider = null;
         chat.ClientOverride = (_, _) => { factories++; throw new InvalidOperationException("UI requested a model"); };
         try
         {
+            // The focused shell route has no configured model. Keep this fixture independent of suite order.
+            var local = chat.AddProvider("Request probe local", "http://localhost:11438/v1", "request-probe", null)
+                ?? throw new InvalidOperationException("Could not create the request probe model");
+            fixtureProvider = local.Id;
+            if (!chat.SelectChatModel(local.Id, "request-probe"))
+                throw new InvalidOperationException("Could not select the request probe model");
             foreach (var count in counts)
             {
                 session.Messages = source.Messages.Take(count).ToList();
                 session.LastInputTokens = 360_000;
                 session.LastUsageAt = source.LastUsageAt;
                 var prepare = typeof(ChatWorkspace).GetMethod("PrepareRequest", BindingFlags.Instance | BindingFlags.NonPublic)!;
-                var request = prepare.Invoke(chat, new object[] { session.Id, 0 })!;
+                var request = prepare.Invoke(chat, new object[] { session.Id, 0 })
+                    ?? throw new InvalidOperationException("Request probe fixture has no prepared request");
                 T Field<T>(string name) => (T)request.GetType().GetProperty(name)!.GetValue(request)!;
                 var history = Field<IReadOnlyList<ChatTurn>>("History");
                 var system = Field<string>("SystemPrompt");
@@ -159,6 +167,7 @@ public partial class ShellCheckWindow
         {
             chat.ClientOverride = priorClient;
             chat.DeleteConversation(session.Id);
+            if (fixtureProvider is not null) chat.RemoveProvider(fixtureProvider);
             if (before is not null) chat.OpenConversation(before);
             panel.Reload();
         }

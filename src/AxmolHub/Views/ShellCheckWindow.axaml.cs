@@ -611,6 +611,8 @@ public partial class ShellCheckWindow : Window
             "跨行内代码块的选区把它自己的代码也算进要复制的文本（读到「" + chipProbe.DraggedText + "」）");
         Check(panel.MarkdownSelectionMenuForCheck(),
             "正文的选区右键菜单给出「复制」「引用」（实际 " + panel.MarkdownSelectionMenuRowsForCheck + "）");
+        panel.ScrollVirtualItemForCheck(0);
+        Relayout(shell, panel, measure: true);
         Check(panel.UserTurnSelectionMenuForCheck(),
             "自己发的消息挂着同一份选区右键菜单（实际 " + panel.UserTurnSelectionMenuRowsForCheck + "）");
         panel.SetInputForCheck("");
@@ -625,6 +627,8 @@ public partial class ShellCheckWindow : Window
         // The earlier cell above only asked which rows the menu carries, which is why it stayed green while the
         // band and the copy were both gone.
         panel.SetInputForCheck("");
+        panel.ScrollVirtualItemForCheck(0);
+        Relayout(shell, panel, measure: true);
         var userPill = panel.ProbeUserPillSelectionForCheck();
         Check(userPill.MenuOpen && userPill.SelectedText == userPill.Picked,
             "自己发的消息弹出右键菜单后选区仍在（菜单打开=" + userPill.MenuOpen + "，选中「"
@@ -5122,7 +5126,10 @@ public partial class ShellCheckWindow : Window
             Relayout(shell, panel, measure: true);
             await WaitUntilAsync(() => panel.ActivityRowsForCheck.Length == 1);
             panel.SetActivityRowExpandedForCheck(0, true);
-            panel.ScrollTranscriptForCheck(40);
+            Relayout(shell, panel, measure: true);
+            // Leave the bottom while keeping the expanded group visible; an absolute offset near zero reads
+            // the earlier filler document, whose offscreen group correctly has no realized controls.
+            panel.ScrollTranscriptForCheck(Math.Max(0, panel.FlowOffsetForCheck - 40));
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             var openedToken = panel.ActivityGroupInstanceTokenForCheck(0);
