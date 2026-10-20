@@ -54,7 +54,8 @@ public partial class HubDialog : Window
         ChromeHost.Content = new HubDialogChrome(this, "CloseWindow", () => Finish(HubDialogResult.Cancel)).Header;
     }
 
-    /// <summary>Replaces MessageBox.Show. Shows even when owner is null (startup-failure path).</summary>
+    /// <summary>Replaces MessageBox.Show. Shows with no owner at all when there is none to be modal to — no main
+    /// window yet (startup failure) or a main window nobody can see (close-to-background on macOS).</summary>
     public static Task<HubDialogResult> ShowAsync(
         Window? owner,
         string title,
@@ -74,13 +75,20 @@ public partial class HubDialog : Window
         dialog.AddLink(linkUrl);
         dialog.Build(buttons, danger);
 
-        if (owner is not null)
+        // Modal needs an owner somebody can see. Two real paths reach this with none: the main window does not exist
+        // yet (startup failure), and on macOS the close button hides it instead of ending the run
+        // (MainWindow.ShouldHideOnCloseForCheck), which leaves the application menu's "About Axmol Hub…" clickable
+        // with nothing on screen. Avalonia 12.1.3 answers the second with
+        // InvalidOperationException("Cannot show window with non-visible owner") — raised inside a native menu
+        // callback, so the click used to end the process rather than open a box. An owner nobody can see is treated
+        // as no owner: nothing is modal to a window that is not there, and a box appearing on its own is also what a
+        // Mac user expects from an application-menu About panel.
+        if (owner is { IsVisible: true })
         {
             return dialog.ShowDialog<HubDialogResult>(owner);
         }
 
-        // ShowDialog needs an owner, but on the "startup failed" path the main window doesn't exist yet.
-        // Degrade to a non-modal Show() and collect the result ourselves: closed without a result is Cancel.
+        // No owner on screen: a non-modal Show() and the result collected here. Closed without a result is Cancel.
         var completion = new TaskCompletionSource<HubDialogResult>();
         dialog._standalone = completion;
         dialog.Closed += (_, _) => completion.TrySetResult(dialog.Result);

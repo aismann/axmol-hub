@@ -181,5 +181,39 @@ public partial class ShellCheckWindow
         Check(closed == HubDialogResult.Cancel && HubDialogWindows().Length == windowsBefore,
             "用自绘头的关闭盘关掉关于对话框，得到 Cancel，窗口没有留下（结果 " + closed + "，剩 "
             + HubDialogWindows().Length + " 个）");
+
+        // ⑪ The click a Mac user actually makes after closing the window: the close button hides the main window
+        //    instead of ending the run (MainWindow.ShouldHideOnCloseForCheck), so the application menu stays there
+        //    with nothing on screen — and that is exactly where the box failed. Asking ShowDialog for a modal owned
+        //    by a window nobody can see throws "Cannot show window with non-visible owner"; raised inside the native
+        //    menu callback, that ended the process instead of opening a box. The owner below is shown and then
+        //    hidden on purpose: that is the state a close leaves, while a window that was never shown would not
+        //    prove the platform path was taken at all.
+        var hiddenOwner = new Window { Title = "hidden owner", Width = 320, Height = 200 };
+        hiddenOwner.Show();
+        hiddenOwner.Hide();
+        var beforeHiddenOwner = HubDialogWindows().Length;
+        var fromHiddenOwner = App.ShowAboutAsync(hiddenOwner);
+        var alone = HubDialogWindows().LastOrDefault();
+        Check(!hiddenOwner.IsVisible && alone is { IsVisible: true }
+              && HubDialogWindows().Length == beforeHiddenOwner + 1,
+            "主窗口藏起来后点关于项照样弹框，不再因为「所有者不可见」抛异常（实际主窗口可见 "
+            + hiddenOwner.IsVisible + "，关于框 "
+            + (alone is null ? "没有弹出" : alone.IsVisible ? "可见" : "不可见")
+            + "，共 " + HubDialogWindows().Length + " 个）");
+
+        // ⑫ …and it is a box, not a wedged process: it closes on its own plate and answers, with no window left over.
+        if (alone is not null)
+        {
+            alone.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            NamedDescendant<Button>(alone, "DialogCloseButton")?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+
+        var aloneAnswer = await fromHiddenOwner;
+        Check(aloneAnswer == HubDialogResult.Cancel && HubDialogWindows().Length == beforeHiddenOwner,
+            "没有主窗口时弹出的关于框自己就能关掉，结果是 Cancel、窗口没有留下（结果 " + aloneAnswer + "，剩 "
+            + HubDialogWindows().Length + " 个）");
+        hiddenOwner.Close();
     }
 }
