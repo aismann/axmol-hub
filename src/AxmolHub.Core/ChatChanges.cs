@@ -43,7 +43,9 @@ public sealed record ChangedFile(
     // turn with different numbers. Appended last and optional because this is a positional record: a fixture that
     // names the nine fields before it still has to compile.
     ChangeLineCounts? Lines = null,
-    string? ChangeId = null);
+    string? ChangeId = null,
+    IReadOnlyList<ChatFileRevision>? History = null,
+    string? SelectedRevisionId = null);
 
 public static class ChatChanges
 {
@@ -106,20 +108,23 @@ public static class ChatChanges
 
             var path = ChatUndoStore.WritePathOf(turn.ToolArguments);
             if (path.Length == 0) continue;
+            var resultLine = results.TryGetValue(callId, out var line) ? line : null;
+            var verdict = VerdictOf(resultLine);
+            if (verdict is not (ChangeVerdict.Created or ChangeVerdict.Edited)) continue;
 
             if (!byPath.ContainsKey(path)) order.Add(path);
             byPath[path] = new ChangedFile(
                 RelativePath: path,
-                Verdict: VerdictOf(results.TryGetValue(callId, out var line) ? line : null),
+                Verdict: verdict,
                 CallId: callId,
                 TurnIndex: index,
                 FrozenPreview: turn.ApprovalPreview,
                 UndoName: turn.UndoName,
                 ArgumentsJson: turn.ToolArguments,
-                ResultLine: FirstLine(results.TryGetValue(callId, out var shown) ? shown : ""),
+                ResultLine: FirstLine(resultLine ?? ""),
                 Latest: false,
                 Lines: LinesOf(turn),
-                ChangeId: turn.ChangeId);
+                ChangeId: turn.UndoRevisionId ?? turn.ChangeId);
         }
 
         // The newest write per path keeps the flag; every earlier one to the same file loses it.
@@ -135,10 +140,13 @@ public static class ChatChanges
     /// is expanded, never for the whole list — a session of twelve writes must not read twelve files to show
     /// one.
     ///
-    /// Four sources, in order, each honest about why it stopped:
+    /// New writes use immutable revision snapshots. Older sessions fall back through their frozen approval
+    /// preview, a retained legacy pre-image plus the recorded edit, and finally the current contents for a
+    /// created file. Every fallback names why it stopped rather than drawing nothing.
     /// <list type="number">
-    /// <item>The preview frozen when the call parked. Survives a restart and is exactly what the approval card
-    /// showed, so the card and the pane cannot disagree.</item>
+    /// <item>The complete before/after snapshot for this exact revision, independent of the current file.</item>
+    /// <item>The preview frozen when an older call parked. Survives a restart and is exactly what the approval
+    /// card showed.</item>
     /// <item>Reconstructed from the pre-image plus the recorded edit. This is the hole the frozen preview
     /// leaves: a write that never had to ask — <c>auto</c>/<c>full</c> mode, or a session-level grant — parked
     /// nothing and froze nothing, yet still changed the file.</item>
@@ -153,6 +161,23 @@ public static class ChatChanges
     {
         state = UndoCopyState.EvictedOrSpent;
         var capped = limits ?? InspectorLimits;
+
+        if (file.SelectedRevisionId is { Length: > 0 } || file.ChangeId is { Length: > 0 })
+        {
+            var id = file.SelectedRevisionId ?? file.ChangeId!;
+            var revision = ChatChangeStore.Read(dataRoot, id);
+            if (revision is null)
+            {
+                state = UndoCopyState.MissingSnapshot;
+                return null;
+            }
+            var snapshot = ChatChangeStore.ReadSnapshot(dataRoot, id, out state);
+            if (snapshot is null) return null;
+            var shownPath = Path.GetRelativePath(revision.Root, revision.Path);
+            if (shownPath == ".." || shownPath.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                shownPath = revision.Path;
+            return FileDiff.Unified(snapshot.Before, snapshot.After, shownPath, capped);
+        }
 
         if (file.FrozenPreview is { Length: > 0 } frozen)
         {

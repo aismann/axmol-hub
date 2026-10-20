@@ -122,7 +122,7 @@ public partial class ChatPanel
         }
 
         var planText = PlanTextFor(conversation, turnIndex);
-        var changes = ChatChanges.Of(conversation);
+        var changes = _chat?.ChangesFor(conversation) ?? ChatChanges.Of(conversation);
         var conversationId = conversation?.Id ?? "";
         var repository = _chat?.RepositoryFor(conversation?.WorkspaceRoot);
         // Entering the tab with nothing read for this directory is the moment to read it. Not before, and not on
@@ -138,7 +138,10 @@ public partial class ChatPanel
                 : (_chat.DiffForChange(change, conversationId, out var state), state),
             repository?.State,
             tab,
-            QuoteIntoComposer);
+            QuoteIntoComposer,
+            change => _chat is null
+                ? (null, UndoCopyState.MissingSnapshot)
+                : (_chat.SnapshotForChange(change, change.SelectedRevisionId, out var state), state));
         // Painting by any route leaves the pane in step with the transcript, so the repaint that follows a
         // click would be a second rebuild of the same thing.
         _inspectorSignature = conversation is null ? "" : conversation.Id + ":" + conversation.Messages.Count;

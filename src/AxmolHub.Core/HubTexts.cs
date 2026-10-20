@@ -927,11 +927,14 @@ public static class HubTexts
         // The plan exists and its document does not. "No plan yet" would be the wrong sentence to show somebody
         // who has one on the transcript, so the pane names the file it looked for and how long the plan was.
         ["InspectorPlanGoneFormat"] = ("这份计划（{0} 字）的正文已不在 ai/plans/{1} 里：Hub 只保留最近的计划文件，或者它被手工删掉了。", "This plan's text ({0} characters) is no longer in ai/plans/{1}: Hub keeps only the most recent plans, or the file was removed by hand."),
-        // Four honest ways a diff can be unavailable. Each names why it stopped instead of drawing nothing:
-        // a created file has no before by construction, and a copy that aged out or was spent by a revert is
-        // gone for good in a store bounded at 64 files / 8 MiB.
+        // Reasons a historical diff can be unavailable, including records written by older Hub versions.
         ["InspectorDiffCreatedFile"] = ("新建的文件没有改动前", "A new file has no before"),
-        ["InspectorDiffCopyGone"] = ("改动前的副本已经不在了", "The pre-image has aged out of Hub's bounded store"),
+        ["InspectorDiffCopyGone"] = ("旧版会话的改动前副本已不可用", "This legacy session's pre-image is unavailable"),
+        ["InspectorDiffPendingSnapshot"] = ("这次改动记录仍待核实，暂时无法显示", "This change record is still pending verification"),
+        ["InspectorDiffMissingSnapshot"] = ("这次改动的历史快照已缺失", "The snapshot for this change is missing"),
+        ["InspectorDiffViewUnified"] = ("差异", "Diff"),
+        ["InspectorDiffViewBefore"] = ("改动前", "Before"),
+        ["InspectorDiffViewAfter"] = ("改动后", "After"),
         ["InspectorDiffCopySpent"] = ("那次写入已被撤销，副本用完", "The copy was spent by a revert"),
         ["InspectorDiffUnreadable"] = ("现在读不到这个文件，或它不是文本", "The file is gone or is not text"),
         ["InspectorDiffRefusedLine"] = ("没有改动", "No change"),

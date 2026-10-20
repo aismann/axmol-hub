@@ -59,6 +59,12 @@ public enum UndoCopyState
 
     /// <summary>The copy is there but cannot be read as text.</summary>
     Unreadable,
+
+    /// <summary>The durable revision journal is still pending because the source does not prove its final state.</summary>
+    PendingSnapshot,
+
+    /// <summary>The transcript names a durable revision whose journal is missing.</summary>
+    MissingSnapshot,
 }
 
 /// <summary>
@@ -88,6 +94,14 @@ public static class ChatUndoStore
         => string.IsNullOrWhiteSpace(dataRoot) || string.IsNullOrWhiteSpace(conversationId)
             ? null
             : Path.Combine(dataRoot, "ai", "undo", SafeName(conversationId));
+
+    public static void DeleteConversationCopies(string? dataRoot, string conversationId)
+    {
+        if (DirectoryFor(dataRoot, conversationId) is not { } directory || !Directory.Exists(directory)) return;
+        try { Directory.Delete(directory, recursive: true); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
 
     /// <summary>The tail a <c>file_write</c> result gets: where the copy went, or why there is none.</summary>
     public static string NoteFor(ChatUndoEntry entry) => entry.Stored

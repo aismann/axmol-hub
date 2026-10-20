@@ -321,12 +321,6 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             journalWarning = $" (change journal pending: {ex.Message})";
         }
 
-        // Legacy undo buttons still use their bounded pre-image until the D2 migration. This copy is optional;
-        // the complete before/after revision above is the durable record and never depends on its eviction.
-        var undo = original is null
-            ? ChatUndoEntry.None
-            : ChatUndoStore.Store(context.DataRoot, context.ConversationId, resolved.Display, original);
-
         // After the bytes are on disk and nowhere earlier: a refused anchor, a sandbox refusal and a failed write
         // all changed nothing, and a tally reported for one of them would be a number for a change that never
         // happened. Both sides are still in memory here, which is the only moment this is free — the pre-image
@@ -336,7 +330,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
 
         context.Log?.Write($"Assistant wrote {resolved.Full} ({edit.Verdict}, {edit.Matches} place(s))");
         return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display)
-               + ChatChangeStore.Marker + revision.Id + journalWarning + ChatUndoStore.NoteFor(undo);
+               + ChatChangeStore.Marker + revision.Id + journalWarning;
     }
 
     [Description("Run one shell command in the session workspace, or in a directory the user granted this session, "

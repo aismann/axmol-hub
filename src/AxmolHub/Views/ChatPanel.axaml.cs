@@ -2584,7 +2584,8 @@ public partial class ChatPanel : UserControl
         {
             if (turn.ApprovalState == ChatApprovalStates.Pending)
                 approvalSurface = BuildApprovalPendingLine(turn);
-            else if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 })
+            else if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 }
+                     || (turn.ChangeId is { Length: > 0 } && !turn.UndoConsumed))
                 approvalSurface = BuildCallRecord(conversationId, callId, turn);
         }
         if (isPlanTurn) approvalSurface = BuildPlanCard(turn, index);
@@ -2814,7 +2815,8 @@ public partial class ChatPanel : UserControl
     private static bool IsNarratedCall(ChatTurn turn) => turn.Role == ChatRoles.Assistant
                                                          && turn.ToolCallId is { Length: > 0 }
                                                          && !string.IsNullOrWhiteSpace(turn.Text)
-                                                         && turn.ApprovalState is null && turn.UndoName is null;
+                                                         && turn.ApprovalState is null && turn.UndoName is null
+                                                         && (turn.ChangeId is null || turn.UndoConsumed);
 
     /// <summary>
     /// <summary>
@@ -3783,7 +3785,7 @@ public partial class ChatPanel : UserControl
             Text = line,
             VerticalAlignment = VerticalAlignment.Center,
         });
-        if (turn.UndoName is { Length: > 0 })
+        if (!turn.UndoConsumed && (turn.ChangeId is { Length: > 0 } || turn.UndoName is { Length: > 0 }))
         {
             row.Children.Add(BuildUndoButton(conversationId, callId,
                 ChatUndoStore.WritePathOf(turn.ToolArguments)));

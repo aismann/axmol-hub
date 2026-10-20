@@ -950,12 +950,82 @@ public sealed class ChatWorkspace : IDisposable
             file,
             conversationId,
             _dataRoot,
-            // A grant revoked since the write is refused here rather than followed: the row says so, which is the
-            // truthful answer to "what did that write change, in a directory I have taken away".
+            // Stored revisions read only Hub's private snapshot objects. Legacy preview reconstruction still uses
+            // the current sandbox and therefore continues to honor revoked grants.
             new WorkspaceSandbox(session?.WorkspaceRoot, WorkspacePaths.NormalizeRoots(session?.GrantedRoots, guards)),
             guards,
             ChatChanges.InspectorLimits,
             out state);
+    }
+
+    public IReadOnlyList<ChangedFile> ChangesFor(Conversation? conversation)
+    {
+        var changes = ChatChanges.Of(conversation);
+        if (conversation is null) return changes;
+        var referenced = conversation.Messages
+            .SelectMany(turn => new[] { turn.ChangeId, turn.UndoRevisionId })
+            .Concat(conversation.ChangeHistoryIds)
+            .Where(id => id is { Length: > 0 })
+            .Distinct(StringComparer.Ordinal)
+            .Select(id => ChatChangeStore.Read(_dataRoot, id!))
+            .Where(revision => revision is not null)
+            .Cast<ChatFileRevision>()
+            .ToList();
+        var revisions = ChatChangeStore.ForConversation(_dataRoot, conversation.Id)
+            .Concat(referenced)
+            .DistinctBy(revision => revision.Id)
+            .ToArray();
+        var result = new List<ChangedFile>();
+        var matched = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var group in revisions.GroupBy(revision => revision.Path, StringComparer.Ordinal))
+        {
+            var history = group.OrderBy(revision => revision.At).ToArray();
+            var latest = history[^1];
+            var transcript = changes.FirstOrDefault(change =>
+                change.ChangeId is { Length: > 0 } id
+                && ChatChangeStore.Read(_dataRoot, id)?.Path == group.Key);
+            var displayPath = latest.Path;
+            var relative = Path.GetRelativePath(latest.Root, latest.Path);
+            if (relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                displayPath = relative;
+            if (transcript is not null)
+            {
+                matched.Add(transcript.RelativePath);
+                result.Add(transcript with
+                {
+                    ChangeId = latest.Id,
+                    History = history,
+                    SelectedRevisionId = latest.Id,
+                    Lines = latest.Lines ?? transcript.Lines,
+                });
+            }
+            else
+            {
+                result.Add(new ChangedFile(displayPath,
+                    latest.BeforeHash is null ? ChangeVerdict.Created : ChangeVerdict.Edited,
+                    latest.Id, -1, null, null, null, "Stored file revision", true,
+                    ChangeId: latest.Id, History: history, SelectedRevisionId: latest.Id,
+                    Lines: latest.Lines));
+            }
+        }
+        result.AddRange(changes.Where(change => !matched.Contains(change.RelativePath)));
+        return result;
+    }
+
+    public ChatFileSnapshot? SnapshotForChange(ChangedFile file, string? revisionId, out UndoCopyState state)
+    {
+        var id = revisionId ?? file.ChangeId;
+        if (id is null)
+        {
+            state = UndoCopyState.MissingSnapshot;
+            return null;
+        }
+        if (ChatChangeStore.Read(_dataRoot, id) is null)
+        {
+            state = UndoCopyState.MissingSnapshot;
+            return null;
+        }
+        return ChatChangeStore.ReadSnapshot(_dataRoot, id, out state);
     }
 
     /// <summary>What a session is called, for a surface that has to name a session other than the one on screen —
@@ -3096,7 +3166,25 @@ public sealed class ChatWorkspace : IDisposable
     public void DeleteConversation(string id)
     {
         StopRunFor(id);
+        var referenced = new HashSet<string>(StringComparer.Ordinal);
+        var liveConversations = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var summary in _sessions.List())
+        {
+            if (summary.Id == id) continue;
+            liveConversations.Add(summary.Id);
+            var conversation = _sessions.Peek(summary.Id) ?? _sessions.Load(summary.Id);
+            if (conversation is null) continue;
+            foreach (var turn in conversation.Messages)
+            {
+                if (turn.ChangeId is { Length: > 0 } changeId) referenced.Add(changeId);
+                if (turn.UndoRevisionId is { Length: > 0 } undoId) referenced.Add(undoId);
+            }
+            foreach (var changeId in conversation.ChangeHistoryIds)
+                if (changeId is { Length: > 0 }) referenced.Add(changeId);
+        }
         _sessions.Delete(id);
+        ChatUndoStore.DeleteConversationCopies(_dataRoot, id);
+        ChatChangeStore.PruneSession(_dataRoot, liveConversations, referenced);
         CloseIfActive(id);
         Changed?.Invoke();
     }
@@ -3300,6 +3388,11 @@ public sealed class ChatWorkspace : IDisposable
             // one the person already answered.
             GrantedRoots = [.. source.GrantedRoots],
             Messages = prefix,
+            ChangeHistoryIds = [.. source.ChangeHistoryIds
+                .Concat(prefix.SelectMany(turn => new[] { turn.ChangeId, turn.UndoRevisionId }))
+                .Where(id => id is { Length: > 0 })
+                .Select(id => id!)
+                .Distinct(StringComparer.Ordinal)],
             ContextSummary = prefix.Count >= SummaryMessageCount(source) ? source.ContextSummary : "",
             ContextSummaryThroughMessageCount = prefix.Count >= SummaryMessageCount(source)
                 ? SummaryMessageCount(source)
@@ -4510,6 +4603,8 @@ public sealed class ChatWorkspace : IDisposable
         {
             UndoName = name, ChangeLines = lines, ChangeId = changeId,
         };
+        if (changeId is { Length: > 0 } && !conversation.ChangeHistoryIds.Contains(changeId, StringComparer.Ordinal))
+            conversation.ChangeHistoryIds.Add(changeId);
     }
 
     /// <summary>Where an approval decision is recorded. Set by the shell to Hub's activity log: a decision that
@@ -4951,7 +5046,7 @@ public sealed class ChatWorkspace : IDisposable
         public bool Succeeded => Verdict == UndoVerdict.Reverted;
     }
 
-    private readonly record struct UndoRecord(string Name, string ArgumentsJson, string? DataRoot,
+    private readonly record struct UndoRecord(string? LegacyName, string? ChangeId, string ArgumentsJson, string? DataRoot,
         string ConversationId, WorkspaceSandbox Sandbox, WorkspaceGuards Guards);
 
     /// <summary>
@@ -4968,10 +5063,12 @@ public sealed class ChatWorkspace : IDisposable
         {
             var conversation = _sessions.Peek(conversationId) ?? _sessions.Load(conversationId);
             var index = conversation?.IndexOfToolCall(callId) ?? -1;
-            if (conversation is null || index < 0 || conversation.Messages[index].UndoName is not { Length: > 0 } name)
-                return null;
+            if (conversation is null || index < 0) return null;
+            var turn = conversation.Messages[index];
+            if (turn.UndoConsumed || (turn.ChangeId is not { Length: > 0 }
+                                      && turn.UndoName is not { Length: > 0 })) return null;
             var scope = ScopeFor(conversationId).Workspace;
-            return new UndoRecord(name, conversation.Messages[index].ToolArguments ?? "{}",
+            return new UndoRecord(turn.UndoName, turn.ChangeId, turn.ToolArguments ?? "{}",
                 scope.DataRoot, scope.ConversationId, scope.Sandbox, scope.Guards);
         }).ConfigureAwait(false);
 
@@ -4981,9 +5078,15 @@ public sealed class ChatWorkspace : IDisposable
         var value = record.Value;
         var attempt = await Task.Run(() =>
         {
-            var verdict = ChatUndoStore.Restore(value.DataRoot, value.ConversationId, value.Name,
-                value.Sandbox, value.Guards, value.ArgumentsJson, out var relative);
-            return (verdict, relative);
+            if (value.ChangeId is { Length: > 0 } changeId)
+            {
+                var verdict = ChatChangeStore.Restore(value.DataRoot, value.ConversationId, changeId,
+                    value.Sandbox, value.Guards, out var path, out var inverseId);
+                return (verdict: verdict, relative: path, inverseId: inverseId);
+            }
+            var legacyVerdict = ChatUndoStore.Restore(value.DataRoot, value.ConversationId, value.LegacyName,
+                value.Sandbox, value.Guards, value.ArgumentsJson, out var legacyPath);
+            return (verdict: legacyVerdict, relative: legacyPath, inverseId: (string?)null);
         }).ConfigureAwait(false);
 
         if (attempt.verdict != UndoVerdict.Reverted)
@@ -4997,7 +5100,15 @@ public sealed class ChatWorkspace : IDisposable
             _sessions.TryUpdate(conversationId, opened =>
             {
                 var at = opened.IndexOfToolCall(callId);
-                if (at >= 0) opened.Messages[at] = opened.Messages[at] with { UndoName = null };
+                if (at >= 0) opened.Messages[at] = opened.Messages[at] with
+                {
+                    UndoName = null,
+                    UndoConsumed = true,
+                    UndoRevisionId = attempt.inverseId,
+                };
+                if (attempt.inverseId is { Length: > 0 } inverseId
+                    && !opened.ChangeHistoryIds.Contains(inverseId, StringComparer.Ordinal))
+                    opened.ChangeHistoryIds.Add(inverseId);
                 // In the user's voice, because it is their own act: the assistant has to read that the file moved
                 // back before it anchors another edit on the content it wrote.
                 opened.Append(ChatTurn.User(string.Format(System.Globalization.CultureInfo.CurrentCulture,

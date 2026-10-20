@@ -78,7 +78,8 @@ public static class TranscriptProjection
     public static bool IsNarratedCall(ChatTurn turn) => turn.Role == ChatRoles.Assistant
                                                         && turn.ToolCallId is { Length: > 0 }
                                                         && !string.IsNullOrWhiteSpace(turn.Text)
-                                                        && turn.ApprovalState is null && turn.UndoName is null;
+                                                        && turn.ApprovalState is null && turn.UndoName is null
+                                                        && (turn.ChangeId is null || turn.UndoConsumed);
 
     /// <summary>The conversation-wide tool name a result prints, first named call wins. See the class remarks.</summary>
     public static Dictionary<string, string> CallNames(Conversation conversation)
@@ -182,7 +183,8 @@ public static class TranscriptProjection
             var turn = visible[at].Turn;
             if (turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 })
             {
-                if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 } || IsNarratedCall(turn))
+                if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 }
+                    || (turn.ChangeId is { Length: > 0 } && !turn.UndoConsumed) || IsNarratedCall(turn))
                 {
                     // The renderer tests the *source* index here rather than the visible one. Reproduced as it
                     // stands: a model that quietly "fixed" it would disagree with the painted rows the moment a

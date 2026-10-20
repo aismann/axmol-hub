@@ -290,6 +290,13 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// refused writes and no-op edits. The contents stay out of the conversation JSON.</summary>
     public string? ChangeId { get; init; }
 
+    /// <summary>The inverse revision produced by undoing this write. Kept separately from <see cref="ChangeId"/>
+    /// so the original edit remains addressable in history.</summary>
+    public string? UndoRevisionId { get; init; }
+
+    /// <summary>Whether the one-step undo for this write has already been used.</summary>
+    public bool UndoConsumed { get; init; }
+
     /// <summary>How many lines this write added and removed, counted where the edit was applied. Null on every
     /// turn that is not a landed write, and null for a session file written before this existed — which still has
     /// to load, and whose numbers then come from <see cref="ApprovalPreview"/> where one was frozen. Kept beside
@@ -392,6 +399,9 @@ public sealed class Conversation
     public string ProviderId { get; set; } = "";
     public string ModelName { get; set; } = "";
     public List<ChatTurn> Messages { get; set; } = [];
+    /// <summary>Durable references to every file revision this session can still reach. Kept outside the
+    /// transcript so compaction, edit-and-resend and history trimming cannot erase file history.</summary>
+    public List<string> ChangeHistoryIds { get; set; } = [];
     public string ContextSummary { get; set; } = "";
     public int ContextSummaryThroughMessageCount { get; set; }
 

@@ -5981,14 +5981,32 @@ public partial class ShellCheckWindow : Window
         var changes = new[]
         {
             new ChangedFile("note.txt", ChangeVerdict.Edited, "call-1", 3,
-                "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", null, null, "Edited note.txt", true),
+                "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", null, null, "Edited note.txt", true)
+            {
+                ChangeId = "revision-2",
+                History =
+                [
+                    new ChatFileRevision("revision-1", "session", "/workspace/note.txt", "/workspace",
+                        DateTimeOffset.UnixEpoch, "before-1", "after-1", ChatChangeStore.Complete),
+                    new ChatFileRevision("revision-2", "session", "/workspace/note.txt", "/workspace",
+                        DateTimeOffset.UnixEpoch.AddSeconds(1), "before-2", "after-2", ChatChangeStore.Complete),
+                ],
+            },
         };
         inspector.Reload("# 计划\n\n- 先看实现\n- 再动手", changes,
-            _ => ("@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", UndoCopyState.Read), null, "changes");
+            change => (change.SelectedRevisionId == "revision-1"
+                ? "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（旧版）"
+                : "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", UndoCopyState.Read), null, "changes");
         Check(inspector.ChangeRowCountForCheck == 1 && inspector.FirstChangePathForCheck == "note.txt"
               && inspector.ChangesTabVisibleForCheck && !inspector.PlanTabVisibleForCheck,
             "改动页把这次会话动过的文件列出来，并停在被点开的哪一页（实际 "
             + inspector.ChangeRowCountForCheck + " 行，首行「" + inspector.FirstChangePathForCheck + "」）");
+        inspector.ClickChangeRowForCheck(0);
+        Check(inspector.DurableDiffControlsForCheck,
+            "改动详情提供可切换的历史修订、差异/前后内容视图和可滚动的文本区域");
+        inspector.SelectHistoryRevisionForCheck(0);
+        Check(inspector.SelectedRevisionForCheck("note.txt") == "revision-1",
+            "切换历史修订会将详情切到选中的那次写入");
         inspector.Reload("# 计划\n\n- 先看实现", changes,
             _ => ((string?)null, UndoCopyState.Read), null, "plan");
         Check(inspector.PlanTabVisibleForCheck && !inspector.ChangesTabVisibleForCheck

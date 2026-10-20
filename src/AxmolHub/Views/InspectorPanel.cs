@@ -62,6 +62,7 @@ internal sealed class InspectorPanel : UserControl
     /// snapshot, and a pane that folds back everything the reader opened on every streamed token is a pane that
     /// cannot be read while the run is still going — so the opened set outlives the rows it was drawn from.</summary>
     private readonly HashSet<string> _openedChanges = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _selectedRevisions = new(StringComparer.Ordinal);
 
     public InspectorPanel()
     {
@@ -189,7 +190,8 @@ internal sealed class InspectorPanel : UserControl
         Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
         GitRepositoryState? repository,
         string tab,
-        Action<string>? quote = null)
+        Action<string>? quote = null,
+        Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot = null)
     {
         if (string.IsNullOrWhiteSpace(planMarkdown))
         {
@@ -217,7 +219,7 @@ internal sealed class InspectorPanel : UserControl
         else
         {
             foreach (var change in changes)
-                _changesList.Children.Add(BuildChangeRow(change, resolveDiff));
+                _changesList.Children.Add(BuildChangeRow(change, resolveDiff, resolveSnapshot));
         }
 
         ReloadRepository(repository, changes);
@@ -440,7 +442,8 @@ internal sealed class InspectorPanel : UserControl
         return button;
     }
 
-    private Control BuildChangeRow(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff)
+    private Control BuildChangeRow(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
+        Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
     {
         var container = new StackPanel { Spacing = 0, Classes = { "inspector-change" } };
 
@@ -488,14 +491,14 @@ internal sealed class InspectorPanel : UserControl
         // so a run that keeps writing does not fold away the file they are in the middle of looking at.
         if (_openedChanges.Contains(change.RelativePath))
         {
-            detail.Content = BuildDiffDetail(change, resolveDiff);
+            detail.Content = BuildDiffDetail(change, resolveDiff, resolveSnapshot);
             detail.IsVisible = true;
             header.Classes.Add("expanded");
         }
         header.Click += (_, _) =>
         {
             if (!detail.IsVisible && detail.Content is null)
-                detail.Content = BuildDiffDetail(change, resolveDiff);
+                detail.Content = BuildDiffDetail(change, resolveDiff, resolveSnapshot);
             detail.IsVisible = !detail.IsVisible;
             header.Classes.Set("expanded", detail.IsVisible);
             if (detail.IsVisible) _openedChanges.Add(change.RelativePath);
@@ -507,26 +510,106 @@ internal sealed class InspectorPanel : UserControl
         return container;
     }
 
-    /// <summary>The row's <c>+N −M</c>: what that write moved, carried on the row itself so a list paint neither
-    /// opens a file nor re-reads a diff. The expanded body below is a different thing on purpose — the capped
-    /// rendering the approval card asked somebody to approve — and when the two differ the body says so in its own
-    /// tail. <see cref="ChatChanges.LinesOf"/> holds the reasoning for preferring the recorded count.</summary>
+    /// <summary>The row's <c>+N −M</c> comes from the selected latest revision, with the transcript's recorded
+    /// count retained for older revisions that predate durable change metadata.</summary>
     private static (int Added, int Removed) PreviewCounts(ChangedFile change)
         => change.Lines is { } lines
             ? (lines.Added, lines.Removed)
             : (0, 0);
 
-    private Control BuildDiffDetail(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff)
+    private Control BuildDiffDetail(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
+        Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
     {
-        var (diff, state) = resolveDiff(change);
-        if (diff is null)
-            return EmptyLine(DiffUnavailableKey(change, state));
-        return BuildDiffBlock(diff);
+        var body = new StackPanel { Spacing = 6 };
+        var history = change.History ?? [];
+        var remembered = _selectedRevisions.GetValueOrDefault(change.RelativePath, "");
+        var selectedId = history.Any(revision => revision.Id == remembered)
+            ? remembered
+            : history.LastOrDefault()?.Id ?? change.ChangeId ?? "";
+        if (history.Count > 1)
+        {
+            var selector = new ComboBox
+            {
+                Tag = "InspectorHistorySelector",
+                ItemsSource = history.Select(revision => new ComboBoxItem
+                {
+                    Content = revision.At.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                    Tag = revision.Id,
+                }).ToArray(),
+                SelectedIndex = Math.Max(0, history.ToList().FindIndex(revision => revision.Id == selectedId)),
+                MinHeight = 28,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            };
+            body.Children.Add(selector);
+            selector.SelectionChanged += (_, _) =>
+            {
+                if (selector.SelectedItem is not ComboBoxItem { Tag: string id }) return;
+                _selectedRevisions[change.RelativePath] = id;
+                body.Children[1] = BuildSelectedDiff(change with { SelectedRevisionId = id }, resolveDiff,
+                    resolveSnapshot);
+            };
+        }
+        var selected = change with { SelectedRevisionId = selectedId };
+        if (history.Count > 1)
+        {
+            var index = history.ToList().FindIndex(revision => revision.Id == selectedId);
+            if (index >= 0 && body.Children[0] is ComboBox combo) combo.SelectedIndex = index;
+        }
+        body.Children.Add(BuildSelectedDiff(selected, resolveDiff, resolveSnapshot));
+        return body;
+    }
+
+    private Control BuildSelectedDiff(ChangedFile change,
+        Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
+        Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
+    {
+        var mode = new ComboBox
+        {
+            Tag = "InspectorDiffViewSelector",
+            ItemsSource = new[]
+            {
+                HubStrings.Get("InspectorDiffViewUnified"),
+                HubStrings.Get("InspectorDiffViewBefore"),
+                HubStrings.Get("InspectorDiffViewAfter"),
+            },
+            SelectedIndex = 0,
+            MinHeight = 28,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        var content = new ContentControl();
+        void Render()
+        {
+            var index = mode.SelectedIndex;
+            if (index == 0)
+            {
+                var (diff, state) = resolveDiff(change);
+                content.Content = diff is null ? EmptyLine(DiffUnavailableKey(change, state)) : BuildDiffBlock(diff);
+            }
+            else if (resolveSnapshot is null)
+            {
+                content.Content = EmptyLine("InspectorDiffMissingSnapshot");
+            }
+            else
+            {
+                var (snapshot, state) = resolveSnapshot(change);
+                content.Content = snapshot is null
+                    ? EmptyLine(DiffUnavailableKey(change, state))
+                    : BuildSnapshotBlock(index == 1 ? snapshot.Before : snapshot.After);
+            }
+        }
+        mode.SelectionChanged += (_, _) => Render();
+        Render();
+        var stack = new StackPanel { Spacing = 6 };
+        stack.Children.Add(mode);
+        stack.Children.Add(content);
+        return stack;
     }
 
     private static string DiffUnavailableKey(ChangedFile change, UndoCopyState state) => state switch
     {
         UndoCopyState.CreatedFile => "InspectorDiffCreatedFile",
+        UndoCopyState.PendingSnapshot => "InspectorDiffPendingSnapshot",
+        UndoCopyState.MissingSnapshot => "InspectorDiffMissingSnapshot",
         UndoCopyState.EvictedOrSpent => change.Verdict == ChangeVerdict.Unchanged
             ? "InspectorDiffRefusedLine"
             : "InspectorDiffCopyGone",
@@ -545,7 +628,7 @@ internal sealed class InspectorPanel : UserControl
             block.Classes.Add("inspector-diff-line");
             var lineClass = DiffLineClass(line);
             if (lineClass.Length > 0) block.Classes.Add(lineClass);
-            var text = Themed(new TextBlock
+            var text = Themed(new SelectableTextBlock
             {
                 Text = line.Length == 0 ? " " : line,
                 FontFamily = ThemedFont("Hub.Font.Mono"),
@@ -560,7 +643,28 @@ internal sealed class InspectorPanel : UserControl
         {
             Content = new Border { Classes = { "inspector-diff" }, Child = lines },
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 420,
+            ClipToBounds = true,
+        };
+    }
+
+    private static Control BuildSnapshotBlock(string text)
+    {
+        var viewer = new TextBox
+        {
+            Text = text,
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.NoWrap,
+            FontFamily = ThemedFont("Hub.Font.Mono"),
+            FontSize = 11.5,
+        };
+        return new ScrollViewer
+        {
+            Content = new Border { Classes = { "inspector-diff" }, Child = viewer },
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             MaxHeight = 420,
             ClipToBounds = true,
         };
@@ -700,6 +804,27 @@ internal sealed class InspectorPanel : UserControl
     /// <summary>Which file rows the reader had opened, as the panel keeps them across repaints. A check drives
     /// this by clicking a row rather than by setting the field, so what it asserts is the wiring.</summary>
     internal int OpenChangeCountForCheck => _openedChanges.Count;
+
+    internal bool DurableDiffControlsForCheck
+    {
+        get
+        {
+            var controls = _changesList.GetLogicalDescendants().OfType<ComboBox>().ToArray();
+            return controls.Any(control => Equals(control.Tag, "InspectorHistorySelector"))
+                   && controls.Any(control => Equals(control.Tag, "InspectorDiffViewSelector"))
+                   && _changesList.GetLogicalDescendants().OfType<ScrollViewer>()
+                       .Any(viewer => viewer.VerticalScrollBarVisibility == ScrollBarVisibility.Auto);
+        }
+    }
+
+    internal void SelectHistoryRevisionForCheck(int index)
+    {
+        var selector = _changesList.GetLogicalDescendants().OfType<ComboBox>()
+            .FirstOrDefault(control => Equals(control.Tag, "InspectorHistorySelector"));
+        if (selector is not null) selector.SelectedIndex = index;
+    }
+
+    internal string? SelectedRevisionForCheck(string path) => _selectedRevisions.GetValueOrDefault(path);
 
     /// <summary>Every string in one change row, joined: the verdict mark, the path, the counts, and once opened,
     /// the diff lines themselves — which is how a check tells the frozen preview from a resolved one.</summary>

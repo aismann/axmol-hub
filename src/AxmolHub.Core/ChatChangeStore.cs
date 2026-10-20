@@ -13,8 +13,11 @@ public sealed record ChatFileRevision(
     string Root,
     DateTimeOffset At,
     string? BeforeHash,
-    string AfterHash,
-    string State);
+    string? AfterHash,
+    string State,
+    ChangeLineCounts? Lines = null);
+
+public sealed record ChatFileSnapshot(string Before, string After);
 
 /// <summary>Durable content and a write journal for each successful assistant file edit. Pending records are
 /// written before touching source; a crash between the source rename and journal completion can be recovered by
@@ -54,6 +57,25 @@ public static class ChatChangeStore
         }
     }
 
+    public static IReadOnlyList<ChatFileRevision> ForConversation(string? dataRoot, string conversationId)
+    {
+        if (DirectoryFor(dataRoot) is not { } root || string.IsNullOrWhiteSpace(conversationId)) return [];
+        var records = new List<ChatFileRevision>();
+        try
+        {
+            var directory = System.IO.Path.Combine(root, "records");
+            if (!Directory.Exists(directory)) return records;
+            foreach (var file in Directory.EnumerateFiles(directory, "*.json"))
+            {
+                var id = System.IO.Path.GetFileNameWithoutExtension(file);
+                if (Read(dataRoot, id) is { } record && record.ConversationId == conversationId)
+                    records.Add(record);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
+        return records.OrderBy(record => record.At).ToArray();
+    }
+
     public static string? ReadContent(string? dataRoot, string hash)
     {
         if (hash.Length != 64 || !hash.All(Uri.IsHexDigit) || DirectoryFor(dataRoot) is not { } root)
@@ -70,19 +92,41 @@ public static class ChatChangeStore
         }
     }
 
+    public static ChatFileSnapshot? ReadSnapshot(string? dataRoot, string id, out UndoCopyState state)
+    {
+        state = UndoCopyState.MissingSnapshot;
+        var revision = Read(dataRoot, id);
+        if (revision is null) return null;
+        if (revision.State != Complete)
+        {
+            state = UndoCopyState.PendingSnapshot;
+            return null;
+        }
+        var before = revision.BeforeHash is null ? "" : ReadContent(dataRoot, revision.BeforeHash);
+        var after = revision.AfterHash is null ? "" : ReadContent(dataRoot, revision.AfterHash);
+        if ((revision.BeforeHash is not null && before is null)
+            || (revision.AfterHash is not null && after is null))
+        {
+            state = UndoCopyState.Unreadable;
+            return null;
+        }
+        state = UndoCopyState.Read;
+        return new ChatFileSnapshot(before!, after!);
+    }
+
     /// <summary>Prepare both full LF snapshots and the pending record. Throws when any durable prerequisite fails;
     /// callers must leave the source untouched on that road.</summary>
     public static ChatFileRevision Prepare(string? dataRoot, string conversationId, string path, string rootPath,
-        string? before, string after)
+        string? before, string? after)
     {
         if (DirectoryFor(dataRoot) is not { } root || string.IsNullOrWhiteSpace(conversationId))
             throw new IOException("Hub has no data directory or conversation for a durable change snapshot.");
 
         var beforeHash = before is null ? null : SaveContent(root, TextEol.ToLf(before));
-        var afterHash = SaveContent(root, TextEol.ToLf(after));
+        var afterHash = after is null ? null : SaveContent(root, TextEol.ToLf(after));
         var record = new ChatFileRevision(Guid.NewGuid().ToString("N"), conversationId,
             System.IO.Path.GetFullPath(path), System.IO.Path.GetFullPath(rootPath), DateTimeOffset.UtcNow,
-            beforeHash, afterHash, Pending);
+            beforeHash, afterHash, Pending, ToLineCounts(FileDiff.CountChangedLines(before, after)));
         WriteRecord(root, record);
         return record;
     }
@@ -124,6 +168,127 @@ public static class ChatChangeStore
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return Pending;
+        }
+    }
+
+    public static UndoVerdict Restore(string? dataRoot, string conversationId, string id,
+        WorkspaceSandbox sandbox, WorkspaceGuards guards, out string path, out string? inverseId)
+    {
+        path = "";
+        inverseId = null;
+        if (Read(dataRoot, id) is not { } revision)
+            return UndoVerdict.CopyMissing;
+        if (revision.AfterHash is null) return UndoVerdict.CopyMissing;
+
+        var resolved = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
+        if (!resolved.IsAllowed) return UndoVerdict.RefusedPath;
+        path = resolved.Display;
+        if (!File.Exists(resolved.Full)) return UndoVerdict.TargetMissing;
+        if (WorkspaceTools.ReadAll(resolved.Full) is not { } current) return UndoVerdict.NotText;
+        if (Hash(Encoding.UTF8.GetBytes(TextEol.ToLf(current))) != revision.AfterHash)
+            return UndoVerdict.ChangedSince;
+
+        var before = revision.BeforeHash is null ? null : ReadContent(dataRoot, revision.BeforeHash);
+        if (revision.BeforeHash is not null && before is null) return UndoVerdict.CopyMissing;
+        ChatFileRevision inverse;
+        try { inverse = Prepare(dataRoot, conversationId, resolved.Full, resolved.Root, current, before); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return UndoVerdict.WriteFailed;
+        }
+
+        string? temporary = null;
+        try
+        {
+            var latest = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
+            if (!latest.IsAllowed || latest.Full != resolved.Full || !File.Exists(resolved.Full)
+                || WorkspaceTools.ReadAll(resolved.Full) is not { } latestText
+                || Hash(Encoding.UTF8.GetBytes(TextEol.ToLf(latestText))) != revision.AfterHash)
+            {
+                Abandon(dataRoot, inverse);
+                return UndoVerdict.ChangedSince;
+            }
+
+            if (before is null)
+            {
+                File.Delete(resolved.Full);
+            }
+            else
+            {
+                temporary = resolved.Full + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                           4096, FileOptions.WriteThrough))
+                {
+                    var bytes = new UTF8Encoding(false).GetBytes(TextEol.ToLf(before));
+                    stream.Write(bytes);
+                    stream.Flush(true);
+                }
+                var final = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
+                if (!final.IsAllowed || final.Full != resolved.Full || !File.Exists(resolved.Full)
+                    || WorkspaceTools.ReadAll(resolved.Full) is not { } finalText
+                    || Hash(Encoding.UTF8.GetBytes(TextEol.ToLf(finalText))) != revision.AfterHash)
+                {
+                    Abandon(dataRoot, inverse);
+                    return UndoVerdict.ChangedSince;
+                }
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, File.GetUnixFileMode(resolved.Full));
+                File.Replace(temporary, resolved.Full, null);
+                temporary = null;
+            }
+
+            CompleteRevision(dataRoot, inverse);
+            inverseId = inverse.Id;
+            return UndoVerdict.Reverted;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Abandon(dataRoot, inverse);
+            return UndoVerdict.WriteFailed;
+        }
+        finally
+        {
+            if (temporary is not null)
+            {
+                try { File.Delete(temporary); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+    }
+
+    /// <summary>Delete a session's unreferenced records, then content no remaining record uses. Any uncertainty
+    /// keeps data on disk; cleanup must never turn a readable history into a missing snapshot.</summary>
+    public static void PruneSession(string? dataRoot, IReadOnlySet<string> liveConversationIds,
+        IReadOnlySet<string> referencedIds)
+    {
+        if (DirectoryFor(dataRoot) is not { } root) return;
+        try
+        {
+            var recordsDirectory = System.IO.Path.Combine(root, "records");
+            if (!Directory.Exists(recordsDirectory)) return;
+            foreach (var file in Directory.EnumerateFiles(recordsDirectory, "*.json"))
+            {
+                var id = System.IO.Path.GetFileNameWithoutExtension(file);
+                var record = Read(dataRoot, id);
+                if (record is not null && !liveConversationIds.Contains(record.ConversationId)
+                    && !referencedIds.Contains(id)) File.Delete(file);
+            }
+
+            var liveHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in Directory.EnumerateFiles(recordsDirectory, "*.json"))
+            {
+                var record = JsonSerializer.Deserialize<ChatFileRevision>(File.ReadAllText(file));
+                if (record?.BeforeHash is { } before) liveHashes.Add(before);
+                if (record?.AfterHash is { } after) liveHashes.Add(after);
+            }
+            var objects = System.IO.Path.Combine(root, "objects");
+            if (!Directory.Exists(objects)) return;
+            foreach (var file in Directory.EnumerateFiles(objects, "*.txt", SearchOption.AllDirectories))
+                if (!liveHashes.Contains(System.IO.Path.GetFileNameWithoutExtension(file))) File.Delete(file);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // The session remains deleted; a partial prune only leaks snapshots, it cannot lose a referenced one.
         }
     }
 
@@ -177,4 +342,7 @@ public static class ChatChangeStore
     private static string RecordPath(string root, string id) => System.IO.Path.Combine(root, "records", id + ".json");
     private static string ObjectPath(string root, string hash) => System.IO.Path.Combine(root, "objects", hash[..2], hash + ".txt");
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static ChangeLineCounts ToLineCounts((int Added, int Removed) lines)
+        => new(lines.Added, lines.Removed);
 }
