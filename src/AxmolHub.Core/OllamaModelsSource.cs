@@ -5,10 +5,21 @@ using System.Text.Json.Nodes;
 namespace AxmolHub.Core;
 
 /// <summary>
+/// The window a local server will serve one model with, and where that answer came from.
+/// </summary>
+/// <param name="Tokens">The number a request is sized against.</param>
+/// <param name="Source">Provenance for the meter: <see cref="CapabilitySource.EndpointReported"/> when the server
+/// said it, <see cref="CapabilitySource.Fallback"/> when it is the documented default nobody confirmed.</param>
+public readonly record struct OllamaWindow(int Tokens, CapabilitySource Source);
+
+/// <summary>
 /// What a local Ollama server says about one of its models, read from <c>POST /api/show</c>.
 /// </summary>
 /// <param name="TrainedContext">The window the weights were trained for (<c>model_info.*.context_length</c>) — what
-/// the model <i>can</i> hold, which is not what the server hands it.</param>
+/// the model <i>can</i> hold, which is not what the server hands it, and which is why it is a ceiling here rather
+/// than an answer. Measured on this machine: <c>qwen3-coder</c> reports 262 144 trained tokens and pins no
+/// <c>num_ctx</c> at all, so believing this number would have Hub build 262 144-token requests that the server
+/// cuts down to its own default before the model sees them.</param>
 /// <param name="ParameterContext">The <c>num_ctx</c> the Modelfile pins, if one does. This is the only field on the
 /// show answer that describes the window the server will actually give a request.</param>
 /// <param name="Vision">Whether the model declares the <c>vision</c> capability. Meaningful only when
@@ -20,17 +31,34 @@ public sealed record OllamaModelFacts(
 
     /// <summary>
     /// The window this model gets, most authoritative answer first: what the server reported for the model it has
-    /// actually loaded (<c>/api/ps</c>), then the Modelfile's own <c>num_ctx</c>, then the trained maximum.
+    /// actually loaded (<c>/api/ps</c>), then the Modelfile's own <c>num_ctx</c>, then — when the server has pinned
+    /// nothing — <b>the server's own documented default of 4 096</b> rather than the trained maximum.
     ///
-    /// <para>The order is the whole point of this type. A model trained for 262 144 tokens served with the default
-    /// <c>num_ctx</c> of 4 096 silently truncates a longer request from the front instead of refusing it — there is
-    /// no 400 to learn from — so the trained number is the <i>last</i> thing to believe and the running one is the
-    /// first.</para>
+    /// <para>That last step is the one this type exists for, and it is the opposite of what a reader expects. A model
+    /// trained for 262 144 tokens is served by Ollama with 4 096 unless somebody says otherwise
+    /// (<c>OLLAMA_CONTEXT_LENGTH</c>, or <c>PARAMETER num_ctx</c> in the Modelfile), and an oversized prompt is
+    /// truncated from the front instead of refused — there is no 400 to learn from, and the answer that comes back
+    /// looks like a model that forgot the beginning of the conversation. Two mistakes are possible here and they are
+    /// not equal: guessing the default costs compaction a person can see and undo, while guessing the trained
+    /// maximum costs turns that are already gone. <c>/api/ps</c> is what makes the guess unnecessary once the model
+    /// has actually been loaded.</para>
+    ///
+    /// <para>The trained number still bounds the answer, because a Modelfile can pin a <c>num_ctx</c> larger than the
+    /// weights were built for and the smaller of the two is the one that will work.</para>
     /// </summary>
-    public int? Window(int? running) => First(running, ParameterContext, TrainedContext);
+    public OllamaWindow Resolve(int? running)
+    {
+        if (running is > 0) return new(running.Value, CapabilitySource.EndpointReported);
+        if (ParameterContext is > 0)
+            return new(Ceiling(ParameterContext.Value), CapabilitySource.EndpointReported);
+        return new(Ceiling(OllamaModelsSource.DefaultContextTokens), CapabilitySource.Fallback);
+    }
 
-    private static int? First(int? running, int? parameter, int? trained)
-        => running is > 0 ? running : parameter is > 0 ? parameter : trained is > 0 ? trained : null;
+    private int Ceiling(int tokens)
+    {
+        var trained = TrainedContext.GetValueOrDefault();
+        return trained > 0 && trained < tokens ? trained : tokens;
+    }
 }
 
 /// <summary>
@@ -67,6 +95,21 @@ public sealed class OllamaModelsSource : IModelCapabilitySource, IRuntimeModelWi
     /// nobody scrolls. The rest keep whatever the list itself said.</summary>
     public const int MaxShowCalls = 32;
 
+    /// <summary>
+    /// The window an Ollama server gives a model when nobody has said otherwise — its own documented default, read
+    /// from the server's documentation rather than from a machine here, and the number this source falls back to
+    /// when neither <c>/api/ps</c> nor the Modelfile answers.
+    ///
+    /// <para><b>It is smaller than every model it will be applied to, on purpose.</b> Measured against the server on
+    /// the machine this was written for: <c>qwen3-coder</c> is trained for 262 144 tokens, pins no <c>num_ctx</c>,
+    /// and is served with this default. Reporting the trained window would let Hub build a request forty times
+    /// larger than the server accepts — and Ollama does not refuse it, it cuts the front off and answers — which is
+    /// the failure of a model that seems to have forgotten what it was asked. Reporting the default costs a
+    /// conversation that is compacted earlier than it strictly had to be, which is visible, announced, and one
+    /// <c>PARAMETER num_ctx</c> away from being corrected.</para>
+    /// </summary>
+    public const int DefaultContextTokens = 4096;
+
     public async Task<ModelCapabilityBatch> FetchAsync(
         HttpClient client, ModelProvider provider, CancellationToken cancellationToken)
     {
@@ -87,9 +130,10 @@ public sealed class OllamaModelsSource : IModelCapabilitySource, IRuntimeModelWi
             if (shown >= MaxShowCalls) break;
             shown++;
             var facts = await ShowAsync(client, provider, name, cancellationToken).ConfigureAwait(false);
-            var window = facts.Window(running.GetValueOrDefault(NormalizeName(name)));
-            if (window is null && !facts.DeclaresCapabilities) continue;
-            capabilities[name] = Merge(capabilities.GetValueOrDefault(name), window, facts);
+            // Every model gets a window, including one whose /api/show call failed: the default is a better answer
+            // than the preset's hosted fallback, and the run itself asks /api/ps again before it is built.
+            var loaded = running.TryGetValue(NormalizeName(name), out var at) ? at : (int?)null;
+            capabilities[name] = Merge(capabilities.GetValueOrDefault(name), facts.Resolve(loaded), facts);
         }
 
         return new ModelCapabilityBatch(listed.Models, listed.Reasoning, capabilities, null);
@@ -107,7 +151,10 @@ public sealed class OllamaModelsSource : IModelCapabilitySource, IRuntimeModelWi
         HttpClient client, ModelProvider provider, string modelName, CancellationToken cancellationToken)
     {
         var running = await RunningAsync(client, provider, cancellationToken).ConfigureAwait(false);
-        return running.GetValueOrDefault(NormalizeName(modelName));
+        // Not GetValueOrDefault: a dictionary miss answers 0 for an int, and 0 is a window nobody has — it would
+        // read as "the server said nothing", which is right by accident and wrong the moment a caller stops
+        // treating it as falsy.
+        return running.TryGetValue(NormalizeName(modelName), out var window) ? window : null;
     }
 
     /// <summary>One <c>/api/show</c> answer, or <see cref="OllamaModelFacts.Empty"/> for a server that does not
@@ -307,21 +354,25 @@ public sealed class OllamaModelsSource : IModelCapabilitySource, IRuntimeModelWi
     /// Provenance is <see cref="CapabilitySource.EndpointReported"/> whenever a window came back: this is a server
     /// describing its own model, which is the strongest claim Hub can have short of one it learned from a
     /// refusal.</summary>
-    public static ModelCapabilities Merge(ModelCapabilities? known, int? window, OllamaModelFacts facts)
+    /// <summary>The record with the endpoint's own answers folded in, keeping everything the list already said.
+    /// Provenance rides along from <paramref name="window"/>, because the meter has to be able to say "the server
+    /// told me 4 096" and "nobody told me, so I assumed its default" in different words — the first is a fact and
+    /// the second is the reason a person opens the model catalog and types a number.</summary>
+    public static ModelCapabilities Merge(ModelCapabilities? known, OllamaWindow window, OllamaModelFacts facts)
     {
         IReadOnlyList<string> modalities = known?.InputModalities ?? [];
         if (facts.DeclaresCapabilities)
             modalities = facts.Vision ? new[] { "text", "image" } : new[] { "text" };
         return new ModelCapabilities
         {
-            ContextTokens = window ?? known?.ContextTokens,
+            ContextTokens = window.Tokens,
             MaxOutputTokens = known?.MaxOutputTokens,
             InputModalities = modalities,
             OutputModalities = known?.OutputModalities ?? [],
             EndpointTypes = known?.EndpointTypes ?? [],
             EffortLevels = known?.EffortLevels ?? [],
             ContextStrategies = known?.ContextStrategies ?? [],
-            Source = window is null ? known?.Source ?? CapabilitySource.None : CapabilitySource.EndpointReported,
+            Source = window.Source,
             ObservedAt = DateTimeOffset.Now,
         };
     }
