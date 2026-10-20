@@ -5139,6 +5139,7 @@ public sealed class ChatWorkspace : IDisposable
         return _sessions.TryUpdate(conversationId, opened =>
         {
             var attachedContext = opened.Messages[index].AttachedContext;
+            var images = opened.Messages[index].Images;
             // The plan an approval instruction refers to travels with it. A person editing that sentence is
             // changing what they asked for, not withdrawing the document they approved, and an instruction whose
             // plan silently went missing would reach the model as exactly that: a command to implement nothing.
@@ -5149,7 +5150,7 @@ public sealed class ChatWorkspace : IDisposable
                 opened.ContextSummary = "";
                 opened.ContextSummaryThroughMessageCount = 0;
             }
-            opened.Append(ChatTurn.User(text, attachedContext) with { Plan = plan });
+            opened.Append(ChatTurn.User(text, attachedContext, images) with { Plan = plan });
         });
     }
 

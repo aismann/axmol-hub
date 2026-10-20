@@ -1763,11 +1763,17 @@ public partial class ShellCheckWindow : Window
             "刷新复用已有气泡控件而不是全量重建（增量渲染）");
 
         // Regenerate drops the trailing assistant turn; edit-and-resend replaces the turn and truncates after it.
+        opsConversation.Messages[0] = opsConversation.Messages[0] with
+        {
+            Images = [new ChatImage("edit.png", "image/png", 24)],
+        };
+        var editedImages = opsConversation.Messages[0].Images.ToArray();
         Check(shell.Chat.Regenerate(opsConversation.Id) && opsConversation.Messages.Count == 1 && opsConversation.Messages[0].Role == ChatRoles.User,
             "重新生成先丢弃末尾的助手回复");
         Check(shell.Chat.EditAndResend(opsConversation.Id, 0, "改写后的提问")
-              && opsConversation.Messages.Count == 1 && opsConversation.Messages[0].Text == "改写后的提问",
-            "编辑重发替换该消息并截断其后全部内容");
+              && opsConversation.Messages.Count == 1 && opsConversation.Messages[0].Text == "改写后的提问"
+              && opsConversation.Messages[0].Images.SequenceEqual(editedImages),
+            "编辑重发替换文本、保留图片附件并截断其后全部内容");
 
         // ── a question that never got an answer carries its own retry ──
         // The failure the user actually hits: a send superseded by the next one, or one that died on the
