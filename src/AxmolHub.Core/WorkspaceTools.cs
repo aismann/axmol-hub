@@ -182,10 +182,11 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             return $"Could not read {resolved.Display}: {ex.Message}";
         }
 
-        if (size > MaxReadFileBytes)
-            return $"Refused: {resolved.Display} is {size / 1024} KiB, over the {MaxReadFileBytes / 1024} KiB read "
-                   + "limit. Read a window of it with offset and limit, or search it with run_command. Do not "
-                   + "retry without a window.";
+        // The cap is about what one result may cost, not about which files are readable: a 356 KiB source file used
+        // to be refused outright, with advice — "read a window of it with offset and limit" — that this very check
+        // made impossible to follow. A file too big to decode whole is streamed instead, and the cap bounds the
+        // window that comes back.
+        if (size > MaxReadFileBytes) return WindowOf(resolved.Display, resolved.Full, offset, limit);
 
         if (ReadAll(resolved.Full) is not { } text) return NotText(resolved.Display);
 
@@ -1397,6 +1398,67 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// One window of a file too large to decode whole. Lines are streamed rather than buffered, the total is counted
+    /// as they go so the header still says "of N lines", and the cap bounds the bytes actually returned — a window
+    /// that would blow it stops growing and says so. CR, LF and CRLF all end a line here, which is the same shape
+    /// <see cref="SplitLines"/> gives the ordinary read.
+    /// </summary>
+    private static string WindowOf(string display, string full, int offset, int limit)
+    {
+        var count = Math.Clamp(limit, 1, MaxReadLimit);
+        var wanted = Math.Max(1, offset);
+        var window = new List<string>();
+        long total = 0;
+        long bytes = 0;
+        var cut = false;
+        try
+        {
+            using var stream = File.Open(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream, new UTF8Encoding(false, true), true);
+            while (reader.ReadLine() is { } line)
+            {
+                total++;
+                if (total < wanted || cut || window.Count >= count) continue;
+                // Counted with its line ending, because that is what the result spends on the way out.
+                bytes += Encoding.UTF8.GetByteCount(line) + 1;
+                if (bytes > MaxReadFileBytes)
+                {
+                    cut = true;
+                    continue;
+                }
+
+                window.Add(line);
+            }
+        }
+        catch (DecoderFallbackException)
+        {
+            return NotText(display);
+        }
+        catch (IOException)
+        {
+            return NotText(display);
+        }
+
+        var from = Math.Clamp(wanted, 1, Math.Max(1, total));
+        var last = from - 1 + window.Count;
+        var header = $"{display} — lines {from}-{last} of {total} (UTF-8)";
+        if (window.Count == 0)
+            return cut
+                ? $"{header}{Lf}(the first line of this window is over the {MaxReadFileBytes / 1024} KiB result "
+                  + "limit on its own; read this one with run_command)"
+                : $"{header}{Lf}(that window is empty)";
+
+        var builder = new StringBuilder(header);
+        foreach (var line in window) builder.Append('\n').Append(line);
+        if (cut)
+            builder.Append($"{Lf}… (this window was cut at {MaxReadFileBytes / 1024} KiB of result; ask for fewer "
+                           + "lines)");
+        else if (last < total)
+            builder.Append($"{Lf}… ({total - last} more lines; read again with offset={last + 1})");
+        return builder.ToString();
     }
 
     private static List<string> SplitLines(string text)
