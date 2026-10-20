@@ -22,10 +22,9 @@ public enum ChangeVerdict
 /// <summary>
 /// One file this conversation touched, derived from the transcript and nothing else.
 ///
-/// There is deliberately no registry of writes anywhere in Hub: a second list of what changed would be a second
-/// source of truth that the transcript can contradict, and the transcript is the one that wins. Everything here
-/// is a pure scan of <see cref="Conversation.Messages"/>, so it costs one linear pass per repaint and can never
-/// disagree with the session file.
+/// The transcript decides which writes belong to the conversation. <see cref="ChatChangeStore"/> keeps their full
+/// contents by ID, but its journal is not a second list for this pane. Everything here is a pure scan of
+/// <see cref="Conversation.Messages"/>, so it costs one linear pass per repaint.
 ///
 /// Only <c>file_write</c> is a change. <c>memory_write</c> is a note with no pre-image and its transcript line
 /// already says what it wrote. Do not "complete" this list later — that one has no before to diff against.
@@ -43,7 +42,8 @@ public sealed record ChangedFile(
     // What that write moved, resolved through LinesOf so a row and the composer's tally cannot answer for the same
     // turn with different numbers. Appended last and optional because this is a positional record: a fixture that
     // names the nine fields before it still has to compile.
-    ChangeLineCounts? Lines = null);
+    ChangeLineCounts? Lines = null,
+    string? ChangeId = null);
 
 public static class ChatChanges
 {
@@ -118,7 +118,8 @@ public static class ChatChanges
                 ArgumentsJson: turn.ToolArguments,
                 ResultLine: FirstLine(results.TryGetValue(callId, out var shown) ? shown : ""),
                 Latest: false,
-                Lines: LinesOf(turn));
+                Lines: LinesOf(turn),
+                ChangeId: turn.ChangeId);
         }
 
         // The newest write per path keeps the flag; every earlier one to the same file loses it.

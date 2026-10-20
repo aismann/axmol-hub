@@ -223,28 +223,109 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         if (!resolved.IsAllowed) return Refusal(resolved.Verdict, resolved.Display, path);
 
         string? original = null;
+        byte[]? originalBytes = null;
         if (File.Exists(resolved.Full))
         {
-            if (ReadAll(resolved.Full) is not { } text) return NotText(resolved.Display);
-            original = text;
+            try
+            {
+                originalBytes = File.ReadAllBytes(resolved.Full);
+                using var memory = new MemoryStream(originalBytes);
+                using var reader = new StreamReader(memory, new UTF8Encoding(false, true), true);
+                original = reader.ReadToEnd();
+            }
+            catch (DecoderFallbackException) { return NotText(resolved.Display); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return $"Could not read {resolved.Display}: {ex.Message}";
+            }
         }
 
         var edit = FileEdit.Apply(original, old_string, new_string, replace_all);
         if (!edit.Changed) return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display);
 
-        // Pre-image before the write, never after: this is the only copy of what was there.
-        var undo = original is null
-            ? ChatUndoEntry.None
-            : ChatUndoStore.Store(context.DataRoot, context.ConversationId, resolved.Display, original);
+        ChatFileRevision revision;
         try
         {
+            revision = ChatChangeStore.Prepare(context.DataRoot, context.ConversationId, resolved.Full,
+                resolved.Root, original, edit.Updated);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return $"Refused: could not save complete before/after snapshots for {resolved.Display}: {ex.Message}";
+        }
+
+        string? temporary = null;
+        try
+        {
+            var latest = WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards);
+            if (!latest.IsAllowed || !string.Equals(latest.Full, resolved.Full, StringComparison.Ordinal))
+            {
+                ChatChangeStore.Abandon(context.DataRoot, revision);
+                return $"Refused: the permitted path changed before writing {resolved.Display}. Read it again.";
+            }
+            var nowExists = File.Exists(resolved.Full);
+            var nowBytes = nowExists ? File.ReadAllBytes(resolved.Full) : null;
+            if (nowExists != (originalBytes is not null)
+                || (nowBytes is not null && !nowBytes.AsSpan().SequenceEqual(originalBytes)))
+            {
+                ChatChangeStore.Abandon(context.DataRoot, revision);
+                return $"No change: {resolved.Display} changed after it was read. Read it again before editing.";
+            }
+
             Directory.CreateDirectory(Path.GetDirectoryName(resolved.Full)!);
-            File.WriteAllText(resolved.Full, edit.Updated);
+            temporary = resolved.Full + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                       4096, FileOptions.WriteThrough))
+            {
+                var bytes = new UTF8Encoding(false).GetBytes(TextEol.ToLf(edit.Updated));
+                stream.Write(bytes);
+                stream.Flush(true);
+            }
+            var finalPath = WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards);
+            var finalExists = File.Exists(resolved.Full);
+            var finalBytes = finalExists ? File.ReadAllBytes(resolved.Full) : null;
+            if (!finalPath.IsAllowed || !string.Equals(finalPath.Full, resolved.Full, StringComparison.Ordinal)
+                || finalExists != nowExists
+                || (finalBytes is not null && !finalBytes.AsSpan().SequenceEqual(originalBytes)))
+            {
+                ChatChangeStore.Abandon(context.DataRoot, revision);
+                return $"No change: {resolved.Display} changed while preparing the write. Read it again.";
+            }
+            if (nowExists && !OperatingSystem.IsWindows())
+                File.SetUnixFileMode(temporary, File.GetUnixFileMode(resolved.Full));
+            if (nowExists) File.Replace(temporary, resolved.Full, null);
+            else File.Move(temporary, resolved.Full);
+            temporary = null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            ChatChangeStore.Abandon(context.DataRoot, revision);
             return $"Could not write {resolved.Display}: {ex.Message}";
         }
+        finally
+        {
+            if (temporary is not null)
+            {
+                try { File.Delete(temporary); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        string journalWarning = "";
+        try { ChatChangeStore.CompleteRevision(context.DataRoot, revision); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The pending journal and both objects were durable before the source rename. Keep its ID so the
+            // interrupted completion can be recovered without inventing a pre-image from the current workspace.
+            journalWarning = $" (change journal pending: {ex.Message})";
+        }
+
+        // Legacy undo buttons still use their bounded pre-image until the D2 migration. This copy is optional;
+        // the complete before/after revision above is the durable record and never depends on its eviction.
+        var undo = original is null
+            ? ChatUndoEntry.None
+            : ChatUndoStore.Store(context.DataRoot, context.ConversationId, resolved.Display, original);
 
         // After the bytes are on disk and nowhere earlier: a refused anchor, a sandbox refusal and a failed write
         // all changed nothing, and a tally reported for one of them would be a number for a change that never
@@ -254,7 +335,8 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         context.RecordChangeLines?.Invoke(new ChangeLineCounts(moved.Added, moved.Removed));
 
         context.Log?.Write($"Assistant wrote {resolved.Full} ({edit.Verdict}, {edit.Matches} place(s))");
-        return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display) + ChatUndoStore.NoteFor(undo);
+        return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display)
+               + ChatChangeStore.Marker + revision.Id + journalWarning + ChatUndoStore.NoteFor(undo);
     }
 
     [Description("Run one shell command in the session workspace, or in a directory the user granted this session, "

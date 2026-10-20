@@ -286,6 +286,10 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// is spent by one revert, which is what takes the button away.</summary>
     public string? UndoName { get; init; }
 
+    /// <summary>Stable ID of the full before/after revision in the Hub data directory. Null on older calls,
+    /// refused writes and no-op edits. The contents stay out of the conversation JSON.</summary>
+    public string? ChangeId { get; init; }
+
     /// <summary>How many lines this write added and removed, counted where the edit was applied. Null on every
     /// turn that is not a landed write, and null for a session file written before this existed — which still has
     /// to load, and whose numbers then come from <see cref="ApprovalPreview"/> where one was frozen. Kept beside

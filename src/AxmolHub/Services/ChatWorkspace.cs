@@ -4502,10 +4502,14 @@ public sealed class ChatWorkspace : IDisposable
     {
         if (toolName != FileWriteTool) return;
         var name = ChatUndoStore.NameFromResult(result);
-        if (name is null && lines is null) return;
+        var changeId = ChatChangeStore.IdFromResult(result);
+        if (name is null && lines is null && changeId is null) return;
         var index = conversation.IndexOfToolCall(callId);
         if (index < 0) return;
-        conversation.Messages[index] = conversation.Messages[index] with { UndoName = name, ChangeLines = lines };
+        conversation.Messages[index] = conversation.Messages[index] with
+        {
+            UndoName = name, ChangeLines = lines, ChangeId = changeId,
+        };
     }
 
     /// <summary>Where an approval decision is recorded. Set by the shell to Hub's activity log: a decision that
