@@ -1707,9 +1707,10 @@ if (args.Contains("--check-ai-sessions"))
     if (ModelCatalog.MaySendEffort(openAiProvider, "unknown-model", ChatReasoningEfforts.Default))
         throw new Exception("The 'default' tier is not a strength; it must never go on the wire as one.");
     var openAiReasoning = ModelCatalog.ReasoningFor(openAiProvider, "gpt-6.1-sol");
-    if (openAiReasoning is not { DefaultEffort: ChatReasoningEfforts.Low }
-        || !openAiReasoning.Efforts.SequenceEqual(["low", "medium", "high", "xhigh", "max"]))
-        throw new Exception("GPT-6.1-Sol's declared reasoning choices or default were not loaded.");
+    if (openAiReasoning is not null
+        || ModelCatalog.DefaultReasoningEffort(openAiProvider, "gpt-6.1-sol") != ChatReasoningEfforts.Default
+        || ModelCatalog.DefaultReasoningEffort(openAiProvider, "unknown-model") != ChatReasoningEfforts.Default)
+        throw new Exception("GPT-6.1-Sol without a manifest default must defer to the service.");
     var parsedReasoning = ModelList.ParseMetadata(Encoding.UTF8.GetBytes(
         """{"object":"list","data":[{"id":"deepseek-flash","effort":{"supported_levels":["low","high","max"],"default_level":"high"}},{"id":"deepseek-v4-pro","effort":{"supported_levels":["low","high","max"],"default_level":"high"}}]}"""));
     if (!parsedReasoning.Models.SequenceEqual(["deepseek-flash", "deepseek-v4-pro"])

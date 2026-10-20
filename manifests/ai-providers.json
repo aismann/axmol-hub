@@ -29,12 +29,6 @@
       "baseUrl": "https://api.openai.com/v1",
       "defaultEnabledModels": ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"],
       "maxContextTokens": 500000,
-      "reasoningModels": {
-        "gpt-6.1-sol": {
-          "efforts": ["low", "medium", "high", "xhigh", "max"],
-          "defaultEffort": "low"
-        }
-      },
       "authMethods": ["oauth", "apiKey"],
       "oauth": { "flow": "openaiPkce" },
       "keyValidation": { "type": "httpGetModels", "path": "/models" }

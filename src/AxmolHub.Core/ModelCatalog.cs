@@ -55,6 +55,17 @@ public static class ModelCatalog
     private static bool IsEnabled(string? declared)
         => string.Equals(declared, "enabled", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Returns the model's declared default tier only when that tier is still supported.</summary>
+    public static string DefaultReasoningEffort(ModelProvider? provider, string? modelName)
+    {
+        var reasoning = ReasoningFor(provider, modelName);
+        var effort = reasoning?.DefaultEffort;
+        return effort is not null
+               && EffortsFor(provider, modelName).Contains(effort, StringComparer.OrdinalIgnoreCase)
+            ? effort
+            : ChatReasoningEfforts.Default;
+    }
+
     public static bool SupportsReasoningEffort(ModelProvider? provider, string? modelName)
         => EffortsFor(provider, modelName).Count > 0 || MayTryUnreportedEfforts(provider, modelName);
 

@@ -688,7 +688,8 @@ public partial class ChatPanel : UserControl
         SelectedModelLabel.Text = selected?.ModelName ?? HubStrings.Get("NoAvailableChatModels");
         var supportsReasoning = selected is not null
             && ModelCatalog.SupportsReasoningEffort(selected.Provider, selected.ModelName);
-        SelectedReasoningLabel.IsVisible = supportsReasoning;
+        var hasExplicitEffort = _chat.ActiveReasoningEffort != ChatReasoningEfforts.Default;
+        SelectedReasoningLabel.IsVisible = supportsReasoning && hasExplicitEffort;
         // With routing on there is no single tier to name — Hub picks one per request — so the chip says who is
         // picking, and the tooltip carries the route this session last actually went out on. A setting that
         // spends money has to be readable without opening a log file.
@@ -1575,8 +1576,7 @@ public partial class ChatPanel : UserControl
                 // to find out is to ship a manifest entry for every model someone might connect to.
                 var currentEffort = isSelected ? _chat.ActiveReasoningEffort : ChatReasoningEfforts.Default;
                 foreach (var (effort, labelKey) in ReasoningChoices.Where(candidate =>
-                             candidate.Value == ChatReasoningEfforts.Default
-                             || knownEfforts.Count == 0
+                             knownEfforts.Count == 0
                              || knownEfforts.Contains(candidate.Value, StringComparer.OrdinalIgnoreCase)))
                 {
                     var effortItem = new MenuItem
@@ -1636,7 +1636,6 @@ public partial class ChatPanel : UserControl
 
     private static readonly (string Value, string LabelKey)[] ReasoningChoices =
     [
-        (ChatReasoningEfforts.Default, "ChatReasoningDefault"),
         (ChatReasoningEfforts.Low, "ChatReasoningLow"),
         (ChatReasoningEfforts.Medium, "ChatReasoningMedium"),
         (ChatReasoningEfforts.High, "ChatReasoningHigh"),
@@ -1647,8 +1646,8 @@ public partial class ChatPanel : UserControl
 
     private static string ReasoningChoiceLabel(string effort)
     {
-        var labelKey = ReasoningChoices.FirstOrDefault(choice => choice.Value == effort).LabelKey
-                       ?? ReasoningChoices[0].LabelKey;
+        var labelKey = ReasoningChoices.FirstOrDefault(choice => choice.Value == effort).LabelKey;
+        if (labelKey is null) return "";
         var label = HubStrings.Get(labelKey);
         var separator = label.IndexOfAny(['：', ':']);
         return separator >= 0 ? label[(separator + 1)..].Trim() : label;

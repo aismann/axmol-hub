@@ -3001,7 +3001,12 @@ public sealed class ChatWorkspace : IDisposable
         var conversation = Conversation.Create(selectedProvider?.Id ?? "");
         conversation.ModelName = modelName;
         conversation.Mode = _selectedMode;
-        conversation.ReasoningEffort = _selectedReasoningEffort;
+        var defaultEffort = ModelCatalog.DefaultReasoningEffort(selectedProvider, modelName);
+        conversation.ReasoningEffort = _selectedReasoningEffort != ChatReasoningEfforts.Default
+                                       && ModelCatalog.MaySendEffort(selectedProvider, modelName, _selectedReasoningEffort)
+            ? _selectedReasoningEffort
+            : defaultEffort;
+        _selectedReasoningEffort = conversation.ReasoningEffort;
         conversation.ApprovalMode = approvalMode;
         conversation.WorkspaceRoot = workspaceRoot;
         _sessions.Adopt(conversation);
