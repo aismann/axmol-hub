@@ -2,13 +2,13 @@
 
 <img src="src/AxmolHub/Assets/hub-icon.png" alt="Axmol Hub icon" width="96" />
 
-**Manage Axmol engines, projects, and toolchains — and build software with an AI coding agent.**
+**Manage Axmol engines, projects, and toolchains — and use a general-purpose AI agent to build software.**
 
-The AI assistant is a general-purpose programming and debugging agent. It can map a workspace, inspect and edit files, run commands and tests, diagnose failures, and iterate on a change — including changes to Axmol Hub itself. Approval modes and workspace safeguards govern tool use. Axmol-specific project and toolchain context adds to these general capabilities; it does not limit what the assistant can help with.
+The assistant can map a workspace, inspect and edit files, run commands, and iterate on code or documentation. Ask, Plan, and Agent modes provide different levels of action, with approval controls and workspace safeguards. Axmol project and toolchain context adds engine-specific help without limiting other programming work.
 
 [![Powered by OrcaRouter](https://img.shields.io/badge/Powered_by-OrcaRouter-2563eb)](https://www.orcarouter.ai/ref/ref_e3b6a1445aa97ab3c359)
 
-See [Releases](https://github.com/axmolengine/axmol-hub/releases) for published builds. The GUI is C# / .NET 8 / **Avalonia** (`net8.0`); Windows and Linux are validated, while macOS GUIs are not yet verified.
+See [Releases](https://github.com/axmolengine/axmol-hub/releases) for published builds. The desktop app uses C# / .NET 8 / **Avalonia** (`net8.0`) and is validated on Windows, Linux, and macOS.
 
 ![Axmol Hub main window](docs/images/hub.png)
 
@@ -16,26 +16,24 @@ See [Releases](https://github.com/axmolengine/axmol-hub/releases) for published 
 
 - **Engines and projects** — download or import engines; create C++ or C++ + Lua projects through Axmol's CLI.
 - **Build and toolchains** — detect tools using the engine's `1k/build.profiles`; delegate setup to its `setup.ps1` and build, run, and deploy to `axmol build/run/deploy`. See [ADR 0002](docs/adr/0002-toolchain-and-build-delegated-to-engine-cmdline.md).
-- **AI coding agent** — Ask, Plan, and Agent modes; workspace mapping, file editing, command execution, and iterative verification, with approval controls. It can work on Hub's own codebase as well as other projects.
+- **AI assistant** — Ask, Plan, and Agent modes for questions, planned changes, and hands-on work across codebases and documents.
 - **Settings and logs** — configure language, data and project directories, editor, and providers; view build/run logs in-app and in the data directory.
 
-Platform/architecture support is expressed by a single build-target model (`BuildTargets`), constrained by host OS and engine major version (v3 adds `windows-arm64`, `linux-arm64`, `wasm64`).
+Available game targets depend on the host OS and Axmol engine version. Axmol v3 adds Windows ARM64, Linux ARM64, and WebAssembly 64-bit targets.
 
-## Platform status
-
-**Game target platforms and Hub's own runtime platform are different things.**.
+## Game targets
 
 | Game target | Required host | Status |
 | --- | --- | --- |
-| Windows x64 | Windows | Managed MSVC / SDK; Debug and Release build and Hello World run verified |
-| Android ARM64 / x64 | Windows, Linux, macOS | ARM64/x64 Debug and ARM64 Release APK/AAB build, signing, and alignment verified on Windows; on-device pending |
-| WebAssembly wasm32 | Windows, Linux, macOS | Real build and local HTTP preview verified on Windows; browser WebGL scene pending |
-| Linux x64 | Linux | Build and run entry points wired; native host pending |
-| macOS ARM64 / x64 | macOS | Xcode build entry points wired; native host pending |
-| iOS / tvOS, device and simulator | macOS | Build plan and unsigned entry points wired; signing, deploy, and on-device run pending |
-| UWP / Xbox x64 | Windows | Target management and build plan; isolated toolchain and packaging not done, execution blocked |
+| Windows x64 / ARM64 | Windows | Debug and Release builds; Hello World run verified on x64 |
+| Android ARM64 / x64 | Windows, Linux, macOS | APK/AAB builds supported; device deployment requires an authorized device |
+| WebAssembly wasm32 / wasm64 | Windows, Linux, macOS | wasm32 build and local HTTP preview verified on Windows |
+| Linux x64 / ARM64 | Linux | Build targets available; see Axmol toolchain requirements |
+| macOS ARM64 / x64 | macOS | Build targets available; see Axmol toolchain requirements |
+| iOS / tvOS | macOS | Build entry points available; signing and device deployment require Apple tooling |
+| UWP / Xbox x64 | Windows | Target support is limited; toolchain and packaging work remains |
 
-The CLI cross-publishes `win-x64`, `linux-x64`, `osx-x64`, and `osx-arm64`; only Windows has been exercised. Android Debug / Release APK and AAB builds are supported; Release uses the project key. See [Android release signing](docs/android-release-signing.md). Installer packages are unsigned, and clean-install verification on Windows 10 / 11 is pending.
+Android Release builds use the project's signing key. See [Android release signing](docs/android-release-signing.md). Installers are unsigned.
 
 ## Quick start
 
@@ -59,38 +57,19 @@ dotnet run --project src/AxmolHub -- --data-root ./data
 
 The `--data-root ./data` option keeps development runs on the repository's local data directory. The CLI's `--json` contract is documented in [docs/cli-json-contract.md](docs/cli-json-contract.md).
 
-## Repository layout
-
-```text
-src/
-  AxmolHub/   Desktop GUI (net8.0, three platforms) and icon
-  AxmolHub.Core/  Engine, toolchain, download, state, build, and deploy logic
-    Scripts/      Runtime PowerShell wrappers, copied into each client's output
-  AxmolHub.Cli/   Host CLI entry point
-tests/
-  AxmolHub.Checks/  Behavior checks with no external test framework
-manifests/        Fixed tool versions, download URLs, and SHA-256
-installer/        Velopack packaging, icon conversion, and install-check scripts
-licenses/         Third-party license texts
-docs/             Design decisions (ADR) and user-facing guides (Chinese)
-docs/images/      README screenshots
-```
-
-Engines, SDKs, projects, caches, and Git history live outside this source tree. `artifacts/`, `data/`, `bin/`, and `obj/` are excluded by `.gitignore`.
+Source lives in `src/`; checks, pinned tool versions, installer scripts, licenses, and guides live in `tests/`, `manifests/`, `installer/`, `licenses/`, and `docs/`. Engines, SDKs, projects, and caches live outside the source tree. `artifacts/`, `data/`, `bin/`, and `obj/` are ignored by Git.
 
 ## Reporting issues and contributing
 
-For bug reports, include Hub and engine versions, OS, target, configuration, reproduction steps, and relevant logs. Redact private paths, device serials, and credentials.
-
-Keep changes scoped: UI in `AxmolHub`, shared logic in `Core`, AI capabilities in `AxmolHub.Agent`, and CLI commands reusing `Core`. Put runtime PowerShell scripts in `Core/Scripts/`; provide both Chinese and English for new UI strings. Engine toolchain versions and setup remain owned by Axmol's `1k/build.profiles` and `setup.ps1` (see [ADR 0002](docs/adr/0002-toolchain-and-build-delegated-to-engine-cmdline.md)).
+For bug reports, include Hub and engine versions, OS, target, configuration, reproduction steps, and relevant logs; redact private paths, device serials, and credentials. Keep UI in `AxmolHub`, shared logic in `Core`, and runtime PowerShell scripts in `Core/Scripts/`. Axmol owns engine toolchain versions and setup through `1k/build.profiles` and `setup.ps1` ([ADR 0002](docs/adr/0002-toolchain-and-build-delegated-to-engine-cmdline.md)).
 
 ## Privacy policy
 
-Axmol Hub collects no telemetry or personal information. Network access fetches engine/toolchain metadata and selected downloads, and contacts the configured AI provider for sign-in, model lists, and your requests. When enabled, `web_fetch` accesses only the URL shown for approval (HTTPS, up to 1 MiB); scripts and styles are stripped before page text reaches the model. Disabling it in Settings also withholds server-tool declarations. Configured provider-side tools may independently access pages; no built-in provider currently declares one. Troubleshooting logs stay on your machine.
+Axmol Hub collects no telemetry. It contacts configured AI providers for sign-in, model lists, and your requests, and downloads engine/toolchain metadata and selected files. Web search is off by default; when enabled, Hub selects the route configured for the provider. DeepSeek Search/Fetch API calls may incur per-request charges, and provider-hosted search may also be billed by that provider. Hub's page-fetch tool is controlled separately, limited to public HTTPS URLs and 1 MiB, and strips scripts and styles before returning page text. Logs stay on your machine.
 
 ## Code signing policy
 
-Installers are unsigned. Windows may show a SmartScreen warning; macOS may require removing quarantine or notarization, for example: `sudo xattr -r -d com.apple.quarantine axmol-hub-0.12.3-osx-arm64.pkg`.
+Installers are unsigned. Windows may show a SmartScreen warning, and macOS may show a Gatekeeper warning.
 
 - Committers and reviewers: [@halx99](https://github.com/halx99)
 - Approvers: [@halx99](https://github.com/halx99)
