@@ -1381,9 +1381,9 @@ public partial class ChatPanel : UserControl
                      (ChatModes.Agent, "ChatModeGoal"),
                  })
         {
-            // Only 计划 wears a tick: the session's mode is a fact about it, and 目标 is what an unticked pair
-            // already means, so that item is the way back to the default rather than a state to hold.
-            var ticks = mode == ChatModes.Plan && _chat.ActiveMode == ChatModes.Plan;
+            // Both choices show the mode actually stored on the active session; an unticked selected mode
+            // made 目标 look like a fallback rather than a real selection.
+            var ticks = _chat.ActiveMode == mode;
             var item = new MenuItem
             {
                 Header = BuildComposerModeHeader(mode, key),
