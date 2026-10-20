@@ -25,7 +25,7 @@ internal static class ChatTools
     {
         ChatModes.Ask => [],
         ChatModes.Plan => [.. ReadOnlyTools(scope), .. AskingTools(scope)],
-        _ => [.. ReadOnlyTools(scope), .. ActingTools(scope), .. AskingTools(scope)],
+        _ => [.. ReadOnlyTools(scope), .. ActingTools(scope), .. AskingTools(scope), .. PlanTaskTools(scope)],
     };
 
     /// <summary>The question tool, or nothing. Switched off means the model is never told the capability exists,
@@ -33,6 +33,12 @@ internal static class ChatTools
     /// a declared-but-ignored tool still gets called.</summary>
     private static IEnumerable<AITool> AskingTools(ChatToolScope scope)
         => scope.AskUserEnabled ? [new AskUserTool()] : [];
+
+    private static IEnumerable<AITool> PlanTaskTools(ChatToolScope scope)
+        => scope.PlanTasksEnabled
+            ? [AIFunctionFactory.Create(new WorkspaceTools(scope.Workspace).UpdatePlanTask,
+                Options("update_plan_task"))]
+            : [];
 
     /// <summary>
     /// Risk by name, arguments and the sandbox the call runs in. The arguments decide two of them: a memory note
@@ -54,6 +60,7 @@ internal static class ChatTools
             or "search_text" or "list_directory" or "find_files" or "workspace_map"
             => ToolRisk.ReadOnly,
         "file_write" or "send_to_session" => ToolRisk.WorkspaceWrite,
+        "update_plan_task" => ToolRisk.AssistantNote,
         // Decided by one method rather than an inline ternary, because there are now two things that can make a
         // command cost more than the sandbox tier, and both have to be read from the same place the gate reads.
         "run_command" => RunCommandRisk(scope, argumentsJson, trustedCommands),

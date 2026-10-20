@@ -7409,8 +7409,8 @@ public partial class ShellCheckWindow : Window
             // Two plans that differ, so a click on the older card can be told apart from a click on the newer
             // one. The pane must show the document the card names, not simply the last plan that was written —
             // which is the whole reason the card carries its turn index into the shell.
-            const string firstPlan = "# First draft\n\n- The older body.";
-            const string secondPlan = "# Second draft\n\n- The newer body.";
+            const string firstPlan = "# First draft\n\n## Implementation tasks\n- [ ] Read the existing code\n- [ ] Make and verify the change\n\n## Notes\n- The older body.";
+            const string secondPlan = "# Second draft\n\n## Implementation tasks\n- [ ] Inspect the new request\n\n## Notes\n- The newer body.";
             chat.ClientOverride = (_, _) => new ScriptedChatClient(
                 [twoPlanSession.Messages.Count(turn => turn.PlanApprovalState is not null) == 0
                     ? firstPlan
@@ -7432,6 +7432,13 @@ public partial class ShellCheckWindow : Window
             // cannot be reported as a focus that never landed.
             Check(panel.PendingPlanApprovalCardsForCheck == 1,
                 "空着输入框时计划卡到达（实际 " + panel.PendingPlanApprovalCardsForCheck + " 张待批准计划卡）");
+            Check(panel.PlanTaskTitlesForCheck.SequenceEqual(
+                      ["Read the existing code", "Make and verify the change"], StringComparer.Ordinal)
+                  && panel.PendingPlanTaskGlyphsForCheck == 2
+                  && panel.PlanTasksAboveComposerForCheck,
+                "计划任务出现在 composer 上方，待办显示空心方框（实际 "
+                + string.Join(" / ", panel.PlanTaskTitlesForCheck) + "，空心图标 "
+                + panel.PendingPlanTaskGlyphsForCheck + " 个）");
             await WaitUntilAsync(() => panel.DecisionHostFocusedForCheck);
             Check(panel.DecisionHostFocusedForCheck,
                 "空着输入框时计划卡到达就拿到键盘，A / B 不必先点一下卡片才有效");

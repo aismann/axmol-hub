@@ -574,6 +574,7 @@ public partial class ChatPanel : UserControl
         // The two composer-anchored surfaces read the transcript, not the run registry, so a repaint is the one
         // place both can be brought in step with whatever just changed.
         RefreshDecisionHost();
+        RefreshPlanTasksHost();
         RefreshSteerConfirm();
         // And the band above them, which outlives the round that filled it: a tally somebody can click has to keep
         // telling the truth after the run ends and after a restart, so it reads the transcript here too rather than

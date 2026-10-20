@@ -799,6 +799,7 @@ public static class HubTexts
         ["ChatPlanRevisionRequested"] = ("计划已要求修改", "Plan revision requested"),
         ["ChatPlanRejected"] = ("计划已拒绝", "Plan rejected"),
         ["ChatPlanCardUntitled"] = ("无标题计划", "Untitled plan"),
+        ["ChatPlanTasksTitle"] = ("计划任务", "Plan tasks"),
         ["ChatPlanAwaitingApproval"] = ("请先处理待确认的计划，再继续发送消息。", "Resolve the pending plan before sending another message."),
         ["ChatPlanNotificationTitle"] = ("计划等待确认", "Plan awaiting approval"),
         ["ChatPlanNotificationBody"] = ("会话「{0}」中的计划需要你的决定。", "A plan in 「{0}」 needs your decision."),

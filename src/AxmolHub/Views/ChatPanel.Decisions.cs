@@ -26,6 +26,99 @@ namespace AxmolHub;
 /// </summary>
 public partial class ChatPanel
 {
+    private void RefreshPlanTasksHost()
+    {
+        var tasks = _chat?.ActiveConversation?.Messages
+            .LastOrDefault(turn => turn.Plan?.Tasks is { Count: > 0 })?.Plan?.Tasks;
+        if (tasks is not { Count: > 0 })
+        {
+            PlanTasksHost.Child = null;
+            PlanTasksHost.IsVisible = false;
+            return;
+        }
+
+        var list = new StackPanel { Spacing = 5, Margin = new Thickness(10, 8) };
+        list.Children.Add(new TextBlock
+        {
+            Text = HubStrings.Get("ChatPlanTasksTitle"),
+            FontSize = 12,
+            Foreground = Brush("Hub.TextTertiary"),
+            Margin = new Thickness(0, 0, 0, 2),
+        });
+        foreach (var task in tasks)
+        {
+            Control glyph = task.State switch
+            {
+                PlanTaskStates.InProgress => new ActivityGlyph
+                {
+                    Width = 14,
+                    Height = 14,
+                    Phase = ActivityPhase.RunningTool,
+                    TrackBrush = Brush("Hub.Border"),
+                    DotBrush = Brush("Hub.Accent"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                PlanTaskStates.Completed => new Path
+                {
+                    Width = 13,
+                    Height = 13,
+                    Stretch = Stretch.Uniform,
+                    Data = Geometry("Hub.Icon.Tick"),
+                    Fill = Brush("Hub.Success"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                _ => new Border
+                {
+                    Width = 13,
+                    Height = 13,
+                    BorderThickness = new Thickness(1.4),
+                    BorderBrush = Brush("Hub.TextTertiary"),
+                    CornerRadius = new CornerRadius(3),
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            };
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("18,*") };
+            row.Children.Add(glyph);
+            row.Children.Add(new TextBlock
+            {
+                Text = task.Title,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 13,
+                Foreground = task.State == PlanTaskStates.Completed
+                    ? Brush("Hub.TextTertiary") : Brush("Hub.TextPrimary"),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            Grid.SetColumn(row.Children[1], 1);
+            list.Children.Add(row);
+        }
+
+        PlanTasksHost.Child = new ScrollViewer
+        {
+            Content = list,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            ClipToBounds = true,
+        };
+        PlanTasksHost.IsVisible = true;
+    }
+
+    private IBrush? Brush(string key)
+        => Application.Current is { } app && app.TryFindResource(key, out var value) ? value as IBrush : null;
+
+    private Geometry? Geometry(string key)
+        => Application.Current is { } app && app.TryFindResource(key, out var value) ? value as Geometry : null;
+
+    internal IReadOnlyList<string> PlanTaskTitlesForCheck => PlanTasksHost.GetLogicalDescendants()
+        .OfType<TextBlock>().Select(block => block.Text ?? "").Where(text => text.Length > 0).Skip(1).ToArray();
+
+    internal int PendingPlanTaskGlyphsForCheck => PlanTasksHost.GetLogicalDescendants().OfType<Border>()
+        .Count(border => border.Width == 13 && border.Height == 13);
+
+    internal bool PlanTasksAboveComposerForCheck
+        => PlanTasksHost.IsVisible
+           && PlanTasksHost.TranslatePoint(new Point(0, PlanTasksHost.Bounds.Height), ComposerFrame) is { } bottom
+           && bottom.Y <= 0;
+
     /// <summary>The call the host is currently asking about, or null. Kept beside the host rather than read
     /// back out of it so a refresh can tell "same decision, repaint" from "a different decision arrived".</summary>
     private string? _decisionCallId;

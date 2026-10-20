@@ -76,7 +76,8 @@ public sealed record WorkspaceToolScope(
     Action<int>? RecordCommandExit = null,
     // Last for a mechanical reason worth stating: this record is built positionally by a few dozen assertions, and a
     // parameter in the middle would silently shift every one of them. Only the app builds it by hand.
-    Func<string, Task<string>>? ApplyGrantedRoot = null)
+    Func<string, Task<string>>? ApplyGrantedRoot = null,
+    Func<int, string, string>? UpdatePlanTask = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
@@ -136,6 +137,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     /// <summary>A peer message goes into another session's context and stays there. A limit that generous is what
     /// lets one assistant bury another.</summary>
     public const int MaxMessageCharacters = 4000;
+
+    [Description("Update the status of a step in the approved plan shown above the composer. Use before starting and after completing each step.")]
+    public string UpdatePlanTask(
+        [Description("One-based task number from the approved plan.")] int task_number,
+        [Description("New status: pending, in_progress, or completed.")] string status)
+        => context.UpdatePlanTask?.Invoke(task_number, status)
+           ?? "There is no active approved plan task list in this session.";
 
     /// <summary>Compiler errors are at the end and the command line is at the beginning, so both ends are kept
     /// and the middle is dropped. The full output is in Hub's log either way, and the result says so.</summary>

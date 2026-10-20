@@ -17,7 +17,8 @@ namespace AxmolHub;
 internal sealed record ChatToolScope(
     ChatWorkspace.HubReadOnlySnapshot? Snapshot,
     WorkspaceToolScope Workspace,
-    bool AskUserEnabled = true)
+    bool AskUserEnabled = true,
+    bool PlanTasksEnabled = false)
 {
     public static ChatToolScope Empty { get; } = new(null, WorkspaceToolScope.Empty);
 }

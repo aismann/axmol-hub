@@ -118,7 +118,14 @@ public sealed record ChatImage(string File, string MediaType, long Bytes);
 /// plan from its length would under-state it about fourfold — and the estimator's own comment names the low
 /// direction as the dangerous one.</para>
 /// </summary>
-public sealed record PlanReference(string? File, string Title, int Chars, int Tokens);
+public sealed record PlanReference(string? File, string Title, int Chars, int Tokens)
+{
+    /// <summary>Stable identity shared by the reviewed plan and the approval instruction.</summary>
+    public string? Id { get; init; }
+
+    /// <summary>Structured task steps parsed from the plan, with progress kept in the session transcript.</summary>
+    public IReadOnlyList<PlanTask>? Tasks { get; init; }
+}
 
 /// <summary>
 /// Exactly how many lines one <c>file_write</c> added and removed, counted at the moment the edit was applied.
