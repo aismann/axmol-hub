@@ -1848,9 +1848,9 @@ if (args.Contains("--check-ai-sessions"))
                        openAiProvider,
                        [ChatTurn.User("test")],
                        modelName: "gpt-6.1-sol")) { }
-    if (defaultOpenAiClient.LastOptions?.Reasoning?.Effort != ReasoningEffort.Low)
-        throw new Exception("GPT-6.1-Sol on the default tier did not use the declared low default.");
-    Console.WriteLine("PASS: GPT-6.1-Sol's default tier uses its manifest default effort.");
+    if (defaultOpenAiClient.LastOptions?.Reasoning is not null)
+        throw new Exception("GPT-6.1-Sol without a declared default must leave the effort to the service.");
+    Console.WriteLine("PASS: GPT-6.1-Sol without a declared default sends no reasoning effort.");
 
     // The other half of what "default" means: a model that lists effort levels but declares none of them as its
     // default gets *no* reasoning field at all. "Default" is not a strength, and mapping it to one — Minimal, say
