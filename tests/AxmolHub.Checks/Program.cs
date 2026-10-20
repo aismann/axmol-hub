@@ -3558,6 +3558,17 @@ if (args.Contains("--check-ai-context"))
     edited.Add(SpinCall("c5", "read_file", """{"path":"a.cpp"}"""));
     if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", edited) is not null)
         throw new Exception("A re-read after a write was refused as a spin; the write reset the window.");
+    // A write that reports no change or a refusal did not move the world. It must not erase the two earlier
+    // reads from the guard's view, or repeated failed anchors can keep a loop alive indefinitely.
+    foreach (var refusedWrite in new[] { "No change: old_string was not found.", "Refused: path is outside the workspace." })
+    {
+        var unchanged = SpinHistory(
+            ("c1", "read_file", """{"path":"a.cpp"}""", "old"),
+            ("c2", "read_file", """{"path":"a.cpp"}""", "old"),
+            ("c3", "file_write", """{"path":"a.cpp","old_string":"wrong"}""", refusedWrite));
+        if (ToolSpinGuard.RefusalFor("read_file", """{"path":"a.cpp"}""", unchanged) is null)
+            throw new Exception("A no-op or refused file_write reset the spin guard; the file did not change.");
+    }
     // A refused approval and a failed tool did not move the world either — they must not reset it.
     var denied = SpinHistory(("c1", "run_command", """{"command":"rm x"}""", ToolApprovalResults.Denied),
         ("c2", "run_command", """{"command":"rm x"}""", ToolApprovalResults.Denied));

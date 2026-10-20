@@ -98,7 +98,7 @@ public static class ToolSpinGuard
                     continue;
                 paired++;
                 // The world moved: anything older than this is a different problem, not a repetition of this one.
-                if (StateChangingTools.Contains(call.Name, StringComparer.Ordinal) && LooksSuccessful(text))
+                if (StateChangingTools.Contains(call.Name, StringComparer.Ordinal) && LooksSuccessful(call.Name, text))
                     return null;
                 if (text.StartsWith(ToolLoopContextGuard.ElidedResultPrefix, StringComparison.Ordinal)
                     || (elidedCallIds is { Count: > 0 } elided && elided.Contains(call.CallId))) continue;
@@ -116,16 +116,33 @@ public static class ToolSpinGuard
 
     /// <summary>A refusal, a denial and a failure left the world where it was; only their absence counts as a
     /// move. The prefixes are the ones Hub's own invoker and approval gate write.</summary>
-    private static bool LooksSuccessful(string result)
-        => result.Length > 0
-           && !result.StartsWith("Tool failed:", StringComparison.Ordinal)
-           && result != Core.ToolApprovalResults.Denied
-           && result != Core.ToolApprovalResults.Superseded
-           // A call closed because the attempt ended before it ran changed nothing either. Left out of this list,
-           // a state-changing tool the model legitimately re-asks after a continue would read as "the world moved",
-           // which silently relaxes the guard on exactly the call whose repeat is the loop this protects against.
-           && result != Core.ToolApprovalResults.NotAnswered
-           && result != Core.ToolApprovalResults.Unavailable;
+    private static bool LooksSuccessful(string toolName, string result)
+    {
+        if (result.Length == 0
+            || result.StartsWith("Tool failed:", StringComparison.Ordinal)
+            || result == Core.ToolApprovalResults.Denied
+            || result == Core.ToolApprovalResults.Superseded
+            // A call closed because the attempt ended before it ran changed nothing either. Left out of this list,
+            // a state-changing tool the model legitimately re-asks after a continue would read as "the world moved",
+            // which silently relaxes the guard on exactly the call whose repeat is the loop this protects against.
+            || result == Core.ToolApprovalResults.NotAnswered
+            || result == Core.ToolApprovalResults.Unavailable)
+            return false;
+
+        // Only these affirmative result shapes prove a state change. In particular, file_write's readable
+        // refusals are nonempty, and treating them as progress lets repeated bad anchors reset the spin guard.
+        return toolName switch
+        {
+            "file_write" => result.StartsWith("Created ", StringComparison.Ordinal)
+                            || result.StartsWith("Edited ", StringComparison.Ordinal),
+            "request_directory" => result.StartsWith("Granted", StringComparison.Ordinal),
+            "memory_write" => result.StartsWith("Saved ", StringComparison.Ordinal),
+            // A command may have changed files before returning a nonzero exit code, so its exit status is not
+            // evidence that no state changed. Tool failures above are the cases where execution never completed.
+            "run_command" => true,
+            _ => false,
+        };
+    }
 
     private static JsonNode Canonical(JsonNode node)
     {
