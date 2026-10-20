@@ -55,7 +55,7 @@
          missing osx-x64 on 2026-10-04; same day corrected `ci.yml` to `build.yml` in this comment (the
          former no longer exists) and spelled out the "three-platform matrix": that is the verify matrix,
          packaging is four. -->
-    <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <DefineConstants Condition="'$(HubIsPrereleaseBuild)' == 'true'">$(DefineConstants);HUB_PRERELEASE_BUILD</DefineConstants>
     <!-- Owns releases from P6 on: the icon travels with the project (it used to live in the WPF project,
          and that cross-project reference was exactly the kind of coupling P1 removed). -->

@@ -44,6 +44,8 @@ $taskSlug = ($RepoUrl -replace '^https?://[^/]+/', '') -replace '\.git$', ''
 # releases.<rid>.json is naturally unique (osx-arm64/osx-x64 no longer collide) and equals the releases.<channel>.json the client looks up.
 $taskPlatforms = @(
     @{ Channel = 'win-x64';    Suffix = '.exe';      Dir = 'win-x64' },
+    @{ Channel = 'win-arm64';  Suffix = '.exe';      Dir = 'win-arm64' },
+    @{ Channel = 'linux-arm64'; Suffix = '.AppImage'; Dir = 'linux-arm64' },
     @{ Channel = 'osx-arm64';  Suffix = '.pkg';      Dir = 'osx-arm64' },
     @{ Channel = 'osx-x64';    Suffix = '.pkg';      Dir = 'osx-x64' },
     @{ Channel = 'linux-x64';  Suffix = '.AppImage'; Dir = 'linux-x64' }

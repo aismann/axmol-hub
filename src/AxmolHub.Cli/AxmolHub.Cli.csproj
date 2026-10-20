@@ -6,7 +6,7 @@
     <!-- Consistent with the host set in installer/Build-Hosts.ps1: all four RIDs are published there
          explicitly with -r. Keeping this gives "the full set of publish hosts for this project" one
          readable declaration point; sync it whenever a publish host is added or changed. -->
-    <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <!-- This project has no PackageReference, so a lock file could pin nothing; it opts out of
          packages.lock.json tracking (details in the repo-root Directory.Build.props).
          **Delete this line when the first PackageReference is added.** -->

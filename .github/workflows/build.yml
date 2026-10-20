@@ -83,6 +83,10 @@ jobs:
             label: Windows x64
             rid: win-x64
             host: windows
+          - os: windows-11-arm
+            label: Windows arm64
+            rid: win-arm64
+            host: windows
           - os: macos-15
             label: macOS arm64
             rid: osx-arm64
@@ -90,6 +94,10 @@ jobs:
           - os: ubuntu-24.04
             label: Linux x64
             rid: linux-x64
+            host: linux
+          - os: ubuntu-24.04-arm
+            label: Linux arm64
+            rid: linux-arm64
             host: linux
     steps:
       # Every official action takes a floating major tag: those majors require Actions Runner >= 2.327.1
@@ -468,4 +476,70 @@ jobs:
             artifacts/releases/linux-x64/axmol-hub-linux-x64.AppImage.sha256
             artifacts/releases/linux-x64/*.nupkg
             artifacts/releases/linux-x64/releases.*.json
+          if-no-files-found: error
+
+  package-win-arm64:
+    name: Package Windows arm64
+    needs: meta
+    if: needs.meta.outputs.should_package == 'true'
+    runs-on: windows-11-arm
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+      - name: Prepare pinned Velopack CLI
+        run: dotnet run --project tests/AxmolHub.Checks -c Release -- cache/packaging-tools --prepare-packaging
+      - name: Build release packages
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE_BUILD: ${{ needs.meta.outputs.is_prerelease }}
+        run: |
+          $prereleaseBuild = $env:PRERELEASE_BUILD -eq 'true'
+          ./installer/Publish.ps1 -Stage Build -Runtime win-arm64 -PrereleaseBuild:$prereleaseBuild
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: win-arm64
+          path: |
+            artifacts/releases/win-arm64/axmol-hub-*-win-arm64.exe
+            artifacts/releases/win-arm64/axmol-hub-*-win-arm64.exe.sha256
+            artifacts/releases/win-arm64/*.nupkg
+            artifacts/releases/win-arm64/releases.*.json
+          if-no-files-found: error
+
+  package-linux-arm64:
+    name: Package Linux arm64
+    needs: meta
+    if: needs.meta.outputs.should_package == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+      - name: Prepare pinned Velopack CLI
+        run: dotnet run --project tests/AxmolHub.Checks -c Release -- cache/packaging-tools --prepare-packaging
+      - name: Build release packages
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE_BUILD: ${{ needs.meta.outputs.is_prerelease }}
+        run: |
+          $prereleaseBuild = $env:PRERELEASE_BUILD -eq 'true'
+          ./installer/Publish.ps1 -Stage Build -Runtime linux-arm64 -PrereleaseBuild:$prereleaseBuild
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-arm64
+          path: |
+            artifacts/releases/linux-arm64/axmol-hub-linux-arm64.AppImage
+            artifacts/releases/linux-arm64/axmol-hub-linux-arm64.AppImage.sha256
+            artifacts/releases/linux-arm64/*.nupkg
+            artifacts/releases/linux-arm64/releases.*.json
           if-no-files-found: error
