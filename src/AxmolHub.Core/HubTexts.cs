@@ -395,15 +395,20 @@ public static class HubTexts
         ["AllowWebFetchHint"] = (
             "默认开启。抓取只走 https、只允许公网主机，重定向不许跨出 https，一次最多读 1 MiB；把脚本、样式和导航"
             + "去掉之后，正文才交回模型。关掉它只是让这条通道不存在——命令沙箱里的 curl 从来不受这个开关约束，"
-            + "「询问审批」档下每一次抓取都照样要过一张卡。provider 若在 ai/providers.json 里声明了 serverTools，"
-            + "同一个开关也决定要不要让服务端自己联网搜索；那一类搜索由服务商执行，任何审批卡都拦不住它。",
+            + "「询问审批」档下每一次抓取都照样要过一张卡。",
             "On by default. Fetching is https only, to public hosts, with a redirect never allowed to leave "
             + "https, and at most 1 MiB is read; scripts, styles and navigation are stripped before the page text "
             + "reaches the model. Turning this off removes the channel — it has never governed curl inside the "
-            + "command sandbox — and in 「询问审批」 every fetch still asks for approval on a card. If a provider "
-            + "declares serverTools in ai/providers.json, the same switch decides whether its endpoint is offered "
-            + "a search of its own; that kind of search runs inside the service, and no approval card can stop one "
-            + "mid-reply."),
+            + "command sandbox — and in 「询问审批」 every fetch still asks for approval on a card."),
+        ["AllowHostedWebSearch"] = ("允许服务商联网搜索", "Allow provider web search"),
+        ["AllowHostedWebSearchHint"] = (
+            "默认关闭。开启后，仅对声明支持搜索的 provider 提供服务端搜索能力；服务商会自行决定是否搜索，Hub 无法逐次审批或限制调用次数，"
+            + "且可能产生额外费用。此开关与 Hub 抓取指定网页的权限相互独立。",
+            "Off by default. When enabled, Hub offers hosted search only to providers that declare support. The provider decides whether and how often to search; Hub cannot approve each search or cap the calls, and extra charges may apply. This is separate from Hub fetching a specific page."),
+        ["ProviderHostedWebSearch"] = ("此提供商支持服务端网页搜索", "This provider supports hosted web search"),
+        ["ProviderHostedWebSearchHint"] = (
+            "仅在服务端实际支持 web_search 时开启；Hub 会在请求中声明搜索能力，但不能逐次审批服务商的搜索。",
+            "Enable only when this endpoint supports web_search. Hub declares the capability in requests, but cannot approve each provider-side search."),
         // The one switch on the appearance pane that is not about appearance. It sits there rather than under
         // permission because it decides what a person reads, never what the assistant may do — and its hint has
         // to say that turning it off buys no tokens back, since the obvious guess about a hidden chain of
@@ -773,6 +778,10 @@ public static class HubTexts
         ["ChatPeerOriginFormat"] = ("来自会话「{0}」", "From session 「{0}」"),
         ["ChatPeerOriginGone"] = ("来自一个已删除的会话", "From a session that no longer exists"),
         ["ConversationQueuedTip"] = ("另一个会话给它发了话，正等待空闲的回答位。", "Another session sent it something to answer; it starts when an answer slot frees."),
+        ["SpawnedSessionCompleted"] = ("子会话已完成，结论已返回", "Helper completed and returned its result"),
+        ["SpawnedSessionFailed"] = ("子会话未能完成", "Helper did not complete"),
+        ["SpawnedSessionStopped"] = ("子会话已停止", "Helper was stopped"),
+        ["SpawnedSessionInterrupted"] = ("子会话因 Hub 关闭而中断", "Helper was interrupted when Hub closed"),
         // The badge itself is a glyph with no number — a session can owe exactly one decision at a time — so the
         // count lives here, where it can say "two" if a later build ever can park two.
         ["PendingApprovalsTip"] = ("有 {0} 个操作在等你批准。", "{0} action(s) in this session are waiting for you."),

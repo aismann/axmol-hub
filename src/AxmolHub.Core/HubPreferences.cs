@@ -123,6 +123,13 @@ public sealed class HubPreferences
     public bool AllowOutboundWebFetch { get; set; } = true;
 
     /// <summary>
+    /// Whether a provider endpoint may run hosted web searches during a model response. Off by default because
+    /// the endpoint chooses when to search and may charge per search; this is independent from Hub fetching one
+    /// page the model named through <c>web_fetch</c>.
+    /// </summary>
+    public bool AllowHostedWebSearch { get; set; }
+
+    /// <summary>
     /// Whether a model's own thinking is put on screen. <b>On by default</b>, and deliberately in the same
     /// direction as <see cref="AllowOutboundWebFetch"/>: a reasoning model's chain of thought ships as part of
     /// the answer, every client people measure against shows it, and a switch that arrived off would mean most

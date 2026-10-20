@@ -988,7 +988,7 @@ if (args.Contains("--check-ai-copilot"))
     Assert(unpinned.ParameterContext is null && unpinned.Resolve(null)
                == new OllamaWindow(OllamaModelsSource.DefaultContextTokens, CapabilitySource.Fallback),
         "with no num_ctx pinned the server's own default sizes the request, not the trained maximum");
-    Assert(OllamaModelsSource.DefaultContextTokens is < 8192 and > 512,
+    Assert(OllamaModelsSource.DefaultContextTokens == 4096,
         "the default is a real local window — not a hosted one, and not a number a model cannot answer in");
     Assert(!unpinned.DeclaresCapabilities
            && OllamaModelsSource.Merge(null, unpinned.Resolve(null), unpinned).AcceptsInput("image"),
@@ -5764,19 +5764,25 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception($"A card promised an action the tool would refuse:{Environment.NewLine}{cardOff}{Environment.NewLine}{cardBad}");
     Console.WriteLine("PASS: the fetch card names the host, and says out loud when the call is going to be refused.");
 
-    // The switch, as the store actually reads it: absent is the shipped default (on), and an explicit off is
-    // honoured. Same file, two questions.
+    // The two switches are independent: page fetch ships on, but an endpoint's autonomous search is opt-in.
     var webPreferences = Path.Combine(toolRoot, "webfetch-settings.json");
     File.WriteAllText(webPreferences, "{}");
-    if (!new PreferencesStore(webPreferences).Load().AllowOutboundWebFetch)
-        throw new Exception("A settings file with no key switched fetching off; the shipped default is on.");
+    var defaults = new PreferencesStore(webPreferences).Load();
+    if (!defaults.AllowOutboundWebFetch || defaults.AllowHostedWebSearch)
+        throw new Exception("The default must allow named-page fetch and keep hosted search off.");
     File.WriteAllText(webPreferences, """{"AllowOutboundWebFetch":false}""");
-    if (new PreferencesStore(webPreferences).Load().AllowOutboundWebFetch)
-        throw new Exception("An explicit off was read as on.");
+    var fetchOff = new PreferencesStore(webPreferences).Load();
+    if (fetchOff.AllowOutboundWebFetch || fetchOff.AllowHostedWebSearch)
+        throw new Exception("An explicit fetch off was ignored or enabled hosted search.");
     File.WriteAllText(webPreferences, """{"AllowOutboundWebFetch":true}""");
-    if (!new PreferencesStore(webPreferences).Load().AllowOutboundWebFetch)
-        throw new Exception("An explicit on was not read back.");
-    Console.WriteLine("PASS: the outbound switch round-trips, and a settings file that says nothing leaves it on.");
+    var fetchOn = new PreferencesStore(webPreferences).Load();
+    if (!fetchOn.AllowOutboundWebFetch || fetchOn.AllowHostedWebSearch)
+        throw new Exception("Enabling page fetch changed the independent hosted-search switch.");
+    File.WriteAllText(webPreferences, """{"AllowOutboundWebFetch":false,"AllowHostedWebSearch":true}""");
+    var searchOn = new PreferencesStore(webPreferences).Load();
+    if (searchOn.AllowOutboundWebFetch || !searchOn.AllowHostedWebSearch)
+        throw new Exception("The hosted-search switch did not round-trip independently.");
+    Console.WriteLine("PASS: page fetching defaults on, hosted search defaults off, and the permissions round-trip independently.");
 
     log.Write("self-check finished");
     Directory.Delete(toolRoot, recursive: true);
@@ -5793,28 +5799,28 @@ if (args.Contains("--check-ai-web-search"))
     // gateway received" would become two assertions that can each lie.
     var declared = new List<string> { ProviderServerTools.WebSearch };
 
-    var chatOn = WebSearchHosted.Decide(declared, ModelProtocols.Chat, ChatModes.Agent, true);
-    var responsesOn = WebSearchHosted.Decide(declared, ModelProtocols.Responses, ChatModes.Agent, true);
-    var switched = WebSearchHosted.Decide(declared, ModelProtocols.Chat, ChatModes.Agent, false);
-    var ask = WebSearchHosted.Decide(declared, ModelProtocols.Chat, ChatModes.Ask, true);
-    var silent = WebSearchHosted.Decide([], ModelProtocols.Chat, ChatModes.Agent, true);
+    var chatOn = WebSearchHosted.Decide(declared, ModelProtocols.Chat, true);
+    var responsesOn = WebSearchHosted.Decide(declared, ModelProtocols.Responses, true);
+    var switched = WebSearchHosted.Decide(declared, ModelProtocols.Chat, false);
+    var ask = WebSearchHosted.Decide(declared, ModelProtocols.Chat, true);
+    var plan = WebSearchHosted.Decide(declared, ModelProtocols.Chat, true);
+    var silent = WebSearchHosted.Decide([], ModelProtocols.Chat, true);
     if (chatOn.Verdict != WebSearchHostedVerdict.On || chatOn.WireField != WebSearchHosted.ChatWireField
         || responsesOn.Verdict != WebSearchHostedVerdict.On
         || responsesOn.WireField != WebSearchHosted.ResponsesWireField
         || switched.Verdict != WebSearchHostedVerdict.SwitchedOff
-        || ask.Verdict != WebSearchHostedVerdict.ModeWithoutTools
+        || ask.Verdict != WebSearchHostedVerdict.On
+        || plan.Verdict != WebSearchHostedVerdict.On
         || silent.Verdict != WebSearchHostedVerdict.NotDeclared)
-        throw new Exception("The hosted-search decision table answered one of its four questions wrong.");
-    Console.WriteLine("PASS: the hosted-search table answers declared, switched-off, tool-less mode and "
-        + "undeclared as four different things.");
+        throw new Exception("The hosted-search decision table answered one of its three questions wrong.");
+    Console.WriteLine("PASS: hosted search requires both provider capability and the separate opt-in in every mode.");
 
     // Each refusal has to say what would change it, because the ordinary failure of this feature is silence: the
     // person sees no search and nothing on screen ever claimed one was possible.
     if (!WebSearchHosted.Explain(silent).Contains("serverTools", StringComparison.Ordinal)
-        || !WebSearchHosted.Explain(switched).Contains("设置", StringComparison.Ordinal)
-        || !WebSearchHosted.Explain(ask).Contains(ChatModes.Agent, StringComparison.Ordinal))
+        || !WebSearchHosted.Explain(switched).Contains("设置", StringComparison.Ordinal))
         throw new Exception("A hosted-search refusal did not name the thing that would have to change.");
-    Console.WriteLine("PASS: every refusal points at the field, the switch, or the mode that would have allowed it.");
+    Console.WriteLine("PASS: each refusal points at the provider capability or the separate search switch.");
 
     // Ordinal, because the kind string is what the service looks up: a case-folded match would let a manifest
     // claim Web_Search, send it, and get nothing back — a bug with no error message anywhere.

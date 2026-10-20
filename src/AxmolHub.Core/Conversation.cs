@@ -540,6 +540,15 @@ public sealed class Conversation
     /// existed has no such property and still has to load, and a session nobody spawned has no parent to name.
     /// It is also what the depth rule reads — a child does not get children — so it is stored rather than derived.</summary>
     public string? SpawnedBy { get; set; }
+
+    /// <summary>The bounded job this helper was asked to do, shown with its parent relationship.</summary>
+    public string? SpawnedTask { get; set; }
+
+    /// <summary>The helper lifecycle, persisted so the parent does not lose its status after a restart.</summary>
+    public string? SpawnedState { get; set; }
+
+    /// <summary>Whether Hub has already handed the terminal result back to the parent.</summary>
+    public bool SpawnResultDelivered { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>When the transcript last gained a turn — every turn, including model replies and tool results.
@@ -841,6 +850,10 @@ public sealed class ConversationSummary
     /// from without reading its messages.</summary>
     public string? SpawnedBy { get; set; }
 
+    public string? SpawnedTask { get; set; }
+
+    public string? SpawnedState { get; set; }
+
     public static ConversationSummary From(Conversation conversation) => new()
     {
         Id = conversation.Id,
@@ -853,6 +866,8 @@ public sealed class ConversationSummary
         Archived = conversation.Archived,
         WorkspaceRoot = conversation.WorkspaceRoot,
         SpawnedBy = conversation.SpawnedBy,
+        SpawnedTask = conversation.SpawnedTask,
+        SpawnedState = conversation.SpawnedState,
         PendingApprovals = conversation.Messages
             .Count(turn => turn.ApprovalState == ChatApprovalStates.Pending
                            || turn.PlanApprovalState == PlanApprovalStates.Pending),

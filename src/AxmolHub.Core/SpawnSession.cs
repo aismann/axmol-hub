@@ -1,5 +1,16 @@
 namespace AxmolHub.Core;
 
+/// <summary>Persisted lifecycle for a helper session, so its parent can still read the state after a restart.</summary>
+public static class SpawnedSessionStates
+{
+    public const string Queued = "queued";
+    public const string Running = "running";
+    public const string Completed = "completed";
+    public const string Failed = "failed";
+    public const string Stopped = "stopped";
+    public const string Interrupted = "interrupted";
+}
+
 /// <summary>
 /// What a request to start a child session looks like to the rules. Every field is a fact the app already has —
 /// the transcript says whether this session was itself spawned, the run registry says how many are live — so the

@@ -39,13 +39,8 @@ public enum WebSearchHostedVerdict
     /// provider shipping today, and the one the decision table exists to make visible rather than infer.</summary>
     NotDeclared,
 
-    /// <summary>The outbound switch is off. Same preference that governs <see cref="WebFetch"/> — see
-    /// <see cref="WebSearchHosted.Decide"/> for why one switch covers both.</summary>
+    /// <summary>The user has not opted into provider-side searches.</summary>
     SwitchedOff,
-
-    /// <summary>The mode sends no tools at all, so there is nowhere to put the declaration. Ask mode is the case
-    /// this names.</summary>
-    ModeWithoutTools,
 }
 
 /// <summary>
@@ -60,7 +55,7 @@ public enum WebSearchHostedVerdict
 public readonly record struct WebSearchHostedDecision(WebSearchHostedVerdict Verdict, string WireField, string Reason);
 
 /// <summary>
-/// Whether this request should tell its endpoint that it may search the web — one pure function over four facts,
+/// Whether this request should tell its endpoint that it may search the web — one pure function over three facts,
 /// because everything about this feature except the decision is somebody else's code.
 ///
 /// <para><b>Measured, not assumed (2026-10-10, against the shipped packages, on a loopback URL).</b> Both of this
@@ -72,12 +67,8 @@ public readonly record struct WebSearchHostedDecision(WebSearchHostedVerdict Ver
 /// real request to the user's own endpoint can tell which. That is why <c>serverTools</c> ships empty everywhere
 /// and why the field is user-editable — the switch to try it is a line in a JSON file, not a build.</para>
 ///
-/// <para><b>One switch, not two.</b> A hosted search leaves the machine in the same direction as
-/// <see cref="WebFetch"/> and with the same reach — the provider's servers fetch the page, not this process — so
-/// a second preference would be a second answer to a question only asked once. It is a weaker gate though, and
-/// that is said out loud rather than smoothed over: no approval tier can stop a hosted search per call, because
-/// the endpoint decides mid-generation and never asks Hub. The approval ladder governs the tools this process
-/// runs; a server-side tool is governed only by whether the request that offered it was allowed to leave.</para>
+/// <para>A separate opt-in is necessary: the endpoint chooses whether and how often to search during generation,
+/// so Hub cannot show a per-call approval card or enforce a call limit.</para>
 /// </summary>
 public static class WebSearchHosted
 {
@@ -97,24 +88,20 @@ public static class WebSearchHosted
 
     /// <summary>
     /// The whole table. Read the arguments in the order they bite: a provider that never declared it is not
-    /// affected by the switch, and a mode that sends no tools is not affected by either.
+    /// affected by the switch. Hosted search is read-only and may be offered in Ask mode without offering Hub's
+    /// regular function tools.
     /// </summary>
     public static WebSearchHostedDecision Decide(
-        IReadOnlyList<string>? declared, string? protocol, string? mode, bool outboundAllowed)
+        IReadOnlyList<string>? declared, string? protocol, bool searchAllowed)
     {
         if (!ProviderServerTools.DeclaresWebSearch(declared))
             return new WebSearchHostedDecision(WebSearchHostedVerdict.NotDeclared, "",
                 $"nothing declares {ProviderServerTools.WebSearch} for this provider (manifest serverTools and "
                 + "the provider's own entry are both silent)");
 
-        if (!outboundAllowed)
+        if (!searchAllowed)
             return new WebSearchHostedDecision(WebSearchHostedVerdict.SwitchedOff, "",
-                "this Hub has outbound fetching turned off (设置 → 允许助手抓取网页), so no search is offered to the "
-                + "endpoint either");
-
-        if (string.Equals(mode, ChatModes.Ask, StringComparison.OrdinalIgnoreCase))
-            return new WebSearchHostedDecision(WebSearchHostedVerdict.ModeWithoutTools, "",
-                $"the {ChatModes.Ask} mode sends no tools, so there is nowhere to put the declaration");
+                "hosted search is disabled in this Hub's settings");
 
         var field = WireFieldFor(protocol);
         return new WebSearchHostedDecision(WebSearchHostedVerdict.On, field,
@@ -135,10 +122,8 @@ public static class WebSearchHosted
             $"Not offered: add \"{ProviderServerTools.WebSearch}\" to serverTools in ai/providers.json for this "
             + $"provider (or in the built-in manifest) — {decision.Reason}.",
         WebSearchHostedVerdict.SwitchedOff =>
-            $"Not offered: the outbound switch is off — {decision.Reason}. Turn it on in "
+            $"Not offered: hosted search is off — {decision.Reason}. Turn it on in "
             + "「设置 → 工具权限」and the next request offers search again.",
-        WebSearchHostedVerdict.ModeWithoutTools =>
-            $"Not offered: {decision.Reason}. Switch the conversation to plan or agent mode.",
         _ => decision.Reason,
     };
 }

@@ -183,6 +183,7 @@ public partial class SettingsPage : UserControl
         AutoDownloadCheck.IsCheckedChanged += (_, _) => OnAutoDownloadChanged();
         SpawnCheck.IsCheckedChanged += (_, _) => OnSpawnChanged();
         WebFetchCheck.IsCheckedChanged += (_, _) => OnWebFetchChanged();
+        HostedWebSearchCheck.IsCheckedChanged += (_, _) => OnHostedWebSearchChanged();
         ShowThinkingCheck.IsCheckedChanged += (_, _) => OnShowThinkingChanged();
         WireProviders();
         InitializeCategories();
@@ -365,6 +366,7 @@ public partial class SettingsPage : UserControl
             AutoDownloadCheck.IsEnabled = UpdateService.Instance.IsInstalled;
             SpawnCheck.IsChecked = _preferences.AllowSpawnedSessions;
             WebFetchCheck.IsChecked = _preferences.AllowOutboundWebFetch;
+            HostedWebSearchCheck.IsChecked = _preferences.AllowHostedWebSearch;
             ShowThinkingCheck.IsChecked = _preferences.ShowThinking;
             // Re-render the update card from the last known check: this re-localizes the status line
             // on a language switch (it is written imperatively) and reflects a check the shell already
@@ -1092,6 +1094,19 @@ public partial class SettingsPage : UserControl
     /// preference the tool consults, not the checkbox that forgot it.</summary>
     internal bool AllowOutboundWebFetchForCheck => _preferences.AllowOutboundWebFetch;
 
+    /// <summary>Hosted search has a separate opt-in because the provider chooses when to search and may charge
+    /// per request, without a per-call approval card.</summary>
+    private void OnHostedWebSearchChanged()
+    {
+        if (!_ready) return;
+        var value = HostedWebSearchCheck.IsChecked == true;
+        if (value == _preferences.AllowHostedWebSearch) return;
+        _preferences.AllowHostedWebSearch = value;
+        _preferencesStore.Save(_preferences);
+    }
+
+    internal bool AllowHostedWebSearchForCheck => _preferences.AllowHostedWebSearch;
+
     /// <summary>The one switch on this pane that changes pixels already on screen, so it cannot stop at the file.
     /// The assistant page is cached and its renderer only lays down turns past the last one it painted — a flip
     /// that only wrote the setting would sit there looking broken until the person started a new conversation.
@@ -1477,6 +1492,28 @@ public partial class SettingsPage : UserControl
 
         // The model section is present in both states; only the edit form is gated on the draft.
         content.Children.Add(BuildModelSection(provider));
+
+        var hostedSearchToggle = new CheckBox
+        {
+            Content = HubStrings.Get("ProviderHostedWebSearch"),
+            IsChecked = ProviderServerTools.DeclaresWebSearch(provider.ServerTools),
+            Tag = SectionTags.ProviderHostedSearch,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        hostedSearchToggle.IsCheckedChanged += (_, _) =>
+        {
+            if (_chat.SetProviderHostedSearch(provider.Id, hostedSearchToggle.IsChecked == true))
+                RebuildProviderGroups();
+        };
+        content.Children.Add(hostedSearchToggle);
+        content.Children.Add(new TextBlock
+        {
+            Text = HubStrings.Get("ProviderHostedWebSearchHint"),
+            Classes = { "muted" },
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Tag = SectionTags.ProviderHostedSearchHint,
+        });
 
         if (!provider.CanAuthenticate)
         {
@@ -3342,6 +3379,27 @@ public partial class SettingsPage : UserControl
         Dispatcher.UIThread.RunJobs();
     }
 
+    internal bool ProviderHostedSearchToggleVisibleForCheck(string providerId)
+        => GroupCards.FirstOrDefault(card => card.Tag as string == providerId)?.Child
+            is StackPanel content && content.Children.OfType<CheckBox>()
+                .Any(toggle => toggle.Tag as string == SectionTags.ProviderHostedSearch);
+
+    internal bool? ProviderHostedSearchToggleValueForCheck(string providerId)
+        => GroupCards.FirstOrDefault(card => card.Tag as string == providerId)?.Child
+            is StackPanel content
+            ? content.Children.OfType<CheckBox>()
+                .FirstOrDefault(toggle => toggle.Tag as string == SectionTags.ProviderHostedSearch)?.IsChecked
+            : null;
+
+    internal void SetProviderHostedSearchToggleForCheck(string providerId, bool enabled)
+    {
+        if (GroupCards.FirstOrDefault(card => card.Tag as string == providerId)?.Child
+            is not StackPanel content) return;
+        var toggle = content.Children.OfType<CheckBox>()
+            .FirstOrDefault(control => control.Tag as string == SectionTags.ProviderHostedSearch);
+        if (toggle is not null) toggle.IsChecked = enabled;
+    }
+
     internal bool SetModelListExpandedForCheck(string providerId, bool expanded)
     {
         var toggle = GroupCards
@@ -3581,6 +3639,8 @@ public partial class SettingsPage : UserControl
         internal const string RemoveAllModels = "provider-remove-all-models";
         internal const string RemoveProvider = "provider-remove";
         internal const string ProviderHeaderDivider = "provider-header-divider";
+        internal const string ProviderHostedSearch = "provider-hosted-search";
+        internal const string ProviderHostedSearchHint = "provider-hosted-search-hint";
 
         /// <summary>The control that re-fetches the list from the endpoint.</summary>
         internal const string RefreshModels = "provider-refresh-models";

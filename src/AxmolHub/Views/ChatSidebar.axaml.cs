@@ -250,10 +250,16 @@ public partial class ChatSidebar : UserControl
                 return;
             }
 
+            var children = bucket.Key == SessionGroupKey.Archived ? archived : live;
+            var visibleIds = children.Select(summary => summary.Id).ToHashSet(StringComparer.Ordinal);
             foreach (var summary in bucket.Sessions)
             {
+                if (summary.SpawnedBy is { } parentId && visibleIds.Contains(parentId)) continue;
                 ConversationList.Children.Add(BuildSessionRow(summary, openId,
                     bucket.Key == SessionGroupKey.Archived, bucket.Depth));
+                foreach (var child in children.Where(candidate => candidate.SpawnedBy == summary.Id))
+                    ConversationList.Children.Add(BuildSessionRow(child, openId,
+                        bucket.Key == SessionGroupKey.Archived, bucket.Depth + 1));
             }
         }
 
@@ -697,7 +703,8 @@ public partial class ChatSidebar : UserControl
             Padding = new Thickness(10, 8),
             Margin = new Thickness(0),
         };
-        ToolTip.SetTip(item, title);
+        ToolTip.SetTip(item, summary.SpawnedTask is { Length: > 0 } task
+            ? $"{title}\n{task}" : title);
         item.Classes.Add("session");
         if (summary.Id == activeId) item.Classes.Add("active");
         item.Tag = summary.Id;
@@ -761,6 +768,8 @@ public partial class ChatSidebar : UserControl
         if (summary.PendingApprovals > 0) layout.Children.Add(BuildApprovalDot(summary));
         else if (_chat.IsRunning(summary.Id)) layout.Children.Add(BuildThinkingGlyph());
         else if (_chat.IsWakeQueued(summary.Id)) layout.Children.Add(BuildQueuedDot());
+        else if (summary.SpawnedState is { } spawnedState)
+            if (BuildSpawnStateGlyph(spawnedState) is { } spawnedGlyph) layout.Children.Add(spawnedGlyph);
 
         Grid.SetColumn(menuButton, 2);
         layout.Children.Add(menuButton);
@@ -895,6 +904,49 @@ public partial class ChatSidebar : UserControl
         return queued;
     }
 
+    private static Control? BuildSpawnStateGlyph(string state)
+    {
+        var label = state switch
+        {
+            SpawnedSessionStates.Completed => "SpawnedSessionCompleted",
+            SpawnedSessionStates.Failed => "SpawnedSessionFailed",
+            SpawnedSessionStates.Stopped => "SpawnedSessionStopped",
+            SpawnedSessionStates.Interrupted => "SpawnedSessionInterrupted",
+            _ => null,
+        };
+        if (label is null) return null;
+        if (state == SpawnedSessionStates.Completed)
+        {
+            var tick = new Path
+            {
+                Name = "SpawnedSessionCompletedGlyph",
+                Width = 12,
+                Height = 12,
+                Stretch = Stretch.Uniform,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            tick.Data = GeometryAt("Hub.Icon.Tick");
+            tick.Bind(Shape.FillProperty, new DynamicResourceExtension("Hub.Success"));
+            Grid.SetColumn(tick, 1);
+            ToolTip.SetTip(tick, HubStrings.Get(label));
+            return tick;
+        }
+
+        var alert = new Ellipse
+        {
+            Name = "SpawnedSessionAlertGlyph",
+            Width = 6,
+            Height = 6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        alert.Bind(Shape.FillProperty, new DynamicResourceExtension("Hub.AlertDot"));
+        Grid.SetColumn(alert, 1);
+        ToolTip.SetTip(alert, HubStrings.Get(label));
+        return alert;
+    }
+
     private async System.Threading.Tasks.Task RenameConversationAsync(string id, string currentTitle)
     {
         var title = await PromptWindow.ShowAsync(GetOwner(), HubStrings.Get("RenameConversationTitle"), currentTitle);
@@ -1012,6 +1064,23 @@ public partial class ChatSidebar : UserControl
     /// disagree, and that difference is the assertion.</summary>
     internal int SessionRowCountForCheck => ConversationList.Children
         .OfType<Border>().Count(row => row.Classes.Contains("session-row"));
+
+    internal void RefreshConversationListForCheck() => RefreshConversationList();
+
+    internal bool SpawnedChildNestedForCheck(string parentId, string childId)
+    {
+        var rows = ConversationList.Children.OfType<Border>()
+            .Where(row => row.Classes.Contains("session-row"))
+            .ToArray();
+        var parentIndex = Array.FindIndex(rows, row => row.Tag?.ToString() == parentId);
+        var childIndex = Array.FindIndex(rows, row => row.Tag?.ToString() == childId);
+        return parentIndex >= 0 && childIndex == parentIndex + 1
+               && rows[childIndex].Margin.Left > rows[parentIndex].Margin.Left;
+    }
+
+    internal bool HasSpawnedCompletionMarkForCheck(string id) => Rows(id)
+        .SelectMany(row => (row.Child as Grid)?.Children ?? [])
+        .OfType<Path>().Any(path => path.Name == "SpawnedSessionCompletedGlyph");
 
     internal bool GroupCollapsedForCheck(string key) => IsGroupCollapsed(key);
 

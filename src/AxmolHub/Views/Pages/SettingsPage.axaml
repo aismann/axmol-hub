@@ -201,6 +201,8 @@
                plus the ask tier's card. -->
           <CheckBox x:Name="WebFetchCheck" Content="{DynamicResource AllowWebFetch}" Margin="0,12,0,0" />
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource AllowWebFetchHint}" />
+          <CheckBox x:Name="HostedWebSearchCheck" Content="{DynamicResource AllowHostedWebSearch}" Margin="0,12,0,0" />
+          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource AllowHostedWebSearchHint}" />
         </StackPanel>
 
         <!-- ─────────────── Engine download source ───────────────

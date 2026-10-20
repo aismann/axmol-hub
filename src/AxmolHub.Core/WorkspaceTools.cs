@@ -958,7 +958,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     private static string NoPeers()
         => "Refused: this session cannot reach the other sessions of this Hub. Answer in your own reply instead.";
 
-    [Description("Start a fresh Hub session to do one bounded piece of work in a context of its own, and have it "
+    [Description("Start a fresh Hub session to do one bounded piece of work in a context of its own, and have Hub "
                  + "report back to this session later. Worth it when the job means reading a lot (a big file, a "
                  + "whole directory, a long build log) but only a short conclusion is wanted here, or when it can "
                  + "run independently of what this conversation already knows. Not worth it for something you can "
@@ -966,8 +966,8 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                  + "never spawn the same one twice.")]
     public async Task<string> SpawnSession(
         [Description("What the child is to do, written self-contained — it cannot see this conversation. Name the "
-                     + "files or the question, say what conclusion to bring back, and include this session's id "
-                     + "as where to send it.")] string task,
+                     + "files or the question, and say what conclusion to bring back. Hub returns the child's final "
+                     + "answer to this session automatically.")] string task,
         [Description("The mode the child runs in: \"agent\" to read and edit, \"plan\" to look and propose without "
                      + "touching anything.")] string mode = "agent",
         [Description("Give the child this session's workspace so it can read the same repository. Leave it false "

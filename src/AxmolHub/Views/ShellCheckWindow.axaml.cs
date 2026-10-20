@@ -2257,7 +2257,7 @@ public partial class ShellCheckWindow : Window
         await CheckUsageReadBackAsync(shell, panel, checkModel);
         await CheckWorkspaceChipAsync(shell, panel);
         await CheckCrossSessionAsync(shell, panel, sidebar);
-        await CheckSpawnAsync(shell, panel);
+        await CheckSpawnAsync(shell, panel, sidebar);
         await CheckPictureAsync(shell, panel);
         await CheckEmptyStateAsync(shell, panel);
         await CheckPictureFeedbackAsync(shell, panel);
@@ -3524,7 +3524,7 @@ public partial class ShellCheckWindow : Window
     /// of the second call are the app's real machinery rather than a unit test of the table — and everything still
     /// runs with no key and no network.
     /// </summary>
-    private async Task CheckSpawnAsync(MainWindow shell, ChatPanel panel)
+    private async Task CheckSpawnAsync(MainWindow shell, ChatPanel panel, ChatSidebar sidebar)
     {
         var chat = shell.Chat;
         var parent = chat.StartConversation();
@@ -3534,9 +3534,11 @@ public partial class ShellCheckWindow : Window
         var children = new List<string>();
         try
         {
-            var askPhase = 0;
+            var parentRuns = 0;
             chat.ClientOverride = (_, id) => id == parent.Id
-                ? new SpawnAskingChatClient($"第 {++askPhase} 问")
+                ? ++parentRuns <= 2
+                    ? new SpawnAskingChatClient($"第 {parentRuns} 问")
+                    : new ScriptedChatClient(["已收到子会话结论。"])
                 : new ScriptedChatClient(["子会话查完了，结论就两行。"]);
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
@@ -3569,13 +3571,29 @@ public partial class ShellCheckWindow : Window
             if (children.Count == 1)
             {
                 await WaitForRunAsync(chat, children[0]);
+                await WaitForRunAsync(chat, parent.Id);
                 var child = chat.OpenConversation(children[0]);
+                var returned = chat.OpenConversation(parent.Id);
                 Check(child is not null
                       && child.SpawnedBy == parent.Id
+                      && child.SpawnedState == SpawnedSessionStates.Completed
+                      && child.SpawnResultDelivered
                       && child.Messages.FirstOrDefault(turn => turn.Role == ChatRoles.User) is { } briefing
                       && briefing.Text.Contains(parent.Id, StringComparison.Ordinal)
                       && briefing.InjectedFrom == parent.Id,
                     "子会话的第一条消息带上任务与父会话 id，回答才知道该往回收（实际 " + child?.Messages.Count + " 条）");
+                var delivered = returned?.Messages.LastOrDefault(turn => turn.InjectedFrom == child?.Id);
+                Check(delivered is not null
+                      && delivered.Role == ChatRoles.User
+                      && delivered.Text.Contains("Result:", StringComparison.Ordinal)
+                      && delivered.Text.Contains("子会话查完了", StringComparison.Ordinal)
+                      && returned?.Messages.Any(turn => turn.Role == ChatRoles.Assistant
+                          && turn.Text.Contains("已收到子会话结论", StringComparison.Ordinal)) == true,
+                    "子会话结束后 Hub 自动把结论写回父会话并唤醒父会话继续处理（" + delivered?.Text + "）");
+                sidebar.RefreshConversationListForCheck();
+                Check(sidebar.SpawnedChildNestedForCheck(parent.Id, children[0])
+                      && sidebar.HasSpawnedCompletionMarkForCheck(children[0]),
+                    "侧栏把已完成子会话显示在父会话下方并显示完成标记");
             }
             chat.OpenConversation(parent.Id);
         }
@@ -8178,6 +8196,7 @@ public partial class ShellCheckWindow : Window
             // channel that was never wired at all. Both halves are therefore set here and cleared in the finally.
             chat.WebFetchHttp = fetchTransport;
             appPreferences.AllowOutboundWebFetch = true;
+            appPreferences.AllowHostedWebSearch = true;
 
             // The tier map itself, asserted next to the calls above: a name this build has never heard is the one
             // least able to vouch for itself, so it lands on the tier that has to ask. It is asserted against a
@@ -9120,17 +9139,20 @@ public partial class ShellCheckWindow : Window
 
             // And the negative control in the same panel: an answer nobody looked anything up for grows no line at
             // all, so the two above cannot be passing because the row is always there.
-            // The mode half of the table, measured on the request rather than on the function: ask sends no tools
-            // at all, so a declaration has nowhere to ride. Without this cell, "the table refuses in ask mode" and
-            // "the wiring never ran" look identical from the outside.
+            // Ask keeps Hub's executable tools out of the request, but the explicit read-only hosted-search marker
+            // is the one exception. This lets a user ask a current-information question without granting the model
+            // access to workspace tools.
             chat.OpenConversation(searchedSession.Id);
             chat.SelectMode(ChatModes.Ask);
             wireProvider.ServerTools = [ProviderServerTools.WebSearch];
             chat.TryEnqueueSend(searchedSession.Id, "问一句就好", null, out _);
             await WaitForIdleAsync(chat);
-            Check(searchedClient.LastOptions?.Tools is not { Count: > 0 },
-                "「只问不答」档下那一次请求根本不带工具列表，声明也就无处可挂（实际 "
-                + (searchedClient.LastOptions?.Tools is { } asked ? string.Join(",", asked.Select(t => t.Name)) : "无") + "）");
+            var askTools = searchedClient.LastOptions?.Tools;
+            Check(askTools is { Count: 1 }
+                  && askTools[0] is Microsoft.Extensions.AI.HostedWebSearchTool
+                  && askTools[0].Name == ProviderServerTools.WebSearch,
+                "「只问不答」档仍不给 Hub 函数工具，只额外提供已获允许的服务端搜索（实际 "
+                + (askTools is { } asked ? string.Join(",", asked.Select(t => t.Name)) : "无") + "）");
             chat.SelectMode(ChatModes.Agent);
             wireProvider.ServerTools = [];
 
@@ -12209,6 +12231,17 @@ public partial class ShellCheckWindow : Window
         var deepseekAdopted = shell.Chat.AddPreset("deepseek") is not null;
         Check(deepseekAdopted, "可以采纳 DeepSeek 预设以验证仅密钥路径");
         settings.RefreshProviderGroupsForCheck();
+        Check(settings.ProviderHostedSearchToggleVisibleForCheck("deepseek")
+              && settings.ProviderHostedSearchToggleValueForCheck("deepseek") == false,
+            "provider 分组提供独立的服务端搜索能力开关，并默认不声明");
+        settings.SetProviderHostedSearchToggleForCheck("deepseek", true);
+        Check(ProviderServerTools.DeclaresWebSearch(
+                  shell.Chat.Providers.First(provider => provider.Id == "deepseek").ServerTools),
+            "打开 provider 搜索能力开关后，能力声明进入 provider 配置");
+        settings.SetProviderHostedSearchToggleForCheck("deepseek", false);
+        Check(!ProviderServerTools.DeclaresWebSearch(
+                  shell.Chat.Providers.First(provider => provider.Id == "deepseek").ServerTools),
+            "关闭 provider 搜索能力开关后，搜索能力从 provider 配置撤回");
         var deepseekGroup = settings.ProviderGroupForId("deepseek");
         Check(deepseekGroup is not null && deepseekGroup.AuthButtonText == HubStrings.Get("Authenticate"),
             "仅支持密钥的 provider 同样显示「鉴权」按钮，方式选择交给对话框");
@@ -14571,6 +14604,19 @@ public partial class ShellCheckWindow : Window
         settings.SelectCategoryForCheck("storage");
         Check(NamedDescendant<TextBox>(settings, "DataLocation")?.Text == new StateStore(scratchRoot).Root,
             "数据目录显示的是实际数据根而不是默认目录");
+
+        settings.SelectCategoryForCheck("permission");
+        Check(NamedDescendant<CheckBox>(settings, "WebFetchCheck")?.IsChecked == true
+              && NamedDescendant<CheckBox>(settings, "HostedWebSearchCheck")?.IsChecked == false
+              && !settings.AllowHostedWebSearchForCheck,
+            "网页抓取保持默认开启，服务端搜索独立显示且默认关闭");
+        var hostedSearchCheck = NamedDescendant<CheckBox>(settings, "HostedWebSearchCheck");
+        if (hostedSearchCheck is not null) hostedSearchCheck.IsChecked = true;
+        var optedInPreferences = new PreferencesStore(preferencesPath).Load();
+        Check(settings.AllowHostedWebSearchForCheck && optedInPreferences.AllowHostedWebSearch
+              && optedInPreferences.AllowOutboundWebFetch,
+            "开启服务端搜索会单独持久化，不改变网页抓取权限");
+        if (hostedSearchCheck is not null) hostedSearchCheck.IsChecked = false;
 
         var projectLocation = NamedDescendant<TextBox>(settings, "DefaultProjectLocation")?.Text;
         Check(projectLocation == HubTexts.Get("NotSelected", HubStrings.Language),
