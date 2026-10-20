@@ -27,6 +27,7 @@ namespace AxmolHub;
 /// </summary>
 public sealed class ChatWorkspace : IDisposable
 {
+    private const int MaxGoalContinuations = 3;
     private readonly ProviderStore _providers;
     private readonly CredentialStore _credentials;
     private readonly ConversationRegistry _sessions;
@@ -543,7 +544,13 @@ public sealed class ChatWorkspace : IDisposable
         }
 
         var memory = MemoryIndexSection(conversation?.WorkspaceRoot);
-        return new ContextPrompt(mode + charter + summary + memory, mode, charter, summary, memory);
+        var goal = conversation?.Goal is { Length: > 0 } objective
+                   && conversation.GoalState == ChatGoalStates.Active
+            ? "\n\nActive thread goal (user-defined outcome; keep working toward it across turns, verify against concrete evidence, and never claim completion without evidence):\n"
+              + objective
+              + "\nAt the end of each continuation, if the objective is fully satisfied, include the exact marker [GOAL_COMPLETE] in your final response. If it is not satisfied, summarize the evidence and next best step."
+            : "";
+        return new ContextPrompt(mode + goal + charter + summary + memory, mode + goal, charter, summary, memory);
     }
 
     /// <summary>One session's system message: the whole of it, and the mode instructions, the workspace's own
@@ -2990,6 +2997,13 @@ public sealed class ChatWorkspace : IDisposable
         var notifyStarted = measurement.ElapsedMs;
         Changed?.Invoke();
         measurement.NotifyMs = measurement.ElapsedMs - notifyStarted;
+        if (_active is { GoalState: ChatGoalStates.Active } goalThread
+            && NormalizeMode(goalThread.Mode) == ChatModes.Agent
+            && !_runs.ContainsKey(goalThread.Id)
+            && _runs.Count < MaxConcurrentRuns
+            && !goalThread.Messages.Any(turn => turn.ApprovalState == ChatApprovalStates.Pending
+                || turn.PlanApprovalState == PlanApprovalStates.Pending))
+            StartRun(goalThread.Id);
         return _active;
     }
 
@@ -3432,6 +3446,12 @@ public sealed class ChatWorkspace : IDisposable
 
     /// <summary>What the session file says right now, cache aside. For the self-check only.</summary>
     internal Conversation? StoredCopyForCheck(string conversationId) => _sessions.LoadFromDisk(conversationId);
+    internal string? GoalStateFor(string conversationId)
+        => (_sessions.Peek(conversationId) ?? _sessions.Load(conversationId))?.GoalState;
+    internal bool IsCurrentGoalTurn(string conversationId, DateTimeOffset at)
+        => (_sessions.Peek(conversationId) ?? _sessions.Load(conversationId))?.GoalTurnAt == at;
+    private string ModeFor(string conversationId)
+        => NormalizeMode((_sessions.Peek(conversationId) ?? _sessions.Load(conversationId))?.Mode);
 
     /// <summary>The session file's own bytes as written. For the self-check only, and only for a claim about the
     /// file — "the plan's text is not in this transcript's JSON" cannot be answered by the hydrated object,
@@ -3493,6 +3513,21 @@ public sealed class ChatWorkspace : IDisposable
     internal bool SeedTurnForCheck(string conversationId, string text)
         => _sessions.TryUpdate(conversationId, opened => opened.Append(ChatTurn.User(text)));
 
+    internal bool SeedGoalForCheck(string conversationId, string text)
+    {
+        var turn = ChatTurn.User(text, isGoal: true);
+        var written = _sessions.TryUpdate(conversationId, opened =>
+        {
+            opened.Goal = text;
+            opened.GoalState = ChatGoalStates.Active;
+            opened.GoalTurnAt = turn.At;
+            opened.GoalContinuationCount = 0;
+            opened.Append(turn);
+        });
+        if (written) Changed?.Invoke();
+        return written;
+    }
+
     /// <summary>Appends one assistant turn through the real write path without scripting a run. For the
     /// self-check only: it stands in for a reply landing in a background conversation while a different one
     /// stays the conversation the person engaged most recently, which is the list-order rule being pinned.</summary>
@@ -3542,6 +3577,54 @@ public sealed class ChatWorkspace : IDisposable
     public bool IsRunning(string conversationId)
         => _runs.TryGetValue(conversationId, out var run) && run.IsStreaming;
 
+    public bool PauseGoal(string conversationId)
+    {
+        var changed = _sessions.TryUpdate(conversationId, opened =>
+        {
+            if (opened.GoalState == ChatGoalStates.Active) opened.GoalState = ChatGoalStates.Paused;
+        });
+        if (changed) Changed?.Invoke();
+        return changed;
+    }
+
+    public bool ResumeGoal(string conversationId)
+    {
+        var changed = _sessions.TryUpdate(conversationId, opened =>
+        {
+            if (opened.GoalState is ChatGoalStates.Paused or ChatGoalStates.BudgetLimited)
+            {
+                opened.GoalState = ChatGoalStates.Active;
+                opened.GoalContinuationCount = 0;
+            }
+        });
+        if (!changed) return false;
+        Changed?.Invoke();
+        if (!IsRunning(conversationId) && ModeFor(conversationId) == ChatModes.Agent) StartRun(conversationId);
+        return true;
+    }
+
+    public bool ClearGoal(string conversationId)
+    {
+        var changed = _sessions.TryUpdate(conversationId, opened =>
+        {
+            opened.Goal = null;
+            opened.GoalState = null;
+            opened.GoalContinuationCount = 0;
+        });
+        if (changed) Changed?.Invoke();
+        return changed;
+    }
+
+    public bool CompleteGoal(string conversationId)
+    {
+        var changed = _sessions.TryUpdate(conversationId, opened =>
+        {
+            if (opened.Goal is not null) opened.GoalState = ChatGoalStates.Complete;
+        });
+        if (changed) Changed?.Invoke();
+        return changed;
+    }
+
     internal bool HasPendingPlanApproval(string conversationId)
         => (_sessions.Peek(conversationId) ?? _sessions.Load(conversationId))?.Messages
             .Any(turn => turn.PlanApprovalState == PlanApprovalStates.Pending) == true;
@@ -3563,7 +3646,7 @@ public sealed class ChatWorkspace : IDisposable
     /// three streams later; only an actor that cannot retry for itself (a peer session, later) earns a queue.
     /// </summary>
     public bool TryEnqueueSend(string conversationId, string text, string? attachedContext, out string? refusalKey)
-        => TryEnqueueSend(conversationId, text, attachedContext, null, out refusalKey);
+        => TryEnqueueSend(conversationId, text, attachedContext, null, false, out refusalKey);
 
     /// <summary>
     /// Starts a run for one message. <paramref name="pictures"/> are the bytes the composer is holding: they reach
@@ -3574,6 +3657,13 @@ public sealed class ChatWorkspace : IDisposable
     /// </summary>
     public bool TryEnqueueSend(string conversationId, string text, string? attachedContext,
         IReadOnlyList<byte[]>? pictures, out string? refusalKey)
+        => TryEnqueueSend(conversationId, text, attachedContext, pictures, false, out refusalKey);
+
+    /// <summary>Starts a run for one message and records whether the person explicitly marked it as a goal. That
+    /// marker belongs to the user turn in the transcript; it does not change the Agent mode or the text sent to the
+    /// model.</summary>
+    public bool TryEnqueueSend(string conversationId, string text, string? attachedContext,
+        IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey)
     {
         refusalKey = null;
         if (_compressingConversations.Contains(conversationId))
@@ -3616,7 +3706,16 @@ public sealed class ChatWorkspace : IDisposable
             {
                 opened.ProviderId = choice.Provider.Id;
                 opened.ModelName = choice.ModelName;
-                opened.Append(ChatTurn.User(text, attachedContext, StorePictures(conversationId, pictures)));
+                var userTurn = ChatTurn.User(text, attachedContext, StorePictures(conversationId, pictures),
+                    isGoal: isGoal);
+                if (isGoal)
+                {
+                    opened.Goal = text;
+                    opened.GoalState = ChatGoalStates.Active;
+                    opened.GoalContinuationCount = 0;
+                    opened.GoalTurnAt = userTurn.At;
+                }
+                opened.Append(userTurn);
             }))
         {
             refusalKey = "ChatSessionMissing";
@@ -5947,6 +6046,7 @@ public sealed class ChatWorkspace : IDisposable
     private void CompleteRun(ConversationRun run, RunResult result, bool receivedText, string? noticeKey,
         bool danger, string? detail)
     {
+        var continueGoal = false;
         // Nothing may outlive the run that captured it. Every frame is taken by the result turn it belongs to, so
         // whatever is still queued here was captured and then cancelled — and a frame from a finished run riding
         // the next run's first result would put a picture in front of the model that nothing in the transcript
@@ -5992,6 +6092,34 @@ public sealed class ChatWorkspace : IDisposable
                 // exactly the runs the reader is most likely to be asking about. The per-answer reading is filed on
                 // <paramref name="stamped"/> alone, so it can never land on an older reply's turn.
                 CommitRunBurn(opened, run, stamped);
+
+                if (opened.GoalState == ChatGoalStates.Active && result != RunResult.Completed)
+                {
+                    opened.GoalState = ChatGoalStates.Paused;
+                }
+                else if (opened.GoalState == ChatGoalStates.Active && NormalizeMode(opened.Mode) == ChatModes.Agent
+                    && result == RunResult.Completed
+                    && !opened.Messages.Any(turn => turn.ApprovalState == ChatApprovalStates.Pending
+                        || turn.PlanApprovalState == PlanApprovalStates.Pending))
+                {
+                    var final = opened.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
+                        && turn.ToolCallId is not { Length: > 0 });
+                    if (final?.Text.Contains("[GOAL_COMPLETE]", StringComparison.Ordinal) == true)
+                    {
+                        opened.GoalState = ChatGoalStates.Complete;
+                        var index = opened.Messages.LastIndexOf(final);
+                        opened.Messages[index] = final with { Text = final.Text.Replace("[GOAL_COMPLETE]", "", StringComparison.Ordinal).TrimEnd() };
+                    }
+                    else if (opened.GoalContinuationCount < MaxGoalContinuations)
+                    {
+                        opened.GoalContinuationCount++;
+                        continueGoal = true;
+                    }
+                    else
+                    {
+                        opened.GoalState = ChatGoalStates.BudgetLimited;
+                    }
+                }
             });
             Changed?.Invoke();
             RunsChanged?.Invoke(run.ConversationId);
@@ -5999,6 +6127,7 @@ public sealed class ChatWorkspace : IDisposable
             RunCompleted?.Invoke(run.ConversationId,
                 new RunOutcome(result, noticeKey, danger, detail, userTurns));
             run.Dispose();
+            if (continueGoal) StartRun(run.ConversationId);
             // Last, after the slot is really gone: a wake waiting for one may only start once this run has left
             // the registry, or the fleet would be one session over its own cap.
             StartNextQueuedWake();

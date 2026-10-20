@@ -245,6 +245,10 @@ public partial class ChatPanel : UserControl
     internal event Action? ConversationStateChanged;
 
     private bool _markdownPassQueued;
+    private bool _goalDraftSelected;
+    private string? _goalDraftConversationId;
+    private bool _startingGoalConversationForSend;
+    private readonly HashSet<string> _collapsedGoalCards = new(StringComparer.Ordinal);
 
     public ChatPanel()
     {
@@ -350,7 +354,14 @@ public partial class ChatPanel : UserControl
         {
             if (ForkNotice.Tag is string sourceId) _chat.OpenConversation(sourceId);
         };
-        ModeIndicatorButton.Click += (_, _) => _chat.SelectMode(ChatModes.Agent);
+        ModeIndicatorButton.Click += (_, _) =>
+        {
+            if (GoalDraftSelectedForActiveConversation)
+                ClearGoalDraftSelection();
+            else if (_chat.ActiveMode == ChatModes.Plan)
+                _chat.SelectMode(ChatModes.Agent);
+            RefreshComposerChoices();
+        };
         ContextButton.Click += (_, _) => ShowContextMenu();
         ContextPopup.PlacementTarget = ContextButton;
         ContextPopup.Placement = PlacementMode.TopEdgeAlignedRight;
@@ -526,6 +537,9 @@ public partial class ChatPanel : UserControl
     {
         if (_chat is null) return;
         var viewed = _chat.ViewedConversationId;
+        if (_goalDraftSelected && !_startingGoalConversationForSend
+            && _goalDraftConversationId != viewed)
+            ClearGoalDraftSelection();
         var requested = _chat.CurrentSessionOpen;
         if (requested is { Completed: false } && requested.ConversationId == viewed)
             _panelOpen = requested;
@@ -691,24 +705,29 @@ public partial class ChatPanel : UserControl
             : selected.Provider.Name + " · " + selected.ModelName);
     }
 
+    private bool GoalDraftSelectedForActiveConversation
+        => _goalDraftSelected && _goalDraftConversationId == _chat.ActiveConversation?.Id;
+
+    private void ClearGoalDraftSelection()
+    {
+        _goalDraftSelected = false;
+        _goalDraftConversationId = null;
+    }
+
     private void RefreshComposerChoices()
     {
         RefreshModelPicker();
-        // The marker is read off the session on screen, never kept here: a field on this view is what let one
-        // session's 计划 paint over the next one's, and the mode it named was then not the mode the message ran
-        // under. Its content follows the session's own mode even while hidden, so a chip cannot disagree with the
-        // session it belongs to; only 计划 wears one, because an unticked menu pair already reads as the default
-        // 目标, and 提问 is a chat with no tools rather than something to advertise.
+        // A goal chip is a one-message draft choice, not the session's Agent mode. It is consumed only after a
+        // successful send and follows the conversation currently being composed in; a session switch drops it.
         var mode = _chat.ActiveMode;
-        ModeIndicatorButton.IsVisible = mode == ChatModes.Plan;
-        ModeIndicatorIcon.Data = ThemeGeometry(ComposerModeIconKey(mode));
-        ModeIndicatorLabel.Text = HubStrings.Get(mode switch
-        {
-            ChatModes.Ask => "ChatModeAsk",
-            ChatModes.Plan => "ChatModePlan",
-            _ => "ChatModeGoal",
-        });
-        ToolTip.SetTip(ModeIndicatorButton, HubStrings.Get("ChatModeResetHint"));
+        var goalSelected = GoalDraftSelectedForActiveConversation && mode == ChatModes.Agent;
+        ModeIndicatorButton.IsVisible = goalSelected || mode == ChatModes.Plan;
+        var indicatorMode = goalSelected ? ChatModes.Agent : mode;
+        ModeIndicatorIcon.Data = ThemeGeometry(ComposerModeIconKey(indicatorMode));
+        ModeIndicatorLabel.Text = HubStrings.Get(goalSelected ? "ChatModeGoal" : "ChatModePlan");
+        ToolTip.SetTip(ModeIndicatorButton, goalSelected
+            ? HubStrings.Get("ChatGoalDraftResetHint")
+            : mode == ChatModes.Plan ? HubStrings.Get("ChatModeResetHint") : null);
         // The chip names the *effective* mode, not the one someone clicked: a session that merely follows a
         // permissive default is in it, and reading back the override would call that mode safe. With no session
         // on screen yet it names the mode the first one starts under, because before the first message is the
@@ -1381,9 +1400,11 @@ public partial class ChatPanel : UserControl
                      (ChatModes.Agent, "ChatModeGoal"),
                  })
         {
-            // Both choices show the mode actually stored on the active session; an unticked selected mode
-            // made 目标 look like a fallback rather than a real selection.
-            var ticks = _chat.ActiveMode == mode;
+            // Plan is a session mode. Goal selection starts a durable thread objective on send while retaining
+            // Agent as the tool-enabled working mode, so its check follows only the pending draft selection.
+            var ticks = mode == ChatModes.Plan
+                ? _chat.ActiveMode == ChatModes.Plan
+                : GoalDraftSelectedForActiveConversation;
             var item = new MenuItem
             {
                 Header = BuildComposerModeHeader(mode, key),
@@ -1393,7 +1414,22 @@ public partial class ChatPanel : UserControl
             };
             item.Click += (_, _) =>
             {
-                _chat.SelectMode(ticks ? ChatModes.Agent : mode);
+                if (mode == ChatModes.Plan)
+                {
+                    ClearGoalDraftSelection();
+                    _chat.SelectMode(ticks ? ChatModes.Agent : ChatModes.Plan);
+                }
+                else if (ticks)
+                {
+                    ClearGoalDraftSelection();
+                    _chat.SelectMode(ChatModes.Agent);
+                }
+                else
+                {
+                    _goalDraftSelected = true;
+                    _goalDraftConversationId = _chat.ActiveConversation?.Id;
+                    _chat.SelectMode(ChatModes.Agent);
+                }
                 menu.Hide();
             };
             menu.Items.Add(item);
@@ -2563,7 +2599,8 @@ public partial class ChatPanel : UserControl
         // each turn the transcript paints. A body no longer on disk copies as nothing, which beats copying the
         // card's title back as though it were the plan.
         var copyText = isPlanTurn ? _chat.PlanBody(turn, out _) ?? "" : turn.Text;
-        var row = BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At);
+        var goalCard = fromUser && turn.IsGoal ? BuildGoalMessageCard(conversationId, turn) : null;
+        var row = BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At, goalCard);
         target.Children.Add(row);
 
         // User text is plain by nature, and a tool payload is now a quiet line rather than a bubble; only the
@@ -2629,6 +2666,94 @@ public partial class ChatPanel : UserControl
         // one string, so its selection needs no extractor.
         SelectionMenu.Attach(block, () => block.SelectedText ?? "", QuoteIntoComposer);
         return block;
+    }
+
+    /// <summary>Attaches the task header directly above the user message that was explicitly sent as a goal.</summary>
+    private Border BuildGoalMessageCard(string conversationId, ChatTurn turn)
+    {
+        var icon = new Avalonia.Controls.Shapes.Path
+        {
+            Width = 16,
+            Height = 16,
+            Stretch = Stretch.Uniform,
+            Data = ThemeGeometry(ComposerModeIconKey(ChatModes.Agent)),
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.7,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty,
+            new DynamicResourceExtension("Hub.TextSecondary"));
+
+        var content = new StackPanel { Spacing = 3 };
+        var heading = new DockPanel();
+        var currentGoalTurn = _chat.IsCurrentGoalTurn(conversationId, turn.At);
+        var state = currentGoalTurn ? _chat.GoalStateFor(conversationId) : ChatGoalStates.Complete;
+        var statusText = !currentGoalTurn ? "ChatGoalPrevious" : state switch
+        {
+            ChatGoalStates.Active => "ChatGoalActive",
+            ChatGoalStates.Paused => "ChatGoalPaused",
+            ChatGoalStates.Complete => "ChatGoalComplete",
+            ChatGoalStates.BudgetLimited => "ChatGoalBudgetLimited",
+            _ => "ChatGoalCleared",
+        };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        var cardKey = conversationId + ":" + turn.At.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        var title = new TextBlock
+        {
+            Classes = { "goal-message-title" },
+            Text = turn.Text,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 490,
+            IsVisible = !_collapsedGoalCards.Contains(cardKey),
+        };
+        actions.Children.Add(GoalActionButton(title.IsVisible ? "⌄" : "⌃",
+            title.IsVisible ? "ChatGoalCollapse" : "ChatGoalExpand", () =>
+            {
+                if (!_collapsedGoalCards.Add(cardKey)) _collapsedGoalCards.Remove(cardKey);
+                RenderMessages();
+            }));
+        if (currentGoalTurn && state == ChatGoalStates.Active)
+            actions.Children.Add(GoalActionButton("Ⅱ", "ChatGoalPause", () => _chat.PauseGoal(conversationId)));
+        else if (currentGoalTurn && (state is ChatGoalStates.Paused or ChatGoalStates.BudgetLimited))
+            actions.Children.Add(GoalActionButton("▶", "ChatGoalResume", () => _chat.ResumeGoal(conversationId)));
+        if (currentGoalTurn && (state is ChatGoalStates.Active or ChatGoalStates.Paused
+                                or ChatGoalStates.BudgetLimited))
+            actions.Children.Add(GoalActionButton("×", "ChatGoalClear", () => _chat.ClearGoal(conversationId)));
+        DockPanel.SetDock(actions, Dock.Right);
+        heading.Children.Add(actions);
+        var goalRun = currentGoalTurn ? _chat.RunFor(conversationId) : null;
+        heading.Children.Add(new TextBlock
+        {
+            Classes = { "goal-message-heading" },
+            Text = HubStrings.Get(statusText)
+                   + (goalRun?.IsStreaming == true ? " · " + FormatDuration(goalRun.Elapsed) : ""),
+        });
+        content.Children.Add(heading);
+        if (turn.Text.Length > 0) content.Children.Add(title);
+
+        var layout = new Grid { ColumnDefinitions = new ColumnDefinitions("20,*"), ColumnSpacing = 7 };
+        Grid.SetColumn(icon, 0);
+        Grid.SetColumn(content, 1);
+        layout.Children.Add(icon);
+        layout.Children.Add(content);
+        var card = new Border
+        {
+            Classes = { "goal-message-card" },
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Child = layout,
+        };
+        ToolTip.SetTip(card, turn.Text.Length == 0 ? HubStrings.Get("ChatGoalCardHeading") : turn.Text);
+        return card;
+    }
+
+    private Button GoalActionButton(string glyph, string tooltipKey, Action action)
+    {
+        var button = new Button { Content = glyph, Padding = new Thickness(6, 1), MinWidth = 22, MinHeight = 22 };
+        ToolTip.SetTip(button, HubStrings.Get(tooltipKey));
+        button.Click += (_, _) => action();
+        return button;
     }
 
     /// <summary>Puts a quoted block in the composer — where the right-click menu's 引用 hands a selection.
@@ -3736,12 +3861,14 @@ public partial class ChatPanel : UserControl
     /// action bar: there is nothing stable to act on until the turn is persisted.
     /// </summary>
     private Control BuildMessageRow(
-        bool fromUser, StackPanel body, int? index, string role, string text, bool isLast, DateTimeOffset? at = null)
+        bool fromUser, StackPanel body, int? index, string role, string text, bool isLast, DateTimeOffset? at = null,
+        Control? goalCard = null)
     {
-        var column = new StackPanel { Spacing = 6 };
+        var column = new StackPanel { Spacing = goalCard is null ? 6 : 3 };
 
         if (fromUser)
         {
+            if (goalCard is not null) column.Children.Add(goalCard);
             column.Children.Add(new Border
             {
                 Classes = { "user-pill" },
@@ -4265,16 +4392,28 @@ public partial class ChatPanel : UserControl
     private bool SendTextAsync(string text, string? attachedContext = null, IReadOnlyList<byte[]>? pictures = null)
     {
         if (text.Length == 0 && pictures is not { Count: > 0 }) return false;
-        if (_chat.ActiveConversation is null) _chat.StartConversation();
+        var isGoal = GoalDraftSelectedForActiveConversation;
+        if (_chat.ActiveConversation is null)
+        {
+            _startingGoalConversationForSend = isGoal;
+            _chat.StartConversation();
+            _startingGoalConversationForSend = false;
+            if (isGoal) _goalDraftConversationId = _chat.ActiveConversation?.Id;
+        }
         if (_chat.ActiveConversation is not { } conversation) return false;
 
-        if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, out var refusalKey))
+        if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, isGoal, out var refusalKey))
         {
             AppendNotice(NoticeFor(refusalKey, conversation.Id), danger: true);
             return false;
         }
 
         RememberSentText(text);
+        if (isGoal)
+        {
+            ClearGoalDraftSelection();
+            RefreshComposerChoices();
+        }
         ConversationStateChanged?.Invoke();
         return true;
     }
@@ -6554,6 +6693,25 @@ public partial class ChatPanel : UserControl
             .Select(item => item.Header?.ToString() ?? "").ToArray();
     internal bool ModeIndicatorVisibleForCheck => ModeIndicatorButton.IsVisible;
     internal string ModeIndicatorLabelForCheck => ModeIndicatorLabel.Text ?? "";
+    internal bool GoalDraftSelectedForCheck => GoalDraftSelectedForActiveConversation;
+    internal int GoalMessageCardCountForCheck
+        => MessageRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants()))
+            .OfType<Border>().Count(border => border.Classes.Contains("goal-message-card"));
+    internal bool GoalMessageCardPrecedesUserPillForCheck
+        => MessageRows.Any(row => row is Border { Child: StackPanel column }
+            && column.Children.Count >= 2
+            && column.Children[0] is Border card && card.Classes.Contains("goal-message-card")
+            && column.Children[1] is Border pill && pill.Classes.Contains("user-pill"));
+    internal string GoalMessageCardTitleForCheck
+        => MessageRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants()))
+            .OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("goal-message-title"))?.Text ?? "";
+    internal string GoalMessageCardStatusForCheck
+        => MessageRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants()))
+            .OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("goal-message-heading"))?.Text ?? "";
+    internal string[] GoalMessageCardActionTooltipsForCheck
+        => MessageRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants()))
+            .OfType<Button>().Select(button => ToolTip.GetTip(button)?.ToString() ?? "")
+            .Where(tip => tip.Length > 0).ToArray();
     internal bool ComposerPlusCenteredForCheck
         => AddContextButton.HorizontalContentAlignment == HorizontalAlignment.Center
            && AddContextButton.VerticalContentAlignment == VerticalAlignment.Center;
@@ -6614,10 +6772,11 @@ public partial class ChatPanel : UserControl
     internal bool ComposerMenuModesAreCheckboxesForCheck
         => BuildComposerMenu().Items.OfType<MenuItem>().Where(IsComposerModeItem)
             .All(item => item.ToggleType == MenuItemToggleType.CheckBox);
-    /// <summary>The marker the composer is wearing, read the same way the chip reads it: 计划 while the session on
-    /// screen is in plan mode, nothing otherwise — the default and 提问 wear no chip by design.</summary>
+    /// <summary>The transient Goal selection wins over the persistent Plan marker; ordinary Agent mode has no
+    /// chip because only explicit one-message goal requests are surfaced.</summary>
     internal string? ComposerModeMarkerForCheck
-        => _chat.ActiveMode == ChatModes.Plan ? ChatModes.Plan : null;
+        => GoalDraftSelectedForActiveConversation ? ChatModes.Agent
+            : _chat.ActiveMode == ChatModes.Plan ? ChatModes.Plan : null;
 
     // ── Permission chip and its menu ──
     // Each probe builds a fresh menu, which is the same object a user's click would have arrived on: the list

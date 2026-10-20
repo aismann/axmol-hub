@@ -31,6 +31,15 @@ public static class ChatModes
     public const string Agent = "agent";
 }
 
+/// <summary>Lifecycle values for a thread-scoped goal.</summary>
+public static class ChatGoalStates
+{
+    public const string Active = "active";
+    public const string Paused = "paused";
+    public const string Complete = "complete";
+    public const string BudgetLimited = "budget_limited";
+}
+
 public static class ChatReasoningEfforts
 {
     /// <summary>
@@ -175,6 +184,11 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     public bool ToolFailed { get; init; }
     public string? AttachedContext { get; init; }
 
+    /// <summary>Whether this user message was explicitly sent as a task goal. It is display metadata only: the
+    /// message remains ordinary user text on the model wire, while the transcript can keep its goal card attached
+    /// to this exact message after the composer selection has been consumed.</summary>
+    public bool IsGoal { get; init; }
+
     /// <summary>What the model thought before it said <see cref="Text"/>, kept because some gateways make it
     /// part of the conversation rather than a display nicety: DeepSeek answers 400 on any request whose history
     /// came from a thinking model that was also offered tools, unless each assistant message carries its own
@@ -313,12 +327,13 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     public IReadOnlyList<ChatImage> Images { get; init; } = [];
 
     public static ChatTurn User(string text, string? attachedContext = null, IReadOnlyList<ChatImage>? images = null,
-        string? injectedFrom = null) =>
+        string? injectedFrom = null, bool isGoal = false) =>
         new(ChatRoles.User, text, DateTimeOffset.Now)
         {
             AttachedContext = attachedContext,
             Images = images ?? [],
             InjectedFrom = injectedFrom,
+            IsGoal = isGoal,
         };
     public static ChatTurn Assistant(string text, string? reasoning = null, TimeSpan? reasoningElapsed = null) =>
         new(ChatRoles.Assistant, text, DateTimeOffset.Now)
@@ -394,6 +409,18 @@ public sealed class Conversation
     public bool ContextCompactionBlocked { get; set; }
 
     public string Mode { get; set; } = ChatModes.Agent;
+
+    /// <summary>The durable objective for this conversation. Null means this is an ordinary prompt thread.</summary>
+    public string? Goal { get; set; }
+
+    /// <summary>Lifecycle state for <see cref="Goal"/>. Older sessions without a goal have no value.</summary>
+    public string? GoalState { get; set; }
+
+    /// <summary>Timestamp of the user turn that established the current goal.</summary>
+    public DateTimeOffset? GoalTurnAt { get; set; }
+
+    /// <summary>Number of automatic continuation runs already spent on the current goal.</summary>
+    public int GoalContinuationCount { get; set; }
     public string ReasoningEffort { get; set; } = ChatReasoningEfforts.Default;
 
     /// <summary>Whether the person or Hub picks the model and tier for this session — see

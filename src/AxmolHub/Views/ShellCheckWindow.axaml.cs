@@ -397,10 +397,16 @@ public partial class ShellCheckWindow : Window
             "模式取消图标使用轻量的文字叉号，字体走应用的 UI 字族栈（实际 " + closeGlyph.FontFamily + "）");
         Check(panel.ClickComposerModeMenuForCheck(ChatModes.Agent)
               && panel.SelectedModeForCheck == ChatModes.Agent
+              && panel.ComposerModeMarkerForCheck == ChatModes.Agent
+              && panel.CheckedComposerMenuModesForCheck.SequenceEqual([ChatModes.Agent])
+              && panel.ModeIndicatorVisibleForCheck
+              && panel.ModeIndicatorLabelForCheck == HubStrings.Get("ChatModeGoal"),
+            "显式选择目标会退出计划并显示目标胶囊；Agent 仍是目标运行时的基础工作模式");
+        Check(panel.ClickComposerModeMenuForCheck(ChatModes.Agent)
               && panel.ComposerModeMarkerForCheck is null
               && panel.CheckedComposerMenuModesForCheck.Length == 0
               && !panel.ModeIndicatorVisibleForCheck,
-            "点击目标取消计划：两档都不勾、胶囊消失、菜单立即关闭（目标就是菜单全不勾的默认）");
+            "再次选择目标可取消未发送的目标草稿并回到默认 Agent");
         Check(panel.ClickComposerModeMenuForCheck(ChatModes.Plan)
               && panel.ComposerModeMarkerForCheck == ChatModes.Plan
               && panel.ClickComposerModeMenuForCheck(ChatModes.Plan)
@@ -408,7 +414,7 @@ public partial class ShellCheckWindow : Window
               && panel.ComposerModeMarkerForCheck is null
               && panel.CheckedComposerMenuModesForCheck.Length == 0
               && !panel.ModeIndicatorVisibleForCheck,
-            "再点已勾选的计划就是取消勾选：回到默认目标模式");
+            "再点已勾选的计划就是取消勾选：回到默认 Agent 模式");
         Check(panel.ClickComposerModeMenuForCheck(ChatModes.Plan)
               && panel.ComposerModeMarkerForCheck == ChatModes.Plan,
             "可重新启用计划模式");
@@ -417,7 +423,7 @@ public partial class ShellCheckWindow : Window
               && panel.ComposerModeMarkerForCheck is null
               && !panel.ModeIndicatorVisibleForCheck
               && panel.CheckedComposerMenuModesForCheck.Length == 0,
-            "点击模式按钮的删除图标恢复默认目标模式并取消勾选");
+            "点击模式按钮的删除图标恢复默认 Agent 模式并取消勾选");
         // The marker is the session's, not the panel's. A field on ChatPanel used to carry it, and a field that
         // only clicks write leaves the composer naming 计划 on a session that is about to run in the default mode
         // — so the pair below is the bug: what the chip says, and what the session's own file says.
@@ -460,6 +466,28 @@ public partial class ShellCheckWindow : Window
         Check(panel.SelectedModeForCheck == ChatModes.Ask && !panel.ModeIndicatorVisibleForCheck
               && panel.CheckedComposerMenuModesForCheck.Length == 0,
             "提问模式不戴胶囊也不勾任何一档，模式照旧生效（实际模式「" + panel.SelectedModeForCheck + "」）");
+        shell.Chat.OpenConversation(markerPeer.Id);
+        shell.Chat.SeedGoalForCheck(markerPeer.Id, "完成目标并依据证据核验");
+        Dispatcher.UIThread.RunJobs();
+        Check(panel.GoalMessageCardCountForCheck == 1
+              && panel.GoalMessageCardPrecedesUserPillForCheck
+              && panel.GoalMessageCardTitleForCheck == "完成目标并依据证据核验"
+              && panel.GoalMessageCardStatusForCheck.StartsWith(HubStrings.Get("ChatGoalActive"), StringComparison.Ordinal)
+              && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalPause"))
+              && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalClear"))
+              && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalCollapse"))
+              && shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Goal == "完成目标并依据证据核验",
+            "显式目标会持久化，卡片贴在目标消息上方并提供暂停、清除和折叠操作");
+        shell.Chat.PauseGoal(markerPeer.Id);
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.Chat.StoredCopyForCheck(markerPeer.Id)?.GoalState == ChatGoalStates.Paused
+              && panel.GoalMessageCardStatusForCheck.StartsWith(HubStrings.Get("ChatGoalPaused"), StringComparison.Ordinal),
+            "目标暂停操作持久化状态并更新目标卡");
+        shell.Chat.ClearGoal(markerPeer.Id);
+        Dispatcher.UIThread.RunJobs();
+        Check(shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Goal is null
+              && panel.GoalMessageCardStatusForCheck.StartsWith(HubStrings.Get("ChatGoalCleared"), StringComparison.Ordinal),
+            "清除目标会移除会话目标并保留可辨认的历史目标卡");
         foreach (var id in new[] { markerBranch?.Id, markerSource.Id, markerPeer.Id })
             if (id is { } gone) shell.Chat.DeleteConversation(gone);
         // The page goes back to whatever the fixture had on screen: deleting the active session empties the panel,
