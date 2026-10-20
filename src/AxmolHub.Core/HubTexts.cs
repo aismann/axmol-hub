@@ -658,6 +658,20 @@ public static class HubTexts
         ["ChatWorkspaceGrantedMenu"] = ("已授权的目录", "Granted to this session"),
         ["ChatWorkspaceRevokeFormat"] = ("撤销对 {0} 的授权", "Revoke access to {0}"),
         ["ChatWorkspaceRevoked"] = ("已撤销该目录的授权，助手不再读写它。", "That directory is no longer granted; the assistant cannot read or write there now."),
+        // The person's own door to the same grant: the menu reads a folder and records it exactly as an approved
+        // card would, so a task that needs a second directory does not depend on the assistant being willing to ask.
+        // Each refusal below is the panel's own words for a `GrantVerdict` — the tool's sentences are for the model.
+        ["ChatWorkspaceMenuGrant"] = ("授权一个目录…", "Grant a folder…"),
+        ["ChatWorkspaceGrantPickTitle"] = ("选择要授权给本会话的目录", "Choose a folder to grant to this session"),
+        ["ChatWorkspaceGrantDoneFormat"] = ("已授权「{0}」，助手现在可以读写它。", "“{0}” is granted: the assistant can read and write there now."),
+        ["ChatWorkspaceGrantSameFormat"] = ("「{0}」就是本会话的工作目录，不需要授权。", "“{0}” is this session's workspace already, so it needs no grant."),
+        ["ChatWorkspaceGrantInsideFormat"] = ("「{0}」在工作目录里面，相对路径已经能到它。", "“{0}” is inside the workspace, so a relative path already reaches it."),
+        ["ChatWorkspaceGrantAlreadyFormat"] = ("「{0}」已经授权给本会话了。", "“{0}” is already granted to this session."),
+        ["ChatWorkspaceGrantInsideGrantFormat"] = ("「{0}」已经在已授权的「{1}」里面。", "“{0}” is already inside “{1}”, which this session holds."),
+        ["ChatWorkspaceGrantContainsWorkspace"] = ("这个目录包含本会话的工作目录，授权它会打开比你要的更多的地方。", "That folder contains this session's workspace, so granting it would open more than the folder you asked about."),
+        ["ChatWorkspaceGrantContainsGrantFormat"] = ("这个目录包含已单独授权的「{0}」，请选一个更窄的目录。", "That folder contains “{0}”, which was granted on its own; pick a narrower one."),
+        ["ChatWorkspaceGrantUnusable"] = ("这个目录不能用：它不存在，或读不到。", "That folder cannot be used: it is missing, or it cannot be read."),
+        ["ChatWorkspaceGrantSessionGone"] = ("这个会话已经不在了，什么都没记下来。", "That session is gone, so nothing was recorded."),
         ["ChatWorkspaceOutside"] = ("这个目录不在本会话允许的范围内（工作目录或已授权目录）。", "That directory is not inside this session's allowed directories — its workspace or one granted to it."),
         ["ChatAttachmentFailed"] = ("读取聊天上下文失败：", "Could not read chat context: "),
         ["ChatFolderPrefix"] = ("文件夹：", "Folder: "),

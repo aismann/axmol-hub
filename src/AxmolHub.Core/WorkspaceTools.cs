@@ -537,81 +537,59 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                  + "named. It shows one approval card, and approving it adds that directory for the rest of this "
                  + "session — alongside the workspace, not instead of it — after which read_file, file_write, "
                  + "list_directory, search_text, find_files, workspace_map and run_command's cwd all take its "
-                 + "absolute paths. Ask only for a directory the user's own words named, ask once, and never guess "
-                 + "a path to ask for.")]
+                 + "absolute paths. Never ask the user for permission in prose first: calling this tool *is* the "
+                 + "request, and the card it shows *is* the approval, so a sentence that waits for the user to "
+                 + "authorize you in words parks the task forever. If the user's own words already named the "
+                 + "directory, call this tool now, once, and let the card decide; only a directory nobody has named "
+                 + "yet is worth asking about first, and never one you guessed at.")]
     public async Task<string> RequestDirectory(
         [Description("Absolute path of the directory to grant, for example D:\\dev\\other-project")]
         string path)
     {
-        if (string.IsNullOrWhiteSpace(path))
-            return "Refused: request_directory needs the absolute path of a directory. Do not retry it empty.";
-        if (!Path.IsPathRooted(path))
-            return $"Refused: '{path}' is not an absolute path. Ask the user for the full directory. Do not retry "
-                   + "a relative one.";
-
-        string full;
-        try
+        var (verdict, full, detail) = WorkspacePaths.ClassifyGrant(context.Sandbox, context.Guards, path);
+        switch (verdict)
         {
-            full = Path.GetFullPath(path.Trim());
-        }
-        catch (Exception ex) when (ex is ArgumentException or System.Security.SecurityException or NotSupportedException)
-        {
-            return $"Refused: '{path}' is not a usable path ({ex.Message}). Do not retry it.";
-        }
-
-        if (!Directory.Exists(full))
-            return $"Refused: '{full}' does not exist or is not a directory. Ask the user to confirm the path; do "
-                   + "not guess another one.";
-        // The floor under every card: a person cannot approve what the guard would refuse in every mode, and a
-        // card that promised the Hub data directory or a .git would be a card that lies.
-        if (WorkspacePaths.IsProtected(full, context.Guards))
-            return WorkspacePaths.ResultFor(WorkspacePathVerdict.ProtectedRoot, full);
-
-        if (WorkspacePaths.CanonicalRoot(context.Sandbox.Primary) is { } workspace)
-        {
-            if (string.Equals(WorkspacePaths.CanonicalRoot(full), workspace, StringComparison.Ordinal))
+            case GrantVerdict.Granted:
+                return context.ApplyGrantedRoot is { } apply
+                    ? await apply(full).ConfigureAwait(false)
+                    : $"Granted {full} to this session: read and write, alongside the workspace.";
+            case GrantVerdict.NoPath:
+                return "Refused: request_directory needs the absolute path of a directory. Do not retry it empty.";
+            case GrantVerdict.NotAbsolute:
+                return $"Refused: '{path}' is not an absolute path. Ask the user for the full directory. Do not retry "
+                       + "a relative one.";
+            case GrantVerdict.Unusable:
+                return $"Refused: '{path}' is not a usable path ({detail}). Do not retry it.";
+            case GrantVerdict.Missing:
+                return $"Refused: '{full}' does not exist or is not a directory. Ask the user to confirm the path; do "
+                       + "not guess another one.";
+            case GrantVerdict.Protected:
+                return WorkspacePaths.ResultFor(WorkspacePathVerdict.ProtectedRoot, full);
+            case GrantVerdict.SameAsWorkspace:
                 return $"'{full}' already is this session's workspace, so it needs no grant. Work in it with "
                        + "relative paths and do not retry this call.";
-            if (IsUnder(workspace, full))
+            case GrantVerdict.InsideWorkspace:
                 return $"'{full}' is inside the session workspace, so a relative path already reaches it. Use one "
                        + "like src/main.cpp; do not retry this call.";
-            if (IsUnder(full, workspace))
-                return $"Refused: '{full}' contains the session workspace '{workspace}', so a grant would open more "
+            case GrantVerdict.ContainsWorkspace:
+                return $"Refused: '{full}' contains the session workspace '{detail}', so a grant would open more "
                        + "than the folder you asked about. Ask for the directory you actually need; do not retry "
                        + "this one.";
+            case GrantVerdict.AlreadyGranted:
+                return $"'{full}' is already granted to this session. Name it by absolute path in read_file, "
+                       + "file_write, list_directory or run_command's cwd; do not ask again.";
+            case GrantVerdict.InsideGrant:
+                return $"'{full}' is already inside '{detail}', which this session holds. Work there with absolute "
+                       + "paths; do not ask again.";
+            case GrantVerdict.ContainsGrant:
+                return $"Refused: '{full}' contains '{detail}', which this session was granted on its own. Ask for "
+                       + "the directory you actually need; a grant covers one folder and what is under it.";
+            default:
+                // SessionGone, which only the workspace menu's own row can see — a card is always answered inside a
+                // session that exists. The sentence is the one ApplyGrantedRoot already answers when the record
+                // fails, so the two doors describe a vanished session the same way.
+                return "Refused: the session is gone, so nothing could be granted. Do not retry this call.";
         }
-
-        if (context.Sandbox.Granted.Any(granted =>
-                string.Equals(WorkspacePaths.CanonicalRoot(granted), WorkspacePaths.CanonicalRoot(full),
-                    StringComparison.Ordinal)))
-            return $"'{full}' is already granted to this session. Name it by absolute path in read_file, "
-                   + "file_write, list_directory or run_command's cwd; do not ask again.";
-        // Nesting is named rather than merged: a request quietly covered by a grant already held, or one that
-        // would cover a grant on its own, is answered with which directory is in the way — a second, silently
-        // wider grant is a card promising one folder and a session holding two.
-        if (context.Sandbox.Granted.FirstOrDefault(granted => IsUnder(granted, full)) is { } alreadyHeld)
-            return $"'{full}' is already inside '{alreadyHeld}', which this session holds. Work there with absolute "
-                   + "paths; do not ask again.";
-        if (context.Sandbox.Granted.FirstOrDefault(granted => IsUnder(full, granted)) is { } underneath)
-            return $"Refused: '{full}' contains '{underneath}', which this session was granted on its own. Ask for "
-                   + "the directory you actually need; a grant covers one folder and what is under it.";
-
-        return context.ApplyGrantedRoot is { } apply
-            ? await apply(full).ConfigureAwait(false)
-            : $"Granted {full} to this session: read and write, alongside the workspace.";
-    }
-
-    /// <summary>Whether <paramref name="child"/> sits <b>strictly</b> under <paramref name="parent"/>. Compared in
-    /// the canonical spelling, so the answer is the same on a host that folds case, and kept apart from
-    /// <see cref="WorkspacePaths.IsProtected"/>'s containment test because that one counts a root as inside itself
-    /// — the one case a grant's nesting question has to exclude, or every directory would be inside the workspace
-    /// it is.</summary>
-    private static bool IsUnder(string? parent, string child)
-    {
-        if (WorkspacePaths.CanonicalRoot(parent) is not { } above) return false;
-        if (WorkspacePaths.CanonicalRoot(child) is not { } below) return false;
-        var prefix = above.EndsWith(Path.DirectorySeparatorChar) ? above : above + Path.DirectorySeparatorChar;
-        return below.StartsWith(prefix, StringComparison.Ordinal);
     }
 
     [Description("Fetch one web page over https and return its text with the scripts, styles and menus taken out. "

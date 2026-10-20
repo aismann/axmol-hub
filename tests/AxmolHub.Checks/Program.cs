@@ -4720,6 +4720,44 @@ if (args.Contains("--check-ai-tools"))
         || !(await tools.RequestDirectory(toolRoot)).Contains("contains the session workspace", StringComparison.Ordinal))
         throw new Exception("request_directory accepted a relative, missing, protected, internal or enclosing directory.");
 
+    // The description is the only sentence the model reads before it decides whether asking is even allowed, and
+    // the card *is* the permission: a model that waits to be authorized in prose parks the task forever, which is
+    // exactly what one did while this line was missing.
+    var grantMethod = typeof(WorkspaceTools).GetMethod(nameof(WorkspaceTools.RequestDirectory));
+    var grantDescription = (Attribute.GetCustomAttribute(grantMethod!,
+            typeof(System.ComponentModel.DescriptionAttribute)) as System.ComponentModel.DescriptionAttribute)
+        ?.Description ?? "";
+    if (!grantDescription.Contains("Never ask the user for permission in prose first", StringComparison.Ordinal)
+        || !grantDescription.Contains("the card it shows *is* the approval", StringComparison.Ordinal))
+        throw new Exception("request_directory's description does not say the card is the permission.");
+
+    // One ruling for both doors — the model's card and the workspace menu's own row — so the two cannot start
+    // accepting directories the other refuses. The nesting pair needs directories of its own: every folder above a
+    // grant inside toolRoot is also above the workspace there, and that question is answered first.
+    static GrantVerdict GradeGrant(WorkspaceSandbox box, WorkspaceGuards g, string path)
+        => WorkspacePaths.ClassifyGrant(box, g, path).Verdict;
+    var grantParent = Path.Combine(root, "grant-parent");
+    var grantLeaf = Path.Combine(grantParent, "leaf");
+    Directory.CreateDirectory(grantLeaf);
+    if (GradeGrant(WorkspaceSandbox.For(workspace), guards, "relative/path") != GrantVerdict.NotAbsolute
+        || GradeGrant(WorkspaceSandbox.For(workspace), guards, "") != GrantVerdict.NoPath
+        || GradeGrant(WorkspaceSandbox.For(workspace), guards, Path.Combine(toolRoot, "no-such-folder"))
+            != GrantVerdict.Missing
+        || GradeGrant(WorkspaceSandbox.For(workspace), guards, dataRoot) != GrantVerdict.Protected
+        || GradeGrant(WorkspaceSandbox.For(workspace), guards, workspace) != GrantVerdict.SameAsWorkspace
+        || GradeGrant(WorkspaceSandbox.For(workspace), guards, Path.Combine(workspace, "src"))
+            != GrantVerdict.InsideWorkspace
+        || GradeGrant(WorkspaceSandbox.For(workspace), guards, toolRoot) != GrantVerdict.ContainsWorkspace
+        || GradeGrant(WorkspaceSandbox.For(workspace), guards, outsiderRoot) != GrantVerdict.Granted
+        || GradeGrant(new WorkspaceSandbox(workspace, [grantedRoot]), guards, grantedRoot)
+            != GrantVerdict.AlreadyGranted
+        || GradeGrant(new WorkspaceSandbox(workspace, [grantedRoot]), guards, Path.Combine(grantedRoot, "src"))
+            != GrantVerdict.InsideGrant
+        || GradeGrant(new WorkspaceSandbox(outsiderRoot, [grantLeaf]), guards, grantParent)
+            != GrantVerdict.ContainsGrant)
+        throw new Exception("ClassifyGrant disagreed with the answers request_directory gives.");
+
+
     var holdingTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "grant-ask", [], log)
     { Sandbox = grantBox });
     if (!(await holdingTools.RequestDirectory(grantedRoot)).Contains("already granted", StringComparison.Ordinal)

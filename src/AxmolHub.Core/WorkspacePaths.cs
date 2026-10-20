@@ -100,6 +100,43 @@ public enum WorkspaceTarget
 }
 
 /// <summary>
+/// Every answer a directory can get when somebody asks for it to be opened — the model on a
+/// <c>request_directory</c> card, or the person on the workspace menu's own grant row. One ruling, two renderings:
+/// <see cref="WorkspaceTools.RequestDirectory"/> turns these into sentences for the model, the panel turns them
+/// into the interface's own words, and neither can drift from the other because the answer is a value rather than
+/// a string. <see cref="Granted"/> is the only one that changes anything.
+/// </summary>
+public enum GrantVerdict
+{
+    /// <summary>The directory may be added to the session's sandbox.</summary>
+    Granted,
+    /// <summary>No path in the argument at all.</summary>
+    NoPath,
+    /// <summary>A relative path: a grant is always named by its absolute path.</summary>
+    NotAbsolute,
+    /// <summary>Rooted, but not a path this host can resolve; <c>Detail</c> carries the reason.</summary>
+    Unusable,
+    /// <summary>Nothing at that path, or a file rather than a directory.</summary>
+    Missing,
+    /// <summary>The Hub data directory, an engine installation or a .git: refused in every mode.</summary>
+    Protected,
+    /// <summary>The session's own workspace, which needs no grant.</summary>
+    SameAsWorkspace,
+    /// <summary>Inside the workspace, where a relative path already reaches.</summary>
+    InsideWorkspace,
+    /// <summary>Above the workspace: a grant there would open more than the folder asked about.</summary>
+    ContainsWorkspace,
+    /// <summary>Already granted to this session.</summary>
+    AlreadyGranted,
+    /// <summary>Inside a directory this session already holds; <c>Detail</c> names it.</summary>
+    InsideGrant,
+    /// <summary>Above a directory this session holds on its own; <c>Detail</c> names it.</summary>
+    ContainsGrant,
+    /// <summary>The session was gone before the grant could be recorded. Only the person's door can see this.</summary>
+    SessionGone,
+}
+
+/// <summary>
 /// Confines the assistant's file tools to the directories one session has: its workspace, and the directories a
 /// person granted that session. Deliberately separate from the approval gate: the gate decides whether a call may
 /// run now, this decides whether the path is inside the sandbox at all. Containment of a relative path reuses
@@ -478,6 +515,67 @@ public static class WorkspacePaths
         if (string.IsNullOrWhiteSpace(root)) return false;
         var prefix = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return fullPath.StartsWith(prefix, comparison) || fullPath.Equals(prefix.TrimEnd(Path.DirectorySeparatorChar), comparison);
+    }
+
+    /// <summary>
+    /// Judges one directory a grant was asked for, and hands back the normalized path plus whichever other
+    /// directory the answer turns on (<c>Detail</c>): why a path was unusable, the workspace a grant would have
+    /// swallowed, or the grant a second one would overlap. Parsing an argument stays the caller's job; every rule
+    /// about where a directory may sit stays here, so the card and the workspace menu cannot disagree.
+    /// </summary>
+    public static (GrantVerdict Verdict, string Full, string Detail) ClassifyGrant(
+        WorkspaceSandbox sandbox, WorkspaceGuards guards, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return (GrantVerdict.NoPath, "", "");
+        if (!Path.IsPathRooted(path)) return (GrantVerdict.NotAbsolute, "", "");
+
+        string full;
+        try
+        {
+            full = Path.GetFullPath(path.Trim());
+        }
+        catch (Exception ex) when (ex is ArgumentException or System.Security.SecurityException or NotSupportedException)
+        {
+            return (GrantVerdict.Unusable, "", ex.Message);
+        }
+
+        if (!Directory.Exists(full)) return (GrantVerdict.Missing, full, "");
+        // The floor under every card: a person cannot approve what the guard would refuse in every mode, and a card
+        // that promised the Hub data directory or a .git would be a card that lies.
+        if (IsProtected(full, guards)) return (GrantVerdict.Protected, full, "");
+
+        if (CanonicalRoot(sandbox.Primary) is { } workspace)
+        {
+            if (string.Equals(CanonicalRoot(full), workspace, StringComparison.Ordinal))
+                return (GrantVerdict.SameAsWorkspace, full, "");
+            if (IsUnder(workspace, full)) return (GrantVerdict.InsideWorkspace, full, "");
+            if (IsUnder(full, workspace)) return (GrantVerdict.ContainsWorkspace, full, workspace);
+        }
+
+        if (sandbox.Granted.Any(granted =>
+                string.Equals(CanonicalRoot(granted), CanonicalRoot(full), StringComparison.Ordinal)))
+            return (GrantVerdict.AlreadyGranted, full, "");
+        // Nesting is named rather than merged: a request quietly covered by a grant already held, or one that would
+        // cover a grant on its own, is answered with which directory is in the way — a second, silently wider grant
+        // is a card promising one folder and a session holding two.
+        if (sandbox.Granted.FirstOrDefault(granted => IsUnder(granted, full)) is { } alreadyHeld)
+            return (GrantVerdict.InsideGrant, full, alreadyHeld);
+        if (sandbox.Granted.FirstOrDefault(granted => IsUnder(full, granted)) is { } underneath)
+            return (GrantVerdict.ContainsGrant, full, underneath);
+
+        return (GrantVerdict.Granted, full, "");
+    }
+
+    /// <summary>Whether <paramref name="child"/> sits <b>strictly</b> under <paramref name="parent"/>. Compared in
+    /// the canonical spelling, so the answer is the same on a host that folds case, and kept apart from
+    /// <see cref="IsProtected"/>'s containment test because that one counts a root as inside itself — the one case
+    /// a grant's nesting question has to exclude, or every directory would be inside the workspace it is.</summary>
+    public static bool IsUnder(string? parent, string? child)
+    {
+        if (CanonicalRoot(parent) is not { } above) return false;
+        if (CanonicalRoot(child) is not { } below) return false;
+        var prefix = above.EndsWith(Path.DirectorySeparatorChar) ? above : above + Path.DirectorySeparatorChar;
+        return below.StartsWith(prefix, StringComparison.Ordinal);
     }
 
     /// <summary>

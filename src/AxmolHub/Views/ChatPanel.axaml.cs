@@ -1033,6 +1033,16 @@ public partial class ChatPanel : UserControl
         };
         menu.Items.Add(choose);
 
+        // The person's own door to a grant, above the model's: a task that needs a second directory must not be
+        // parked on the assistant being willing to ask for one. Same ruling as the card's body, different words.
+        var grant = new MenuItem { Header = HubStrings.Get("ChatWorkspaceMenuGrant") };
+        grant.Click += async (_, _) =>
+        {
+            menu.Hide();
+            await GrantFolderAsync();
+        };
+        menu.Items.Add(grant);
+
         if (_chat.ActiveWorkspaceRoot is { Length: > 0 })
         {
             var clear = new MenuItem { Header = HubStrings.Get("ChatWorkspaceMenuClear") };
@@ -1108,6 +1118,73 @@ public partial class ChatPanel : UserControl
                 return;
         }
     }
+
+    /// <summary>
+    /// Grant a folder to this session from the workspace menu — the same ruling the approval card's body runs
+    /// (<see cref="WorkspacePaths.ClassifyGrant"/>, through the workspace), so the two doors cannot disagree about
+    /// what a directory has to be. Only the words are the panel's own: the sentences the tool hands back are
+    /// written for the model.
+    /// </summary>
+    private async Task GrantFolderAsync()
+    {
+        if (_chat is null || _chat.ActiveConversation is not { } session) return;
+        var owner = TopLevel.GetTopLevel(this);
+        if (owner is null) return;
+        var result = await Pickers.PickFolderAsync(owner, HubStrings.Get("ChatWorkspaceGrantPickTitle"));
+        if (result.Outcome == PickOutcome.Cancelled) return;
+        if (result.Outcome == PickOutcome.NotLocal)
+        {
+            AppendNotice(HubStrings.Get("ChatFolderNotLocal"), danger: true);
+            return;
+        }
+
+        // The picker answers a folder or nothing; an empty path here would be a picker bug, and it is answered by
+        // saying nothing rather than by a notice about a directory nobody named.
+        if (result.Path is not { Length: > 0 } picked) return;
+
+        var (verdict, detail) = await _chat.GrantDirectoryAsync(session.Id, picked);
+        switch (verdict)
+        {
+            case null:
+                AppendNotice(Notice("ChatWorkspaceGrantDoneFormat", picked), danger: false);
+                return;
+            case GrantVerdict.Protected:
+                AppendNotice(HubStrings.Get("ChatWorkspaceProtected"), danger: true);
+                return;
+            // The four that answer "you already have it": said plainly and without the danger colour, because
+            // nothing went wrong — the folder the person named is simply reachable by another spelling.
+            case GrantVerdict.SameAsWorkspace:
+                AppendNotice(Notice("ChatWorkspaceGrantSameFormat", picked), danger: false);
+                return;
+            case GrantVerdict.InsideWorkspace:
+                AppendNotice(Notice("ChatWorkspaceGrantInsideFormat", picked), danger: false);
+                return;
+            case GrantVerdict.AlreadyGranted:
+                AppendNotice(Notice("ChatWorkspaceGrantAlreadyFormat", picked), danger: false);
+                return;
+            case GrantVerdict.InsideGrant:
+                AppendNotice(Notice("ChatWorkspaceGrantInsideGrantFormat", picked, detail), danger: false);
+                return;
+            case GrantVerdict.ContainsGrant:
+                AppendNotice(Notice("ChatWorkspaceGrantContainsGrantFormat", detail), danger: true);
+                return;
+            case GrantVerdict.ContainsWorkspace:
+                AppendNotice(HubStrings.Get("ChatWorkspaceGrantContainsWorkspace"), danger: true);
+                return;
+            case GrantVerdict.SessionGone:
+                AppendNotice(HubStrings.Get("ChatWorkspaceGrantSessionGone"), danger: true);
+                return;
+            default:
+                // NoPath, NotAbsolute, Unusable, Missing: the picker hands back an absolute folder that exists, so
+                // this arm is what a directory deleted between the picker and the call looks like.
+                AppendNotice(HubStrings.Get("ChatWorkspaceGrantUnusable"), danger: true);
+                return;
+        }
+    }
+
+    /// <summary>One localized sentence with its placeholders filled, in the reader's own culture.</summary>
+    private static string Notice(string key, params object[] arguments)
+        => string.Format(System.Globalization.CultureInfo.CurrentCulture, HubStrings.Get(key), arguments);
 
     /// <summary>
     /// The flyout this panel last opened. A popup is its own top-level, so a screenshot of one has to start
