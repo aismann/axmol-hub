@@ -17,16 +17,28 @@ namespace AxmolHub;
 /// </summary>
 internal static class ChatTools
 {
-    /// <summary>The tools for one request. <c>ask</c> mode gets none: a session that may not act should not be
-    /// offered the chance to. <c>plan</c> gets the read-only ones, which is what its prompt already claims —
-    /// plus the question tool, which is not read-only and never was a permission question either way: it reads
+    /// <summary>The tools for one request. <c>ask</c> gets only explicitly enabled DeepSeek web tools, which
+    /// read external information without changing the workspace. <c>plan</c> gets the ordinary read-only tools
+    /// and those same optional web tools, plus the question tool, which is not read-only and never was a
+    /// permission question either way: it reads
     /// nothing and changes nothing, it stops the run and waits for a person.</summary>
     public static IReadOnlyList<AITool> CreateFor(string mode, ChatToolScope scope) => mode switch
     {
-        ChatModes.Ask => [],
-        ChatModes.Plan => [.. ReadOnlyTools(scope), .. AskingTools(scope)],
-        _ => [.. ReadOnlyTools(scope), .. ActingTools(scope), .. AskingTools(scope), .. PlanTaskTools(scope)],
+        ChatModes.Ask => [.. DeepSeekWebTools(scope)],
+        ChatModes.Plan => [.. ReadOnlyTools(scope), .. DeepSeekWebTools(scope), .. AskingTools(scope)],
+        _ => [.. ReadOnlyTools(scope), .. DeepSeekWebTools(scope), .. ActingTools(scope), .. AskingTools(scope), .. PlanTaskTools(scope)],
     };
+
+    private static IEnumerable<AITool> DeepSeekWebTools(ChatToolScope scope)
+    {
+        if (!scope.DeepSeekWebApiEnabled || scope.Workspace.DeepSeekWeb is null) return [];
+        var tools = new WorkspaceTools(scope.Workspace);
+        return
+        [
+            AIFunctionFactory.Create(tools.SearchWeb, Options("web_search")),
+            AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")),
+        ];
+    }
 
     /// <summary>The question tool, or nothing. Switched off means the model is never told the capability exists,
     /// which is the only shape of "don't ask me" that cannot leave a run parked on a question nobody will read —
@@ -67,10 +79,12 @@ internal static class ChatTools
         // Reading a page sends nothing the shell could not already send: a sandboxed run_command has been able to
         // reach the same address without a card since the auto tier was drawn, and a refusal that pushes the model
         // off the named, bounded, source-showing tool and onto that path is a worse guard, not a stricter one. So
-        // web_fetch shares the sandbox-command tier and the guards that actually bite are elsewhere: the address
-        // policy in WebFetch (https, public host, redirect cannot cross out of either), the byte cap, and Hub's own
-        // outbound switch, which no approval mode can open. Spelled out rather than left to the fallback arm, for
-        // the standing reason: "unknown tool" and "this tool was thought about" must not read the same here.
+        // Local web_fetch shares the sandbox-command tier: its address policy, byte cap and outbound switch are
+        // enforced by WebFetch. The DeepSeek API variant is a read-only request and takes the branches above.
+        // Spelled out rather than left to the fallback arm so "unknown tool" and "this tool was thought about"
+        // do not read the same here.
+        "web_search" when scope.DeepSeekWeb is not null => ToolRisk.ReadOnly,
+        "web_fetch" when scope.DeepSeekWeb is not null => ToolRisk.ReadOnly,
         "web_fetch" => ToolRisk.WorkspaceCommand,
         // Asking for a directory is asking for a place nobody has agreed to yet, so it sits on the tier that always
         // asks. It stays there whatever the path is: the card *is* the mechanism, and a
@@ -288,8 +302,8 @@ internal static class ChatTools
     private static IReadOnlyList<AITool> ActingTools(ChatToolScope scope)
     {
         var tools = new WorkspaceTools(scope.Workspace);
-        return
-        [
+        var result = new List<AITool>
+        {
             AIFunctionFactory.Create(tools.FileWrite, Options("file_write")),
             AIFunctionFactory.Create(tools.RunCommand, Options("run_command")),
             // The name is the pair's, not this call's: web_fetch reads a page from here, and the phase-two search
@@ -297,12 +311,14 @@ internal static class ChatTools
             // provider's own kind string. Two nouns in front of "fetch" and "search" so the model sees one capability
             // family even though only this half has a Hub body. The method behind it is FetchWebPage because
             // WebFetch is the rules class in Core's namespace, and a method of that name would shadow it here.
-            AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")),
             AIFunctionFactory.Create(tools.CaptureScreen, Options("capture_screen")),
             AIFunctionFactory.Create(tools.RequestDirectory, Options("request_directory")),
             AIFunctionFactory.Create(tools.MemoryWrite, Options("memory_write")),
             AIFunctionFactory.Create(tools.SendToSession, Options("send_to_session")),
             AIFunctionFactory.Create(tools.SpawnSession, Options("spawn_session")),
-        ];
+        };
+        if (!scope.DeepSeekWebApiMode)
+            result.Add(AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")));
+        return result;
     }
 }

@@ -129,6 +129,9 @@ public sealed class HubPreferences
     /// </summary>
     public bool AllowHostedWebSearch { get; set; }
 
+    /// <summary>Whether Hub may make billable Search/Fetch requests to DeepSeek's web tools API. Off by default.</summary>
+    public bool AllowDeepSeekWebApi { get; set; }
+
     /// <summary>
     /// Whether a model's own thinking is put on screen. <b>On by default</b>, and deliberately in the same
     /// direction as <see cref="AllowOutboundWebFetch"/>: a reasoning model's chain of thought ships as part of

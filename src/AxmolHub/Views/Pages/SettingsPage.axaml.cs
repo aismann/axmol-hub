@@ -184,6 +184,7 @@ public partial class SettingsPage : UserControl
         SpawnCheck.IsCheckedChanged += (_, _) => OnSpawnChanged();
         WebFetchCheck.IsCheckedChanged += (_, _) => OnWebFetchChanged();
         HostedWebSearchCheck.IsCheckedChanged += (_, _) => OnHostedWebSearchChanged();
+        DeepSeekWebApiCheck.IsCheckedChanged += (_, _) => OnDeepSeekWebApiChanged();
         ShowThinkingCheck.IsCheckedChanged += (_, _) => OnShowThinkingChanged();
         WireProviders();
         InitializeCategories();
@@ -367,6 +368,7 @@ public partial class SettingsPage : UserControl
             SpawnCheck.IsChecked = _preferences.AllowSpawnedSessions;
             WebFetchCheck.IsChecked = _preferences.AllowOutboundWebFetch;
             HostedWebSearchCheck.IsChecked = _preferences.AllowHostedWebSearch;
+            DeepSeekWebApiCheck.IsChecked = _preferences.AllowDeepSeekWebApi;
             ShowThinkingCheck.IsChecked = _preferences.ShowThinking;
             // Re-render the update card from the last known check: this re-localizes the status line
             // on a language switch (it is written imperatively) and reflects a check the shell already
@@ -1107,6 +1109,17 @@ public partial class SettingsPage : UserControl
 
     internal bool AllowHostedWebSearchForCheck => _preferences.AllowHostedWebSearch;
 
+    private void OnDeepSeekWebApiChanged()
+    {
+        if (!_ready) return;
+        var value = DeepSeekWebApiCheck.IsChecked == true;
+        if (value == _preferences.AllowDeepSeekWebApi) return;
+        _preferences.AllowDeepSeekWebApi = value;
+        _preferencesStore.Save(_preferences);
+    }
+
+    internal bool AllowDeepSeekWebApiForCheck => _preferences.AllowDeepSeekWebApi;
+
     /// <summary>The one switch on this pane that changes pixels already on screen, so it cannot stop at the file.
     /// The assistant page is cached and its renderer only lays down turns past the last one it painted — a flip
     /// that only wrote the setting would sit there looking broken until the person started a new conversation.
@@ -1497,6 +1510,7 @@ public partial class SettingsPage : UserControl
         {
             Content = HubStrings.Get("ProviderHostedWebSearch"),
             IsChecked = ProviderServerTools.DeclaresWebSearch(provider.ServerTools),
+            IsEnabled = provider.WebToolsBackend != WebToolBackends.DeepSeekApi,
             Tag = SectionTags.ProviderHostedSearch,
             Margin = new Thickness(0, 2, 0, 0),
         };
@@ -1514,6 +1528,34 @@ public partial class SettingsPage : UserControl
             TextWrapping = TextWrapping.Wrap,
             Tag = SectionTags.ProviderHostedSearchHint,
         });
+
+        var webBackend = new ComboBox
+        {
+            Width = 280,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+            Tag = SectionTags.ProviderWebToolsBackend,
+            Items =
+            {
+                new ComboBoxItem { Content = HubStrings.Get("ProviderWebToolsBackendHosted"), Tag = WebToolBackends.Default },
+                new ComboBoxItem { Content = HubStrings.Get("ProviderWebToolsBackendDeepSeek"), Tag = WebToolBackends.DeepSeekApi },
+            },
+        };
+        webBackend.SelectedItem = webBackend.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(item => Equals(item.Tag, provider.WebToolsBackend)) ?? webBackend.Items[0];
+        webBackend.SelectionChanged += (_, _) =>
+        {
+            if (webBackend.SelectedItem is ComboBoxItem { Tag: string backend }
+                && _chat.SetProviderWebToolsBackend(provider.Id, backend))
+                RebuildProviderGroups();
+        };
+        content.Children.Add(new TextBlock
+        {
+            Text = HubStrings.Get("ProviderWebToolsBackend"),
+            Classes = { "muted" },
+            FontSize = 11,
+            Margin = new Thickness(0, 4, 0, 0),
+        });
+        content.Children.Add(webBackend);
 
         if (!provider.CanAuthenticate)
         {
@@ -3400,6 +3442,26 @@ public partial class SettingsPage : UserControl
         if (toggle is not null) toggle.IsChecked = enabled;
     }
 
+    internal string? ProviderWebToolsBackendForCheck(string providerId)
+    {
+        if (GroupCards.FirstOrDefault(card => card.Tag as string == providerId)?.Child
+            is not StackPanel content) return null;
+        return content.Children.OfType<ComboBox>()
+            .FirstOrDefault(combo => combo.Tag as string == SectionTags.ProviderWebToolsBackend)?.SelectedItem
+            is ComboBoxItem { Tag: string backend } ? backend : null;
+    }
+
+    internal bool SetProviderWebToolsBackendForCheck(string providerId, string backend)
+    {
+        if (GroupCards.FirstOrDefault(card => card.Tag as string == providerId)?.Child
+            is not StackPanel content) return false;
+        var combo = content.Children.OfType<ComboBox>()
+            .FirstOrDefault(control => control.Tag as string == SectionTags.ProviderWebToolsBackend);
+        if (combo is null) return false;
+        combo.SelectedItem = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(item => Equals(item.Tag, backend));
+        return combo.SelectedItem is ComboBoxItem;
+    }
+
     internal bool SetModelListExpandedForCheck(string providerId, bool expanded)
     {
         var toggle = GroupCards
@@ -3641,6 +3703,7 @@ public partial class SettingsPage : UserControl
         internal const string ProviderHeaderDivider = "provider-header-divider";
         internal const string ProviderHostedSearch = "provider-hosted-search";
         internal const string ProviderHostedSearchHint = "provider-hosted-search-hint";
+        internal const string ProviderWebToolsBackend = "provider-web-tools-backend";
 
         /// <summary>The control that re-fetches the list from the endpoint.</summary>
         internal const string RefreshModels = "provider-refresh-models";

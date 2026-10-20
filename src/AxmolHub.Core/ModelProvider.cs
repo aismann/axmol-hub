@@ -50,6 +50,9 @@ public sealed class ModelProvider
     /// <summary>OpenAI-compatible base URL. Built-in providers have a default; a custom provider requires the user to fill it.</summary>
     public string BaseUrl { get; set; } = "";
 
+    /// <summary>The web tools implementation selected for this provider.</summary>
+    public string WebToolsBackend { get; set; } = "";
+
     /// <summary>
     /// How this provider can be authenticated (see <see cref="ProviderAuthMethods"/>), in the order the picker
     /// offers them. A built-in provider takes the list from its manifest entry on every load; a custom one keeps

@@ -77,7 +77,8 @@ public sealed record WorkspaceToolScope(
     // Last for a mechanical reason worth stating: this record is built positionally by a few dozen assertions, and a
     // parameter in the middle would silently shift every one of them. Only the app builds it by hand.
     Func<string, Task<string>>? ApplyGrantedRoot = null,
-    Func<int, string, string>? UpdatePlanTask = null)
+    Func<int, string, string>? UpdatePlanTask = null,
+    DeepSeekWebApiBridge? DeepSeekWeb = null)
 {
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
@@ -687,6 +688,9 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         int max_characters = WebFetch.DefaultCharacters,
         CancellationToken cancellationToken = default)
     {
+        if (context.DeepSeekWeb is not null)
+            return await FetchDeepSeekWebPage(url, max_characters, cancellationToken).ConfigureAwait(false);
+
         // No path guard runs here, deliberately: the sandbox says nothing about a URL. What has something to say is
         // the setting (is this Hub allowed out at all), WebFetch's scheme-and-host policy (is this address one to
         // ask), and the approval tier the registration names (does a person have to agree first).
@@ -700,6 +704,93 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         context.Log?.Write($"Assistant fetching {SecretRedaction.Redact(target.ToString(), context.SensitiveValues)}");
         return await WebFetch.FetchAsync(bridge, target, max_characters, context.SensitiveValues, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    [Description("Fetch one public HTTPS web page through the configured DeepSeek Fetch API and return its title and Markdown content.")]
+    public async Task<string> FetchDeepSeekWebPage(
+        string url,
+        int max_characters = WebFetch.DefaultCharacters,
+        CancellationToken cancellationToken = default)
+    {
+        var bridge = context.DeepSeekWeb;
+        if (bridge is null) return "Refused: DeepSeek Fetch API is not configured for this provider. Do not retry.";
+        if (!bridge.Allowed()) return "Refused: DeepSeek Search/Fetch API is disabled in Hub settings. Do not retry.";
+        if (context.Web is not { } web)
+            return WebFetch.ResultFor(new WebFetchDecision(WebFetchVerdict.RefusedNoHost, null), url ?? "");
+        // The DeepSeek master switch governs this backend; local Hub fetching has its own independent setting.
+        // Reuse only the shared URL policy here and do not inherit that local-fetch toggle.
+        var decision = WebFetch.Decide(new WebBridge(() => true, web.Get), url);
+        if (decision.Verdict != WebFetchVerdict.Allowed) return WebFetch.ResultFor(decision, url ?? "");
+
+        try
+        {
+            var page = await bridge.Fetch(decision.Target!, cancellationToken).ConfigureAwait(false);
+            var title = string.IsNullOrWhiteSpace(page.Title) ? "(untitled page)" : page.Title.Trim();
+            var content = page.Content ?? "";
+            var limit = Math.Clamp(max_characters, 1, WebFetch.MaxCharacters);
+            if (content.Length > limit) content = content[..limit] + "\n[Content truncated by Hub]";
+            return $"Title: {title}\nURL: {decision.Target}\n\n{content}";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return "DeepSeek Fetch API call was canceled with the conversation. No result was returned.";
+        }
+        catch (OperationCanceledException)
+        {
+            return "DeepSeek Fetch API call timed out. No result was returned; retry only if still needed.";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or
+                                   System.Text.Json.JsonException)
+        {
+            return $"DeepSeek Fetch API failed ({ex.GetType().Name}: {ex.Message}). Check the endpoint and API key; do not retry immediately.";
+        }
+    }
+
+    [Description("Search the live web using DeepSeek's Search API. Returns ranked titles, URLs, and summaries; use web_fetch to read a selected page.")]
+    public async Task<string> SearchWeb(
+        [Description("A concise web search query, from 1 to 128 characters.")] string query,
+        [Description("The user's original question that led to this search, when available.")] string? original_question = null,
+        CancellationToken cancellationToken = default)
+    {
+        var bridge = context.DeepSeekWeb;
+        if (bridge is null) return "Refused: DeepSeek Search API is not configured for this provider. Do not retry.";
+        if (!bridge.Allowed()) return "Refused: DeepSeek Search/Fetch API is disabled in Hub settings. Do not retry.";
+        var normalized = (query ?? "").Trim();
+        if (normalized.Length is < 1 or > 128)
+            return "Refused: query must contain 1 to 128 characters. Do not retry with the same query.";
+        try
+        {
+            var response = await bridge.Search(new DeepSeekWebSearchRequest(normalized,
+                OriginalQuestion: string.IsNullOrWhiteSpace(original_question)
+                    ? null : original_question.Trim()[..Math.Min(original_question.Trim().Length, 128)]),
+                cancellationToken).ConfigureAwait(false);
+            if (response.Results.Count == 0) return "No web search results were found.";
+            var output = new System.Text.StringBuilder();
+            foreach (var result in response.Results)
+            {
+                output.Append("- ").Append(result.Title).Append("\n  URL: ").Append(result.Url);
+                if (!string.IsNullOrWhiteSpace(result.SiteName)) output.Append("\n  Site: ").Append(result.SiteName);
+                if (!string.IsNullOrWhiteSpace(result.Date)) output.Append("\n  Date: ").Append(result.Date);
+                if (!string.IsNullOrWhiteSpace(result.Summary)) output.Append("\n  Summary: ").Append(result.Summary);
+                else if (!string.IsNullOrWhiteSpace(result.Snippet)) output.Append("\n  Summary: ").Append(result.Snippet);
+                output.Append("\n  Authority: ").Append(result.Authority).Append("; relevance: ")
+                    .Append(result.Score.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)).Append("\n");
+            }
+            return output.ToString();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return "DeepSeek Search API call was canceled with the conversation. No result was returned.";
+        }
+        catch (OperationCanceledException)
+        {
+            return "DeepSeek Search API call timed out. No result was returned; retry only if still needed.";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or
+                                   System.Text.Json.JsonException)
+        {
+            return $"DeepSeek Search API failed ({ex.GetType().Name}: {ex.Message}). Check the endpoint and API key; do not retry immediately.";
+        }
     }
 
     [Description("Capture one window, or the whole display, as an image and put it in this conversation so you can "

@@ -2656,6 +2656,28 @@ public partial class ChatPanel : UserControl
         if (!fromUser && ServerSearchLog.Read(turn.WebSearch) is { IsEmpty: false } searches)
             body.Children.Add(BuildSearchSources(searches));
 
+        if (isLast && !fromUser && turn.Role != ChatRoles.Tool
+            && _chat.ActiveConversation is { } active && active.Id == conversationId)
+        {
+            var apiCalls = active.Messages.Select(message => message.WebApiCall)
+                .Where(call => call is not null).ToArray();
+            if (apiCalls.Length > 0)
+            {
+                var searchesCount = apiCalls.Count(call => call!.Operation == "search");
+                var fetchesCount = apiCalls.Count(call => call!.Operation == "fetch");
+                var billableSearches = apiCalls.Count(call => call!.Operation == "search" && call.Billable);
+                var billableFetches = apiCalls.Count(call => call!.Operation == "fetch" && call.Billable);
+                var estimated = (billableSearches + billableFetches) * 0.005m;
+                body.Children.Add(new TextBlock
+                {
+                    Classes = { "muted", "tool-result-line" },
+                    Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                        HubStrings.Get("DeepSeekWebUsageFormat"), searchesCount, billableSearches,
+                        fetchesCount, billableFetches, estimated),
+                });
+            }
+        }
+
         if (approvalSurface is not null) body.Children.Add(approvalSurface);
         return row;
     }
@@ -7033,13 +7055,16 @@ public partial class ChatPanel : UserControl
         await WaitForRunToFinishForCheck();
     }
 
-    /// <summary>Pumps the dispatcher until the viewed session's run is over. A check that wants the finished
-    /// answer has to ask for it now: a reply arrives independently of whoever pressed send.</summary>
+    /// <summary>Pumps until the viewed run ends or genuinely needs another human decision. An approved run may
+    /// still be in its parked phase while its asynchronous continuation starts; that gap is not completion.</summary>
     internal async Task WaitForRunToFinishForCheck()
     {
-        for (var wait = 0; wait < 200 && IsStreamingForCheck; wait++)
+        for (var wait = 0; wait < 200 && ViewedRun is { } run; wait++)
         {
             Dispatcher.UIThread.RunJobs();
+            if (run.Phase == RunPhase.AwaitingApproval
+                && _chat.ActiveConversation?.Messages.Any(turn =>
+                    turn.ApprovalState == ChatApprovalStates.Pending) == true) return;
             await Task.Delay(5);
         }
     }

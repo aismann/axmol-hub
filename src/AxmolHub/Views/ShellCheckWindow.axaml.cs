@@ -153,6 +153,7 @@ public partial class ShellCheckWindow : Window
             "自检起步语言被强制为中文（否则断言会随用户设置漂移，实测 " + HubStrings.Language + "）");
 
         CheckStringDefinition();
+        await VerifyDeepSeekWebApiTransportAsync();
         CheckWindowsTaskbarBadge();
         CheckWindowsToastInterop();
         CheckMacNotificationInterop();
@@ -188,6 +189,126 @@ public partial class ShellCheckWindow : Window
         CheckWorkspaceGroups(scratchRoot, shell);
         await CheckDataRootSwitch(scratchRoot, shell);
         await CheckRealRender(shell);
+    }
+
+    private async Task VerifyDeepSeekWebApiTransportAsync()
+    {
+        var handler = new DeepSeekApiProbeHandler();
+        using var http = new System.Net.Http.HttpClient(handler);
+        var provider = new ModelProvider
+        {
+            BaseUrl = "https://api.deepseek.com/v1",
+            Credential = new ProviderCredential { Secret = "probe-key" },
+        };
+        var calls = new List<DeepSeekWebApiCall>();
+        var bridge = OutboundDeepSeekWebApi.Bridge(provider, http, () => true, calls.Add)!;
+        handler.Responses.Enqueue((System.Net.HttpStatusCode.OK,
+            """{"results":[{"rerank_score":2.1,"title":"Guide","url":"https://example.com/guide","snippet":"short","summary":"long","content":"","site_name":"Example","date":null,"authority":3}]}"""));
+        var search = await bridge.Search(new DeepSeekWebSearchRequest("engine guide"), CancellationToken.None);
+        using (var body = System.Text.Json.JsonDocument.Parse(handler.Requests[0].Body))
+        {
+            var root = body.RootElement;
+            Check(handler.Requests[0].Url == "https://api.deepseek.com/v1/tools/search"
+                  && handler.Requests[0].Authorization == "Bearer probe-key"
+                  && root.GetProperty("query").GetString() == "engine guide"
+                  && !root.GetProperty("need_content").GetBoolean()
+                  && !root.TryGetProperty("count", out _)
+                  && search.Results.Count == 1,
+                "DeepSeek Search 使用官方地址、Bearer 鉴权和默认条数，并关闭正文返回");
+        }
+
+        handler.Responses.Enqueue((System.Net.HttpStatusCode.OK,
+            """{"title":"Guide","content":"# Guide"}"""));
+        var fetch = await bridge.Fetch(new Uri("https://example.com/guide"), CancellationToken.None);
+        using (var body = System.Text.Json.JsonDocument.Parse(handler.Requests[1].Body))
+            Check(handler.Requests[1].Url == "https://api.deepseek.com/v1/tools/fetch"
+                  && body.RootElement.GetProperty("url").GetString() == "https://example.com/guide"
+                  && fetch.Content == "# Guide" && calls.Count == 2 && calls.All(call => call.Billable),
+                "DeepSeek Fetch 发送页面 URL 并记录成功调用");
+
+        handler.Responses.Enqueue((System.Net.HttpStatusCode.OK, """{"results":[]}"""));
+        _ = await bridge.Search(new DeepSeekWebSearchRequest("no results"), CancellationToken.None);
+        Check(calls.Count == 3 && !calls[^1].Billable,
+            "空搜索结果会保留调用记录但不计入成功计费次数");
+
+        handler.Responses.Enqueue((System.Net.HttpStatusCode.Unauthorized,
+            """{"error":{"message":"invalid key"}}"""));
+        var tools = new WorkspaceTools(WorkspaceToolScope.Empty with { DeepSeekWeb = bridge });
+        var error = await tools.SearchWeb("bad key");
+        Check(error.Contains("HTTP 401", StringComparison.Ordinal)
+              && calls.Count == 4 && !calls[^1].Billable,
+            "API 错误作为明确工具结果返回，并保留非计费调用记录");
+
+        handler.CancelNext = true;
+        var timeout = await tools.SearchWeb("timeout");
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        var canceledResult = await tools.SearchWeb("canceled", cancellationToken: canceled.Token);
+        Check(timeout.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+              && canceledResult.Contains("canceled", StringComparison.OrdinalIgnoreCase)
+              && calls.Count == 6 && calls[^1] is { Operation: "search", Billable: false }
+              && calls[^2] is { Operation: "search", Billable: false },
+            "超时和取消返回清晰工具结果，不计费成功且保留调用记录");
+
+        var offBridge = OutboundDeepSeekWebApi.Bridge(provider, http, () => false, null)!;
+        var scoped = WorkspaceToolScope.Empty with { DeepSeekWeb = offBridge };
+        var namesOff = ChatTools.CreateFor(ChatModes.Agent,
+            new ChatToolScope(new ChatWorkspace.HubReadOnlySnapshot([], [], []), scoped, DeepSeekWebApiMode: true, DeepSeekWebApiEnabled: false))
+            .Select(tool => tool.Name).ToArray();
+        var namesOn = ChatTools.CreateFor(ChatModes.Agent,
+            new ChatToolScope(new ChatWorkspace.HubReadOnlySnapshot([], [], []), scoped, DeepSeekWebApiMode: true, DeepSeekWebApiEnabled: true))
+            .Select(tool => tool.Name).ToArray();
+        Check(!namesOff.Contains("web_search") && !namesOff.Contains("web_fetch")
+              && namesOn.Contains("web_search") && namesOn.Contains("web_fetch")
+              && namesOn.Count(name => name is "web_search" or "web_fetch") == 2,
+            "总开关关闭时 API 工具不暴露，开启时只提供一组 Search/Fetch 工具");
+    }
+
+    private void CheckDeepSeekWebUsage(MainWindow shell, ChatPanel panel)
+    {
+        var chat = shell.Chat;
+        var previous = chat.ActiveConversation?.Id;
+        var session = chat.StartConversation();
+        try
+        {
+            session.Append(ChatTurn.User("检查网页 API 调用统计"));
+            void AddCall(string operation, bool billable)
+            {
+                var id = NextCallId("web-usage");
+                session.Append(ChatTurn.FunctionCall(id, "web_" + operation, "{}"));
+                session.AppendFunctionResult(ChatTurn.FunctionResult(id, "Probe result",
+                    webApiCall: new DeepSeekWebApiCall(operation, billable, DateTimeOffset.UtcNow)));
+            }
+            bool ShowsUsage(int searches, int billableSearches, int fetches, int billableFetches, decimal cost)
+            {
+                panel.Reload();
+                Relayout(shell, panel, measure: true);
+                var expected = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("DeepSeekWebUsageFormat"),
+                    searches, billableSearches, fetches, billableFetches, cost);
+                return panel.GetLogicalDescendants().OfType<TextBlock>().Any(block => block.Text == expected);
+            }
+
+            AddCall("search", false);
+            AddCall("fetch", false);
+            chat.SeedAssistantReplyForCheck(session.Id, "这两次请求没有计费结果。");
+            Check(ShowsUsage(1, 0, 1, 0, 0m),
+                "网页 API 没有计费成功时仍显示 Search/Fetch 总调用次数和零估算费用");
+
+            AddCall("search", true);
+            AddCall("fetch", true);
+            chat.SeedAssistantReplyForCheck(session.Id, "这两次请求返回了计费结果。");
+            var stored = chat.StoredCopyForCheck(session.Id)?.Messages
+                .Select(turn => turn.WebApiCall).Where(call => call is not null).ToArray();
+            Check(ShowsUsage(2, 1, 2, 1, 0.010m)
+                  && stored?.Length == 4 && stored.Count(call => call!.Billable) == 2,
+                "会话保存全部 API 调用，显示总次数与计费成功次数，并只按成功次数估算费用");
+        }
+        finally
+        {
+            chat.DeleteConversation(session.Id);
+            if (previous is not null) chat.OpenConversation(previous);
+            panel.Reload();
+        }
     }
 
     /// <summary>
@@ -1697,7 +1818,7 @@ public partial class ShellCheckWindow : Window
             Check(panel.LastNoticeTextForCheck?.StartsWith(HubStrings.Get("ChatNoResponse"), StringComparison.Ordinal) == true
                   && panel.LastNoticeTextForCheck!.Contains("finish_reason: length", StringComparison.Ordinal),
                 "端点给了理由，提示就把理由一起说清楚（实际「" + panel.LastNoticeTextForCheck + "」）");
-            Check(silenceAudits.Any(line => line.Contains("Completed with no content", StringComparison.Ordinal)
+            Check(silenceAudits.Any(line => line.Contains("Completed without a final answer", StringComparison.Ordinal)
                     && line.Contains("finish_reason=length", StringComparison.Ordinal)),
                 "一声不吭的结束在日志里留下一行，带模型名和端点给的理由（实际抓到 " + silenceAudits.Count + " 行审计）");
             var silentCopy = shell.Chat.StoredCopyForCheck(silentRun.Id);
@@ -2258,6 +2379,7 @@ public partial class ShellCheckWindow : Window
         await CheckWorkspaceChipAsync(shell, panel);
         await CheckCrossSessionAsync(shell, panel, sidebar);
         await CheckSpawnAsync(shell, panel, sidebar);
+        CheckDeepSeekWebUsage(shell, panel);
         await CheckPictureAsync(shell, panel);
         await CheckEmptyStateAsync(shell, panel);
         await CheckPictureFeedbackAsync(shell, panel);
@@ -3532,6 +3654,7 @@ public partial class ShellCheckWindow : Window
         var savedPreferences = chat.PreferencesProvider;
         var savedOverride = chat.ClientOverride;
         var children = new List<string>();
+        var finishChild = PeerGate();
         try
         {
             var parentRuns = 0;
@@ -3539,7 +3662,7 @@ public partial class ShellCheckWindow : Window
                 ? ++parentRuns <= 2
                     ? new SpawnAskingChatClient($"第 {parentRuns} 问")
                     : new ScriptedChatClient(["已收到子会话结论。"])
-                : new ScriptedChatClient(["子会话查完了，结论就两行。"]);
+                : new ScriptedChatClient(["子会话查完了，结论就两行。"], gate: finishChild.Task);
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
 
@@ -3570,6 +3693,8 @@ public partial class ShellCheckWindow : Window
                 + string.Join(" / ", newResults) + "」）");
             if (children.Count == 1)
             {
+                // Exercise an idle parent's automatic wake, independently of the parent's tool-loop timing.
+                finishChild.TrySetResult(true);
                 await WaitForRunAsync(chat, children[0]);
                 await WaitForRunAsync(chat, parent.Id);
                 var child = chat.OpenConversation(children[0]);
@@ -3599,6 +3724,7 @@ public partial class ShellCheckWindow : Window
         }
         finally
         {
+            finishChild.TrySetResult(true);
             chat.PreferencesProvider = savedPreferences;
             chat.ClientOverride = savedOverride;
             foreach (var id in children) chat.DeleteConversation(id);
@@ -4841,7 +4967,7 @@ public partial class ShellCheckWindow : Window
         var chat = shell.Chat;
         var savedOverride = chat.ClientOverride;
         var session = chat.StartConversation();
-        var workspace = ScratchDirectory.Resolve("activity-workspace");
+        var workspace = Path.Combine(ScratchDirectory.Resolve("activity-workspace"), Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(workspace);
         // Held open by the last scene so a check can work on a run that is still calling tools; released on the
         // way out whatever an assertion did, because a closed gate parks the suite, not just the cell.
@@ -5352,7 +5478,7 @@ public partial class ShellCheckWindow : Window
             chat.SetApprovalMode(chipSession.Id, ToolApprovalModes.Ask);
             chat.OpenConversation(chipSession.Id);
             System.IO.File.WriteAllText(System.IO.Path.Combine(workspace, "chip-note.txt"), "第一行\n第二行\n");
-            chat.ClientOverride = (_, _) => new ApprovalChatClient
+            var chipClient = new ApprovalChatClient
             {
                 CallsRemaining = 1,
                 ToolName = "file_write",
@@ -5363,6 +5489,7 @@ public partial class ShellCheckWindow : Window
                     ["new_string"] = "第二行（改过）",
                 },
             };
+            chat.ClientOverride = (_, _) => chipClient;
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
             panel.SetInputForCheck("改一行，然后我要看改动");
@@ -5401,7 +5528,9 @@ public partial class ShellCheckWindow : Window
                   && chipPane.ChangeRowCountForCheck == 1
                   && chipPane.FirstChangePathForCheck == "chip-note.txt"
                   && panel.ActivityGroupInstanceTokenForCheck(0) == chipTokenBefore,
-                "点组头上那个数字，右边那一列就开到改动页并列出刚动过的文件，而那一折还是同一个控件、没有被这次点击重建");
+                "点组头上那个数字，右边那一列就开到改动页并列出刚动过的文件，而那一折还是同一个控件、没有被这次点击重建"
+                + $"（点击 {chipPressed}，显示 {shell.InspectorVisibleForCheck}，行 {chipPane.ChangeRowCountForCheck}，"
+                + $"路径 {chipPane.FirstChangePathForCheck}，组 {chipTokenBefore}/{panel.ActivityGroupInstanceTokenForCheck(0)}）");
             // A repaint that folds everything the reader had opened is the same teardown seen from the other side:
             // the row is opened here, before the second run, and has to come back open out of it.
             chipPane.ClickChangeRowForCheck(0);
@@ -5411,7 +5540,7 @@ public partial class ShellCheckWindow : Window
                 + chipPane.ChangeRowTextForCheck(0) + "」）");
             // The pane is open while the assistant keeps working, which is exactly when it used to stop telling the
             // truth: it was painted once, on opening, and every write after that landed in a list nobody repainted.
-            chat.ClientOverride = (_, _) => new ApprovalChatClient
+            var chipTwoClient = new ApprovalChatClient
             {
                 CallsRemaining = 1,
                 ToolName = "file_write",
@@ -5422,6 +5551,7 @@ public partial class ShellCheckWindow : Window
                     ["new_string"] = "新建的一行\n",
                 },
             };
+            chat.ClientOverride = (_, _) => chipTwoClient;
             panel.SetInputForCheck("再新建一个文件");
             _ = panel.SendComposerForCheck();
             var secondCallId = await WaitForPendingCallAsync(chipSession);
@@ -5698,7 +5828,8 @@ public partial class ShellCheckWindow : Window
                   && rankedPillBottom is { } pill && pill < card.BottomRelativeToFrame - 1,
                 "有待批准问题时，问题卡才是贴着输入框的那一行，胶囊排在它上面（卡片下沿 "
                 + (rankedCardBottom?.BottomRelativeToFrame.ToString("F1", CultureInfo.InvariantCulture) ?? "?")
-                + "，胶囊下沿 " + (rankedPillBottom ?? double.NaN).ToString("F1", CultureInfo.InvariantCulture) + "）");
+                + "，胶囊下沿 " + (rankedPillBottom ?? double.NaN).ToString("F1", CultureInfo.InvariantCulture)
+                + $"，显示 {panel.ChangesPillVisibleForCheck}，等待 {rankedPending}，文件 {ChatChanges.Of(rankedSession).Count}）");
             chat.DeleteConversation(rankedSession.Id);
             // A row that fits is the other half of the same claim: nothing is owed a row that holds nothing.
             var bareSession = chat.StartConversation();
@@ -9431,10 +9562,12 @@ public partial class ShellCheckWindow : Window
             Relayout(shell, panel, measure: true);
             await WaitUntilAsync(() => panel.UndoButtonsForCheck == 1);
             var afterNewest = chat.StoredCopyForCheck(parkSession.Id);
-            var stillUndoable = afterNewest?.Messages.Count(turn => turn.UndoName is { Length: > 0 }) ?? -1;
+            static bool HasUndo(ChatTurn turn) => !turn.UndoConsumed
+                && (turn.ChangeId is { Length: > 0 } || turn.UndoName is { Length: > 0 });
+            var stillUndoable = afterNewest?.Messages.Count(HasUndo) ?? -1;
             Check(System.IO.File.ReadAllText(target) == "第一行\n第二行（已改）\n"
                   && panel.UndoButtonsForCheck == 1 && stillUndoable == 1,
-                "撤销最新那次写入：文件退回它写入前的内容，用完的副本一起删掉，更早那次仍可撤销（现在「"
+                "撤销最新那次写入：文件退回它写入前的内容，用完的入口消失，历史副本仍保留，更早那次仍可撤销（现在「"
                 + System.IO.File.ReadAllText(target).Replace('\n', '·') + "」）");
             Check(afterNewest!.Messages.Any(turn => turn.Role == ChatRoles.User
                       && turn.Text.Contains(string.Format(CultureInfo.CurrentCulture,
@@ -9446,8 +9579,8 @@ public partial class ShellCheckWindow : Window
             await WaitUntilAsync(() => panel.UndoButtonsForCheck == 0);
             Check(System.IO.File.ReadAllText(target) == "第一行\n第二行\n"
                   && panel.UndoButtonsForCheck == 0
-                  && (chat.StoredCopyForCheck(parkSession.Id)?.Messages.Count(turn => turn.UndoName is { Length: > 0 }) ?? -1) == 0,
-                "再撤一次退回更早那次写入，两个按钮随各自的副本一起消失（现在「"
+                  && (chat.StoredCopyForCheck(parkSession.Id)?.Messages.Count(HasUndo) ?? -1) == 0,
+                "再撤一次退回更早那次写入，两个撤销入口都被消耗（现在「"
                 + System.IO.File.ReadAllText(target).Replace('\n', '·') + "」）");
 
             // The guard is the reason this is a command rather than a file copy: once a person has edited the
@@ -9473,11 +9606,14 @@ public partial class ShellCheckWindow : Window
                 "文件被事后改过时拒绝恢复：话说清了原因、手工改动保住了、副本没被消耗、也没假称已经恢复（提示「"
                 + panel.LastNoticeTextForCheck + "」；按钮 " + panel.UndoButtonsForCheck
                 + "；调用 " + CallState() + "）");
-            var keptName = parkSession.Messages.LastOrDefault(turn => turn.UndoName is { Length: > 0 })?.UndoName ?? "";
-            var undoRoot = chat.UndoDirectoryForCheck(parkSession.Id) ?? "";
-            Check(keptName.Length > 0 && undoRoot.Length > 0
-                  && System.IO.File.Exists(System.IO.Path.Combine(undoRoot, keptName)),
-                "没被消耗的副本仍躺在磁盘上，等那次手工改动被撤掉（记的是文件名「" + keptName + "」）");
+            var kept = parkSession.Messages.LastOrDefault(HasUndo);
+            var keptChange = chat.ChangesFor(parkSession).LastOrDefault(change => change.ChangeId == kept?.ChangeId);
+            var keptSnapshot = keptChange is null ? null
+                : chat.SnapshotForChange(keptChange, kept?.ChangeId, out _);
+            Check(kept is { ChangeId.Length: > 0 } && keptSnapshot is not null
+                  && keptSnapshot.Before == "第一行\n第二行\n"
+                  && keptSnapshot.After == "第一行\n第二行（已改）\n",
+                "拒绝撤销后完整前后副本仍可读取，手工改动没有替换历史内容（版本「" + kept?.ChangeId + "」）");
 
             // Refusing is an ending: the model is told it was refused, and it is not asked to talk about it.
             chat.IdleTimeout = savedIdleTimeout;
@@ -10324,15 +10460,13 @@ public partial class ShellCheckWindow : Window
             await WaitForIdleAsync(chat);
             var quiet = chat.StoredCopyForCheck(unreported.Id);
             var quietUsage = chat.TranscriptUsageForCheck(unreported.Id);
-            // The ceiling is "a plausible conversation", not a number to hit: it catches an estimate that read a
-            // silent gateway as zero, and it has to move whenever a tool declaration is added, because every
-            // schema rides every request. ask_user's took roughly 400 of these tokens, which is why the headroom
-            // is now a fifth rather than a hair — a bound this one sits on breaks for the next tool too.
+            // A gateway that omits usage must retain a nonzero estimate within the available input window.
+            // Tool declarations are part of that estimate, so their growth must not trip an arbitrary token cap.
             Check(quiet?.LastInputTokens == 0 && quiet.LastUsageAt is null
                   && quietUsage.EffectiveWindow == ContextBudget.FallbackTokens
                   && quietUsage.Source == CapabilitySource.Fallback
                   && !quietUsage.IsMeasured
-                  && quietUsage.Used < 6_000 && quietUsage.Used > 0,
+                  && quietUsage.Used < quietUsage.Room && quietUsage.Used > 0,
                 "从不报用量的网关不会被读成 0，这条会话仍然按估算计量（实测 " + quietUsage.Used
                 + "/" + quietUsage.Room + "，窗口 " + quietUsage.EffectiveWindow + "）");
             // The rows are the whole point of the meter: a category that never made it into the total is a
@@ -10639,10 +10773,11 @@ public partial class ShellCheckWindow : Window
                   && panel.WorkspaceChipHintForCheck == HubStrings.Get("ChatWorkspaceChipHint"),
                 "没有绑定目录时工作区胶囊仍然可见，并读出「未设工作目录」（实际「"
                 + panel.WorkspaceChipLabelForCheck + "」）");
-            Check(panel.WorkspaceMenuTitlesForCheck.SequenceEqual([HubStrings.Get("ChatWorkspaceMenuChoose")],
+            Check(panel.WorkspaceMenuTitlesForCheck.SequenceEqual(
+                    [HubStrings.Get("ChatWorkspaceMenuChoose"), HubStrings.Get("ChatWorkspaceMenuGrant")],
                     StringComparer.Ordinal)
                   && panel.OpenWorkspaceMenuForCheck() is not null,
-                "没有绑定目录时菜单只提供「选择」，不提供无从谈起「清除」（实际 "
+                "没有绑定目录时菜单提供「选择」和「授权」，不提供无从谈起「清除」（实际 "
                 + string.Join(" / ", panel.WorkspaceMenuTitlesForCheck) + "）");
             Check(!chat.PreparedSystemPromptForCheck(session.Id)
                     .Contains("Memory index", StringComparison.Ordinal),
@@ -10754,9 +10889,11 @@ public partial class ShellCheckWindow : Window
                 "圆环明细里有「项目规则」这一行且不为 0（" + string.Join("；", chipRows) + "）");
 
             Check(panel.WorkspaceMenuTitlesForCheck.SequenceEqual(
-                    [HubStrings.Get("ChatWorkspaceMenuChoose"), HubStrings.Get("ChatWorkspaceMenuClear")],
+                    [HubStrings.Get("ChatWorkspaceMenuChoose"), HubStrings.Get("ChatWorkspaceMenuGrant"),
+                        HubStrings.Get("ChatWorkspaceMenuClear")],
                     StringComparer.Ordinal),
-                "绑定之后菜单多出「清除」一行（实际 " + string.Join(" / ", panel.WorkspaceMenuTitlesForCheck) + "）");
+                "绑定之后菜单保留「选择」和「授权」，并多出「清除」一行（实际 "
+                + string.Join(" / ", panel.WorkspaceMenuTitlesForCheck) + "）");
 
             // Attachments are capped by "how much the model's window can hold", not just by on-disk bytes:
             // 160 KiB of Chinese is tens of thousands of tokens, and with the old small windows the truncator
@@ -12234,6 +12371,12 @@ public partial class ShellCheckWindow : Window
         Check(settings.ProviderHostedSearchToggleVisibleForCheck("deepseek")
               && settings.ProviderHostedSearchToggleValueForCheck("deepseek") == false,
             "provider 分组提供独立的服务端搜索能力开关，并默认不声明");
+        Check(settings.ProviderWebToolsBackendForCheck("deepseek") == WebToolBackends.DeepSeekApi,
+            "DeepSeek 预设默认选择官方 Search/Fetch API 后端");
+        Check(settings.SetProviderWebToolsBackendForCheck("deepseek", WebToolBackends.Default)
+              && shell.Chat.Providers.First(provider => provider.Id == "deepseek").WebToolsBackend == WebToolBackends.Default,
+            "DeepSeek 可切换回服务商搜索与 Hub 抓取后端");
+        settings.SetProviderWebToolsBackendForCheck("deepseek", WebToolBackends.DeepSeekApi);
         settings.SetProviderHostedSearchToggleForCheck("deepseek", true);
         Check(ProviderServerTools.DeclaresWebSearch(
                   shell.Chat.Providers.First(provider => provider.Id == "deepseek").ServerTools),
@@ -12930,8 +13073,11 @@ public partial class ShellCheckWindow : Window
         // The URL is the provider's own base URL + /models. Trailing-slash tolerance is checked through the
         // request itself rather than by reading the URL-building expression: a base written as ".../v1/" is
         // legitimate user input, and "//models" 404s on a provider that otherwise works.
-        Check(keylessProbe.Requests.All(request =>
-                request.RequestUri?.AbsolutePath.TrimEnd('/').EndsWith("/models", StringComparison.Ordinal) == true),
+        // Ollama also asks its own native metadata endpoints; those must stay on the same origin.
+        var catalogUri = new Uri(target.BaseUrl.TrimEnd('/') + "/models");
+        Check(keylessProbe.Requests.Count(request => request.RequestUri == catalogUri) == 1
+              && keylessProbe.Requests.All(request => request.RequestUri?.GetLeftPart(UriPartial.Authority)
+                  == catalogUri.GetLeftPart(UriPartial.Authority)),
             "请求打到该 provider 自己的 {baseUrl}/models（实际 "
                 + keylessProbe.Requests.FirstOrDefault()?.RequestUri + "）");
 
@@ -13261,10 +13407,35 @@ public partial class ShellCheckWindow : Window
         Check(keyless is not null, "存在不需要凭据的 provider，用它确认不会被要求鉴权");
     }
 
+    /// <summary>Records web API requests and supplies bounded, offline response and cancellation fixtures.</summary>
+    private sealed class DeepSeekApiProbeHandler : System.Net.Http.HttpMessageHandler
+    {
+        public Queue<(System.Net.HttpStatusCode Status, string Body)> Responses { get; } = new();
+        public List<(string Url, string Authorization, string Body)> Requests { get; } = [];
+        public bool CancelNext { get; set; }
+
+        protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(
+            System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
+            Requests.Add((request.RequestUri?.ToString() ?? "",
+                request.Headers.Authorization?.ToString() ?? "", body));
+            if (CancelNext)
+            {
+                CancelNext = false;
+                throw new OperationCanceledException("Probe timeout");
+            }
+            var answer = Responses.Dequeue();
+            return new System.Net.Http.HttpResponseMessage(answer.Status)
+            {
+                Content = new System.Net.Http.StringContent(answer.Body, System.Text.Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+
     /// <summary>
-    /// Answers the OAuth discovery request and fails the exchange. That split is deliberate: discovery is
-    /// reached before any browser work, so it proves the flow starts, while the failing exchange stops the
-    /// check short of waiting for a callback that will never arrive.
+    /// Answers OAuth discovery but fails the exchange, so the check never waits for a real browser callback.
     /// </summary>
     private sealed class OAuthProbeHandler : System.Net.Http.HttpMessageHandler
     {
@@ -14608,8 +14779,9 @@ public partial class ShellCheckWindow : Window
         settings.SelectCategoryForCheck("permission");
         Check(NamedDescendant<CheckBox>(settings, "WebFetchCheck")?.IsChecked == true
               && NamedDescendant<CheckBox>(settings, "HostedWebSearchCheck")?.IsChecked == false
-              && !settings.AllowHostedWebSearchForCheck,
-            "网页抓取保持默认开启，服务端搜索独立显示且默认关闭");
+              && NamedDescendant<CheckBox>(settings, "DeepSeekWebApiCheck")?.IsChecked == false
+              && !settings.AllowHostedWebSearchForCheck && !settings.AllowDeepSeekWebApiForCheck,
+            "网页抓取保持默认开启，服务商搜索与 DeepSeek API 开关独立且默认关闭");
         var hostedSearchCheck = NamedDescendant<CheckBox>(settings, "HostedWebSearchCheck");
         if (hostedSearchCheck is not null) hostedSearchCheck.IsChecked = true;
         var optedInPreferences = new PreferencesStore(preferencesPath).Load();
@@ -14617,6 +14789,14 @@ public partial class ShellCheckWindow : Window
               && optedInPreferences.AllowOutboundWebFetch,
             "开启服务端搜索会单独持久化，不改变网页抓取权限");
         if (hostedSearchCheck is not null) hostedSearchCheck.IsChecked = false;
+        var deepSeekApiCheck = NamedDescendant<CheckBox>(settings, "DeepSeekWebApiCheck");
+        if (deepSeekApiCheck is not null) deepSeekApiCheck.IsChecked = true;
+        var deepSeekOptIn = new PreferencesStore(preferencesPath).Load();
+        Check(settings.AllowDeepSeekWebApiForCheck && deepSeekOptIn.AllowDeepSeekWebApi
+              && deepSeekOptIn.AllowHostedWebSearch == false
+              && deepSeekOptIn.AllowOutboundWebFetch,
+            "开启 DeepSeek API 联网总开关会独立持久化，不改变本地抓取或服务商搜索权限");
+        if (deepSeekApiCheck is not null) deepSeekApiCheck.IsChecked = false;
 
         var projectLocation = NamedDescendant<TextBox>(settings, "DefaultProjectLocation")?.Text;
         Check(projectLocation == HubTexts.Get("NotSelected", HubStrings.Language),

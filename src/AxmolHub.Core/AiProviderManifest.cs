@@ -313,6 +313,9 @@ public sealed class AiProviderEntry
     /// </summary>
     public string? RequestSemantics { get; set; }
 
+    /// <summary>Optional native web tools backend selected by this preset.</summary>
+    public string? WebToolsBackend { get; set; }
+
     /// <summary>
     /// Tools this provider runs <b>inside its own service</b> when the request offers them — today only
     /// <see cref="ProviderServerTools.WebSearch"/>. Not a Hub tool: no body, no sandbox, no approval card, and the
@@ -515,6 +518,8 @@ public static class AiProviderManifest
                 // (see ModelCatalog), and a keyless provider gets it with no secret at all.
                 MaxContextTokens = entry.MaxContextTokens,
                 CapabilitySource = entry.CapabilitySource,
+                WebToolsBackend = entry.WebToolsBackend is WebToolBackends.DeepSeekApi
+                    ? WebToolBackends.DeepSeekApi : WebToolBackends.Default,
                 // Through IsKnown, not pasted through: the manifest is hand-edited and a family label such as
                 // "anthropic" (which is what real catalogs call it, not a wire name) would otherwise arrive as a
                 // protocol nothing builds a body for. Unknown is "nothing declared", which is chat — the same

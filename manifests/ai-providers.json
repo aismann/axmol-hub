@@ -45,6 +45,7 @@
       "description": "DeepSeek's OpenAI-compatible API. The model list is read from the endpoint after you authenticate.",
       "descriptionZh": "DeepSeek 的 OpenAI 兼容接口。鉴权后从接口拉取可用模型列表。",
       "baseUrl": "https://api.deepseek.com/v1",
+      "webToolsBackend": "deepSeekApi",
       "defaultEnabledModels": ["deepseek-flash"],
       "maxContextTokens": 500000,
       "reasoningModels": {

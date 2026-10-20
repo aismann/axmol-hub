@@ -606,7 +606,8 @@ public sealed class ChatWorkspace : IDisposable
     /// its card was shown for — which is the persisted <see cref="Conversation.WorkspaceRoot"/>, not whatever is
     /// on screen now.
     /// </summary>
-    private ChatToolScope ScopeFor(string conversationId)
+    private ChatToolScope ScopeFor(string conversationId, ModelProvider? webProvider = null,
+        System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentQueue<DeepSeekWebApiCall>>? deepSeekWebCalls = null)
     {
         var session = _sessions.Peek(conversationId) ?? _sessions.Load(conversationId);
         var root = session?.WorkspaceRoot;
@@ -665,6 +666,12 @@ public sealed class ChatWorkspace : IDisposable
                 session?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
                     && turn.PlanApprovalState == PlanApprovalStates.Approved)?.Plan?.Tasks is { Count: > 0 }
                     ? (number, status) => UpdatePlanTaskStatus(conversationId, number, status)
+                    : null,
+                webProvider?.WebToolsBackend == WebToolBackends.DeepSeekApi
+                    ? OutboundDeepSeekWebApi.Bridge(webProvider, DeepSeekWebApiHttp,
+                        () => PreferencesProvider?.Invoke().AllowDeepSeekWebApi == true,
+                        call => deepSeekWebCalls?.GetOrAdd(call.Operation,
+                            _ => new System.Collections.Concurrent.ConcurrentQueue<DeepSeekWebApiCall>()).Enqueue(call))
                     : null)
             {
                 // Read from the session's own record rather than the screen: a parked call answered after a
@@ -678,7 +685,12 @@ public sealed class ChatWorkspace : IDisposable
             // tool list is assembled once per request and a parked question can be answered long after.
             session?.AskUserEnabled != false,
             session?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
-                && turn.PlanApprovalState == PlanApprovalStates.Approved)?.Plan?.Tasks is { Count: > 0 });
+                && turn.PlanApprovalState == PlanApprovalStates.Approved)?.Plan?.Tasks is { Count: > 0 },
+            webProvider?.WebToolsBackend == WebToolBackends.DeepSeekApi,
+            webProvider?.WebToolsBackend == WebToolBackends.DeepSeekApi
+                && PreferencesProvider?.Invoke().AllowDeepSeekWebApi == true
+                && webProvider.ApiKey is { Length: > 0 },
+            deepSeekWebCalls);
     }
 
     private string UpdatePlanTaskStatus(string conversationId, int taskNumber, string status)
@@ -1744,6 +1756,8 @@ public sealed class ChatWorkspace : IDisposable
                 provider.CapabilitySource = builtIn.CapabilitySource;
                 provider.ExtraHeaders = builtIn.ExtraHeaders;
                 provider.RequestSemantics = builtIn.RequestSemantics;
+                provider.WebToolsBackend = provider.WebToolsBackend.Length == 0
+                    ? builtIn.WebToolsBackend : provider.WebToolsBackend;
                 // ??= on purpose, unlike the three lines above: a hosted tool is a claim about the deployment this
                 // person is standing on, and they are the only one who can test it. The manifest is the seed.
                 // The `?? []` is for the compiler, not for a real case — `CreateBuiltIn` always hands over a list —
@@ -2301,6 +2315,16 @@ public sealed class ChatWorkspace : IDisposable
         return true;
     }
 
+    public bool SetProviderWebToolsBackend(string providerId, string backend)
+    {
+        var provider = _providerList.FirstOrDefault(item => item.Id == providerId);
+        if (provider is null || backend is not (WebToolBackends.Default or WebToolBackends.DeepSeekApi)) return false;
+        if (provider.WebToolsBackend == backend) return false;
+        provider.WebToolsBackend = backend;
+        SaveProviders();
+        return true;
+    }
+
     /// <summary>Retries startup reads after the user unlocks or grants access to the credential store.</summary>
     public void RetrySecretReads()
     {
@@ -2708,6 +2732,8 @@ public sealed class ChatWorkspace : IDisposable
     }
 
     private HttpClient? _webFetchHttp;
+
+    internal HttpClient? DeepSeekWebApiHttp { get; set; }
 
     /// <summary>
     /// How long every part of a browser sign-in gets: the wait for the callback, and the discovery and exchange
@@ -5184,10 +5210,6 @@ public sealed class ChatWorkspace : IDisposable
         return new UndoOutcome(attempt.verdict, attempt.relative, null);
     }
 
-    /// <summary>Where this session's pre-images live. A check reads it to prove that a revert which refused kept
-    /// the copy it did not use — the transcript says what the button offers, the disk says whether it is real.</summary>
-    internal string? UndoDirectoryForCheck(string conversationId) => ChatUndoStore.DirectoryFor(_dataRoot, conversationId);
-
     /// <summary>
     /// Replaces the user turn at <paramref name="index"/> with <paramref name="text"/>. Everything after the
     /// edited turn is dropped: that text was answered once already, so the reply and any later turns are stale
@@ -5861,7 +5883,9 @@ public sealed class ChatWorkspace : IDisposable
         // One scope per request: it is what the tools close over, and now also what the approval gate reads, so a
         // call's tier and a call's working directory are decided from the same value rather than two reads of the
         // session — which cannot move inside a round, because only a person moves it.
-        var scope = ScopeFor(conversationId);
+        var webApiCalls = new System.Collections.Concurrent.ConcurrentDictionary<string,
+            System.Collections.Concurrent.ConcurrentQueue<DeepSeekWebApiCall>>(StringComparer.Ordinal);
+        var scope = ScopeFor(conversationId, choice.Provider, webApiCalls);
         var tools = ChatTools.CreateFor(mode, scope);
         // Whether this endpoint gets told it may search for itself. The table is three facts and one answer, so the
         // reason a session has no search is something the audit can state instead of something a person infers from
@@ -5870,9 +5894,9 @@ public sealed class ChatWorkspace : IDisposable
         var search = WebSearchHosted.Decide(choice.Provider.ServerTools,
             ChatClientFactory.ProtocolFor(choice.Provider, modelName),
             PreferencesProvider?.Invoke().AllowHostedWebSearch == true);
-        if (search.Verdict == WebSearchHostedVerdict.On)
+        if (!scope.DeepSeekWebApiMode && search.Verdict == WebSearchHostedVerdict.On)
             tools = [.. tools, new HostedWebSearchTool()];
-        else if (ProviderServerTools.DeclaresWebSearch(choice.Provider.ServerTools))
+        else if (!scope.DeepSeekWebApiMode && ProviderServerTools.DeclaresWebSearch(choice.Provider.ServerTools))
             Audit(conversationId, $"Hosted search not offered: {WebSearchHosted.Explain(search)}");
         // What this mode's declarations cost is remembered for the meter: building the tools is the only place
         // that knows, and the ring redraws on every keystroke, so it must not pay for the reflection again.
@@ -5906,6 +5930,10 @@ public sealed class ChatWorkspace : IDisposable
             systemPrompt += "\n\nThe provider may run its hosted web search when current or external information would materially "
                 + "improve this response. Use its results where relevant and ground specific claims in the returned sources. "
                 + "This read-only capability does not grant Hub workspace tools or permission to change anything.";
+        if (scope.DeepSeekWebApiEnabled)
+            systemPrompt += "\n\nUse web_search for current or external information when it materially improves the answer. "
+                + "Use web_fetch to read a selected public HTTPS result when its summary is not enough. Search and Fetch "
+                + "are billable DeepSeek API calls; avoid duplicate calls and rely on the returned sources.";
         if (RunFor(conversationId)?.ToolNudgeArmed == true)
             systemPrompt += "\n\n" + ToolCallNudge.Sentence;
 
@@ -6118,8 +6146,12 @@ public sealed class ChatWorkspace : IDisposable
                 // lets the result carry its own duration — the bracket measures the call rather than the answer,
                 // and it closes exactly once, so a number stamped here is the one the card counted while it ran.
                 var elapsed = run.EndTool(info.CallId);
+                DeepSeekWebApiCall? webApiCall = null;
+                if (info.Name is "web_search" or "web_fetch")
+                    if (request.Scope.DeepSeekWebCalls?.TryGetValue(info.Name == "web_search" ? "search" : "fetch", out var calls) == true)
+                        calls.TryDequeue(out webApiCall);
                 var turn = ChatTurn.FunctionResult(info.CallId, result, failed, TakeFrames(run.ConversationId),
-                    CommandFacts(run.ConversationId, info.Name, elapsed));
+                    CommandFacts(run.ConversationId, info.Name, elapsed), webApiCall);
                 run.RecordToolOutcome($"{info.Name}（{OutcomeWord(failed, result)}）");
                 // The refusal that ended the loop says so in its own first words — the one place that knows
                 // while it is still true. The stream ends with no text after it, and the ending branch reads

@@ -332,6 +332,9 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// remember a search belongs to the service that ran it.</para></summary>
     public string? WebSearch { get; init; }
 
+    /// <summary>One billable or non-billable DeepSeek Search/Fetch request attached to its tool result.</summary>
+    public DeepSeekWebApiCall? WebApiCall { get; init; }
+
     /// <summary>What the command behind this result ended with, when it was a command that ended by itself — the
     /// exit code and how long it ran. Null on every turn that is not a landed <c>run_command</c>, on a result a
     /// person answered instead of a process (a refusal, a skipped question), and on every session file written
@@ -385,13 +388,15 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// the name is recorded on the result so the transcript says what was captured, and the request boundary turns
     /// it into the user-role message that carries the bytes, because a <c>tool</c> message cannot hold an image.</summary>
     public static ChatTurn FunctionResult(string callId, string text, bool failed = false,
-        IReadOnlyList<ChatImage>? images = null, ToolRunFacts? facts = null) =>
+        IReadOnlyList<ChatImage>? images = null, ToolRunFacts? facts = null,
+        DeepSeekWebApiCall? webApiCall = null) =>
         new(ChatRoles.Tool, text, DateTimeOffset.Now)
         {
             ToolCallId = callId,
             ToolFailed = failed,
             Images = images ?? [],
             ToolFacts = facts,
+            WebApiCall = webApiCall,
         };
 }
 

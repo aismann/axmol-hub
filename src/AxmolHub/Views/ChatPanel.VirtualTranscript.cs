@@ -56,6 +56,7 @@ public partial class ChatPanel
         public bool Last { get; init; }
         public bool Thinking { get; init; }
         public bool InGroup { get; init; }
+        public string? GoalStamp { get; init; }
         public string? GroupKey { get; init; }
         public List<(int Index, ChatTurn Turn, string? ToolName)>? GroupTurns { get; set; }
         public string? GroupStamp { get; set; }
@@ -65,6 +66,7 @@ public partial class ChatPanel
         public bool Same(VirtualTranscriptItem other) => Key == other.Key && Session == other.Session
             && Kind == other.Kind && Equals(Turn, other.Turn) && Equals(Call, other.Call)
             && ToolName == other.ToolName && Markdown == other.Markdown && Last == other.Last
+            && GoalStamp == other.GoalStamp
             && Thinking == other.Thinking && InGroup == other.InGroup && (Kind == "group" || GroupStamp == other.GroupStamp)
             && ReferenceEquals(Special, other.Special);
     }
@@ -433,6 +435,8 @@ public partial class ChatPanel
                 if (entry is TranscriptMessage message)
                     items.Add(new() { Key = Key(message.SourceIndex, "message"), Session = conversation.Id,
                         Source = message.SourceIndex, Turn = conversation.Messages[message.SourceIndex], Markdown = message.Markdown,
+                        GoalStamp = conversation.Messages[message.SourceIndex].IsGoal
+                            ? $"{conversation.GoalTurnAt:O}:{conversation.GoalState}" : null,
                         Last = message.SourceIndex == conversation.Messages.Count - 1, Thinking = _chat.ShowThinking });
                 else if (entry is TranscriptNotice notice)
                     items.Add(new() { Key = Key(notice.SourceIndex, "notice"), Session = conversation.Id,

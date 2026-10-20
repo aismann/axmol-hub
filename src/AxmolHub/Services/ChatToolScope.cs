@@ -18,7 +18,10 @@ internal sealed record ChatToolScope(
     ChatWorkspace.HubReadOnlySnapshot? Snapshot,
     WorkspaceToolScope Workspace,
     bool AskUserEnabled = true,
-    bool PlanTasksEnabled = false)
+    bool PlanTasksEnabled = false,
+    bool DeepSeekWebApiMode = false,
+    bool DeepSeekWebApiEnabled = false,
+    System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentQueue<DeepSeekWebApiCall>>? DeepSeekWebCalls = null)
 {
     public static ChatToolScope Empty { get; } = new(null, WorkspaceToolScope.Empty);
 }

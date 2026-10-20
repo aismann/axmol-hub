@@ -405,6 +405,14 @@ public static class HubTexts
             "默认关闭。开启后，仅对声明支持搜索的 provider 提供服务端搜索能力；服务商会自行决定是否搜索，Hub 无法逐次审批或限制调用次数，"
             + "且可能产生额外费用。此开关与 Hub 抓取指定网页的权限相互独立。",
             "Off by default. When enabled, Hub offers hosted search only to providers that declare support. The provider decides whether and how often to search; Hub cannot approve each search or cap the calls, and extra charges may apply. This is separate from Hub fetching a specific page."),
+        ["AllowDeepSeekWebApi"] = ("允许 DeepSeek API 网页搜索与抓取", "Allow DeepSeek API web search and fetch"),
+        ["AllowDeepSeekWebApiHint"] = (
+            "默认关闭。开启后，选用 DeepSeek API 后端的 web_search 与 web_fetch 会按成功请求次数计费；Hub 会在当前会话显示成功次数和估算费用。",
+            "Off by default. When enabled, successful web_search and web_fetch requests through the DeepSeek API backend may incur per-call charges. Hub shows successful counts and estimated cost for the current conversation."),
+        ["ProviderWebToolsBackend"] = ("网页工具后端", "Web tools backend"),
+        ["ProviderWebToolsBackendHosted"] = ("服务商搜索 + Hub 抓取", "Provider search + Hub fetch"),
+        ["ProviderWebToolsBackendDeepSeek"] = ("DeepSeek Search/Fetch API", "DeepSeek Search/Fetch API"),
+        ["DeepSeekWebUsageFormat"] = ("DeepSeek 网页工具：搜索 {0} 次（{1} 次计费），抓取 {2} 次（{3} 次计费）；估算费用 ¥{4:F3}", "DeepSeek web tools: {0} searches ({1} billable), {2} fetches ({3} billable); estimated cost ¥{4:F3}"),
         ["ProviderHostedWebSearch"] = ("此提供商支持服务端网页搜索", "This provider supports hosted web search"),
         ["ProviderHostedWebSearchHint"] = (
             "仅在服务端实际支持 web_search 时开启；Hub 会在请求中声明搜索能力，但不能逐次审批服务商的搜索。",
