@@ -1728,6 +1728,68 @@ public partial class ShellCheckWindow : Window
             shell.Chat.AuditWrite = savedSilenceAudit;
         }
 
+        var truncatedSession = shell.Chat.StartConversation();
+        RunOutcome? truncatedOutcome = null;
+        void CaptureTruncatedOutcome(string id, RunOutcome outcome)
+        {
+            if (id == truncatedSession.Id) truncatedOutcome = outcome;
+        }
+        shell.Chat.RunCompleted += CaptureTruncatedOutcome;
+        try
+        {
+            shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient(["这是未完成的答复"], finish: "length");
+            await panel.SendForCheckAsync("写一段较长的说明");
+            Check(truncatedOutcome?.Result == RunResult.Incomplete
+                  && truncatedOutcome?.NoticeKey == "ChatResponseTruncated"
+                  && panel.NoticeActionNameForCheck == "ContinueTruncated",
+                "达到输出上限时将部分答复标为未完成，并提供明确的继续操作");
+
+            shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient(["这是续写部分"], finish: "stop");
+            Check(panel.ClickNoticeActionForCheck(), "截断提示的继续操作可以点击");
+            await panel.WaitForRunToFinishForCheck();
+            Check(truncatedSession.Messages.Any(turn => turn.Role == ChatRoles.User
+                      && turn.Text == HubStrings.Get("ContinueTruncatedPrompt"))
+                  && truncatedSession.Messages.Any(turn => turn.Role == ChatRoles.Assistant
+                      && turn.Text == "这是续写部分"),
+                "继续操作会发出明确的续写指令并保留之前已生成的部分");
+        }
+        finally
+        {
+            shell.Chat.RunCompleted -= CaptureTruncatedOutcome;
+        }
+
+        var filteredSession = shell.Chat.StartConversation();
+        RunOutcome? filteredOutcome = null;
+        void CaptureFilteredOutcome(string id, RunOutcome outcome)
+        {
+            if (id == filteredSession.Id) filteredOutcome = outcome;
+        }
+        shell.Chat.RunCompleted += CaptureFilteredOutcome;
+        try
+        {
+            shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient(["被过滤前的部分"], finish: "content_filter");
+            await panel.SendForCheckAsync("说明这个话题");
+            Check(filteredOutcome?.Result == RunResult.Incomplete
+                  && filteredOutcome?.NoticeKey == "ChatResponseFiltered"
+                  && panel.LastNoticeTextForCheck?.Contains(HubStrings.Get("ChatResponseFiltered"), StringComparison.Ordinal) == true
+                  && !panel.NoticeRetryVisibleForCheck,
+                "内容过滤结束会明确说明原因，且不会把同一请求伪装成可重试的成功答复");
+        }
+        finally
+        {
+            shell.Chat.RunCompleted -= CaptureFilteredOutcome;
+        }
+
+        var thoughtSession = shell.Chat.StartConversation();
+        shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient([], finish: "stop",
+            reasoning: [new Microsoft.Extensions.AI.TextReasoningContent("只返回了思考过程")]);
+        await panel.SendForCheckAsync("请回答这个问题");
+        Check(thoughtSession.Messages.Any(turn => turn.Role == ChatRoles.Assistant
+                  && turn.Text.Length == 0 && turn.Reasoning == "只返回了思考过程")
+              && panel.LastNoticeTextForCheck?.Contains(HubStrings.Get("ChatReasoningOnly"), StringComparison.Ordinal) == true
+              && panel.NoticeActionNameForCheck == "RetryMessage",
+            "只有思考过程时不显示为正常完成，并提供重试入口");
+
         shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient([], exception: new TimeoutException());
         await panel.SendForCheckAsync("超时问题");
         Check(panel.LastNoticeTextForCheck == HubStrings.Get("ChatTimedOut"),
@@ -7029,7 +7091,8 @@ public partial class ShellCheckWindow : Window
                   && SystemAttentionService.ShouldNotifyApproval(viewed, background, new AttentionVisibility(false, false)),
                 "系统通知闸门：只有「窗口在前台 + 停在助手页 + 正是该会话」三条同时成立才不打扰；窗口失焦或最小化时，即便正停在该会话也照样提醒（八种组合全覆盖）");
             Check(Enum.GetValues<RunResult>()
-                      .Where(result => result is RunResult.Completed or RunResult.Failed or RunResult.TimedOut)
+                      .Where(result => result is RunResult.Completed or RunResult.Incomplete
+                          or RunResult.Failed or RunResult.TimedOut)
                       .All(result => SystemAttentionService.ShouldNotifyRun(
                           viewed, background, new AttentionVisibility(true, true),
                           hasPendingPlan: false, result))
@@ -13374,7 +13437,8 @@ public partial class ShellCheckWindow : Window
         System.Threading.Tasks.TaskCompletionSource<bool>? searchStartReached = null,
         // Why the response stopped, on the frame that closes it. A gateway that ends without one is common enough
         // that null has to stay a possible answer, and it is the case the caller must not report as a reason.
-        string? finish = null) : Microsoft.Extensions.AI.IChatClient
+        string? finish = null,
+        IList<Microsoft.Extensions.AI.AIContent>? reasoning = null) : Microsoft.Extensions.AI.IChatClient
     {
         /// <summary>The options of the request that was just made, so a check can read what would have gone on
         /// the wire. The scripted client answers instead of a gateway, and the field a gateway would have been
@@ -13403,6 +13467,8 @@ public partial class ShellCheckWindow : Window
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, start);
                 searchStartReached?.TrySetResult(true);
             }
+            if (reasoning is { Count: > 0 } thought)
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, thought);
             // A gate lets a check hold the stream open at its first token, so the mid-stream state of the
             // composer button can be asserted instead of only its end state. The wait is cancellation-aware:
             // a real stream dies when its token is cancelled, and "stop pressed while parked mid-reply" is

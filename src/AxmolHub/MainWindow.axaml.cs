@@ -551,6 +551,7 @@ public partial class MainWindow : Window
         {
             RunResult.Failed => "ChatRunFailedNotificationTitle",
             RunResult.TimedOut => "ChatRunTimedOutNotificationTitle",
+            RunResult.Incomplete => "ChatRunIncompleteNotificationTitle",
             _ => "ChatRunCompletedNotificationTitle",
         };
         _attention.Show(HubStrings.Get(notificationTitle),

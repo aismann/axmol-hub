@@ -80,7 +80,6 @@ public partial class ChatPanel
     private TranscriptItemKey? _selectionPinnedKey;
     private readonly List<(SelectableTextBlock Block, int Start, int End)> _pinnedTextSelection = [];
     private bool _reconcilingTranscript;
-    private bool _virtualOpening;
     private int _virtualRealizations;
     private long _transcriptGeneration;
     private TranscriptSnapshot? _virtualSnapshot;
@@ -326,7 +325,7 @@ public partial class ChatPanel
                 break;
             }
             case "notice":
-                host.Children.Add(BuildNoticeRow(turn.Text, false, null));
+                host.Children.Add(BuildNoticeRow(turn.Text, false, null, null, null));
                 break;
             case "exchange":
                 var exchange = BuildActivityRowShell(item.Session, index, item.Call, turn);
@@ -384,7 +383,6 @@ public partial class ChatPanel
                 _discardTranscriptDrag = true;
                 EndTranscriptThumbDrag(restorePosition: false, flush: false);
             }
-            _virtualOpening = true;
             _pendingTailFollow = true;
             _tailFollowMisses = 0;
             _repairFailures = 0;
@@ -624,7 +622,6 @@ public partial class ChatPanel
                 || (!_stickToBottom && !_pendingTailFollow))
             {
                 _virtualFollowQueued = false;
-                _virtualOpening = false;
                 return;
             }
             AlignTailOnce();
@@ -638,7 +635,6 @@ public partial class ChatPanel
                 return;
             }
             _virtualFollowQueued = false;
-            _virtualOpening = false;
             _pendingTailFollow = !TranscriptTailVisible();
             if (_pendingTailFollow) RequestTranscriptRepair("follow-exhausted");
         }

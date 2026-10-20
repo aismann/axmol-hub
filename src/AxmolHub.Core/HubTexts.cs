@@ -741,7 +741,12 @@ public static class HubTexts
         // The status line while the pipeline obeys a Retry-After: the wait is the provider's instruction, so it
         // is said as work in progress on the row the tool and the search already use, not as a second label.
         ["ChatRetryWaitFormat"] = ("模型服务在限流，第 {0}/{1} 次尝试，等待 {2} 秒", "Rate-limited by the provider: attempt {0}/{1}, waiting {2}s"),
-        ["ChatNoResponse"] = ("模型没有返回内容，请重试或检查模型配置。", "The model returned no content. Try again or check the model configuration."),
+        ["ChatNoResponse"] = ("模型没有返回最终答复，可以重试或检查模型配置。", "The model returned no final answer. Retry or check the model configuration."),
+        ["ChatReasoningOnly"] = ("模型只返回了思考过程，没有给出答复。可以重试。", "The model returned reasoning but no answer. You can retry."),
+        ["ChatResponseTruncated"] = ("答复达到模型输出上限，当前内容可能不完整。点击继续，让模型从这里接着写。", "The response reached the model's output limit and may be incomplete. Continue to ask the model to pick up here."),
+        ["ChatResponseFiltered"] = ("模型服务因内容过滤结束了答复。请调整或改写请求后再试。", "The provider stopped the response because of content filtering. Rephrase the request and try again."),
+        ["ContinueTruncated"] = ("继续未完成的答复", "Continue the incomplete response"),
+        ["ContinueTruncatedPrompt"] = ("请从刚才停止的位置继续完成答复，不要重复已经写出的内容。", "Continue the response from where it stopped. Do not repeat the content already written."),
         // A session that names a model its provider no longer offers. Saying "no models are available" would be
         // false — the picker is full — and would hide the one fact the person can act on: which name went missing,
         // and that the chip is where to put a new one. {0} = the model name the session carries.
@@ -798,6 +803,7 @@ public static class HubTexts
         ["ChatPlanNotificationTitle"] = ("计划等待确认", "Plan awaiting approval"),
         ["ChatPlanNotificationBody"] = ("会话「{0}」中的计划需要你的决定。", "A plan in 「{0}」 needs your decision."),
         ["ChatRunCompletedNotificationTitle"] = ("助手任务已完成", "Assistant task completed"),
+        ["ChatRunIncompleteNotificationTitle"] = ("助手任务未完成", "Assistant task incomplete"),
         ["ChatRunFailedNotificationTitle"] = ("助手任务失败", "Assistant task failed"),
         ["ChatRunTimedOutNotificationTitle"] = ("助手任务超时", "Assistant task timed out"),
         ["ChatRunNotificationBody"] = ("会话「{0}」中的助手任务已结束。", "The assistant task in 「{0}」 has finished."),

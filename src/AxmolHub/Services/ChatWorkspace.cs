@@ -1599,6 +1599,7 @@ public sealed class ChatWorkspace : IDisposable
     {
         RunResult.Cancelled => "用户停止",
         RunResult.TimedOut => "空闲超时",
+        RunResult.Incomplete => "答复未完成",
         RunResult.Failed => "失败",
         _ => null,
     };
@@ -5353,21 +5354,34 @@ public sealed class ChatWorkspace : IDisposable
             // Either the stream ran out or the gate parked it and the enumeration stopped without throwing; the
             // run's phase is what tells those apart, and a parked run must not be reported as an answer that end.
             if (run.Phase == RunPhase.AwaitingApproval) return (RunResult.Parked, null, false, null);
-            if (run.SpinStopped) return (RunResult.Completed, "ChatToolSpinStopped", false, null);
-            if (run.SaidAnything) return (RunResult.Completed, null, false, null);
-            // The stream ended and carried neither an answer nor a thought across the whole run. This used to be
-            // the silent ending of the house: nothing was written to the transcript, because an empty assistant
-            // turn would go back out on the wire, and nothing was written to the log either, so a session that
-            // stopped answering left no trace a person could read afterwards — only a line above the composer
-            // that lived until the next repaint. The reason the endpoint gave is the single thing that separates
-            // a truncated answer from a filtered one from a call this build never decoded, so it is the fact
-            // worth keeping.
             var ended = run.FinishReason;
+            if (run.SpinStopped)
+                return (RunResult.Incomplete, "ChatToolSpinStopped", false, null);
+            if (string.Equals(ended, "content_filter", StringComparison.OrdinalIgnoreCase))
+            {
+                Audit(run.ConversationId,
+                    $"Response filtered on {request.Value.ModelName} ({request.Value.Provider.Name}): "
+                    + $"{run.LiveText.Length} chars of text, {run.LiveReasoning.Length} of reasoning");
+                return (RunResult.Incomplete, "ChatResponseFiltered", false, null);
+            }
+            if (string.Equals(ended, "length", StringComparison.OrdinalIgnoreCase) && run.LiveText.Length > 0)
+            {
+                Audit(run.ConversationId,
+                    $"Response truncated at the output limit on {request.Value.ModelName} "
+                    + $"({request.Value.Provider.Name}): {run.LiveText.Length} chars of partial text");
+                return (RunResult.Incomplete, "ChatResponseTruncated", false, null);
+            }
+            if (run.LiveText.Length > 0) return (RunResult.Completed, null, false, null);
+
+            // A thought without prose is not an answer. Likewise, prose from an earlier tool round cannot turn
+            // an empty final response into a completed run. Keep the distinct ending on the session so goal and
+            // plan automation stops here and a person can retry or continue deliberately.
+            var thoughtOnly = run.LiveReasoning.Length > 0;
             Audit(run.ConversationId,
-                $"Completed with no content on {request.Value.ModelName} ({request.Value.Provider.Name}): "
+                $"Completed without a final answer on {request.Value.ModelName} ({request.Value.Provider.Name}): "
                 + (ended is { Length: > 0 } reason ? $"finish_reason={reason}" : "no finish reason reported")
-                + ", 0 chars of reasoning and 0 of text across the run");
-            return (RunResult.Completed, "ChatNoResponse", true,
+                + $", {run.LiveReasoning.Length} chars of reasoning and {run.LiveText.Length} of text in the final response");
+            return (RunResult.Incomplete, thoughtOnly ? "ChatReasoningOnly" : "ChatNoResponse", true,
                 ended is { Length: > 0 } closed ? $" (finish_reason: {closed})" : null);
         }
         catch (OperationCanceledException) when (run.Phase == RunPhase.AwaitingApproval)
