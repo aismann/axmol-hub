@@ -364,6 +364,29 @@ internal sealed class ConversationRun : IDisposable
 
     internal bool SpinStopped => Volatile.Read(ref _spinStopped);
 
+    private bool _toolCallSeen;
+    private int _toolNudgeArmed;
+
+    /// <summary>Whether any tool call has been made in this run. Written from the stream's thread as the gate judges
+    /// each call, read between segments afterwards, which is why it is a <c>Volatile</c> flag and not a counter: the
+    /// question asked of it is "did this turn ever act", and one call answers it for good.</summary>
+    internal void NoteToolCall() => Volatile.Write(ref _toolCallSeen, true);
+
+    internal bool ToolCallSeen => Volatile.Read(ref _toolCallSeen);
+
+    /// <summary>
+    /// Takes the one second chance a run is allowed for a model that described its limits instead of acting, and
+    /// reports whether this caller got it. <b>Once per run, never per turn of the loop</b>: a correction repeated is
+    /// a conversation with itself, and the state belongs to the run — which is one user message, start to finish —
+    /// so the sentence rides exactly the requests that answer that message.
+    /// </summary>
+    internal bool TryArmToolNudge() => Interlocked.Exchange(ref _toolNudgeArmed, 1) == 0;
+
+    /// <summary>Whether the next request carries <see cref="Core.ToolCallNudge.Sentence"/>. Stays set once armed, so
+    /// a tool loop the correction actually set in motion keeps the correction under it rather than losing it at the
+    /// first round that asked for a call.</summary>
+    internal bool ToolNudgeArmed => Volatile.Read(ref _toolNudgeArmed) == 1;
+
     /// <summary>Re-arms the inactivity deadline for the next frame of output, on the silence window: this round
     /// has already spoken, so a gap now means the stream stopped. A parked run has no stream, so nothing re-arms
     /// it — waiting for a human is not the same as stalling — and neither does a tool that owns the run, which is

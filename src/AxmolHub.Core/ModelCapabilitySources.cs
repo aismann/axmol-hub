@@ -15,6 +15,7 @@ public static class ModelCapabilitySources
     [
         new OpenAiCompatibleModelsSource(),
         new GithubCopilotModelsSource(),
+        new OllamaModelsSource(),
     ];
 
     /// <summary>The source for one provider: whatever its manifest entry names in <c>capabilitySource</c>, or the

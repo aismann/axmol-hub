@@ -217,6 +217,30 @@ public interface IModelCapabilitySource
     Task<ModelCapabilityBatch> FetchAsync(HttpClient client, ModelProvider provider, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// The second question a source may be able to answer: <b>right now</b>, what window does the server give this one
+/// model?
+///
+/// <para>Optional rather than part of <see cref="IModelCapabilitySource"/> because it is only answerable by an
+/// endpoint that runs the model itself. A hosted catalog describes what the model can hold, which is a fact that
+/// changes when the vendor ships something; a local server hands a model whatever window its Modelfile, its
+/// environment or its last client asked for, which is a fact that changes while the app is open. Only the second
+/// kind can be wrong in the direction that costs a turn — a request too large is truncated from the front by the
+/// server and comes back looking like a model that forgot the task.</para>
+///
+/// <para>A source that answers nothing (null) is not an error: the catalog's number, the preset's, or the declared
+/// default stands, exactly as it did before this interface existed.</para>
+/// </summary>
+public interface IRuntimeModelWindow
+{
+    /// <summary>The window the endpoint is serving this model with at this moment, or <c>null</c> when it will not
+    /// say — the model is not loaded, the endpoint is too old for the question, or the name is one it does not
+    /// serve. Must not throw for a transport reason, and must not take long: it runs on the way to a request that
+    /// is already waiting.</summary>
+    Task<int?> RuntimeWindowAsync(HttpClient client, ModelProvider provider, string modelName,
+        CancellationToken cancellationToken);
+}
+
 /// <summary>Reads a token count out of a gateway's JSON without trusting its shape.</summary>
 internal static class TokenField
 {

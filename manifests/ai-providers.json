@@ -123,8 +123,9 @@
       "descriptionZh": "通过 Ollama 在本地运行的模型，无需账户和密钥，但需要先启动本机服务并拉取模型。",
       "baseUrl": "http://localhost:11434/v1",
       "authMethods": ["none"],
+      "capabilitySource": "ollama-models",
       "maxContextTokens": 256000,
-      "_maxContextTokensNote": "A local server answers /v1/models with ids and nothing else, and its OpenAI layer truncates an oversized prompt silently instead of refusing it — so there is no 400 to learn the real window from. Adopting the hosted fallback of 256000 accepts that Hub may overestimate a small local model; the per-model override in the model catalog is the way to correct it down for a model pulled with a smaller num_ctx."
+      "_maxContextTokensNote": "The number above is what stands when the server says nothing, and it is deliberately the hosted fallback rather than an honest-looking 4096: /v1/models publishes ids and nothing else, and an oversized prompt is truncated from the front in silence instead of refused — there is no 400 to learn the real window from, so a guess that is too small would compact a conversation that fits. The capability source (ollama-models) is what keeps this from being a guess: /api/ps reports the context_length of the model that is loaded right now, /api/show reports the Modelfile's num_ctx and the trained maximum, and the run itself asks once more before it is built. What remains uncovered is a model nobody has loaded yet with no num_ctx pinned, where only the per-model override in the model catalog can correct it."
     }
   ]
 }

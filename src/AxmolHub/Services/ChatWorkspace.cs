@@ -4227,6 +4227,11 @@ public sealed class ChatWorkspace : IDisposable
         ConversationRun run, ChatPipeline.ToolCallInfo call,
         IReadOnlyList<ChatPipeline.ToolCallInfo> batch, ChatToolScope scope)
     {
+        // The turn acted. Whatever the gate decides below — allow, park, refuse — the model asked for a tool, so it
+        // is not the failure <see cref="ToolCallNudge"/> exists for and the one second chance stays unspent. Recorded
+        // here rather than where a call is invoked, because a call that parks or is refused still proves the model
+        // tried, and the correction is about a model that did not try at all.
+        run.NoteToolCall();
         // null means nothing here waits; an empty group means it does and somebody already wrote it down.
         var waiting = await ReadOnUiAsync(() =>
         {
@@ -5025,13 +5030,22 @@ public sealed class ChatWorkspace : IDisposable
                 // Even if an early handoff could not help, later results may now be old enough to reclaim.
                 // Suppression bounds mid-loop retries; it must not suppress the existing end-of-segment pass.
                 compacted |= await CompactIfNeededAsync(run).ConfigureAwait(false);
-                if (!run.TryTakeSteer(out var steerText, out var steerContext, out var steerPictures)) break;
-                if (await AppendSteerTurnAsync(run, steerText, steerContext, steerPictures).ConfigureAwait(false) is null)
+                if (run.TryTakeSteer(out var steerText, out var steerContext, out var steerPictures))
                 {
-                    result = RunResult.Cancelled;
-                    break;
+                    if (await AppendSteerTurnAsync(run, steerText, steerContext, steerPictures).ConfigureAwait(false) is null)
+                    {
+                        result = RunResult.Cancelled;
+                        break;
+                    }
+                    prepareSegment = true;
+                    continue;
                 }
-                prepareSegment = true;
+                // A message the person typed goes first, always: it is the only thing in this loop somebody is
+                // waiting to see answered. The correction below is Hub's own voice and can have the next request
+                // instead, so it is asked only once the queue is empty.
+                if (result == RunResult.Completed
+                    && await ShouldCorrectLimitationsAsync(run).ConfigureAwait(false)) continue;
+                break;
             }
         }
         catch (Exception ex)
@@ -5051,6 +5065,32 @@ public sealed class ChatWorkspace : IDisposable
             noticeKey ?? (compacted ? "ChatContextCompacted" : null), noticeDanger, detail);
     }
 
+    /// <summary>
+    /// Whether this message ended the way a model that believes it is not allowed to act ends it: prose about its
+    /// own limits, from a turn that never called a tool.
+    ///
+    /// <para>Three facts, and the cheap ones first. The deterministic pair comes off the run: no call was made, and
+    /// the one second chance is unspent — arming it here <b>is</b> the answer, so a second identical refusal ends
+    /// the message instead of paying for a third round. The third is the mode, and it is <c>agent</c> and nothing
+    /// else: <c>plan</c> declares only the reading tools and its prompt tells the model not to claim it acted, so
+    /// "I cannot modify files" is the truth there; <c>ask</c> declares no tools at all. Sending the correction into
+    /// either is Hub arguing with its own setting. The reply's own words are the heuristic, and
+    /// <see cref="ToolCallNudge"/> carries why there is no better one available.</para>
+    /// </summary>
+    private async Task<bool> ShouldCorrectLimitationsAsync(ConversationRun run)
+    {
+        if (run.ToolCallSeen || run.ToolNudgeArmed) return false;
+        var mode = await ReadOnUiAsync(() => NormalizeMode(_sessions.Peek(run.ConversationId)?.Mode))
+            .ConfigureAwait(false);
+        if (mode != ChatModes.Agent) return false;
+        if (!ToolCallNudge.LooksLikeDeclinedAction(run.LiveText)) return false;
+        if (!run.TryArmToolNudge()) return false;
+        Audit(run.ConversationId,
+            "The reply described its own limits and called no tool; continuing once with the correction in the "
+            + "system prompt");
+        return true;
+    }
+
     /// <summary>Streams one segment and writes what arrived, even when it is cancelled halfway: dropping a
     /// partial reply would leave the user turn with no answer and no trace of what the model had already said.
     /// An error is different — it is reported through the outcome so the view can show it as a notice rather
@@ -5065,6 +5105,10 @@ public sealed class ChatWorkspace : IDisposable
         ConversationRun run, bool mayRecover = true)
     {
         run.BeginSegment();
+        // Before the request is built, because the number it sizes itself against is the one being corrected here.
+        // `mayRecover` is false only on the retry of a segment that already failed, and a retry has no reason to ask
+        // a local server the same question again.
+        if (mayRecover) await ProbeRuntimeWindowAsync(run).ConfigureAwait(false);
         var request = await ReadOnUiAsync(() => PrepareRequest(run.ConversationId, run.SteerCount)).ConfigureAwait(false);
         if (request is null)
         {
@@ -5328,7 +5372,19 @@ public sealed class ChatWorkspace : IDisposable
     /// from the model that turned the request down, and because it cannot be stale in the way a preset can: it
     /// is the size that request failed against, measured this minute.
     /// </summary>
-    private async Task NoteLearnedWindowAsync(string conversationId, int tokens)
+    private Task NoteLearnedWindowAsync(string conversationId, int tokens)
+        => NoteWindowAsync(conversationId, tokens, CapabilitySource.LearnedFromRefusal);
+
+    /// <summary>
+    /// Records the window a local endpoint reported for the model it has loaded. Weaker evidence than a refusal —
+    /// nobody failed — but stronger than a catalog's claim about the weights, because it is the server saying what
+    /// it will actually accept, and it is the only reading available <b>before</b> an oversized prompt gets
+    /// truncated in silence.
+    /// </summary>
+    private Task NoteObservedWindowAsync(string conversationId, int tokens)
+        => NoteWindowAsync(conversationId, tokens, CapabilitySource.EndpointReported);
+
+    private async Task NoteWindowAsync(string conversationId, int tokens, CapabilitySource source)
     {
         await ApplyOnUiAsync(() =>
         {
@@ -5341,13 +5397,72 @@ public sealed class ChatWorkspace : IDisposable
                     capabilities[name] = caps;
 
             var known = capabilities.GetValueOrDefault(choice.ModelName) ?? new ModelCapabilities();
-            if (known.ContextTokens == tokens && known.Source == CapabilitySource.LearnedFromRefusal) return;
-            capabilities[choice.ModelName] = known.WithContext(tokens, CapabilitySource.LearnedFromRefusal);
+            if (known.ContextTokens == tokens && known.Source == source) return;
+            capabilities[choice.ModelName] = known.WithContext(tokens, source);
 
             _modelLists.Save(ModelCacheId(provider.Id), cache?.Models ?? [], cache?.ReasoningModels, capabilities);
             provider.ModelCapabilities = MergeCapabilities(
                 AiProviderManifest.CreateBuiltIn(provider.Id)?.ModelCapabilities, capabilities);
         }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Asks a local endpoint what window it is serving this model with right now, and records it when the answer is
+    /// smaller than what the request is about to assume.
+    ///
+    /// <para><b>Why before the request and not after a failure.</b> A hosted provider refuses an oversized prompt
+    /// with a message that names its window (see <see cref="NoteLearnedWindowAsync"/>), so being wrong costs one
+    /// failed turn and teaches Hub the number. A local server truncates from the front and answers normally, so
+    /// being wrong costs the beginning of the conversation — the system prompt under some servers, and every turn
+    /// before the last few under all of them — and teaches Hub nothing. There is no failure to react to, which is
+    /// the whole reason the question is asked first.</para>
+    ///
+    /// <para><b>Only ever downwards.</b> A reported window at or above what Hub already believed changes nothing:
+    /// writing it would rewrite the cache on every segment, and a number that makes the request the same size as
+    /// before is not evidence worth a disk write. A run that ends here is not a run that failed — every branch of
+    /// this returns, and the request it interrupts is built from whatever the meter says now.</para>
+    /// </summary>
+    private async Task ProbeRuntimeWindowAsync(ConversationRun run)
+    {
+        var choice = await ReadOnUiAsync(() => ModelFor(run.ConversationId)).ConfigureAwait(false);
+        if (choice is null) return;
+        // The question belongs to the source, not to this file: a provider whose catalog is the whole truth
+        // answers nothing here and is never asked.
+        if (ModelCapabilitySources.For(choice.Provider) is not IRuntimeModelWindow probe) return;
+
+        var believed = await ReadOnUiAsync(
+                () => SessionWindow(_sessions.Peek(run.ConversationId), choice.Provider, choice.ModelName).Tokens)
+            .ConfigureAwait(false);
+
+        // The same client rule as the catalog fetch: an injected one is borrowed and not disposed, an owned one
+        // is. The deadline is short on purpose — a local server that has not answered in seconds is a server whose
+        // request is about to fail on its own terms, and this probe must never be the reason a turn is slow.
+        using var owned = _modelListHttp is null
+            ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+            {
+                Timeout = TimeSpan.FromSeconds(5),
+            }
+            : null;
+        var client = _modelListHttp ?? owned!;
+
+        int? window;
+        try
+        {
+            window = await probe.RuntimeWindowAsync(client, choice.Provider, choice.ModelName, run.Token)
+                .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // A cancelled or unreachable probe costs this turn nothing: the send that follows reports its own
+            // failure with the sentence the person can act on.
+            return;
+        }
+
+        if (window is not > 0 || window >= believed) return;
+        await NoteObservedWindowAsync(run.ConversationId, window.Value).ConfigureAwait(false);
+        Audit(run.ConversationId,
+            $"Runtime window: {choice.ModelName} is loaded with {window} tokens on {choice.Provider.Name}, below "
+            + $"the {believed} this session assumed; the request is sized to the server's number from here");
     }
 
     /// <summary>
@@ -5486,8 +5601,17 @@ public sealed class ChatWorkspace : IDisposable
         // The trailing user turn is part of the history; the pipeline sends it as the last message.
         // The attachment resolver is bound to this conversation because the turn names the file, and which
         // session's directory holds it is a fact only this class has.
+        //
+        // The correction for a model that answered with its limits is appended here rather than into the mode
+        // prompt: it belongs to one run and one message, it must not be counted as the mode's own cost by the
+        // meter, and a request assembled without a live run — a compaction, a question about the same session from
+        // another window — must never carry it.
+        var systemPrompt = EffectiveSystemPrompt(conversation);
+        if (RunFor(conversationId)?.ToolNudgeArmed == true)
+            systemPrompt += "\n\n" + ToolCallNudge.Sentence;
+
         return new ChatRequest(choice.Provider, modelName, reasoning, tools, scope,
-            EffectiveSystemPrompt(conversation),
+            systemPrompt,
             history,
             image => _sessions.Store.ReadImage(conversationId, image.File) is { } bytes
                 ? BinaryData.FromBytes(bytes)
