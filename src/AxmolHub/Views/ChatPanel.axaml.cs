@@ -5149,6 +5149,13 @@ public partial class ChatPanel : UserControl
         => !ChangesPillHost.IsVisible ? null
             : ChangesPillHost.TranslatePoint(new Point(0, ChangesPillHost.Bounds.Height), ComposerFrame)?.Y;
 
+    internal double ComposerBandGapForCheck
+        => -(ComposerBand.TranslatePoint(new Point(0, ComposerBand.Bounds.Height), ComposerFrame)?.Y ?? double.NaN);
+
+    internal string ComposerLayoutForCheck => string.Join("; ",
+        new Control[] { ComposerBand, PlanTasksHost, DecisionHost, SteerConfirmHost, ComposerFrame }
+            .Select(control => $"{control.Name}: visible={control.IsVisible}, bounds={control.Bounds}, desired={control.DesiredSize}"));
+
     /// <summary>Where the top edge of the input frame sits in the panel's own coordinates. Read before and after a
     /// scroll, this is the only way to assert that scrolling leaves the composer where it was: a bounds check on
     /// the band would pass while the frame still moved, because both are laid out by the same grid.</summary>

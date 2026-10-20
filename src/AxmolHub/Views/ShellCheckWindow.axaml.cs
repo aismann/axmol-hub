@@ -4868,6 +4868,9 @@ public partial class ShellCheckWindow : Window
             Dispatcher.UIThread.RunJobs();
             Check(panel.ViewAtBottomForCheck && !panel.ScrollToBottomVisible,
                 "长回复写完之后视图停在最后一条，也不需要那个回底板的按钮");
+            Check(panel.ComposerBandGapForCheck >= 0 && panel.ComposerBandGapForCheck <= 18,
+                "没有任务或审批卡时，composer 上方横排紧邻输入框，不为隐藏卡片留空（"
+                + panel.ComposerLayoutForCheck + "）");
 
             // ── A notice line survives one rebuild ──
             panel.AppendNoticeForCheck("这条提示要在重建之后还在");
@@ -4942,6 +4945,7 @@ public partial class ShellCheckWindow : Window
             Check(panel.PendingPictureCountForCheck == 1 && panel.ViewAtBottomForCheck
                   && !panel.ScrollToBottomVisible,
                 "贴上图片让输入框长高一截，视图仍然跟着底部，不冒出回底板的按钮");
+
         }
         finally
         {
@@ -7584,10 +7588,51 @@ public partial class ShellCheckWindow : Window
             Check(panel.PlanTaskTitlesForCheck.SequenceEqual(
                       ["Read the existing code", "Make and verify the change"], StringComparer.Ordinal)
                   && panel.PendingPlanTaskGlyphsForCheck == 2
+                  && panel.PlanTasksPaintedForCheck
                   && panel.PlanTasksAboveComposerForCheck,
-                "计划任务出现在 composer 上方，待办显示空心方框（实际 "
+                "计划任务出现在 composer 上方，文字与空心方框都有可见画刷（实际 "
                 + string.Join(" / ", panel.PlanTaskTitlesForCheck) + "，空心图标 "
                 + panel.PendingPlanTaskGlyphsForCheck + " 个）");
+            var taskPlanIndex = twoPlanSession.Messages.FindLastIndex(turn => turn.Plan?.Tasks is { Count: > 0 });
+            var taskPlanTurn = twoPlanSession.Messages[taskPlanIndex];
+            twoPlanSession.Messages[taskPlanIndex] = taskPlanTurn with
+            {
+                Plan = taskPlanTurn.Plan! with
+                {
+                    Tasks = taskPlanTurn.Plan.Tasks!.Select((task, index) => task with
+                    {
+                        State = index == 0 ? PlanTaskStates.InProgress : PlanTaskStates.Completed,
+                    }).ToArray(),
+                },
+            };
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.PlanTaskTitlesForCheck.Count == 2 && panel.PlanTasksPaintedForCheck,
+                "进行中的转圈、完成的勾号和任务文字均使用可见的主题画刷");
+            twoPlanSession.Messages[taskPlanIndex] = taskPlanTurn with
+            {
+                Plan = taskPlanTurn.Plan! with
+                {
+                    Tasks = taskPlanTurn.Plan.Tasks!
+                        .Select(task => task with { State = PlanTaskStates.Completed }).ToArray(),
+                },
+            };
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.PlanTasksVisibleForCheck,
+                "计划任务全部完成后收起任务卡，避免完成的清单继续占用 composer 上方空间");
+            twoPlanSession.Messages[taskPlanIndex] = taskPlanTurn with
+            {
+                PlanApprovalState = PlanApprovalStates.Approved,
+            };
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.PlanTasksVisibleForCheck && panel.ComposerBandGapForCheck <= 18,
+                "运行结束后旧计划即使保留未完成条目也不常驻输入区，横排与输入框之间没有空卡片占位");
+            twoPlanSession.Messages[taskPlanIndex] = taskPlanTurn;
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
             await WaitUntilAsync(() => panel.DecisionHostFocusedForCheck);
             Check(panel.DecisionHostFocusedForCheck,
                 "空着输入框时计划卡到达就拿到键盘，A / B 不必先点一下卡片才有效");

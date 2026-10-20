@@ -28,9 +28,12 @@ public partial class ChatPanel
 {
     private void RefreshPlanTasksHost()
     {
-        var tasks = _chat?.ActiveConversation?.Messages
-            .LastOrDefault(turn => turn.Plan?.Tasks is { Count: > 0 })?.Plan?.Tasks;
-        if (tasks is not { Count: > 0 })
+        var plan = _chat?.ActiveConversation?.Messages
+            .LastOrDefault(turn => turn.Plan?.Tasks is { Count: > 0 })?.Plan;
+        var tasks = plan?.Tasks;
+        // Saved task metadata is history; only current work or a pending decision needs composer space.
+        if (tasks is not { Count: > 0 } || tasks.All(task => task.State == PlanTaskStates.Completed)
+            || (ViewedRun is null && !DecisionHost.IsVisible))
         {
             PlanTasksHost.Child = null;
             PlanTasksHost.IsVisible = false;
@@ -38,13 +41,14 @@ public partial class ChatPanel
         }
 
         var list = new StackPanel { Spacing = 5, Margin = new Thickness(10, 8) };
-        list.Children.Add(new TextBlock
+        var title = new TextBlock
         {
             Text = HubStrings.Get("ChatPlanTasksTitle"),
             FontSize = 12,
-            Foreground = Brush("Hub.TextTertiary"),
             Margin = new Thickness(0, 0, 0, 2),
-        });
+        };
+        title.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextTertiary"));
+        list.Children.Add(title);
         foreach (var task in tasks)
         {
             Control glyph = task.State switch
@@ -54,8 +58,6 @@ public partial class ChatPanel
                     Width = 14,
                     Height = 14,
                     Phase = ActivityPhase.RunningTool,
-                    TrackBrush = Brush("Hub.Border"),
-                    DotBrush = Brush("Hub.Accent"),
                     VerticalAlignment = VerticalAlignment.Center,
                 },
                 PlanTaskStates.Completed => new Path
@@ -63,8 +65,7 @@ public partial class ChatPanel
                     Width = 13,
                     Height = 13,
                     Stretch = Stretch.Uniform,
-                    Data = Geometry("Hub.Icon.Tick"),
-                    Fill = Brush("Hub.Success"),
+                    Data = ThemeGeometry("Hub.Icon.Tick"),
                     VerticalAlignment = VerticalAlignment.Center,
                 },
                 _ => new Border
@@ -72,22 +73,36 @@ public partial class ChatPanel
                     Width = 13,
                     Height = 13,
                     BorderThickness = new Thickness(1.4),
-                    BorderBrush = Brush("Hub.TextTertiary"),
                     CornerRadius = new CornerRadius(3),
                     VerticalAlignment = VerticalAlignment.Center,
                 },
             };
+            // Theme brushes resolve after attachment and must follow later theme changes.
+            switch (glyph)
+            {
+                case ActivityGlyph activity:
+                    activity.Bind(ActivityGlyph.TrackBrushProperty, new DynamicResourceExtension("Hub.Border"));
+                    activity.Bind(ActivityGlyph.DotBrushProperty, new DynamicResourceExtension("Hub.Accent"));
+                    break;
+                case Path tick:
+                    tick.Bind(Path.FillProperty, new DynamicResourceExtension("Hub.Success"));
+                    break;
+                case Border pending:
+                    pending.Bind(Border.BorderBrushProperty, new DynamicResourceExtension("Hub.TextTertiary"));
+                    break;
+            }
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("18,*") };
             row.Children.Add(glyph);
-            row.Children.Add(new TextBlock
+            var label = new TextBlock
             {
                 Text = task.Title,
                 TextWrapping = TextWrapping.Wrap,
                 FontSize = 13,
-                Foreground = task.State == PlanTaskStates.Completed
-                    ? Brush("Hub.TextTertiary") : Brush("Hub.TextPrimary"),
                 VerticalAlignment = VerticalAlignment.Center,
-            });
+            };
+            label.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension(
+                task.State == PlanTaskStates.Completed ? "Hub.TextTertiary" : "Hub.TextPrimary"));
+            row.Children.Add(label);
             Grid.SetColumn(row.Children[1], 1);
             list.Children.Add(row);
         }
@@ -102,14 +117,20 @@ public partial class ChatPanel
         PlanTasksHost.IsVisible = true;
     }
 
-    private IBrush? Brush(string key)
-        => Application.Current is { } app && app.TryFindResource(key, out var value) ? value as IBrush : null;
-
-    private Geometry? Geometry(string key)
-        => Application.Current is { } app && app.TryFindResource(key, out var value) ? value as Geometry : null;
-
     internal IReadOnlyList<string> PlanTaskTitlesForCheck => PlanTasksHost.GetLogicalDescendants()
         .OfType<TextBlock>().Select(block => block.Text ?? "").Where(text => text.Length > 0).Skip(1).ToArray();
+
+    internal bool PlanTasksVisibleForCheck => PlanTasksHost.IsVisible;
+
+    internal bool PlanTasksPaintedForCheck => PlanTasksHost.IsVisible
+        && PlanTasksHost.GetLogicalDescendants().OfType<TextBlock>().All(text => text.Foreground is { Opacity: > 0 })
+        && PlanTasksHost.GetLogicalDescendants().OfType<Border>()
+            .Where(border => border.Width == 13 && border.Height == 13)
+            .All(border => border.BorderBrush is { Opacity: > 0 })
+        && PlanTasksHost.GetLogicalDescendants().OfType<ActivityGlyph>()
+            .All(glyph => glyph.TrackBrush is { Opacity: > 0 } && glyph.DotBrush is { Opacity: > 0 })
+        && PlanTasksHost.GetLogicalDescendants().OfType<Path>()
+            .All(tick => tick.Data is not null && tick.Fill is { Opacity: > 0 });
 
     internal int PendingPlanTaskGlyphsForCheck => PlanTasksHost.GetLogicalDescendants().OfType<Border>()
         .Count(border => border.Width == 13 && border.Height == 13);
