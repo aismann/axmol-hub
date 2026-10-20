@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## General Rule
+
+- When implementing features, take pride in streamlining and removing legacy redundant code; regard bloated duplicate implementations as bad practice.
+
 ## Product charter
 
 The AI assistant is, first, a **general programming and debugging tool** — the same job ChatGPT
