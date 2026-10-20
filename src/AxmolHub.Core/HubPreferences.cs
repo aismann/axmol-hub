@@ -123,13 +123,12 @@ public sealed class HubPreferences
     public bool AllowOutboundWebFetch { get; set; } = true;
 
     /// <summary>
-    /// Whether a provider endpoint may run hosted web searches during a model response. Off by default because
-    /// the endpoint chooses when to search and may charge per search; this is independent from Hub fetching one
-    /// page the model named through <c>web_fetch</c>.
+    /// Legacy storage for the global web-search switch. Kept to read existing preference files; Settings keeps
+    /// this and <see cref="AllowDeepSeekWebApi"/> synchronized.
     /// </summary>
     public bool AllowHostedWebSearch { get; set; }
 
-    /// <summary>Whether Hub may make billable Search/Fetch requests to DeepSeek's web tools API. Off by default.</summary>
+    /// <summary>Legacy storage for the global web-search switch, kept for existing preference files.</summary>
     public bool AllowDeepSeekWebApi { get; set; }
 
     /// <summary>

@@ -12413,23 +12413,10 @@ public partial class ShellCheckWindow : Window
         var deepseekAdopted = shell.Chat.AddPreset("deepseek") is not null;
         Check(deepseekAdopted, "可以采纳 DeepSeek 预设以验证仅密钥路径");
         settings.RefreshProviderGroupsForCheck();
-        Check(settings.ProviderHostedSearchToggleVisibleForCheck("deepseek")
-              && settings.ProviderHostedSearchToggleValueForCheck("deepseek") == false,
-            "provider 分组提供独立的服务端搜索能力开关，并默认不声明");
-        Check(settings.ProviderWebToolsBackendForCheck("deepseek") == WebToolBackends.DeepSeekApi,
-            "DeepSeek 预设默认选择官方 Search/Fetch API 后端");
-        Check(settings.SetProviderWebToolsBackendForCheck("deepseek", WebToolBackends.Default)
-              && shell.Chat.Providers.First(provider => provider.Id == "deepseek").WebToolsBackend == WebToolBackends.Default,
-            "DeepSeek 可切换回服务商搜索与 Hub 抓取后端");
-        settings.SetProviderWebToolsBackendForCheck("deepseek", WebToolBackends.DeepSeekApi);
-        settings.SetProviderHostedSearchToggleForCheck("deepseek", true);
-        Check(ProviderServerTools.DeclaresWebSearch(
-                  shell.Chat.Providers.First(provider => provider.Id == "deepseek").ServerTools),
-            "打开 provider 搜索能力开关后，能力声明进入 provider 配置");
-        settings.SetProviderHostedSearchToggleForCheck("deepseek", false);
-        Check(!ProviderServerTools.DeclaresWebSearch(
-                  shell.Chat.Providers.First(provider => provider.Id == "deepseek").ServerTools),
-            "关闭 provider 搜索能力开关后，搜索能力从 provider 配置撤回");
+        Check(settings.ProviderWebToolControlsHiddenForCheck("deepseek"),
+            "provider 分组不再显示独立搜索开关或后端选择");
+        Check(shell.Chat.Providers.First(provider => provider.Id == "deepseek").WebToolsBackend == WebToolBackends.DeepSeekApi,
+            "DeepSeek 预设仍自动使用官方 Search/Fetch API 后端");
         var deepseekGroup = settings.ProviderGroupForId("deepseek");
         Check(deepseekGroup is not null && deepseekGroup.AuthButtonText == HubStrings.Get("Authenticate"),
             "仅支持密钥的 provider 同样显示「鉴权」按钮，方式选择交给对话框");
@@ -14823,25 +14810,16 @@ public partial class ShellCheckWindow : Window
 
         settings.SelectCategoryForCheck("permission");
         Check(NamedDescendant<CheckBox>(settings, "WebFetchCheck")?.IsChecked == true
-              && NamedDescendant<CheckBox>(settings, "HostedWebSearchCheck")?.IsChecked == false
-              && NamedDescendant<CheckBox>(settings, "DeepSeekWebApiCheck")?.IsChecked == false
-              && !settings.AllowHostedWebSearchForCheck && !settings.AllowDeepSeekWebApiForCheck,
-            "网页抓取保持默认开启，服务商搜索与 DeepSeek API 开关独立且默认关闭");
-        var hostedSearchCheck = NamedDescendant<CheckBox>(settings, "HostedWebSearchCheck");
-        if (hostedSearchCheck is not null) hostedSearchCheck.IsChecked = true;
+              && NamedDescendant<CheckBox>(settings, "WebSearchCheck")?.IsChecked == false
+              && !settings.AllowWebSearchForCheck,
+            "网页抓取默认开启，联网搜索由一个默认关闭的总开关控制");
+        var webSearchCheck = NamedDescendant<CheckBox>(settings, "WebSearchCheck");
+        if (webSearchCheck is not null) webSearchCheck.IsChecked = true;
         var optedInPreferences = new PreferencesStore(preferencesPath).Load();
-        Check(settings.AllowHostedWebSearchForCheck && optedInPreferences.AllowHostedWebSearch
-              && optedInPreferences.AllowOutboundWebFetch,
-            "开启服务端搜索会单独持久化，不改变网页抓取权限");
-        if (hostedSearchCheck is not null) hostedSearchCheck.IsChecked = false;
-        var deepSeekApiCheck = NamedDescendant<CheckBox>(settings, "DeepSeekWebApiCheck");
-        if (deepSeekApiCheck is not null) deepSeekApiCheck.IsChecked = true;
-        var deepSeekOptIn = new PreferencesStore(preferencesPath).Load();
-        Check(settings.AllowDeepSeekWebApiForCheck && deepSeekOptIn.AllowDeepSeekWebApi
-              && deepSeekOptIn.AllowHostedWebSearch == false
-              && deepSeekOptIn.AllowOutboundWebFetch,
-            "开启 DeepSeek API 联网总开关会独立持久化，不改变本地抓取或服务商搜索权限");
-        if (deepSeekApiCheck is not null) deepSeekApiCheck.IsChecked = false;
+        Check(settings.AllowWebSearchForCheck && optedInPreferences.AllowHostedWebSearch
+              && optedInPreferences.AllowDeepSeekWebApi && optedInPreferences.AllowOutboundWebFetch,
+            "开启联网搜索总开关会持久化并覆盖旧开关，且不改变网页抓取权限");
+        if (webSearchCheck is not null) webSearchCheck.IsChecked = false;
 
         var projectLocation = NamedDescendant<TextBox>(settings, "DefaultProjectLocation")?.Text;
         Check(projectLocation == HubTexts.Get("NotSelected", HubStrings.Language),

@@ -669,7 +669,7 @@ public sealed class ChatWorkspace : IDisposable
                     : null,
                 webProvider?.WebToolsBackend == WebToolBackends.DeepSeekApi
                     ? OutboundDeepSeekWebApi.Bridge(webProvider, DeepSeekWebApiHttp,
-                        () => PreferencesProvider?.Invoke().AllowDeepSeekWebApi == true,
+                        () => IsWebSearchEnabled(),
                         call => deepSeekWebCalls?.GetOrAdd(call.Operation,
                             _ => new System.Collections.Concurrent.ConcurrentQueue<DeepSeekWebApiCall>()).Enqueue(call))
                     : null)
@@ -688,7 +688,7 @@ public sealed class ChatWorkspace : IDisposable
                 && turn.PlanApprovalState == PlanApprovalStates.Approved)?.Plan?.Tasks is { Count: > 0 },
             webProvider?.WebToolsBackend == WebToolBackends.DeepSeekApi,
             webProvider?.WebToolsBackend == WebToolBackends.DeepSeekApi
-                && PreferencesProvider?.Invoke().AllowDeepSeekWebApi == true
+                && IsWebSearchEnabled()
                 && webProvider.ApiKey is { Length: > 0 },
             deepSeekWebCalls);
     }
@@ -2297,32 +2297,6 @@ public sealed class ChatWorkspace : IDisposable
     {
         _providers.Save(_providerList);
         Changed?.Invoke();
-    }
-
-    /// <summary>Changes one provider's declared hosted-search capability. It is an endpoint-specific user claim,
-    /// persisted with that provider and never inferred from its model name or protocol.</summary>
-    public bool SetProviderHostedSearch(string providerId, bool enabled)
-    {
-        var provider = _providerList.FirstOrDefault(item => item.Id == providerId);
-        if (provider is null) return false;
-        var tools = provider.ServerTools ?? [];
-        var declared = ProviderServerTools.DeclaresWebSearch(tools);
-        if (declared == enabled) return false;
-        var updated = tools.Where(name => name != ProviderServerTools.WebSearch).ToList();
-        if (enabled) updated.Add(ProviderServerTools.WebSearch);
-        provider.ServerTools = updated;
-        SaveProviders();
-        return true;
-    }
-
-    public bool SetProviderWebToolsBackend(string providerId, string backend)
-    {
-        var provider = _providerList.FirstOrDefault(item => item.Id == providerId);
-        if (provider is null || backend is not (WebToolBackends.Default or WebToolBackends.DeepSeekApi)) return false;
-        if (provider.WebToolsBackend == backend) return false;
-        provider.WebToolsBackend = backend;
-        SaveProviders();
-        return true;
     }
 
     /// <summary>Retries startup reads after the user unlocks or grants access to the credential store.</summary>
@@ -4173,6 +4147,12 @@ public sealed class ChatWorkspace : IDisposable
     /// <see cref="HubSnapshotProvider"/>, which keeps the workspace constructible on its own.</summary>
     internal Func<HubPreferences>? PreferencesProvider { get; set; }
 
+    private bool IsWebSearchEnabled()
+    {
+        var preferences = PreferencesProvider?.Invoke();
+        return preferences?.AllowHostedWebSearch == true || preferences?.AllowDeepSeekWebApi == true;
+    }
+
     /// <summary>Set by the shell alongside the reader: how a change to the app-wide trust list reaches the disk.
     /// Null in a workspace nobody wired to a settings file (a self-check builds one to drive the gate), and the
     /// grant then lives for the length of that session only — which is the honest fallback, not a silent lie about
@@ -5898,7 +5878,7 @@ public sealed class ChatWorkspace : IDisposable
         // provider, because honouring it is per-gateway and only a real request can say (see WebSearchHosted).
         var search = WebSearchHosted.Decide(choice.Provider.ServerTools,
             ChatClientFactory.ProtocolFor(choice.Provider, modelName),
-            PreferencesProvider?.Invoke().AllowHostedWebSearch == true);
+            IsWebSearchEnabled());
         if (!scope.DeepSeekWebApiMode && search.Verdict == WebSearchHostedVerdict.On)
             tools = [.. tools, new HostedWebSearchTool()];
         else if (!scope.DeepSeekWebApiMode && ProviderServerTools.DeclaresWebSearch(choice.Provider.ServerTools))
