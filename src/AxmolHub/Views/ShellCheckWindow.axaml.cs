@@ -908,6 +908,36 @@ public partial class ShellCheckWindow : Window
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
 
+        // ── A call for a name the request never declared ──
+        // The response is well formed and asks for `write`, which is not in this request (the tool is `file_write`)
+        // and never was in this transcript either. Nothing may run it, so nothing reaches the transcript — the turn
+        // used to end telling the person the model had returned only reasoning. The correction rides the next
+        // request instead, so the two facts worth pinning are that the run was asked again and what it was told.
+        var undeclaredBefore = shell.Chat.ActiveConversation?.Id;
+        var undeclaredSession = StartAgentSession(shell.Chat);
+        var undeclaredClient = new UndeclaredCallChatClient();
+        shell.Chat.ClientOverride = (_, id) => id == undeclaredSession.Id
+            ? undeclaredClient
+            : new ScriptedChatClient(["不该被使用"]);
+        panel.Reload();
+        await panel.SendForCheckAsync("把结论写进 docs/plan.md");
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var undeclaredSaid = undeclaredClient.LastSystem?.Contains("no tool named `write`", StringComparison.Ordinal) == true;
+        Check(undeclaredClient.Round == 2
+              && undeclaredSaid
+              && shell.Chat.StoredCopyForCheck(undeclaredSession.Id)?.Messages.Any(
+                  message => message.Text.Contains("写完了", StringComparison.Ordinal)) == true,
+            "请求未声明的工具名后本轮自动带纠正重发并跑完（请求 " + undeclaredClient.Round + " 次，第二请求"
+            + (undeclaredSaid ? "已点名 write" : "未带纠正") + "）");
+        shell.Chat.ClientOverride = null;
+        shell.Chat.DeleteConversation(undeclaredSession.Id);
+        if (undeclaredBefore is { } undeclaredBack) shell.Chat.OpenConversation(undeclaredBack);
+        shell.OpenAssistant();
+        panel.Reload();
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+
         // ── Prose that rode in on a call ──
         // The model writes its answer and then asks: one assistant message, one stored turn carrying the text and
         // the call alike (ChatTurn.FunctionCall files the prose on the call's own turn). A call that owed a
@@ -11456,6 +11486,58 @@ public partial class ShellCheckWindow : Window
             {
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
                     Microsoft.Extensions.AI.ChatRole.Assistant, "后说的话");
+            }
+
+            await Task.Yield();
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    /// <summary>Two rounds: the first asks for a tool name the request never declares, the second answers in prose.
+    ///
+    /// <para>The name is the whole fixture. <c>write</c> is not declared (the tool is <c>file_write</c>) and it is
+    /// not in any transcript either, so the request cannot have taught it — this is the endpoint inventing a name,
+    /// which is the shape recorded in the wild on 2026-10-21 next to two others. What it must not cost is the turn:
+    /// the run is asked again with a sentence saying which name went unanswered, and that sentence is only
+    /// observable from the second request, which is why this client keeps the system message.</para></summary>
+    private sealed class UndeclaredCallChatClient : Microsoft.Extensions.AI.IChatClient
+    {
+        private int _round;
+
+        public int Round => _round;
+
+        /// <summary>The system message of the last request made, so a check can read what the model was told.</summary>
+        public string? LastSystem { get; private set; }
+
+        public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(
+            System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("The undeclared-call check only uses the streaming path.");
+
+        public async System.Collections.Generic.IAsyncEnumerable<Microsoft.Extensions.AI.ChatResponseUpdate> GetStreamingResponseAsync(
+            System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            Microsoft.Extensions.AI.ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var list = messages.ToList();
+            LastSystem = list.FirstOrDefault(message =>
+                message.Role == Microsoft.Extensions.AI.ChatRole.System)?.Text;
+            _round++;
+            if (_round == 1)
+            {
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant,
+                    [new Microsoft.Extensions.AI.FunctionCallContent(
+                        NextCallId("call-undeclared"), "write",
+                        new Dictionary<string, object?> { ["path"] = "docs/plan.md" })]);
+            }
+            else
+            {
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(
+                    Microsoft.Extensions.AI.ChatRole.Assistant, "用 file_write 写完了");
             }
 
             await Task.Yield();

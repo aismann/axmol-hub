@@ -750,6 +750,10 @@ public static class HubTexts
         ["ChatRetryWaitFormat"] = ("模型服务在限流，第 {0}/{1} 次尝试，等待 {2} 秒", "Rate-limited by the provider: attempt {0}/{1}, waiting {2}s"),
         ["ChatNoResponse"] = ("模型没有返回最终答复，可以重试或检查模型配置。", "The model returned no final answer. Retry or check the model configuration."),
         ["ChatReasoningOnly"] = ("模型只返回了思考过程，没有给出答复。可以重试。", "The model returned reasoning but no answer. You can retry."),
+        // The ending a withheld tool used to produce silently: the response named a call, nothing ran it, and the
+        // sentence the person got blamed the model's silence. The tool's name arrives in the detail appended after
+        // this line, so the copy stays one sentence and names no tool of its own.
+        ["ChatUndeclaredTool"] = ("模型要求调用本次请求没有声明的工具，于是一次也没有执行。可以重试，或在设置里打开对应能力。", "The model asked for a tool this request never declared, so nothing ran. Retry, or switch that capability on in settings."),
         ["ChatResponseTruncated"] = ("答复达到模型输出上限，当前内容可能不完整。点击继续，让模型从这里接着写。", "The response reached the model's output limit and may be incomplete. Continue to ask the model to pick up here."),
         ["ChatResponseFiltered"] = ("模型服务因内容过滤结束了答复。请调整或改写请求后再试。", "The provider stopped the response because of content filtering. Rephrase the request and try again."),
         ["ContinueTruncated"] = ("继续未完成的答复", "Continue the incomplete response"),

@@ -5350,6 +5350,11 @@ public sealed class ChatWorkspace : IDisposable
                 // instead, so it is asked only once the queue is empty.
                 if (result == RunResult.Completed
                     && await ShouldCorrectLimitationsAsync(run).ConfigureAwait(false)) continue;
+                // A response that asked for a tool this request never declared is corrected once and carried on:
+                // nothing ran, so the transcript holds no call and no result, and a plain retry would replay the
+                // very request that produced the wrong name.
+                if (result == RunResult.Incomplete && noticeKey == "ChatUndeclaredTool"
+                    && ShouldCorrectUndeclaredCall(run)) continue;
                 break;
             }
         }
@@ -5393,6 +5398,25 @@ public sealed class ChatWorkspace : IDisposable
         Audit(run.ConversationId,
             "The reply described its own limits and called no tool; continuing once with the correction in the "
             + "system prompt");
+        return true;
+    }
+
+    /// <summary>
+    /// The one correction for a response that asked for a tool name this request never declared — and it is the
+    /// whole reason this failure is survivable: the call never ran, so the transcript has no call turn and no result,
+    /// which means resending the same history asks the model the same question and invites the same wrong name. The
+    /// sentence carried by the next request is the only thing in the loop that can move it.
+    ///
+    /// <para>Every mode gets it, <c>ask</c> included: a name out of the transcript can be asked for there too, and
+    /// the alternative is telling the person the model returned nothing when it was trying to act.</para>
+    /// </summary>
+    private bool ShouldCorrectUndeclaredCall(ConversationRun run)
+    {
+        var asked = run.SegmentCallNames;
+        if (!run.TryArmUndeclaredNudge(asked)) return false;
+        Audit(run.ConversationId,
+            $"The response asked for {string.Join(", ", asked)}, which this request never declared; continuing once "
+            + "with the correction in the system prompt");
         return true;
     }
 
@@ -5466,10 +5490,23 @@ public sealed class ChatWorkspace : IDisposable
             // an empty final response into a completed run. Keep the distinct ending on the session so goal and
             // plan automation stops here and a person can retry or continue deliberately.
             var thoughtOnly = run.LiveReasoning.Length > 0;
+            // The two counts ride along because the sentence a person sees cannot carry them, and this line is what
+            // the next reader greps. `asked=` is what the response itself named; `tool_calls=` is what reached the
+            // gate. A name with no gate count is a call nothing ran — an undeclared tool, or a bridge that dropped
+            // it — while no name at all beside `finish_reason=tool_calls` is a response whose call deltas never
+            // became a call, which is the one shape no trace on screen can show.
+            var askedNames = run.SegmentCallNames;
             Audit(run.ConversationId,
                 $"Completed without a final answer on {request.Value.ModelName} ({request.Value.Provider.Name}): "
                 + (ended is { Length: > 0 } reason ? $"finish_reason={reason}" : "no finish reason reported")
+                + $", tool_calls={run.SegmentToolCalls}"
+                + (askedNames.Count > 0 ? $", asked={string.Join("+", askedNames)}" : null)
                 + $", {run.LiveReasoning.Length} chars of reasoning and {run.LiveText.Length} of text in the final response");
+            // A name the response asked for that nothing ran is not the model's silence: it asked, and this request
+            // never offered what it asked for. Said apart because the fix is a setting or a retry, not a rephrase —
+            // and because the sentence below used to attribute it to the model.
+            if (askedNames.Count > 0)
+                return (RunResult.Incomplete, "ChatUndeclaredTool", true, $" ({string.Join("+", askedNames)})");
             return (RunResult.Incomplete, thoughtOnly ? "ChatReasoningOnly" : "ChatNoResponse", true,
                 ended is { Length: > 0 } closed ? $" (finish_reason: {closed})" : null);
         }
@@ -5937,6 +5974,10 @@ public sealed class ChatWorkspace : IDisposable
                 + "are billable DeepSeek API calls; avoid duplicate calls and rely on the returned sources.";
         if (RunFor(conversationId)?.ToolNudgeArmed == true)
             systemPrompt += "\n\n" + ToolCallNudge.Sentence;
+        // Armed only by a response that named a tool this request never declared: the name it asked for is in the
+        // sentence, because that is the fact the model cannot read back from a transcript in which nothing ran.
+        if (RunFor(conversationId)?.UndeclaredNudge is { } undeclaredNudge)
+            systemPrompt += "\n\n" + undeclaredNudge;
 
         return new ChatRequest(choice.Provider, modelName, reasoning, tools, scope,
             systemPrompt,
@@ -6215,6 +6256,11 @@ public sealed class ChatWorkspace : IDisposable
                 NoteContextUsage(run.ConversationId, request.ModelName, report);
             },
             onFinishReason: reason => run.NoteFinishReason(reason),
+            // The name of every call this response asked for, kept on the run whether or not anything runs it. A
+            // call the request never declared ends the invoking client's loop instead of being invoked, and that
+            // is the one ending that used to leave no trace anywhere: the transcript gets no call turn, the gate
+            // is never asked, and all that reached the person was reasoning and then no answer.
+            onCallContent: name => run.NoteCallName(name),
             // A search the endpoint ran for itself. Nothing here is waited on, gated, or answered — the fact is
             // folded into the run so the row under the bubble can show it while the reply streams, and so the
             // reply's own turn carries it afterwards. The repaint is the whole UI cost: the bubble reads the run

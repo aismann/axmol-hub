@@ -145,6 +145,13 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         // answer-less stream is one indistinguishable event: the caller cannot tell a truncated answer from a
         // filtered one from a call it never decoded.
         Action<string>? onFinishReason = null,
+        // Every function call the response asked for, by name, as it reaches this iterator. Not every one of them
+        // is run: the invoking client resolves a name against this request's own declarations, and a name it was
+        // never given ends the loop instead of being invoked. This method used to hear about neither outcome,
+        // which made "the response asked for a call nothing ran" indistinguishable from "the response carried
+        // nothing at all" — and both read the same to the person: reasoning, then no answer. The caller keeps the
+        // names for the line it writes when a turn ends that way.
+        Action<string>? onCallContent = null,
         // A search the endpoint ran for itself, reported as it arrives. Same thread rule as the two above: this
         // fires inside the stream, on whatever thread the response is being read on.
         Action<ServerSearchNotice>? onServerSearch = null,
@@ -455,6 +462,14 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                     }
                     thinking.Append(said);
                     onReasoning?.Invoke(said);
+                }
+                else if (content is FunctionCallContent asked)
+                {
+                    // A call this response carried, reported whether or not anything will run it. The arguments
+                    // are still arriving in pieces for a call that is about to be invoked, so the name is the
+                    // only field worth reading here — and it is the field that says which tool went unanswered
+                    // when a turn ends with no text.
+                    onCallContent?.Invoke(asked.Name);
                 }
                 else if (content is WebSearchToolCallContent searched)
                 {

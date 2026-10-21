@@ -326,6 +326,10 @@ internal sealed class ConversationRun : IDisposable
             _reasoningClosed = false;
             _reasoningTicks = 0L;
             _spinStopped = false;
+            // The next segment is answered by its own response, so the calls it asks for are counted from zero.
+            // The run's own count is deliberately left alone: that one must survive a tool loop.
+            Interlocked.Exchange(ref _toolCallsInSegment, 0);
+            _segmentCallNames.Clear();
             // Each segment is answered by its own response, so the reason belongs to the one now starting.
             _finishReason = null;
         }
@@ -366,15 +370,51 @@ internal sealed class ConversationRun : IDisposable
 
     internal bool SpinStopped => Volatile.Read(ref _spinStopped);
 
-    private bool _toolCallSeen;
+    private int _toolCallsInRun;
+    private int _toolCallsInSegment;
+    private readonly List<string> _segmentCallNames = [];
     private int _toolNudgeArmed;
+    private string? _undeclaredNudge;
 
-    /// <summary>Whether any tool call has been made in this run. Written from the stream's thread as the gate judges
-    /// each call, read between segments afterwards, which is why it is a <c>Volatile</c> flag and not a counter: the
-    /// question asked of it is "did this turn ever act", and one call answers it for good.</summary>
-    internal void NoteToolCall() => Volatile.Write(ref _toolCallSeen, true);
+    /// <summary>One call of the response being judged, counted on two clocks because the two questions are
+    /// different. The run's count answers "did this turn ever act", which the nudge below must not lose when a
+    /// later segment starts; the segment's answers "did the response that just ended ask for anything", which is
+    /// what tells an empty reply apart from the tail of a tool loop. Written from the stream's thread as the gate
+    /// judges each call, read afterwards from another one, hence the interlocked writes.</summary>
+    internal void NoteToolCall()
+    {
+        Interlocked.Increment(ref _toolCallsInRun);
+        Interlocked.Increment(ref _toolCallsInSegment);
+    }
 
-    internal bool ToolCallSeen => Volatile.Read(ref _toolCallSeen);
+    internal bool ToolCallSeen => Volatile.Read(ref _toolCallsInRun) > 0;
+
+    /// <summary>How many calls the response now being answered asked for. Both callers of
+    /// <see cref="BeginSegment"/> are what makes that true: one starts a segment, the other files a call and so
+    /// starts the round that answers it, so a whole tool loop never adds up into one number. At the ending that
+    /// reads this, zero beside <c>finish_reason=tool_calls</c> means the provider declared calls and nothing was
+    /// assembled from its deltas; anything else means the calls were read, and the silence came from further
+    /// along.</summary>
+    internal int SegmentToolCalls => Volatile.Read(ref _toolCallsInSegment);
+
+    /// <summary>One call the response asked for, by name, as it arrived on the stream. Recorded beside
+    /// <see cref="NoteToolCall"/> rather than instead of it, because the two answer different questions: that one
+    /// counts what reached the gate, this one counts what the response said. A name here with no matching gate
+    /// count is a call Hub never ran — and until this existed, that difference was invisible: the person saw
+    /// reasoning and then no answer, and nothing on disk said a tool had been asked for at all.</summary>
+    internal void NoteCallName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return;
+        lock (_gate)
+            if (!_segmentCallNames.Contains(name, StringComparer.Ordinal)) _segmentCallNames.Add(name);
+    }
+
+    /// <summary>The distinct names this segment's response asked for, in the order they arrived. Read at an
+    /// ending to say which tool went unanswered.</summary>
+    internal IReadOnlyList<string> SegmentCallNames
+    {
+        get { lock (_gate) return [.. _segmentCallNames]; }
+    }
 
     /// <summary>
     /// Takes the one second chance a run is allowed for a model that described its limits instead of acting, and
@@ -388,6 +428,27 @@ internal sealed class ConversationRun : IDisposable
     /// a tool loop the correction actually set in motion keeps the correction under it rather than losing it at the
     /// first round that asked for a call.</summary>
     internal bool ToolNudgeArmed => Volatile.Read(ref _toolNudgeArmed) == 1;
+
+    /// <summary>Whether the one correction for an undeclared call is still unspent, arming it with the names the
+    /// response asked for. One per run, mirroring <see cref="TryArmToolNudge"/>: a second identical wrong name is the
+    /// model's answer, not a fact Hub has failed to explain.</summary>
+    internal bool TryArmUndeclaredNudge(IReadOnlyList<string> asked)
+    {
+        if (asked.Count == 0) return false;
+        lock (_gate)
+        {
+            if (_undeclaredNudge is not null) return false;
+            _undeclaredNudge = UndeclaredCallNudge.Sentence(asked);
+            return true;
+        }
+    }
+
+    /// <summary>The sentence a request carries after an undeclared call, or null while the chance is unspent. Read
+    /// by the request builder, so it has to survive the rounds the correction itself sets in motion.</summary>
+    internal string? UndeclaredNudge
+    {
+        get { lock (_gate) return _undeclaredNudge; }
+    }
 
     /// <summary>Re-arms the inactivity deadline for the next frame of output, on the silence window: this round
     /// has already spoken, so a gap now means the stream stopped. A parked run has no stream, so nothing re-arms

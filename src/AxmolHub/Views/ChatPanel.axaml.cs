@@ -4071,7 +4071,7 @@ public partial class ChatPanel : UserControl
     private static bool NoticeIsRetryable(string key)
         => key is "ChatNoFirstFrame" or "ChatTimedOut" or "ChatTimedOutAfterRetries"
             or "ChatStreamInterrupted" or "ChatConnectionFailed" or "ChatRateLimited"
-            or "ChatFailed" or "ChatNoResponse" or "ChatReasoningOnly";
+            or "ChatFailed" or "ChatNoResponse" or "ChatReasoningOnly" or "ChatUndeclaredTool";
 
     private static bool NoticeIsContinuable(string key) => key == "ChatResponseTruncated";
 

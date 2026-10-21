@@ -6400,6 +6400,61 @@ if (args.Contains("--check-ai-tool-policy"))
         throw new Exception("The refusal the model was sent is not the refusal it was given.");
     Console.WriteLine("PASS: a denied call never runs, and the model is told it was refused.");
 
+    // A response that asks for a tool this request never declared. The invoking client refuses to run a name it
+    // was not given and ends the loop there, so nothing is gated and nothing reaches the transcript — and until
+    // the iterator started reporting the calls it saw, the only trace was a reply carrying reasoning and no text.
+    // That is the ending a person met and a log could not explain: reasoning, then 「模型只返回了思考过程」.
+    var undeclaredClient = new ToolLoopChatClient(callName: "web_search");
+    var undeclaredSeen = new List<string>();
+    var undeclaredGated = 0;
+    var undeclaredAnswer = new StringBuilder();
+    await foreach (var chunk in new ChatPipeline(undeclaredClient).SendAsync(
+                       gateProvider,
+                       [ChatTurn.User("search the web for it")],
+                       tools: [gatedFunction],
+                       gate: (_, _, _) =>
+                       {
+                           undeclaredGated++;
+                           return Task.FromResult(ChatPipeline.ToolGateOutcome.Allow);
+                       },
+                       onCallContent: name => undeclaredSeen.Add(name)))
+        undeclaredAnswer.Append(chunk);
+    if (string.Join(",", undeclaredSeen) != "web_search")
+        throw new Exception(
+            $"A call the request never declared did not reach the caller: [{string.Join(",", undeclaredSeen)}].");
+    if (undeclaredGated != 0)
+        throw new Exception($"A call the request never declared reached the gate ({undeclaredGated} time(s)).");
+    if (undeclaredAnswer.Length != 0)
+        throw new Exception($"An undeclared call was answered instead of ending the turn: 「{undeclaredAnswer}」.");
+    Console.WriteLine("PASS: a call the request never declared is reported to the caller and never reaches the gate.");
+
+    // And whether the same report fires for a call the client *does* run decides how the log line is read: a name
+    // there means "the response asked", and only the gate count beside it says whether anything acted on it. The
+    // answer is a property of the shipped Microsoft.Extensions.AI assembly, so it is measured here rather than
+    // assumed — the assertion allows both, and the printed line records which one this lock file gives.
+    var declaredClient = new ToolLoopChatClient();
+    var declaredSeen = new List<string>();
+    var declaredGated = 0;
+    var declaredAnswer = new StringBuilder();
+    await foreach (var chunk in new ChatPipeline(declaredClient).SendAsync(
+                       gateProvider,
+                       [ChatTurn.User("list the projects")],
+                       tools: [gatedFunction],
+                       gate: (_, _, _) =>
+                       {
+                           declaredGated++;
+                           return Task.FromResult(ChatPipeline.ToolGateOutcome.Allow);
+                       },
+                       onCallContent: name => declaredSeen.Add(name)))
+        declaredAnswer.Append(chunk);
+    if (declaredGated != 1 || declaredAnswer.ToString() != "Projects loaded.")
+        throw new Exception($"A declared call stopped running: gated={declaredGated}, answer=「{declaredAnswer}」.");
+    if (declaredSeen.Count > 1)
+        throw new Exception($"One call of one response was reported {declaredSeen.Count} times: "
+            + $"[{string.Join(",", declaredSeen)}].");
+    Console.WriteLine("PASS: a call the client runs is reported "
+        + $"{(declaredSeen.Count == 0 ? "not at all — this report means \"nothing ran it\"" : "once, so the gate count beside it is what says whether it acted")}.");
+
     // Pending: the stream ends, nothing is written as the call's result, and the placeholder stays inside.
     using var parkCancellation = new CancellationTokenSource();
     var parkCompleted = 0;
@@ -9373,7 +9428,7 @@ sealed class MultiCallChatClient(params string[] toolNames) : IChatClient
     public void Dispose() { }
 }
 
-sealed class ToolLoopChatClient(bool honorCancellation = false) : IChatClient{
+sealed class ToolLoopChatClient(bool honorCancellation = false, string callName = "get_projects") : IChatClient{
     public int CallCount { get; private set; }
     public IList<ChatMessage> SecondRequest { get; private set; } = [];
     public ChatOptions? LastOptions { get; private set; }
@@ -9396,7 +9451,7 @@ sealed class ToolLoopChatClient(bool honorCancellation = false) : IChatClient{
                 ChatRole.Assistant,
                 new List<AIContent>
                 {
-                    new FunctionCallContent("call-1", "get_projects", new Dictionary<string, object?>()),
+                    new FunctionCallContent("call-1", callName, new Dictionary<string, object?>()),
                 });
         }
         else
