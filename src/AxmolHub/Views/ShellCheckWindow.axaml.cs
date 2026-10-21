@@ -9415,55 +9415,66 @@ public partial class ShellCheckWindow : Window
             // The signed-in OpenAI route is known to speak Responses and to provide native hosted search. Inspect
             // the prepared request directly so this regression check never contacts OpenAI or relies on a response
             // claiming that it searched. The same-name refusal function must be replaced, not sent beside it.
-            var openAiProvider = chat.Providers.First(provider => provider.Id == "openai");
-            var previousOpenAiCredential = openAiProvider.Credential;
-            var previousHostedSearch = appPreferences.AllowHostedWebSearch;
-            var previousDeepSeekSearch = appPreferences.AllowDeepSeekWebApi;
-            try
+            //
+            // The provider is looked up without throwing: this suite runs against the repository's own data root,
+            // where the OpenAI preset may legitimately be absent, and a missing fixture must fail this one group
+            // rather than abort every check after it.
+            if (chat.Providers.FirstOrDefault(provider => provider.Id == "openai") is { } openAiProvider)
             {
-                var oauthSession = StartAgentSession(chat, openAiProvider.Id);
-                openAiProvider.Credential = new ProviderCredential
+                var previousOpenAiCredential = openAiProvider.Credential;
+                var previousHostedSearch = appPreferences.AllowHostedWebSearch;
+                var previousDeepSeekSearch = appPreferences.AllowDeepSeekWebApi;
+                try
                 {
-                    ProviderId = openAiProvider.Id,
-                    AuthKind = "openaiOAuth",
-                    Secret = "fixture-token-bundle",
-                };
-                var oauthTools = chat.PreparedToolsForCheck(oauthSession.Id);
-                Check(oauthTools.Count(tool => tool.Name == ProviderServerTools.WebSearch) == 1
-                      && oauthTools.Single(tool => tool.Name == ProviderServerTools.WebSearch)
-                          is Microsoft.Extensions.AI.HostedWebSearchTool,
-                    "OpenAI OAuth 开启搜索时只声明一条原生 Responses web_search，不再并列拒绝占位工具（实际 "
-                    + string.Join(",", oauthTools.Select(tool => tool.Name)) + "）");
+                    var oauthSession = StartAgentSession(chat, openAiProvider.Id);
+                    openAiProvider.Credential = new ProviderCredential
+                    {
+                        ProviderId = openAiProvider.Id,
+                        AuthKind = "openaiOAuth",
+                        Secret = "fixture-token-bundle",
+                    };
+                    var oauthTools = chat.PreparedToolsForCheck(oauthSession.Id);
+                    Check(oauthTools.Count(tool => tool.Name == ProviderServerTools.WebSearch) == 1
+                          && oauthTools.Single(tool => tool.Name == ProviderServerTools.WebSearch)
+                              is Microsoft.Extensions.AI.HostedWebSearchTool,
+                        "OpenAI OAuth 开启搜索时只声明一条原生 Responses web_search，不再并列拒绝占位工具（实际 "
+                        + string.Join(",", oauthTools.Select(tool => tool.Name)) + "）");
 
-                openAiProvider.Credential = new ProviderCredential
-                {
-                    ProviderId = openAiProvider.Id,
-                    AuthKind = "apiKey",
-                    Secret = "fixture-api-key",
-                };
-                var apiKeyTools = chat.PreparedToolsForCheck(oauthSession.Id);
-                Check(apiKeyTools.All(tool => tool is not Microsoft.Extensions.AI.HostedWebSearchTool),
-                    "OpenAI API Key 不会自动继承 OAuth 搜索能力（实际 "
-                    + string.Join(",", apiKeyTools.Select(tool => tool.Name)) + "）");
+                    openAiProvider.Credential = new ProviderCredential
+                    {
+                        ProviderId = openAiProvider.Id,
+                        AuthKind = "apiKey",
+                        Secret = "fixture-api-key",
+                    };
+                    var apiKeyTools = chat.PreparedToolsForCheck(oauthSession.Id);
+                    Check(apiKeyTools.All(tool => tool is not Microsoft.Extensions.AI.HostedWebSearchTool),
+                        "OpenAI API Key 不会自动继承 OAuth 搜索能力（实际 "
+                        + string.Join(",", apiKeyTools.Select(tool => tool.Name)) + "）");
 
-                openAiProvider.Credential = new ProviderCredential
+                    openAiProvider.Credential = new ProviderCredential
+                    {
+                        ProviderId = openAiProvider.Id,
+                        AuthKind = "openaiOAuth",
+                        Secret = "fixture-token-bundle",
+                    };
+                    appPreferences.AllowHostedWebSearch = false;
+                    appPreferences.AllowDeepSeekWebApi = false;
+                    var switchedOffTools = chat.PreparedToolsForCheck(oauthSession.Id);
+                    Check(switchedOffTools.All(tool => tool is not Microsoft.Extensions.AI.HostedWebSearchTool),
+                        "OpenAI OAuth 的总开关关闭后不提供可执行的托管搜索（实际 "
+                        + string.Join(",", switchedOffTools.Select(tool => tool.Name)) + "）");
+                }
+                finally
                 {
-                    ProviderId = openAiProvider.Id,
-                    AuthKind = "openaiOAuth",
-                    Secret = "fixture-token-bundle",
-                };
-                appPreferences.AllowHostedWebSearch = false;
-                appPreferences.AllowDeepSeekWebApi = false;
-                var switchedOffTools = chat.PreparedToolsForCheck(oauthSession.Id);
-                Check(switchedOffTools.All(tool => tool is not Microsoft.Extensions.AI.HostedWebSearchTool),
-                    "OpenAI OAuth 的总开关关闭后不提供可执行的托管搜索（实际 "
-                    + string.Join(",", switchedOffTools.Select(tool => tool.Name)) + "）");
+                    openAiProvider.Credential = previousOpenAiCredential;
+                    appPreferences.AllowHostedWebSearch = previousHostedSearch;
+                    appPreferences.AllowDeepSeekWebApi = previousDeepSeekSearch;
+                }
             }
-            finally
+            else
             {
-                openAiProvider.Credential = previousOpenAiCredential;
-                appPreferences.AllowHostedWebSearch = previousHostedSearch;
-                appPreferences.AllowDeepSeekWebApi = previousDeepSeekSearch;
+                Check(false, "这份数据根里没有内置 openai provider，OpenAI OAuth 搜索的三条断言未执行（现有 provider："
+                    + string.Join(",", chat.Providers.Select(provider => provider.Id)) + "）");
             }
 
             // A search that named its query but read nothing back: the record keeps the query, and the reply grows
