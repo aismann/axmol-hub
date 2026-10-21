@@ -91,9 +91,10 @@ public static class Pickers
     /// The two hosts disagree about what one *is*, and on macOS the disagreement is not cosmetic: a bundle is a
     /// **directory**, and Avalonia's file picker filters directories out of its result even though the panel lets
     /// you click one — it comes back empty (AvaloniaUI/Avalonia#18303, still true of the pinned version), which
-    /// reads to the user as "choose an application and nothing happens". The folder picker is the one that returns
-    /// the bundle, so it is what asks on macOS; it starts in <c>/Applications</c> so the list is applications
-    /// rather than files. Elsewhere the file picker is right and <c>*.exe</c> is the type worth filtering on.
+    /// reads to the user as "choose an application and nothing happens". So macOS gets <see cref="MacApplicationPicker"/>,
+    /// a file panel driven directly through AppKit, which both looks like "choose an application" and returns the
+    /// bundle. The folder panel below stays as the fallback for a host where those native calls fail — it is the
+    /// one Avalonia panel that can hand back a bundle, even though it renders it as a folder.
     ///
     /// The returned path is folded up to the enclosing bundle; whether it can be launched is
     /// <see cref="CodeEditors"/>' question, not this one's.
@@ -104,6 +105,17 @@ public static class Pickers
         {
             return await PickFileAsync(owner, title,
                 OperatingSystem.IsWindows() ? [new FilePickerFileType("Executable") { Patterns = ["*.exe"] }] : null);
+        }
+
+        var (outcome, chosen) = MacApplicationPicker.Pick(title);
+        if (outcome == MacApplicationPicker.Outcome.Picked)
+        {
+            return PickResult.Picked(CodeEditors.ApplicationBundle(chosen!) ?? chosen!);
+        }
+
+        if (outcome == MacApplicationPicker.Outcome.Cancelled)
+        {
+            return PickResult.Cancelled;
         }
 
         var folders = await owner.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions

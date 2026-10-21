@@ -1031,13 +1031,6 @@ public partial class SettingsPage : UserControl
     /// </summary>
     private void RenderEditors()
     {
-        // macOS: the list already holds every application in /Applications, and the only panel that can hand back
-        // a bundle is a *folder* panel — so the button says what it really does, instead of promising a chooser the
-        // list has already replaced.
-        var macos = OperatingSystem.IsMacOS();
-        BrowseEditorButton.Content = HubStrings.Get(macos ? "BrowseElsewhere" : "BrowseEditor");
-        ToolTip.SetTip(BrowseEditorButton, macos ? HubStrings.Get("BrowseElsewhereHint") : null);
-
         EditorPicker.Items.Clear();
         EditorPicker.PlaceholderText = HubStrings.Get("NotSelected");
 
