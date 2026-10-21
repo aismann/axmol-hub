@@ -31,19 +31,14 @@ internal static class WebFetchSelfCheck
 
     public static int Run(string? url, string preferencesPath)
     {
-        var failures = 0;
-        void Check(bool condition, string name)
-        {
-            if (condition) { Console.WriteLine("PASS: " + name); return; }
-            failures++;
-            Console.WriteLine("FAIL: " + name);
-        }
+        var report = CheckReport.Console();
+        bool Check(bool condition, string name) => report.Check(condition, name);
 
         if (string.IsNullOrWhiteSpace(url))
         {
-            Console.WriteLine("FAIL: --check-webfetch needs one absolute https URL to read.");
+            Check(false, "--check-webfetch needs one absolute https URL to read.");
             Console.WriteLine("result=usage");
-            return 1;
+            return report.ExitCode;
         }
 
         var preferences = LoadPreferences(preferencesPath);
@@ -69,10 +64,10 @@ internal static class WebFetchSelfCheck
         {
             clock.Stop();
             var detail = $"{ex.GetType().Name}: {ex.Message}";
-            Console.WriteLine("FAIL: the call threw instead of answering in a sentence ("
-                              + detail[..Math.Min(200, detail.Length)] + ")");
+            Check(false, "the call threw instead of answering in a sentence ("
+                         + detail[..Math.Min(200, detail.Length)] + ")");
             Console.WriteLine("result=threw");
-            return 1;
+            return report.ExitCode;
         }
 
         clock.Stop();
@@ -104,8 +99,8 @@ internal static class WebFetchSelfCheck
         Console.WriteLine(body.Replace('\r', ' ').TrimEnd());
         Console.WriteLine("--- end ---");
 
-        Console.WriteLine($"result={(failures == 0 ? "ok" : "failed")}");
-        return failures;
+        Console.WriteLine($"result={(report.Succeeded ? "ok" : "failed")}");
+        return report.ExitCode;
     }
 
     /// <summary>Reads the shipped settings file the shipped way, and falls back to the factory defaults when there is

@@ -28,13 +28,8 @@ internal static class SecretStoreSelfCheck
             ? Path.Combine(Path.GetTempPath(), "axmolhub-secret-selfcheck-" + Environment.ProcessId)
             : Path.GetFullPath(scratchDirectory);
 
-        var failures = 0;
-        void Check(bool condition, string name)
-        {
-            if (condition) { Console.WriteLine("PASS: " + name); return; }
-            failures++;
-            Console.WriteLine("FAIL: " + name);
-        }
+        var report = CheckReport.Console();
+        bool Check(bool condition, string name) => report.Check(condition, name);
 
         Directory.CreateDirectory(scratch);
         var dataRoot = Path.Combine(scratch, "data");
@@ -53,9 +48,9 @@ internal static class SecretStoreSelfCheck
         {
             // A platform with no backend is a known state, not a failure: unknown platforms may have no backend, and the CI
             // matrix must not go red over a decision the product took deliberately.
-            Console.WriteLine("PASS: no secret store on this platform, and the factory says so instead of storing a plaintext key");
+            Check(true, "no secret store on this platform, and the factory says so instead of storing a plaintext key");
             Console.WriteLine("backend=none");
-            return 0;
+            return report.ExitCode;
         }
 
         const string providerId = "selfcheck-provider";
@@ -115,11 +110,11 @@ internal static class SecretStoreSelfCheck
             }
         }
 
-        CheckBrowserLauncher(Check);
+        CheckBrowserLauncher((ok, name) => report.Check(ok, name));
 
         Console.WriteLine("backend=" + descriptor.Kind.ToString().ToLowerInvariant());
         TryDelete(scratch);
-        return failures;
+        return report.ExitCode;
     }
 
     /// <summary>

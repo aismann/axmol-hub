@@ -1,3 +1,5 @@
+using AxmolHub.Core;
+
 namespace AxmolHub;
 
 /// <summary>
@@ -23,18 +25,13 @@ internal static class MacNotificationSelfCheck
 {
     public static int Run()
     {
+        var report = CheckReport.Console();
+        bool Check(bool condition, string name) => report.Check(condition, name);
+
         if (!OperatingSystem.IsMacOS())
         {
-            Console.WriteLine("PASS: this host is not macOS, and the notification channel it would test is macOS-only");
-            return 0;
-        }
-
-        var failures = 0;
-        void Check(bool condition, string name)
-        {
-            if (condition) { Console.WriteLine("PASS: " + name); return; }
-            failures++;
-            Console.WriteLine("FAIL: " + name);
+            Check(true, "this host is not macOS, and the notification channel it would test is macOS-only");
+            return report.ExitCode;
         }
 
         MacUserNotifications.Prepare();
@@ -42,8 +39,8 @@ internal static class MacNotificationSelfCheck
                           + " bundled=" + (MacUserNotifications.Bundled ? "yes" : "no"));
         if (!MacUserNotifications.Bundled)
         {
-            Console.WriteLine("SKIP: this process is not inside an .app bundle; authorization and delivery need "
-                              + "a bundle identity, so only the ABI below is asserted");
+            report.Skip("this process is not inside an .app bundle; authorization and delivery need "
+                        + "a bundle identity, so only the ABI below is asserted");
         }
 
         Check(MacUserNotifications.TryProbe(out var step, out var failure),
@@ -60,8 +57,8 @@ internal static class MacNotificationSelfCheck
               && MacUserNotifications.DidReceiveTypeEncoding == "v@:@@@?",
             "the presentation options and both delegate encodings match the UserNotifications headers");
 
-        Console.WriteLine("SKIP: a visible banner and a click need a desktop session and a person; use "
-                          + "--test-system-attention and the manual checklist in docs/building-from-source.md");
-        return failures;
+        report.Skip("a visible banner and a click need a desktop session and a person; use "
+                    + "--test-system-attention and the manual checklist in docs/building-from-source.md");
+        return report.ExitCode;
     }
 }

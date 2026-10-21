@@ -37,9 +37,7 @@ namespace AxmolHub;
 /// </summary>
 public partial class ShellCheckWindow : Window
 {
-    private int _passed;
-    private int _failed;
-    private readonly List<string> _lines = [];
+    private readonly CheckReport _report = CheckReport.Collected();
 
     public ShellCheckWindow() => InitializeComponent();
 
@@ -65,23 +63,23 @@ public partial class ShellCheckWindow : Window
             }
 
             finished = true;
-            _lines.Add(string.Format(CultureInfo.InvariantCulture, "RESULT: {0}/{1} passed", _passed, _passed + _failed));
+            _report.Line(string.Format(CultureInfo.InvariantCulture, "RESULT: {0}/{1} passed", _report.Passed, _report.Passed + _report.Failures));
 
             try
             {
-                TextEol.WriteLines(reportPath, _lines);
+                _report.WriteReport(reportPath);
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(ex.Message);
             }
 
-            foreach (var line in _lines)
+            foreach (var line in _report.Lines)
             {
                 Console.WriteLine(line);
             }
 
-            lifetime.Shutdown(_failed == 0 ? 0 : 1);
+            lifetime.Shutdown(_report.Succeeded ? 0 : 1);
         }
 
         var checksStarted = false;
@@ -128,17 +126,12 @@ public partial class ShellCheckWindow : Window
 
     private void Check(bool ok, string message)
     {
-        if (Environment.GetEnvironmentVariable("AXMOL_SHELL_TRACE") == "1") Console.Error.WriteLine((ok ? "PASS " : "FAIL ") + message);
-        if (ok)
+        if (Environment.GetEnvironmentVariable("AXMOL_SHELL_TRACE") == "1")
         {
-            _passed++;
-            _lines.Add("PASS  " + message);
+            Console.Error.WriteLine((ok ? "PASS " : "FAIL ") + message);
         }
-        else
-        {
-            _failed++;
-            _lines.Add("FAIL  " + message);
-        }
+
+        _report.Check(ok, message);
     }
 
     /// <summary>
@@ -11423,7 +11416,7 @@ public partial class ShellCheckWindow : Window
                     + ownText.Length + " 字符，上限 " + MemoryStore.MaxCharterCharacters + "，注入 "
                     + ownSection.Length + " 字符）");
             }
-            else _lines.Add("SKIP  仓库根上没有 AGENTS.md，跳过「产品自己的章程整份进得来」（仅开发环境可跑）");
+            else _report.Skip("仓库根上没有 AGENTS.md，跳过「产品自己的章程整份进得来」（仅开发环境可跑）");
 
             // The fixture's charter claims "no command needs approval", so this is the claim to test rather than a
             // polite one: the demand goes into the prompt verbatim — Hub does not censor a project's own rules —
@@ -12131,7 +12124,7 @@ public partial class ShellCheckWindow : Window
     {
         if (!OperatingSystem.IsWindows())
         {
-            _lines.Add("SKIP  非 Windows 平台没有 Win32 窗口过程，跳过最大化按钮的真实非客户区点击");
+            _report.Skip("非 Windows 平台没有 Win32 窗口过程，跳过最大化按钮的真实非客户区点击");
             return;
         }
 
@@ -12156,7 +12149,7 @@ public partial class ShellCheckWindow : Window
         Dispatcher.UIThread.RunJobs();
         if (ScreenCentreOf(plate, shell) is not { } over || ScreenCentreOf(close, shell) is not { } away)
         {
-            _lines.Add("SKIP  窗口还没落到屏幕上，取不到按钮的屏幕坐标");
+            _report.Skip("窗口还没落到屏幕上，取不到按钮的屏幕坐标");
             return;
         }
 
@@ -12213,13 +12206,13 @@ public partial class ShellCheckWindow : Window
     {
         if (OperatingSystem.IsWindows())
         {
-            _lines.Add("SKIP  Windows 上把窗口从全屏里拖出来是 DWM 的事，这里验证的是非 Windows 那一支");
+            _report.Skip("Windows 上把窗口从全屏里拖出来是 DWM 的事，这里验证的是非 Windows 那一支");
             return;
         }
 
         if (dragArea is null)
         {
-            _lines.Add("SKIP  找不到标题栏的拖动层，还原落位没法测");
+            _report.Skip("找不到标题栏的拖动层，还原落位没法测");
             return;
         }
 
@@ -12228,7 +12221,7 @@ public partial class ShellCheckWindow : Window
         Dispatcher.UIThread.RunJobs();
         if (shell.Bounds.Width <= shell.NormalClientSizeForCheck.Width + 1)
         {
-            _lines.Add("SKIP  没有窗口管理器把这个窗口真的最大化，非 Windows 的落位实测在这里量不到东西");
+            _report.Skip("没有窗口管理器把这个窗口真的最大化，非 Windows 的落位实测在这里量不到东西");
             return;
         }
 
@@ -14634,7 +14627,7 @@ public partial class ShellCheckWindow : Window
 
         if (!OperatingSystem.IsWindows())
         {
-            _lines.Add("SKIP  非 Windows 平台没有任务栏 overlay，跳过 ITaskbarList3 的真实探测");
+            _report.Skip("非 Windows 平台没有任务栏 overlay，跳过 ITaskbarList3 的真实探测");
             return;
         }
 
@@ -14646,7 +14639,7 @@ public partial class ShellCheckWindow : Window
         var probed = SystemAttentionService.WindowsTaskbarBadge.TryProbe(out var hr, out var failure);
         if (!probed && hr == SystemAttentionService.WindowsTaskbarBadge.CO_E_NOTINITIALIZED)
         {
-            _lines.Add("SKIP  本线程未初始化 COM，跳过 ITaskbarList3 的真实探测（" + failure + "）");
+            _report.Skip("本线程未初始化 COM，跳过 ITaskbarList3 的真实探测（" + failure + "）");
             return;
         }
 
@@ -14693,7 +14686,7 @@ public partial class ShellCheckWindow : Window
 
         if (!OperatingSystem.IsWindows())
         {
-            _lines.Add("SKIP  非 Windows 平台没有 WinRT toast，跳过进程内互操作的真实探测");
+            _report.Skip("非 Windows 平台没有 WinRT toast，跳过进程内互操作的真实探测");
             return;
         }
 
@@ -14719,7 +14712,7 @@ public partial class ShellCheckWindow : Window
 
         if (!OperatingSystem.IsMacOS())
         {
-            _lines.Add("SKIP  非 macOS 平台没有 UserNotifications，跳过 delegate 与 global block 的真实探测");
+            _report.Skip("非 macOS 平台没有 UserNotifications，跳过 delegate 与 global block 的真实探测");
             return;
         }
 
@@ -14851,7 +14844,7 @@ public partial class ShellCheckWindow : Window
         {
             // The installed self-contained artifacts have no .axaml source. **Record it explicitly** rather than skipping silently:
             // the report must distinguish "verified" from "this didn't run".
-            _lines.Add("SKIP  源码目录不在，跳过 XAML 资源 key 扫描（仅开发/CI 环境可跑）");
+            _report.Skip("源码目录不在，跳过 XAML 资源 key 扫描（仅开发/CI 环境可跑）");
             return;
         }
 

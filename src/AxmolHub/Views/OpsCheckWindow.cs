@@ -35,10 +35,7 @@ namespace AxmolHub;
 /// </summary>
 public sealed class OpsCheckWindow : Window
 {
-    private int _passed;
-    private int _failed;
-    private int _skipped;
-    private readonly List<string> _lines = [];
+    private readonly CheckReport _report = CheckReport.Collected();
 
     public void Run(IClassicDesktopStyleApplicationLifetime lifetime, string reportPath, string[] engines)
     {
@@ -56,24 +53,24 @@ public sealed class OpsCheckWindow : Window
             }
 
             finished = true;
-            _lines.Add(string.Format(CultureInfo.InvariantCulture,
-                "RESULT: {0}/{1} passed, {2} skipped", _passed, _passed + _failed, _skipped));
+            _report.Line(string.Format(CultureInfo.InvariantCulture,
+                "RESULT: {0}/{1} passed, {2} skipped", _report.Passed, _report.Passed + _report.Failures, _report.Skipped));
 
             try
             {
-                TextEol.WriteLines(reportPath, _lines);
+                _report.WriteReport(reportPath);
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(ex.Message);
             }
 
-            foreach (var line in _lines)
+            foreach (var line in _report.Lines)
             {
                 Console.WriteLine(line);
             }
 
-            lifetime.Shutdown(_failed == 0 ? 0 : 1);
+            lifetime.Shutdown(_report.Succeeded ? 0 : 1);
         }
 
         Opened += (_, _) => Dispatcher.UIThread.Post(async () =>
@@ -102,26 +99,10 @@ public sealed class OpsCheckWindow : Window
         }, TimeSpan.FromSeconds(10));
     }
 
-    private void Check(bool ok, string message)
-    {
-        if (ok)
-        {
-            _passed++;
-            _lines.Add("PASS  " + message);
-        }
-        else
-        {
-            _failed++;
-            _lines.Add("FAIL  " + message);
-        }
-    }
+    private void Check(bool ok, string message) => _report.Check(ok, message);
 
     /// <summary>Explicitly records "this didn't run". Skips must be **visible**, otherwise the report reads as if everything ran.</summary>
-    private void Skip(string message)
-    {
-        _skipped++;
-        _lines.Add("SKIP  " + message);
-    }
+    private void Skip(string message) => _report.Skip(message);
 
     private async Task RunChecksAsync(string scratchRoot, string[] engines)
     {
@@ -179,8 +160,8 @@ public sealed class OpsCheckWindow : Window
             "每个组件都给出了结论性状态（没有停在 Unknown/Checking）");
         Check(components.All(c => c.Details.Length > 0), "每个组件都给出了状态说明（含期望版本或落点）");
 
-        _lines.Add("INFO  实测: " + string.Join(" / ", components.Select(c => c.Name + "=" + c.Status)));
-        _lines.Add("INFO  真源: <engine>/1k/build.profiles（期望版本）+ <engine>/tools/external（实装）");
+        _report.Line("INFO  实测: " + string.Join(" / ", components.Select(c => c.Name + "=" + c.Status)));
+        _report.Line("INFO  真源: <engine>/1k/build.profiles（期望版本）+ <engine>/tools/external（实装）");
     }
 
     /// <summary>
@@ -225,7 +206,7 @@ public sealed class OpsCheckWindow : Window
                     var parts = added.Version.Split('.');
                     Check(parts.Length == 3 && parts.All(part => int.TryParse(part, out _)),
                         "引擎「" + name + "」的版本读出为 " + added.Version + "（三段点分，来自引擎版本头 axmolver.h.in：v3 在 axmol/，v2 在 core/）");
-                    _lines.Add("INFO  " + name + " → 版本 " + added.Version + "，通道 " + added.Channel);
+                    _report.Line("INFO  " + name + " → 版本 " + added.Version + "，通道 " + added.Channel);
                 }
             }
             else
@@ -236,7 +217,7 @@ public sealed class OpsCheckWindow : Window
                     "不完整引擎「" + name + "」没有被加进列表（缺 " + string.Join(", ", missing) + "）");
                 Check(workspace.LastError.Contains(missing[0], StringComparison.Ordinal),
                     "拒绝理由点名了缺失的标志文件「" + missing[0] + "」（而不是只说\"无效引擎\"）");
-                _lines.Add("INFO  " + name + " → 被拒绝，缺失标志文件: " + string.Join(", ", missing));
+                _report.Line("INFO  " + name + " → 被拒绝，缺失标志文件: " + string.Join(", ", missing));
             }
         }
 

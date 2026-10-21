@@ -1,4 +1,5 @@
 using System.Text;
+using AxmolHub.Core;
 
 namespace AxmolHub;
 
@@ -26,12 +27,15 @@ internal static class LinuxIntegrationSelfCheck
 {
     public static int Run(string? scratchDirectory)
     {
+        var report = CheckReport.Console();
+        bool Check(bool condition, string name) => report.Check(condition, name);
+
         if (!OperatingSystem.IsLinux())
         {
             // The integration is Linux-only by design (Windows uses the registry, macOS the Info.plist), so a
             // non-Linux host has nothing to fail on. Same reasoning as the secrets check's `backend=none` branch.
-            Console.WriteLine("PASS: this host is not Linux, and the desktop integration it would test is Linux-only");
-            return 0;
+            Check(true, "this host is not Linux, and the desktop integration it would test is Linux-only");
+            return report.ExitCode;
         }
 
         var scratch = string.IsNullOrWhiteSpace(scratchDirectory)
@@ -41,14 +45,7 @@ internal static class LinuxIntegrationSelfCheck
         Directory.CreateDirectory(dataHome);
         Environment.SetEnvironmentVariable("XDG_DATA_HOME", dataHome);
 
-        var failures = 0;
         var notes = new List<string>();
-        void Check(bool condition, string name)
-        {
-            if (condition) { Console.WriteLine("PASS: " + name); return; }
-            failures++;
-            Console.WriteLine("FAIL: " + name);
-        }
 
         // The icon bytes have to be in this process's own payload: the desktop entry points at files this
         // run lays down, and on an installed AppImage there is no source tree to fall back on. Reading them
@@ -144,8 +141,8 @@ internal static class LinuxIntegrationSelfCheck
         Check(attention.TryTakeActivationTarget(now) is null,
             "a click that named its own conversation clears the pending target so a later raise cannot replay it");
 
-        foreach (var note in notes) Console.WriteLine("note: " + note);
-        return failures;
+        foreach (var note in notes) report.Line("note: " + note);
+        return report.ExitCode;
     }
 
     private static Dictionary<string, string>? ReadDesktopEntry(string path)

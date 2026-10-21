@@ -39,6 +39,8 @@ public partial class ControlGalleryWindow : Window
         new("TileForge", "2.11.5", "Not built", "2026-09-28 09:37"),
     };
 
+    private readonly CheckReport _report = CheckReport.Collected();
+
     public ControlGalleryWindow()
     {
         InitializeComponent();
@@ -68,7 +70,7 @@ public partial class ControlGalleryWindow : Window
     {
         var finished = false;
 
-        void Finish(List<string> lines, int passed, int failed)
+        void Finish()
         {
             if (finished)
             {
@@ -76,59 +78,40 @@ public partial class ControlGalleryWindow : Window
             }
 
             finished = true;
-            lines.Add(string.Format(CultureInfo.InvariantCulture, "RESULT: {0}/{1} passed", passed, passed + failed));
+            _report.Line(string.Format(CultureInfo.InvariantCulture, "RESULT: {0}/{1} passed", _report.Passed, _report.Passed + _report.Failures));
 
             try
             {
-                TextEol.WriteLines(reportPath, lines);
+                _report.WriteReport(reportPath);
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(ex.Message);
             }
 
-            foreach (var line in lines)
+            foreach (var line in _report.Lines)
             {
                 Console.WriteLine(line);
             }
 
-            lifetime.Shutdown(failed == 0 ? 0 : 1);
+            lifetime.Shutdown(_report.Succeeded ? 0 : 1);
         }
 
         // Hook Opened rather than posting directly: the visual tree only exists after the window is shown; running assertions before that yields a pile of false failures.
         Opened += (_, _) => Dispatcher.UIThread.Post(() =>
         {
-            var lines = new List<string>();
-            var passed = 0;
-            var failed = 0;
-
-            void Check(bool ok, string message)
-            {
-                if (ok)
-                {
-                    passed++;
-                    lines.Add("PASS  " + message);
-                }
-                else
-                {
-                    failed++;
-                    lines.Add("FAIL  " + message);
-                }
-            }
-
             try
             {
                 UpdateLayout();
                 Dispatcher.UIThread.RunJobs();
-                RunChecks(Check);
+                RunChecks((ok, name) => _report.Check(ok, name));
             }
             catch (Exception ex)
             {
-                failed++;
-                lines.Add("FAIL  验证过程抛出异常: " + ex.GetType().Name + ": " + ex.Message);
+                _report.Check(false, "验证过程抛出异常: " + ex.GetType().Name + ": " + ex.Message);
             }
 
-            Finish(lines, passed, failed);
+            Finish();
         }, DispatcherPriority.Background);
 
         // Fallback: don't let the process hang forever if the window never shows (in automation, hanging is harder to diagnose than failing).
@@ -136,7 +119,8 @@ public partial class ControlGalleryWindow : Window
         {
             if (!finished)
             {
-                Finish(new List<string> { "FAIL  窗口在 10 秒内没有触发 Opened，断言未执行" }, 0, 1);
+                _report.Check(false, "窗口在 10 秒内没有触发 Opened，断言未执行");
+                Finish();
             }
         }, TimeSpan.FromSeconds(10));
     }
