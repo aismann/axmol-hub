@@ -3630,6 +3630,8 @@ public sealed class ChatWorkspace : IDisposable
     /// <summary>The session file's own bytes as written. For the self-check only, and only for a claim about the
     /// file — "the plan's text is not in this transcript's JSON" cannot be answered by the hydrated object,
     /// which holds the body again as soon as anything resolves its reference.</summary>
+    internal string SessionFilePath(string conversationId) => _sessions.Store.SessionFilePath(conversationId);
+
     internal string? StoredSessionTextForCheck(string conversationId) => _sessions.Store.ReadStoredText(conversationId);
 
     /// <summary>Where one stored attachment sits, or <c>null</c> when the name is not a plain file name or the

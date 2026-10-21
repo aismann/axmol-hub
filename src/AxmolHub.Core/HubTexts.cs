@@ -1171,6 +1171,10 @@ public static class HubTexts
         // is otherwise only readable off the disk. The copy says so in words because a clipboard write is invisible.
         ["CopyConversationId"] = ("复制会话 ID", "Copy session ID"),
         ["ConversationIdCopied"] = ("会话 ID 已复制到剪贴板。", "The session ID is on the clipboard."),
+        ["CopyConversationDeepLink"] = ("复制会话深度链接", "Copy conversation deep link"),
+        ["ConversationDeepLinkCopied"] = ("会话深度链接已复制到剪贴板。", "The conversation deep link is on the clipboard."),
+        ["CopyConversationFilePath"] = ("复制会话文件路径", "Copy conversation file path"),
+        ["ConversationFilePathCopied"] = ("会话文件路径已复制到剪贴板。", "The conversation file path is on the clipboard."),
         ["PinConversation"] = ("置顶", "Pin"),
         ["UnpinConversation"] = ("取消置顶", "Unpin"),
         // Session grouping: workspaces first, conversations with no working directory all go to the trailing "Chats" group, archived ones sink to the very bottom.

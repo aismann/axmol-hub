@@ -26,6 +26,9 @@ public sealed class ConversationStore(string root)
     private string IndexPath => Path.Combine(SessionsDirectory, "index.json");
     private string ConversationPath(string id) => Path.Combine(SessionsDirectory, SanitizeId(id) + ".json");
 
+    /// <summary>The on-disk JSON file for a conversation, including before it has been saved.</summary>
+    public string SessionFilePath(string id) => ConversationPath(id);
+
     /// <summary>Where one conversation's attachments live: a directory named after the session, beside its JSON.
     /// Images stay out of the session file because that file is rewritten on every message and replayed into
     /// every later request, and a megabyte of PNG re-encoded as JSON escapes each time is not a transcript, it is

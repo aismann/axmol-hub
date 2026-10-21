@@ -747,8 +747,18 @@ public partial class ChatSidebar : UserControl
         // Archived rows carry it too: a session that has been put away is still the one a log line or a deep link
         // names, and its id is the only way back to it.
         var copyIdItem = new MenuItem { Header = HubStrings.Get("CopyConversationId") };
-        copyIdItem.Click += (_, _) => _ = CopyConversationIdAsync(summary.Id);
+        copyIdItem.Click += (_, _) => _ = CopyConversationTextAsync(summary.Id, "ConversationIdCopied");
         menu.Items.Add(copyIdItem);
+
+        var copyDeepLinkItem = new MenuItem { Header = HubStrings.Get("CopyConversationDeepLink") };
+        copyDeepLinkItem.Click += (_, _) => _ = CopyConversationTextAsync(
+            $"axmolhub://conversation/{Uri.EscapeDataString(summary.Id)}", "ConversationDeepLinkCopied");
+        menu.Items.Add(copyDeepLinkItem);
+
+        var copyFilePathItem = new MenuItem { Header = HubStrings.Get("CopyConversationFilePath") };
+        copyFilePathItem.Click += (_, _) => _ = CopyConversationTextAsync(
+            _chat.SessionFilePath(summary.Id), "ConversationFilePathCopied");
+        menu.Items.Add(copyFilePathItem);
 
         var deleteItem = new MenuItem
         {
@@ -778,36 +788,31 @@ public partial class ChatSidebar : UserControl
         return row;
     }
 
-    /// <summary>
-    /// Hands this row's own session id to the clipboard. Nothing on screen changes when it works, which is exactly
-    /// why the bottom strip has to say so: "it is in there" and "the clipboard refused" otherwise look identical
-    /// to the person who just clicked.
-    /// </summary>
-    private async System.Threading.Tasks.Task CopyConversationIdAsync(string id)
+    /// <summary>Copies one row-specific value and reports success without interrupting the person who copied it.</summary>
+    private async System.Threading.Tasks.Task CopyConversationTextAsync(string text, string copiedMessageKey)
     {
         try
         {
             if (TestClipboardWriter is { } writer)
             {
-                await writer(id);
+                await writer(text);
             }
             else if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard)
             {
                 var item = new DataTransferItem();
-                item.Set(DataFormat.Text, id);
+                item.Set(DataFormat.Text, text);
                 var data = new DataTransfer();
                 data.Add(item);
                 await clipboard.SetDataAsync(data);
             }
             else return;
 
-            StatusReporter?.Invoke(HubStrings.Get("ConversationIdCopied"));
+            StatusReporter?.Invoke(HubStrings.Get(copiedMessageKey));
         }
         catch (Exception)
         {
-            // A clipboard that refuses — locked by another process, a headless session — is not worth an error
-            // dialog. The id is still the session file's own name on disk, which is the same fallback every copy
-            // affordance in this app degrades to.
+            // A clipboard that refuses — locked by another process or unavailable in a headless session — is not
+            // worth an error dialog. The clicked row remains unchanged.
         }
     }
 
@@ -1265,10 +1270,13 @@ public partial class ChatSidebar : UserControl
     /// gone. Driving the item rather than reading a payload is the point — it is the closure that row was built with
     /// that decides which id goes, and two different rows are what show a wrong one up.</summary>
     internal string? CopiedConversationIdFromMenuForCheck(string id)
+        => CopiedConversationTextFromMenuForCheck(id, "CopyConversationId");
+
+    internal string? CopiedConversationTextFromMenuForCheck(string id, string menuKey)
     {
         var item = SessionMenuItems(id)
             .FirstOrDefault(candidate => string.Equals(candidate.Header?.ToString(),
-                HubStrings.Get("CopyConversationId"), StringComparison.Ordinal));
+                HubStrings.Get(menuKey), StringComparison.Ordinal));
         if (item is null) return null;
 
         string? copied = null;
