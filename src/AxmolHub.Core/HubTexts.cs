@@ -591,6 +591,7 @@ public static class HubTexts
         // both are right.
         ["ChatRequestSpeedApproxFormat"] = ("约 {0:0} tok/s", "~{0:0} tok/s"),
         ["ChatRequestSpeedWaiting"] = ("等待输出…", "Waiting for output…"),
+        ["ChatRequestSpeedSampling"] = ("等待后续输出…", "Waiting for more output…"),
         ["ChatSessionTokensFormat"] = ("{0} tok", "{0} tok"),
         ["ChatSessionCacheFormat"] = ("缓存命中 {0}%", "cache hit {0}%"),
         ["ChatContextBurnSendLabel"] = ("本轮实测消耗（tokens）：", "This reply measured (tokens): "),

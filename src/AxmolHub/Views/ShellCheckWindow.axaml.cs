@@ -480,13 +480,21 @@ public partial class ShellCheckWindow : Window
                   && ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedWaiting"),
                 "请求尚无流式输出时显示等待状态，不显示虚构的模型速度");
             rateRun.AppendReasoning(new string('a', 80));
-            Check(ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedWaiting"),
-                "首个输出块没有采样区间，仍不报告速度");
-            await Task.Delay(420);
+            Check(ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedSampling"),
+                "首个输出块没有采样区间，但不能再说尚未输出");
             rateRun.AppendText(new string('b', 80));
+            rateRun.AppendText(new string('c', 80));
             Check(rateRun.ApproximateTokensPerSecond is > 0
                   && ChatPanel.RequestSpeedTextForCheck(rateRun).Contains("tok/s", StringComparison.Ordinal),
-                "流式思考和正文共用短窗口估算速度，底部随流显示 tok/s");
+                "密集流式思考和正文无需间隔 350ms，也能当场显示约 tok/s");
+            await Task.Delay(2200);
+            Check(rateRun.ApproximateTokensPerSecond is null
+                  && ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedSampling"),
+                "输出暂停后不用陈旧的速度冒充实时速度，状态区分于首次等待");
+            rateRun.AppendText(new string('d', 80));
+            rateRun.AppendText(new string('e', 80));
+            Check(rateRun.ApproximateTokensPerSecond is > 0,
+                "暂停后恢复输出重新采样，速度不永久卡在等待态");
             rateRun.ParkForApproval();
             Check(rateRun.ApproximateTokensPerSecond is null
                   && ChatPanel.RequestSpeedTextForCheck(rateRun).Length == 0,
@@ -10585,12 +10593,86 @@ public partial class ShellCheckWindow : Window
         var unreported = chat.StartConversation(provider!.Id);
         var measured = chat.StartConversation(provider.Id);
         var healing = chat.StartConversation(declined!.Id);
+        var rateSession = chat.StartConversation(provider.Id);
         chat.SelectChatModel(provider.Id, model);
         chat.SelectChatModel(declined.Id, model);
         var savedOverride = chat.ClientOverride;
         var sent = new List<ScriptedChatClient>();
         try
         {
+            // A real streaming UI path, held open after a fast burst. The previous test called AppendText
+            // directly and missed the dispatcher paint: during a real send the old 350ms gate left this label
+            // saying "waiting" for an entire burst of output, despite the bubble visibly writing text.
+            var beforeOutput = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var afterFirst = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var afterBurst = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var burstReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            chat.ClientOverride = (_, _) => new ScriptedChatClient(
+                ["首", "段快速输出", "紧接着第二段输出", "第三段也不等350毫秒"],
+                gate: beforeOutput.Task, afterFirstChunkGate: afterFirst.Task,
+                firstChunkReached: firstReached, afterAllChunksGate: afterBurst.Task,
+                allChunksReached: burstReached);
+            try
+            {
+                chat.OpenConversation(rateSession.Id);
+                chat.TryEnqueueSend(rateSession.Id, "检查底部实时速度", null, out _);
+                panel.Reload();
+                Check(panel.ComposerSpeedForCheck == HubStrings.Get("ChatRequestSpeedWaiting"),
+                    "正在请求但还没收到流输出时，底部确实显示等待输出");
+                beforeOutput.TrySetResult(true);
+                await firstReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                for (var tick = 0; tick < 40 && panel.ComposerSpeedForCheck != HubStrings.Get("ChatRequestSpeedSampling"); tick++)
+                {
+                    await Task.Delay(20);
+                    Dispatcher.UIThread.RunJobs();
+                }
+                Check(panel.ComposerSpeedForCheck == HubStrings.Get("ChatRequestSpeedSampling"),
+                    "流收到首块后底部不再声称尚无输出（实际「" + panel.ComposerSpeedForCheck + "」）");
+                afterFirst.TrySetResult(true);
+                await burstReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                for (var tick = 0; tick < 40 && !panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal); tick++)
+                {
+                    await Task.Delay(20);
+                    Dispatcher.UIThread.RunJobs();
+                }
+                Check(panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal)
+                      && panel.ComposerSpeedForCheck != HubStrings.Get("ChatRequestSpeedWaiting"),
+                    "密集输出后流仍未结束，真实界面底部立即显示速度（实际「" + panel.ComposerSpeedForCheck + "」）");
+                var originalWidth = shell.Width;
+                try
+                {
+                    shell.Width = 900;
+                    shell.UpdateLayout();
+                    Dispatcher.UIThread.RunJobs();
+                    var layout = panel.ComposerStatusBoundsForCheck;
+                    Check(layout.SpeedWidth >= 60 && layout.SpeedRight < layout.ContextRight
+                          && layout.ContextRight <= layout.RowWidth + 1,
+                        "窗口最窄时 TPS 仍有可读宽度，三个状态靠右且上下文按钮留在行内（"
+                        + $"speed={layout.SpeedWidth:0.#}, contextRight={layout.ContextRight:0.#}, row={layout.RowWidth:0.#}）");
+                }
+                finally
+                {
+                    shell.Width = originalWidth;
+                    shell.UpdateLayout();
+                }
+                chat.OpenConversation(measured.Id);
+                panel.Reload();
+                Check(panel.ComposerSpeedForCheck.Length == 0,
+                    "切换到未运行的会话，不沿用后台会话的速度");
+                chat.OpenConversation(rateSession.Id);
+                panel.Reload();
+                Check(panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal),
+                    "切回仍在输出的会话，底部从运行数据恢复速度");
+            }
+            finally
+            {
+                beforeOutput.TrySetResult(true);
+                afterFirst.TrySetResult(true);
+                afterBurst.TrySetResult(true);
+                await WaitForIdleAsync(chat);
+            }
+
             // Phase 1: a gateway that never says what a request cost. The session has to keep estimating — a
             // meter that read the absence of a report as zero would call an overflowing conversation empty.
             chat.ClientOverride = (_, _) =>
@@ -10739,6 +10821,13 @@ public partial class ShellCheckWindow : Window
                   && burnText.Contains(string.Format(culture, HubStrings.Get("ChatContextBurnRequestsFormat"),
                       2.ToString(culture)), StringComparison.Ordinal),
                 "本轮实测把两次请求的输入加总（" + summedText + "）、输出加总，并说清这是几次请求（「" + burnText + "」）");
+            shell.UpdateLayout();
+            var metricSpacing = panel.ComposerMetricSpacingForCheck;
+            Check(panel.ComposerBurnForCheck.Contains(HubStrings.Get("ChatSessionCacheFormat").Split('{')[0], StringComparison.Ordinal)
+                  && metricSpacing.SpendToContext >= 8 && metricSpacing.SpendToContext <= 22
+                  && metricSpacing.RightInset >= 0 && metricSpacing.RightInset <= 12,
+                "用量与缓存同组，靠近最右侧上下文按钮，间距固定而非两个星号列撑开（"
+                + $"间距 {metricSpacing.SpendToContext:0.#}，右侧留白 {metricSpacing.RightInset:0.#}）");
             // The two readings side by side on one screen, and deliberately different numbers: the note above the
             // button still quotes the largest single request, because that one is the window's question.
             Check(burnInput != overfullReading
@@ -10885,6 +10974,7 @@ public partial class ShellCheckWindow : Window
             chat.DeleteConversation(unreported.Id);
             chat.DeleteConversation(measured.Id);
             chat.DeleteConversation(healing.Id);
+            chat.DeleteConversation(rateSession.Id);
             chat.RemoveProvider(provider.Id);
             chat.RemoveProvider(declined.Id);
             await WaitForIdleAsync(chat);
@@ -13838,7 +13928,9 @@ public partial class ShellCheckWindow : Window
         // Why the response stopped, on the frame that closes it. A gateway that ends without one is common enough
         // that null has to stay a possible answer, and it is the case the caller must not report as a reason.
         string? finish = null,
-        IList<Microsoft.Extensions.AI.AIContent>? reasoning = null) : Microsoft.Extensions.AI.IChatClient
+        IList<Microsoft.Extensions.AI.AIContent>? reasoning = null,
+        Task? afterAllChunksGate = null,
+        System.Threading.Tasks.TaskCompletionSource<bool>? allChunksReached = null) : Microsoft.Extensions.AI.IChatClient
     {
         /// <summary>The options of the request that was just made, so a check can read what would have gone on
         /// the wire. The scripted client answers instead of a gateway, and the field a gateway would have been
@@ -13890,6 +13982,8 @@ public partial class ShellCheckWindow : Window
                 }
                 await Task.Yield();
             }
+            allChunksReached?.TrySetResult(true);
+            if (afterAllChunksGate is not null) await afterAllChunksGate.WaitAsync(cancellationToken);
 
             // The reason on a frame of its own, carrying no content — the shape an OpenAI-compatible endpoint
             // actually sends it in, and precisely why a caller that only reads contents never learns why the

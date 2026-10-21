@@ -262,6 +262,7 @@ public partial class ChatPanel : UserControl
         InitializeComponent();
 
         _chat.Changed += Reload;
+        ComposerStatusRow.SizeChanged += (_, _) => RefreshComposerStatusDensity();
         // A command that went quiet raises its own question, and it is raised from inside the tool body — nowhere on
         // the token stream, so nothing else would ever tell this panel the card exists. The conversation id rides
         // along: a question in a session that is not on screen must not repaint the one that is.
@@ -287,6 +288,9 @@ public partial class ChatPanel : UserControl
         _chat.RunTextChanged += conversationId =>
         {
             if (_live is { } live && live.Run.ConversationId == conversationId) RefreshLive(live);
+            // Paint the speed on the same dispatcher frame as the incoming delta. A burst can finish before
+            // the bubble's 350ms timer ticks even once, leaving the status stuck at "waiting" otherwise.
+            if (_chat.ActiveConversation?.Id == conversationId) RenderComposerMetrics();
         };
         // A command that printed another line. Its card is not a turn and not a token: the transcript grows nothing
         // until the command ends, so what changes is the text inside one row that is already on screen. Refreshed
@@ -799,6 +803,23 @@ public partial class ChatPanel : UserControl
 
     private ContextUsage CurrentContextUsage() => _chat.EstimateContextUsage(InputBox.Text ?? "");
 
+    private void RefreshComposerStatusDensity()
+    {
+        var width = ComposerStatusRow.Bounds.Width;
+        if (width <= 0) return;
+        var tight = width < 300;
+        WorkspaceChipLabel.IsVisible = !tight;
+        WorkspaceChipCaret.IsVisible = !tight;
+        WorkspaceChip.MaxWidth = tight ? 28 : width < 420 ? 95 : 160;
+        WorkspaceChipLabel.MaxWidth = width < 420 ? 55 : 120;
+        ContextPercentLabel.IsVisible = !tight;
+        ComposerStatusRow.ColumnSpacing = tight ? 4 : 12;
+        if (ComposerStatusRow.ColumnDefinitions[1].Width.IsStar == tight)
+            ComposerStatusRow.ColumnDefinitions[1].Width = tight
+                ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        RenderComposerMetrics();
+    }
+
     private void RenderComposerMetrics()
     {
         RequestSpeedLabel.Text = RequestSpeedText(ViewedRun);
@@ -811,7 +832,15 @@ public partial class ChatPanel : UserControl
         var output = (session?.Output ?? 0) + (live?.Output ?? 0);
         var cached = (session?.CachedInput ?? 0) + (live?.CachedInput ?? 0);
         var hasReading = session is not null || live is not null;
-        SessionBurnLabel.IsVisible = hasReading;
+        var showSpend = hasReading && (ComposerStatusRow.Bounds.Width == 0 || ComposerStatusRow.Bounds.Width >= 300);
+        SessionBurnLabel.IsVisible = showSpend;
+        // At full width the spend takes only its content width, keeping the three readouts together.
+        // Under pressure it becomes the flexible column, so speed and the context button stay readable.
+        var spendWidth = !showSpend ? new GridLength(0)
+            : ComposerStatusRow.Bounds.Width >= 600 ? GridLength.Auto
+            : new GridLength(1, GridUnitType.Star);
+        if (ComposerStatusRow.ColumnDefinitions[3].Width != spendWidth)
+            ComposerStatusRow.ColumnDefinitions[3].Width = spendWidth;
         if (!hasReading)
         {
             SessionBurnLabel.Text = "";
@@ -839,7 +868,7 @@ public partial class ChatPanel : UserControl
         return rate is > 0
             ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("ChatRequestSpeedApproxFormat"), rate.Value)
-            : HubStrings.Get("ChatRequestSpeedWaiting");
+            : HubStrings.Get(run.SegmentHasOutput ? "ChatRequestSpeedSampling" : "ChatRequestSpeedWaiting");
     }
 
     private static string CompactTokenCount(long tokens, System.Globalization.CultureInfo culture)
@@ -6830,12 +6859,18 @@ public partial class ChatPanel : UserControl
            && AddContextButton.VerticalContentAlignment == VerticalAlignment.Center;
     internal bool ContextRingBelowComposerForCheck
         => ContextButton.Parent is Grid row && Grid.GetRow(row) == 5
-           && Grid.GetColumn(ContextButton) == 3
+           && Grid.GetColumn(ContextButton) == 4
            && ReferenceEquals(WorkspaceChip.Parent, row)
            && ContextPercentLabel.Text == ContextPopoverPercent.Text;
     internal string ComposerSpeedForCheck => RequestSpeedLabel.Text ?? "";
+    internal (double RowWidth, double SpeedWidth, double ContextRight, double SpeedRight) ComposerStatusBoundsForCheck
+        => (ComposerStatusRow.Bounds.Width, RequestSpeedLabel.Bounds.Width,
+            ContextButton.Bounds.Right, RequestSpeedLabel.Bounds.Right);
     internal static string RequestSpeedTextForCheck(ConversationRun? run) => RequestSpeedText(run);
     internal string ComposerBurnForCheck => SessionBurnLabel.Text ?? "";
+    internal (double SpendToContext, double RightInset) ComposerMetricSpacingForCheck
+        => (ContextButton.Bounds.Left - SessionBurnLabel.Bounds.Right,
+            ComposerStatusRow.Bounds.Width - ContextButton.Bounds.Right);
     internal string ComposerBurnTooltipForCheck => ToolTip.GetTip(SessionBurnLabel)?.ToString() ?? "";
     internal static string CompactTokenCountForCheck(long tokens, System.Globalization.CultureInfo culture)
         => CompactTokenCount(tokens, culture);
@@ -6844,9 +6879,15 @@ public partial class ChatPanel : UserControl
            && SessionBurnLabel.TextTrimming == TextTrimming.CharacterEllipsis
            && RequestSpeedLabel.Parent is Grid row
            && ReferenceEquals(row, SessionBurnLabel.Parent)
-           && row.ColumnDefinitions[1].Width.IsStar
-           && row.ColumnDefinitions[2].Width.IsStar
-           && row.ColumnDefinitions[3].Width.IsAuto;
+           && row.ColumnDefinitions[1].Width.IsStar == (row.Bounds.Width >= 300)
+           && row.ColumnDefinitions[2].Width.IsAuto
+           && row.ColumnDefinitions[3].Width.IsAuto == (SessionBurnLabel.IsVisible && row.Bounds.Width >= 600)
+           && row.ColumnDefinitions[3].Width.IsStar == (SessionBurnLabel.IsVisible && row.Bounds.Width < 600)
+           && row.ColumnDefinitions[4].Width.IsAuto
+           && Grid.GetColumn(RequestSpeedLabel) == 2
+           && Grid.GetColumn(SessionBurnLabel) == 3
+           && Grid.GetColumn(ContextButton) == 4
+           && row.ColumnSpacing == (row.Bounds.Width < 300 ? 4 : 12);
     internal bool PermissionChipFollowsPlusForCheck
         => PermissionChip.Parent is Panel panel
            && panel.Children.IndexOf(PermissionChip) == panel.Children.IndexOf(AddContextButton) + 1;

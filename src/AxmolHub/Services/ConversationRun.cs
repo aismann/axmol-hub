@@ -74,12 +74,17 @@ internal sealed class ConversationRun : IDisposable
     private readonly object _gate = new();
     private readonly StringBuilder _text = new();
     private readonly StringBuilder _reasoning = new();
-    // Usage arrives at request boundaries, not per streamed chunk. Keep a short rolling character window
-    // for an explicitly approximate output rate; never mistake a final usage report for live tokens.
-    private readonly Queue<(long At, int Characters)> _outputSamples = new();
-    private int _sampleCharacters;
+    // Usage arrives at request boundaries, not per streamed chunk. Keep a short rolling output window
+    // for an explicitly approximate rate; never mistake a final usage report for live tokens.
+    private readonly Queue<(long At, long Units)> _outputSamples = new();
+    private long _sampleUnits;
     private long _firstOutputAt;
     private long _lastOutputAt;
+    private bool _segmentHasOutput;
+    internal bool SegmentHasOutput
+    {
+        get { lock (_gate) return _segmentHasOutput; }
+    }
     private static readonly long RateWindow = 4 * Stopwatch.Frequency;
     private static readonly long RateIdle = 2 * Stopwatch.Frequency;
 
@@ -94,8 +99,11 @@ internal sealed class ConversationRun : IDisposable
                 TrimOutputSamples(now);
                 if (now - _lastOutputAt > RateIdle || _outputSamples.Count < 2) return null;
                 var span = (_lastOutputAt - _firstOutputAt) / (double)Stopwatch.Frequency;
-                // The first chunk has no measured starting time; count only output arriving after it.
-                return span >= 0.35 ? (_sampleCharacters - _outputSamples.Peek().Characters) / 4d / span : null;
+                // The first chunk has no measured starting time. A burst can arrive between two UI ticks;
+                // require two chunks, not a 350ms gap between them, and bound tiny intervals to avoid spikes.
+                var units = _sampleUnits - _outputSamples.Peek().Units;
+                return units > 0 ? units / (double)ContextTrimmer.CharactersPerToken
+                    / Math.Max(span, 0.25) : null;
             }
         }
     }
@@ -103,10 +111,12 @@ internal sealed class ConversationRun : IDisposable
     private void SampleOutput(string chunk)
     {
         if (chunk.Length == 0) return;
+        _segmentHasOutput = true;
         var now = Stopwatch.GetTimestamp();
         if (now - _lastOutputAt > RateIdle) ClearOutputSamples();
-        _outputSamples.Enqueue((now, chunk.Length));
-        _sampleCharacters += chunk.Length;
+        var units = TokenWeighing.Units(chunk);
+        _outputSamples.Enqueue((now, units));
+        _sampleUnits += units;
         _lastOutputAt = now;
         TrimOutputSamples(now);
     }
@@ -114,14 +124,14 @@ internal sealed class ConversationRun : IDisposable
     private void TrimOutputSamples(long now)
     {
         while (_outputSamples.Count > 0 && now - _outputSamples.Peek().At > RateWindow)
-            _sampleCharacters -= _outputSamples.Dequeue().Characters;
+            _sampleUnits -= _outputSamples.Dequeue().Units;
         _firstOutputAt = _outputSamples.Count > 0 ? _outputSamples.Peek().At : 0;
     }
 
     private void ClearOutputSamples()
     {
         _outputSamples.Clear();
-        _sampleCharacters = 0;
+        _sampleUnits = 0;
         _firstOutputAt = 0;
         _lastOutputAt = 0;
     }
@@ -375,6 +385,7 @@ internal sealed class ConversationRun : IDisposable
             _text.Clear();
             _reasoning.Clear();
             ClearOutputSamples();
+            _segmentHasOutput = false;
             // The next segment thinks again, so its thinking is measured from here and not from the run's start.
             // <see cref="ThoughtFiledBefore"/> is deliberately not re-armed by this line — it answers "has this run
             // already filed thinking", and a run is one answer however many rounds of tool calls it took to get
