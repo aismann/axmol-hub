@@ -86,22 +86,36 @@ public static class Pickers
     }
 
     /// <summary>
-    /// An editor: an application on macOS, an executable elsewhere. The two hosts disagree about what one *is* —
-    /// a bundle is a directory, so a <c>*.app</c> type filter greys out every application and a folder picker
-    /// walks into <c>Contents</c> — so the platform's own answer is resolved here, once, rather than in each page
-    /// that needs to ask. The returned path is what the user pointed at, folded up to the bundle that contains it;
-    /// whether it is an acceptable editor is <see cref="CodeEditors"/>' question, not this one's.
+    /// An editor: an application bundle on macOS, an executable elsewhere.
+    ///
+    /// The two hosts disagree about what one *is*, and on macOS the disagreement is not cosmetic: a bundle is a
+    /// **directory**, and Avalonia's file picker filters directories out of its result even though the panel lets
+    /// you click one — it comes back empty (AvaloniaUI/Avalonia#18303, still true of the pinned version), which
+    /// reads to the user as "choose an application and nothing happens". The folder picker is the one that returns
+    /// the bundle, so it is what asks on macOS; it starts in <c>/Applications</c> so the list is applications
+    /// rather than files. Elsewhere the file picker is right and <c>*.exe</c> is the type worth filtering on.
+    ///
+    /// The returned path is folded up to the enclosing bundle; whether it can be launched is
+    /// <see cref="CodeEditors"/>' question, not this one's.
     /// </summary>
     public static async Task<PickResult> PickEditorAsync(TopLevel owner, string title)
     {
-        var picked = await PickFileAsync(owner, title,
-            OperatingSystem.IsWindows() ? [new FilePickerFileType("Executable") { Patterns = ["*.exe"] }] : null);
-        if (picked.Outcome != PickOutcome.Picked)
+        if (!OperatingSystem.IsMacOS())
         {
-            return picked;
+            return await PickFileAsync(owner, title,
+                OperatingSystem.IsWindows() ? [new FilePickerFileType("Executable") { Patterns = ["*.exe"] }] : null);
         }
 
-        return PickResult.Picked(CodeEditors.ApplicationBundle(picked.Path!) ?? picked.Path!);
+        var folders = await owner.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+            SuggestedStartLocation = await owner.StorageProvider.TryGetFolderFromPathAsync("/Applications"),
+        });
+        var picked = Translate(folders.Count > 0 ? folders[0] : null);
+        return picked.Outcome == PickOutcome.Picked
+            ? PickResult.Picked(CodeEditors.ApplicationBundle(picked.Path!) ?? picked.Path!)
+            : picked;
     }
 
     public static async Task<PickResult> SaveFileAsync(

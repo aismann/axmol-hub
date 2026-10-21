@@ -134,7 +134,15 @@ public static class CodeEditors
     private static IReadOnlyList<EditorProbe> Bundle(string name)
         => [At($"/Applications/{name}.app"), At($"~/Applications/{name}.app")];
 
-    /// <summary>Every editor found on this host, in catalog order. Never throws: detection is an offer.</summary>
+    /// <summary>
+    /// Every editor Hub can offer on this host: the catalog's hits, then — on macOS — the applications sitting in
+    /// the two folders applications actually live in.
+    ///
+    /// Listing them is what makes "choose an application" one click again. A folder dialog is the only panel that
+    /// can hand back a macOS bundle, and it opens the bundle as a folder (the reader sees <c>Contents</c>); the
+    /// alternative, a file dialog, returns nothing at all (AvaloniaUI/Avalonia#18303). So the list carries them,
+    /// and 浏览… stays as the way out for a bundle somewhere else. Never throws: detection is an offer.
+    /// </summary>
     public static IReadOnlyList<EditorBinding> Detect()
     {
         var found = new List<EditorBinding>();
@@ -146,7 +154,48 @@ public static class CodeEditors
             }
         }
 
+        if (OperatingSystem.IsMacOS())
+        {
+            foreach (var bundle in MacApplications())
+            {
+                // A catalog hit already names this path (VS Code found at /Applications/… is the same file the
+                // listing would offer); the catalog's row wins because it carries the product's name.
+                if (found.All(binding => !string.Equals(binding.Path, bundle, StringComparison.Ordinal)))
+                {
+                    found.Add(new EditorBinding(EditorPreset.Custom(bundle), bundle));
+                }
+            }
+        }
+
         return found;
+    }
+
+    /// <summary>Application bundles under <c>/Applications</c> and <c>~/Applications</c>, alphabetically.</summary>
+    private static List<string> MacApplications()
+    {
+        string[] folders =
+        [
+            "/Applications",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Applications"),
+        ];
+        var bundles = new List<string>();
+        foreach (var folder in folders)
+        {
+            try
+            {
+                if (Directory.Exists(folder))
+                {
+                    bundles.AddRange(Directory.EnumerateDirectories(folder, "*.app"));
+                }
+            }
+            catch (Exception)
+            {
+                // An unreadable Applications folder costs rows in a dropdown, not the settings page.
+            }
+        }
+
+        bundles.Sort(StringComparer.OrdinalIgnoreCase);
+        return bundles;
     }
 
     /// <summary>The preset behind a saved choice; an id the catalog does not know becomes a custom preset.</summary>

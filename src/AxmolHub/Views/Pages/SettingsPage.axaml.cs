@@ -1031,14 +1031,23 @@ public partial class SettingsPage : UserControl
     /// </summary>
     private void RenderEditors()
     {
+        // macOS: the list already holds every application in /Applications, and the only panel that can hand back
+        // a bundle is a *folder* panel — so the button says what it really does, instead of promising a chooser the
+        // list has already replaced.
+        var macos = OperatingSystem.IsMacOS();
+        BrowseEditorButton.Content = HubStrings.Get(macos ? "BrowseElsewhere" : "BrowseEditor");
+        ToolTip.SetTip(BrowseEditorButton, macos ? HubStrings.Get("BrowseElsewhereHint") : null);
+
         EditorPicker.Items.Clear();
         EditorPicker.PlaceholderText = HubStrings.Get("NotSelected");
 
-        // One row per product. The saved choice wins over the one detection found — an older install, or a place the
+        // One row per path. The saved choice wins over the one detection found — an older install, or a place the
         // catalog does not look, is exactly what "Browse…" was for — and a saved editor that is gone is not shown at
         // all, because the row is a promise that the press will launch something.
         var saved = CodeEditors.Bind(_workspace.State.CodeEditor);
-        var rows = _workspace.DetectedEditors.Where(candidate => saved is null || candidate.Preset.Id != saved.Preset.Id).ToList();
+        var rows = _workspace.DetectedEditors
+            .Where(candidate => saved is null || !string.Equals(candidate.Path, saved.Path, StringComparison.Ordinal))
+            .ToList();
         if (saved is not null)
         {
             rows.Insert(0, saved);
@@ -1051,7 +1060,7 @@ public partial class SettingsPage : UserControl
         {
             var item = new ComboBoxItem { Content = binding.Preset.DisplayName, Tag = new CodeEditor(binding.Preset.Id, binding.Path) };
             EditorPicker.Items.Add(item);
-            if (effective is not null && binding.Preset.Id == effective.Preset.Id && binding.Path == effective.Path)
+            if (effective is not null && string.Equals(binding.Path, effective.Path, StringComparison.Ordinal))
             {
                 EditorPicker.SelectedItem = item;
             }

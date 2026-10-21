@@ -1505,16 +1505,25 @@ public sealed class HubWorkspace : IDisposable
     private IReadOnlyList<EditorBinding>? _detectedEditors;
 
     /// <summary>
-    /// Editors found on this machine, probed on first use and then cached: a dozen existence tests plus one
-    /// <c>vswhere</c> spawn is not something a page should pay for on every repaint.
+    /// Editors found on this machine, probed on first use and then cached: existence tests, one <c>vswhere</c>
+    /// spawn and — on macOS — a scan of <c>/Applications</c> are not something a page should pay for on every
+    /// repaint. What was found is logged once, so "the list is missing an application" can be answered from the
+    /// log instead of by guesswork.
     /// </summary>
-    public IReadOnlyList<EditorBinding> DetectedEditors => _detectedEditors ??= CodeEditors.Detect();
+    public IReadOnlyList<EditorBinding> DetectedEditors => _detectedEditors ??= DetectAndLog();
 
     /// <summary>Probes again, for the editor the user installed while Hub was open.</summary>
     public void RefreshDetectedEditors()
     {
-        _detectedEditors = CodeEditors.Detect();
+        _detectedEditors = DetectAndLog();
         Changed?.Invoke();
+    }
+
+    private IReadOnlyList<EditorBinding> DetectAndLog()
+    {
+        var found = CodeEditors.Detect();
+        Log.Write($"Editors detected ({found.Count}): " + string.Join(", ", found.Select(binding => binding.Preset.DisplayName)));
+        return found;
     }
 
     /// <summary>
