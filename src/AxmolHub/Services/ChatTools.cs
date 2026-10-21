@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text.Json;
 using AxmolHub.Core;
 using Microsoft.Extensions.AI;
@@ -24,14 +25,29 @@ internal static class ChatTools
     /// nothing and changes nothing, it stops the run and waits for a person.</summary>
     public static IReadOnlyList<AITool> CreateFor(string mode, ChatToolScope scope) => mode switch
     {
-        ChatModes.Ask => [.. DeepSeekWebTools(scope)],
-        ChatModes.Plan => [.. ReadOnlyTools(scope), .. DeepSeekWebTools(scope), .. AskingTools(scope)],
-        _ => [.. ReadOnlyTools(scope), .. DeepSeekWebTools(scope), .. ActingTools(scope), .. AskingTools(scope), .. PlanTaskTools(scope)],
+        ChatModes.Ask => [.. WebTools(scope)],
+        ChatModes.Plan => [.. ReadOnlyTools(scope), .. WebTools(scope), .. SearchStub(scope), .. AskingTools(scope)],
+        _ => [.. ReadOnlyTools(scope), .. WebTools(scope), .. SearchStub(scope), .. ActingTools(scope),
+              .. AskingTools(scope), .. PlanTaskTools(scope)],
     };
 
-    private static IEnumerable<AITool> DeepSeekWebTools(ChatToolScope scope)
+    /// <summary>Whether the DeepSeek bodies are the ones on offer for the web pair: the switch is on <i>and</i> this
+    /// workspace holds a bridge to run them. One claim, read by the declaration, by the local reader's own
+    /// declaration and by the search stub — the three used to spell the condition out for themselves.</summary>
+    private static bool DeepSeekWebBodies(ChatToolScope scope)
+        => scope.DeepSeekWebApiEnabled && scope.Workspace.DeepSeekWeb is not null;
+
+    /// <summary>Whether the local page reader is the body behind <c>web_fetch</c> in this mode. One name, one body:
+    /// declaring both put two <c>web_fetch</c> entries in the same request whenever the switch was on (22 tool
+    /// entries for 21 names, counted in a recorded request), and the model's call was answered by whichever of them
+    /// the bridge happened to resolve.</summary>
+    private static bool LocalFetchDeclared(ChatToolScope scope)
+        => !scope.DeepSeekWebApiMode && !DeepSeekWebBodies(scope);
+
+    /// <summary>The web pair with their real bodies, or nothing at all: this is what the switch buys.</summary>
+    private static IEnumerable<AITool> WebTools(ChatToolScope scope)
     {
-        if (!scope.DeepSeekWebApiEnabled || scope.Workspace.DeepSeekWeb is null) return [];
+        if (!DeepSeekWebBodies(scope)) return [];
         var tools = new WorkspaceTools(scope.Workspace);
         return
         [
@@ -39,6 +55,36 @@ internal static class ChatTools
             AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")),
         ];
     }
+
+    /// <summary>The search name, still answerable in a mode that offers tools when the real body is not on offer.
+    ///
+    /// <para><b>Why a withheld tool is still offered.</b> Letting the name vanish was the design once — a capability
+    /// that is switched off should not be advertised. But the transcript keeps what earlier turns did, and
+    /// <see cref="ChatPipeline.ToChatMessages"/> replays every recorded call, so a session that searched before
+    /// keeps that name in front of the model whatever this request declares; and a model can name it besides. An
+    /// undeclared name is the one thing the invoking client will not run — it ends its loop there — and what
+    /// reached the person was 「模型只返回了思考过程」 for a turn in which nothing had gone wrong but a setting
+    /// (measured 2026-10-21). A refusal the model can read costs one schema and, at most, one round.</para>
+    ///
+    /// <para><b>Ask is deliberately left out.</b> Its request is built to carry no executable tool at all, which is
+    /// the promise the mode makes; a stub there would also displace the declarations its history needs for the
+    /// endpoint to decode. An undeclared name met in that mode is said out loud instead of answered — see
+    /// <c>ChatUndeclaredTool</c>.</para></summary>
+    private static IEnumerable<AITool> SearchStub(ChatToolScope scope)
+        => DeepSeekWebBodies(scope) ? [] : [AIFunctionFactory.Create(WebSearchOff, Options("web_search"))];
+
+    /// <summary>What a model gets for naming web search while it is off. The wording carries three facts on purpose:
+    /// nothing was sent (so a turn that ends with no prose is a refusal, not a mystery), the answer is still owed,
+    /// and asking again this turn buys nothing.</summary>
+    [Description("Search the live web. Not available in this session — a call here sends no query and returns that "
+                 + "fact — because this Hub's settings have search switched off or the provider has no search API "
+                 + "configured.")]
+    private static string WebSearchOff(
+        [Description("A concise web search query, from 1 to 128 characters.")] string query,
+        [Description("The user's original question that led to this search, when available.")] string? original_question = null)
+        => "Refused: web search is not available in this session (this Hub's settings have it switched off, or the "
+           + "provider has no search API configured), so no query was sent and no results exist. Answer with what "
+           + "you already have and say you could not search; do not call this tool again this turn.";
 
     /// <summary>The question tool, or nothing. Switched off means the model is never told the capability exists,
     /// which is the only shape of "don't ask me" that cannot leave a run parked on a question nobody will read —
@@ -80,10 +126,14 @@ internal static class ChatTools
         // reach the same address without a card since the auto tier was drawn, and a refusal that pushes the model
         // off the named, bounded, source-showing tool and onto that path is a worse guard, not a stricter one. So
         // Local web_fetch shares the sandbox-command tier: its address policy, byte cap and outbound switch are
-        // enforced by WebFetch. The DeepSeek API variant is a read-only request and takes the branches above.
-        // Spelled out rather than left to the fallback arm so "unknown tool" and "this tool was thought about"
-        // do not read the same here.
-        "web_search" when scope.DeepSeekWeb is not null => ToolRisk.ReadOnly,
+        // enforced by WebFetch. The DeepSeek API variant is a read-only request and takes the branch above, and
+        // search is a read however it is answered — with the switch off its body is a refusal that sends nothing,
+        // so a read that cannot cost a card. The tier is read from the bridge rather than from the switch because
+        // this table only ever sees a workspace scope: the stub is unfiled here, and it is the one arm that would
+        // have to be guessed wrong to matter, so it stays with the body it stands beside.
+        // Spelled out rather than left to the fallback arm so "unknown tool" and "this tool was thought about" do
+        // not read the same here.
+        "web_search" => ToolRisk.ReadOnly,
         "web_fetch" when scope.DeepSeekWeb is not null => ToolRisk.ReadOnly,
         "web_fetch" => ToolRisk.WorkspaceCommand,
         // Asking for a directory is asking for a place nobody has agreed to yet, so it sits on the tier that always
@@ -317,7 +367,7 @@ internal static class ChatTools
             AIFunctionFactory.Create(tools.SendToSession, Options("send_to_session")),
             AIFunctionFactory.Create(tools.SpawnSession, Options("spawn_session")),
         };
-        if (!scope.DeepSeekWebApiMode)
+        if (LocalFetchDeclared(scope))
             result.Add(AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")));
         return result;
     }

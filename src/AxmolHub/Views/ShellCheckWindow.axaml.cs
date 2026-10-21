@@ -265,16 +265,35 @@ public partial class ShellCheckWindow : Window
 
         var offBridge = OutboundDeepSeekWebApi.Bridge(provider, http, () => false, null)!;
         var scoped = WorkspaceToolScope.Empty with { DeepSeekWeb = offBridge };
-        var namesOff = ChatTools.CreateFor(ChatModes.Agent,
-            new ChatToolScope(new ChatWorkspace.HubReadOnlySnapshot([], [], []), scoped, DeepSeekWebApiMode: true, DeepSeekWebApiEnabled: false))
+        // The shape production builds: the mode flag is never set outside these fixtures, and setting it here
+        // would have measured a configuration no user can reach.
+        ChatToolScope WebScope(bool enabled) => new(
+            new ChatWorkspace.HubReadOnlySnapshot([], [], []), scoped, DeepSeekWebApiEnabled: enabled);
+        var offTools = ChatTools.CreateFor(ChatModes.Agent, WebScope(enabled: false));
+        var namesOff = offTools.Select(tool => tool.Name).ToArray();
+        var namesOn = ChatTools.CreateFor(ChatModes.Agent, WebScope(enabled: true))
             .Select(tool => tool.Name).ToArray();
-        var namesOn = ChatTools.CreateFor(ChatModes.Agent,
-            new ChatToolScope(new ChatWorkspace.HubReadOnlySnapshot([], [], []), scoped, DeepSeekWebApiMode: true, DeepSeekWebApiEnabled: true))
+        // With the switch off, search stays declared and answers with a refusal. The rule it replaces — "do not
+        // advertise what is switched off" — lost to a measurement from the request side: the transcript replays
+        // every recorded call, so the name is in front of the model whatever this request declares, and a name the
+        // request does not declare is the one the invoking client refuses to run — it ends the turn right there,
+        // with no prose and no trace. Ask keeps none of this: its request carries no executable tool by design.
+        // Convert.ToString rather than a cast: what an AIFunction hands back is the factory's business, and this
+        // project already reads tool results that way everywhere else (Program.cs's bound functions).
+        var refusedSearch = Convert.ToString(await ((Microsoft.Extensions.AI.AIFunction)offTools
+            .First(tool => tool.Name == "web_search"))
+            .InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments(
+                new Dictionary<string, object?> { ["query"] = "axmol" })));
+        var askOff = ChatTools.CreateFor(ChatModes.Ask, WebScope(enabled: false))
             .Select(tool => tool.Name).ToArray();
-        Check(!namesOff.Contains("web_search") && !namesOff.Contains("web_fetch")
+        Check(namesOff.Contains("web_search") && namesOff.Contains("web_fetch")
+              && refusedSearch?.StartsWith("Refused:", StringComparison.Ordinal) == true
               && namesOn.Contains("web_search") && namesOn.Contains("web_fetch")
-              && namesOn.Count(name => name is "web_search" or "web_fetch") == 2,
-            "总开关关闭时 API 工具不暴露，开启时只提供一组 Search/Fetch 工具");
+              && namesOn.Count(name => name is "web_search" or "web_fetch") == 2
+              && askOff.Length == 0,
+            "总开关关闭时 search 仍声明但以拒绝作答（Ask 档一个不给），开启时每个 web 名字只有一组真实工具（实际 关="
+            + string.Join(",", namesOff) + "；开=" + string.Join(",", namesOn)
+            + "；拒绝=" + (refusedSearch ?? "空") + "；Ask=" + string.Join(",", askOff) + "）");
     }
 
     private void CheckDeepSeekWebUsage(MainWindow shell, ChatPanel panel)
@@ -8602,7 +8621,10 @@ public partial class ShellCheckWindow : Window
                 new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "schema", [], null, null)));
             var schema = string.Join("\n", agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
                 .Select(tool => tool.JsonSchema.GetRawText()));
-            Check(agentTools.Count == 20
+            // Twenty-one rather than twenty since the search name is declared with a refusing body when it is not
+            // offered: the transcript keeps an earlier call's name in front of the model either way, and a name the
+            // request does not declare is the one the invoking client will not run.
+            Check(agentTools.Count == 21
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Select(tool => tool.Name)
                       .All(name => name.Contains('_', StringComparison.Ordinal))
                   && schema.Contains("old_string") && schema.Contains("new_string")
@@ -8611,8 +8633,9 @@ public partial class ShellCheckWindow : Window
                   && schema.Contains("fullscreen") && schema.Contains("inherit_workspace")
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "capture_screen")
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "spawn_session")
+                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "web_search")
                   && !schema.Contains("oldString") && !schema.Contains("ignoreCase"),
-                "Agent 档注册二十个工具、名字都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
+                "Agent 档注册二十一个工具、名字都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
                 + agentTools.Count + " 个）");
 
             // The capability this build took away, pinned where the list itself is: the model may ask for a directory
