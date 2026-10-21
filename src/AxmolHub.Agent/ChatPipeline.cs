@@ -430,6 +430,9 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
             effectiveClient = functionClient;
         }
 
+        // Whether this response has spoken yet: an in-stream provider error is only worth turning into a failure while
+        // it is still the first thing that arrived, because after that there is an answer to keep.
+        var spoke = false;
         await foreach (var update in effectiveClient.GetStreamingResponseAsync(messages, options, cancellationToken))
         {
             if (parked.Parked) break;
@@ -446,6 +449,7 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                 if (content is TextContent text && text.Text.Length > 0)
                 {
                     // Joining happens in the caller so partial chunks stay partial.
+                    spoke = true;
                     yield return text.Text;
                 }
                 else if (content is TextReasoningContent thought && thought.Text is { Length: > 0 } said)
@@ -470,6 +474,20 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                     // only field worth reading here — and it is the field that says which tool went unanswered
                     // when a turn ends with no text.
                     onCallContent?.Invoke(asked.Name);
+                }
+                else if (content is ErrorContent failure && thinking.Length == 0 && !spoke)
+                {
+                    // The endpoint's own report of a failed response. It has to become an exception, because as
+                    // content it is dropped and the caller can only describe what it did not see: on 2026-10-21 an
+                    // overloaded OpenAI endpoint sent "Our servers are currently overloaded. Please try again
+                    // later." in plain text, and the person was told the model had returned no answer and that they
+                    // should check the model configuration. Only while nothing has been spoken or thought: a
+                    // provider that reports a soft error after answering still owes its answer, and a failure
+                    // notice is not worth losing text that is already in hand.
+                    var failedSaid = failure.Message;
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(failedSaid)
+                        ? "The provider failed the response without saying why."
+                        : failedSaid);
                 }
                 else if (content is WebSearchToolCallContent searched)
                 {

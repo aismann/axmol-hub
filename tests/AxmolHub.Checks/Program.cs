@@ -6485,6 +6485,28 @@ if (args.Contains("--check-ai-tool-policy"))
     Console.WriteLine("PASS: a call the client runs is reported "
         + $"{(declaredSeen.Count == 0 ? "not at all — this report means \"nothing ran it\"" : "once, so the gate count beside it is what says whether it acted")}.");
 
+    // An endpoint that reports a failure inside the stream, before it has produced anything. The turn then has nothing
+    // to lose and everything to gain from the provider's own sentence reaching the person: that is the difference
+    // between "the server is overloaded, retry" and "the model returned nothing, check your configuration" — the
+    // second of which is what an overloaded gpt-6-sol told a person on 2026-10-21 while the wire said the first.
+    var providerSaid = "Our servers are currently overloaded. Please try again later.";
+    string? reachedCaller = null;
+    try
+    {
+        await foreach (var _ in new ChatPipeline(new ErrorStreamChatClient(providerSaid)).SendAsync(
+                           gateProvider, [ChatTurn.User("hello")], tools: [gatedFunction]))
+        {
+        }
+    }
+    catch (InvalidOperationException ex)
+    {
+        reachedCaller = ex.Message;
+    }
+    if (reachedCaller != providerSaid)
+        throw new Exception("An in-stream provider error did not reach the caller as its own sentence: "
+            + $"「{reachedCaller ?? "nothing was thrown"}」");
+    Console.WriteLine("PASS: an in-stream provider error reaches the caller as the provider's own sentence.");
+
     // Pending: the stream ends, nothing is written as the call's result, and the placeholder stays inside.
     using var parkCancellation = new CancellationTokenSource();
     var parkCompleted = 0;
@@ -9495,6 +9517,31 @@ sealed class ToolLoopChatClient(bool honorCancellation = false, string callName 
             yield return new ChatResponseUpdate(ChatRole.Assistant, "Projects loaded.");
         }
 
+        await Task.Yield();
+    }
+
+    public object? GetService(Type serviceType, object? serviceKey = null) => null;
+    public void Dispose() { }
+}
+
+/// <summary>One update: the endpoint's own error, in the shape the OpenAI responses wire carries it.
+///
+/// <para>An overloaded endpoint sends <c>event: error</c> with "Our servers are currently overloaded" and then
+/// <c>response.failed</c>, and the SDK ends the stream there — so the turn arrived with no text, no reasoning and no
+/// finish reason, and the person was told the model had returned nothing and to check the model configuration.
+/// Measured 2026-10-21 on gpt-6-sol. The sentence has to survive the trip; that is what this fixture pins.</para></summary>
+sealed class ErrorStreamChatClient(string message) : IChatClient
+{
+    public Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Checks only use the streaming path.");
+
+    public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        yield return new ChatResponseUpdate(ChatRole.Assistant, new List<AIContent> { new ErrorContent(message) });
         await Task.Yield();
     }
 

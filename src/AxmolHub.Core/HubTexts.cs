@@ -753,7 +753,7 @@ public static class HubTexts
         // The status line while the pipeline obeys a Retry-After: the wait is the provider's instruction, so it
         // is said as work in progress on the row the tool and the search already use, not as a second label.
         ["ChatRetryWaitFormat"] = ("模型服务在限流，第 {0}/{1} 次尝试，等待 {2} 秒", "Rate-limited by the provider: attempt {0}/{1}, waiting {2}s"),
-        ["ChatNoResponse"] = ("模型没有返回最终答复，可以重试或检查模型配置。", "The model returned no final answer. Retry or check the model configuration."),
+        ["ChatNoResponse"] = ("端点这次什么都没返回，也没有给出结束原因——通常是服务端临时故障或连接提前断开，先直接重试。", "The endpoint returned nothing at all, and no finish reason — usually a transient server fault or a connection closed early. Retrying is the first thing to try."),
         ["ChatReasoningOnly"] = ("模型只返回了思考过程，没有给出答复。可以重试。", "The model returned reasoning but no answer. You can retry."),
         // The ending a withheld tool used to produce silently: the response named a call, nothing ran it, and the
         // sentence the person got blamed the model's silence. The tool's name arrives in the detail appended after
