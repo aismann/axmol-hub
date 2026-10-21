@@ -4724,7 +4724,7 @@ public sealed class ChatWorkspace : IDisposable
 
     /// <summary>The one tool that leaves a pre-image behind. Named because a file whose own contents happen to
     /// carry the marker must not get a revert button: what decides is which tool ran.</summary>
-    private const string FileWriteTool = "file_write";
+    private const string FileWriteTool = ToolNames.FileWrite;
 
     /// <summary>Records on the <i>call</i> turn which copy would undo it and how far the write moved the file. The
     /// call turn is the one the card is built from and the one that outlives a restart, so both facts ride on it

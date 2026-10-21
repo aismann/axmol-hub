@@ -165,7 +165,7 @@ public static class AskUserQuestion
     public static string Preview(string? argumentsJson)
     {
         var arguments = Read(argumentsJson);
-        if (arguments is null) return "ask_user";
+        if (arguments is null) return ToolNames.AskUser;
         var asked = Text(arguments, "question").Trim();
         return asked.Length == 0
             ? "ask_user · (no question text)"

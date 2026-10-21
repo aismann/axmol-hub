@@ -51,8 +51,8 @@ internal static class ChatTools
         var tools = new WorkspaceTools(scope.Workspace);
         return
         [
-            AIFunctionFactory.Create(tools.SearchWeb, Options("web_search")),
-            AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")),
+            AIFunctionFactory.Create(tools.SearchWeb, Options(ToolNames.WebSearch)),
+            AIFunctionFactory.Create(tools.FetchWebPage, Options(ToolNames.WebFetch)),
         ];
     }
 
@@ -71,7 +71,7 @@ internal static class ChatTools
     /// endpoint to decode. An undeclared name met in that mode is said out loud instead of answered — see
     /// <c>ChatUndeclaredTool</c>.</para></summary>
     private static IEnumerable<AITool> SearchStub(ChatToolScope scope)
-        => DeepSeekWebBodies(scope) ? [] : [AIFunctionFactory.Create(WebSearchOff, Options("web_search"))];
+        => DeepSeekWebBodies(scope) ? [] : [AIFunctionFactory.Create(WebSearchOff, Options(ToolNames.WebSearch))];
 
     /// <summary>What a model gets for naming web search while it is off. The wording carries three facts on purpose:
     /// nothing was sent (so a turn that ends with no prose is a refusal, not a mystery), the answer is still owed,
@@ -95,7 +95,7 @@ internal static class ChatTools
     private static IEnumerable<AITool> PlanTaskTools(ChatToolScope scope)
         => scope.PlanTasksEnabled
             ? [AIFunctionFactory.Create(new WorkspaceTools(scope.Workspace).UpdatePlanTask,
-                Options("update_plan_task"))]
+                Options(ToolNames.UpdatePlanTask))]
             : [];
 
     /// <summary>
@@ -113,15 +113,15 @@ internal static class ChatTools
     public static ToolRisk RiskOf(string name, string? argumentsJson, WorkspaceToolScope scope,
         IReadOnlyList<string>? trustedCommands = null) => name switch
     {
-        "get_projects" or "get_engines" or "get_toolchain_status" or "read_file" or "memory_read"
-            or "list_sessions" or "read_session"
-            or "search_text" or "list_directory" or "find_files" or "workspace_map"
+        ToolNames.GetProjects or ToolNames.GetEngines or ToolNames.GetToolchainStatus or ToolNames.ReadFile or ToolNames.MemoryRead
+            or ToolNames.ListSessions or ToolNames.ReadSession
+            or ToolNames.SearchText or ToolNames.ListDirectory or ToolNames.FindFiles or ToolNames.WorkspaceMap
             => ToolRisk.ReadOnly,
-        "file_write" or "send_to_session" => ToolRisk.WorkspaceWrite,
-        "update_plan_task" => ToolRisk.AssistantNote,
+        ToolNames.FileWrite or ToolNames.SendToSession => ToolRisk.WorkspaceWrite,
+        ToolNames.UpdatePlanTask => ToolRisk.AssistantNote,
         // Decided by one method rather than an inline ternary, because there are now two things that can make a
         // command cost more than the sandbox tier, and both have to be read from the same place the gate reads.
-        "run_command" => RunCommandRisk(scope, argumentsJson, trustedCommands),
+        ToolNames.RunCommand => RunCommandRisk(scope, argumentsJson, trustedCommands),
         // Reading a page sends nothing the shell could not already send: a sandboxed run_command has been able to
         // reach the same address without a card since the auto tier was drawn, and a refusal that pushes the model
         // off the named, bounded, source-showing tool and onto that path is a worse guard, not a stricter one. So
@@ -133,28 +133,28 @@ internal static class ChatTools
         // have to be guessed wrong to matter, so it stays with the body it stands beside.
         // Spelled out rather than left to the fallback arm so "unknown tool" and "this tool was thought about" do
         // not read the same here.
-        "web_search" => ToolRisk.ReadOnly,
-        "web_fetch" when scope.DeepSeekWeb is not null => ToolRisk.ReadOnly,
-        "web_fetch" => ToolRisk.WorkspaceCommand,
+        ToolNames.WebSearch => ToolRisk.ReadOnly,
+        ToolNames.WebFetch when scope.DeepSeekWeb is not null => ToolRisk.ReadOnly,
+        ToolNames.WebFetch => ToolRisk.WorkspaceCommand,
         // Asking for a directory is asking for a place nobody has agreed to yet, so it sits on the tier that always
         // asks. It stays there whatever the path is: the card *is* the mechanism, and a
         // call that fell through silently under 自动审批 would be a grant the person never saw. 「总是允许」 is not
         // offered — the same tier rule as the screen and another session — and here it would mean "open every
         // directory I ever name".
-        "request_directory" => ToolRisk.SystemCommand,
+        ToolNames.RequestDirectory => ToolRisk.SystemCommand,
         // Reading the screen writes nothing, but it shows the desktop to a model that decided when to look, and
         // the frame leaves the machine in the next request. That is the SystemCommand tier's job: it asks in
         // every mode but full. Spelled out rather than left to the fallback arm, because "unknown tool" and "this
         // tool was thought about" must not read the same in this table.
         // "spawn_session" is spelled out for the same reason: a new session spends money on nobody's click.
-        "capture_screen" => ToolRisk.SystemCommand,
-        "computer_use" => ToolRisk.SystemCommand,
-        "spawn_session" => ToolRisk.SystemCommand,
+        ToolNames.CaptureScreen => ToolRisk.SystemCommand,
+        ToolNames.ComputerUse => ToolRisk.SystemCommand,
+        ToolNames.SpawnSession => ToolRisk.SystemCommand,
         // The one tier no mode ever asks for, which is exactly why the reading of the scope has to fail closed:
         // a scope this cannot name is not a workspace note, it is a write whose destination is unknown, and an
         // unknown destination asks a person. Comparing against Workspace rather than Global is what keeps that
         // true for a call whose arguments do not parse at all.
-        "memory_write" => ScopeOf(argumentsJson) == MemoryScope.Workspace
+        ToolNames.MemoryWrite => ScopeOf(argumentsJson) == MemoryScope.Workspace
             ? ToolRisk.AssistantNote
             : ToolRisk.WorkspaceWrite,
         // Spelled out for the standing reason, and it bites harder here than anywhere: the unknown-name arm below
@@ -229,7 +229,7 @@ internal static class ChatTools
     public static string? TrustCandidateVerb(string name, string? argumentsJson, WorkspaceToolScope scope,
         IReadOnlyList<string>? trustedCommands = null)
     {
-        if (!string.Equals(name, "run_command", StringComparison.Ordinal)) return null;
+        if (!string.Equals(name, ToolNames.RunCommand, StringComparison.Ordinal)) return null;
         var verbs = GitCommandGrades.WriteVerbsOf(argumentsJson);
         if (verbs.Count != 1) return null;
         var key = CommandTrust.KeyFor(verbs.First());
@@ -250,7 +250,7 @@ internal static class ChatTools
         // The line has to write something, or every command that is not git would count as granted: "no git write in
         // it" is exactly the state AllWritesAllowed allows vacuously, and the gate reads a true here as "a person
         // answered for this".
-        if (!string.Equals(name, "run_command", StringComparison.Ordinal)) return false;
+        if (!string.Equals(name, ToolNames.RunCommand, StringComparison.Ordinal)) return false;
         if (GitCommandGrades.WriteVerbsOf(argumentsJson).Count == 0) return false;
         return GitCommandGrades.AllWritesAllowed(argumentsJson, CommandTrust.VerbsOf(trustedCommands));
     }
@@ -326,27 +326,27 @@ internal static class ChatTools
                     project.Configuration,
                     project.BuildStatus,
                 }))),
-                Options("get_projects",
+                Options(ToolNames.GetProjects,
                     "List the Axmol game projects registered in Hub — each one is a workspace with a locked engine "
                     + "version and a build target. A workspace is any directory, so being a project only adds those "
                     + "attributes.")),
             AIFunctionFactory.Create(
                 (Func<string>)(() => JsonSerializer.Serialize(snapshot.Engines)),
-                Options("get_engines", "List installed Axmol engine versions and channels.")),
+                Options(ToolNames.GetEngines, "List installed Axmol engine versions and channels.")),
             AIFunctionFactory.Create(
                 (Func<string>)(() => JsonSerializer.Serialize(snapshot.Toolchains)),
-                Options("get_toolchain_status",
+                Options(ToolNames.GetToolchainStatus,
                     "Read the latest already-known toolchain detection status; does not run probes or change anything.")),
-            AIFunctionFactory.Create(tools.ReadFile, Options("read_file")),
-            AIFunctionFactory.Create(tools.SearchText, Options("search_text")),
-            AIFunctionFactory.Create(tools.ListDirectory, Options("list_directory")),
-            AIFunctionFactory.Create(tools.FindFiles, Options("find_files")),
+            AIFunctionFactory.Create(tools.ReadFile, Options(ToolNames.ReadFile)),
+            AIFunctionFactory.Create(tools.SearchText, Options(ToolNames.SearchText)),
+            AIFunctionFactory.Create(tools.ListDirectory, Options(ToolNames.ListDirectory)),
+            AIFunctionFactory.Create(tools.FindFiles, Options(ToolNames.FindFiles)),
             // The method is MapWorkspace because WorkspaceMap is the Core class it delegates to; the name the
             // model sees is the tool's own, and AIFunctionFactory would have taken the method name otherwise.
-            AIFunctionFactory.Create(tools.MapWorkspace, Options("workspace_map")),
-            AIFunctionFactory.Create(tools.MemoryRead, Options("memory_read")),
-            AIFunctionFactory.Create(tools.ListSessions, Options("list_sessions")),
-            AIFunctionFactory.Create(tools.ReadSession, Options("read_session")),
+            AIFunctionFactory.Create(tools.MapWorkspace, Options(ToolNames.WorkspaceMap)),
+            AIFunctionFactory.Create(tools.MemoryRead, Options(ToolNames.MemoryRead)),
+            AIFunctionFactory.Create(tools.ListSessions, Options(ToolNames.ListSessions)),
+            AIFunctionFactory.Create(tools.ReadSession, Options(ToolNames.ReadSession)),
         ];
     }
 
@@ -355,22 +355,22 @@ internal static class ChatTools
         var tools = new WorkspaceTools(scope.Workspace);
         var result = new List<AITool>
         {
-            AIFunctionFactory.Create(tools.FileWrite, Options("file_write")),
-            AIFunctionFactory.Create(tools.RunCommand, Options("run_command")),
+            AIFunctionFactory.Create(tools.FileWrite, Options(ToolNames.FileWrite)),
+            AIFunctionFactory.Create(tools.RunCommand, Options(ToolNames.RunCommand)),
             // The name is the pair's, not this call's: web_fetch reads a page from here, and the phase-two search
             // arrives as web_search — which is not ours to name anyway, since a hosted tool is advertised by the
             // provider's own kind string. Two nouns in front of "fetch" and "search" so the model sees one capability
             // family even though only this half has a Hub body. The method behind it is FetchWebPage because
             // WebFetch is the rules class in Core's namespace, and a method of that name would shadow it here.
-            AIFunctionFactory.Create(tools.CaptureScreen, Options("capture_screen")),
-            AIFunctionFactory.Create(tools.ComputerUse, Options("computer_use")),
-            AIFunctionFactory.Create(tools.RequestDirectory, Options("request_directory")),
-            AIFunctionFactory.Create(tools.MemoryWrite, Options("memory_write")),
-            AIFunctionFactory.Create(tools.SendToSession, Options("send_to_session")),
-            AIFunctionFactory.Create(tools.SpawnSession, Options("spawn_session")),
+            AIFunctionFactory.Create(tools.CaptureScreen, Options(ToolNames.CaptureScreen)),
+            AIFunctionFactory.Create(tools.ComputerUse, Options(ToolNames.ComputerUse)),
+            AIFunctionFactory.Create(tools.RequestDirectory, Options(ToolNames.RequestDirectory)),
+            AIFunctionFactory.Create(tools.MemoryWrite, Options(ToolNames.MemoryWrite)),
+            AIFunctionFactory.Create(tools.SendToSession, Options(ToolNames.SendToSession)),
+            AIFunctionFactory.Create(tools.SpawnSession, Options(ToolNames.SpawnSession)),
         };
         if (LocalFetchDeclared(scope))
-            result.Add(AIFunctionFactory.Create(tools.FetchWebPage, Options("web_fetch")));
+            result.Add(AIFunctionFactory.Create(tools.FetchWebPage, Options(ToolNames.WebFetch)));
         return result;
     }
 }

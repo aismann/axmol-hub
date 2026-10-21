@@ -43,7 +43,7 @@ public static class ToolSpinGuard
     /// by name alone. <c>request_directory</c> is here because its success is a grant recorded on the session —
     /// state a repeat would be asking for twice, and the answer to the second ask is "already granted".</summary>
     private static readonly string[] StateChangingTools =
-        ["file_write", "run_command", "request_directory", "memory_write"];
+        [Core.ToolNames.FileWrite, Core.ToolNames.RunCommand, Core.ToolNames.RequestDirectory, Core.ToolNames.MemoryWrite];
 
     /// <summary>The sentence a refused repeat hands back to the model. Matched on itself by the checks.</summary>
     public const string RefusalMarker = "has already run";
@@ -133,13 +133,13 @@ public static class ToolSpinGuard
         // refusals are nonempty, and treating them as progress lets repeated bad anchors reset the spin guard.
         return toolName switch
         {
-            "file_write" => result.StartsWith("Created ", StringComparison.Ordinal)
+            Core.ToolNames.FileWrite => result.StartsWith("Created ", StringComparison.Ordinal)
                             || result.StartsWith("Edited ", StringComparison.Ordinal),
-            "request_directory" => result.StartsWith("Granted", StringComparison.Ordinal),
-            "memory_write" => result.StartsWith("Saved ", StringComparison.Ordinal),
+            Core.ToolNames.RequestDirectory => result.StartsWith("Granted", StringComparison.Ordinal),
+            Core.ToolNames.MemoryWrite => result.StartsWith("Saved ", StringComparison.Ordinal),
             // A command may have changed files before returning a nonzero exit code, so its exit status is not
             // evidence that no state changed. Tool failures above are the cases where execution never completed.
-            "run_command" => true,
+            Core.ToolNames.RunCommand => true,
             _ => false,
         };
     }

@@ -19,8 +19,8 @@ internal static class ComputerUseGrants
 
     public static string ApplicationForTool(string? toolName, string? json)
     {
-        if (toolName == "computer_use") return ApplicationFromArguments(json);
-        if (toolName != "capture_screen" || string.IsNullOrWhiteSpace(json)) return "";
+        if (toolName == ToolNames.ComputerUse) return ApplicationFromArguments(json);
+        if (toolName != ToolNames.CaptureScreen || string.IsNullOrWhiteSpace(json)) return "";
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(json);
@@ -31,7 +31,7 @@ internal static class ComputerUseGrants
         catch (System.Text.Json.JsonException) { return ""; }
     }
 
-    public static bool IsComputerUseTool(string? name) => name is "computer_use" or "capture_screen";
+    public static bool IsComputerUseTool(string? name) => name is ToolNames.ComputerUse or ToolNames.CaptureScreen;
 
     public static string NormalizeKey(string? value)
         => (value ?? "").Trim().Normalize(System.Text.NormalizationForm.FormC);

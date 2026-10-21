@@ -51,7 +51,7 @@ public static class ChatChanges
 {
     /// <summary>The tool whose calls are file changes. Spelled out once because both the scan and the undo
     /// record match on it, and a rename that only touched one side would silently empty the list.</summary>
-    public const string FileWriteTool = "file_write";
+    public const string FileWriteTool = ToolNames.FileWrite;
 
     /// <summary>
     /// The bounds the inspector asks for, against the approval card's defaults. Two numbers on one fact, on

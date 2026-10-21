@@ -20,25 +20,25 @@ public static class ToolPreviews
         var arguments = Parse(argumentsJson);
         return name switch
         {
-            "file_write" => WritePreview(arguments, scope),
-            "run_command" => CommandPreview(arguments, scope),
-            "request_directory" => GrantPreview(Text(arguments, "path"), scope, projectPaths),
-            "capture_screen" => CapturePreview(arguments, scope),
-            "web_fetch" => FetchPreview(arguments, scope),
-            "send_to_session" => SendPreview(arguments),
-            "spawn_session" => SpawnPreview(arguments, scope),
-            "memory_write" => MemoryPreview(arguments),
-            "memory_read" => $"memory_read · {Text(arguments, "scope")} · {Text(arguments, "name")}",
+            ToolNames.FileWrite => WritePreview(arguments, scope),
+            ToolNames.RunCommand => CommandPreview(arguments, scope),
+            ToolNames.RequestDirectory => GrantPreview(Text(arguments, "path"), scope, projectPaths),
+            ToolNames.CaptureScreen => CapturePreview(arguments, scope),
+            ToolNames.WebFetch => FetchPreview(arguments, scope),
+            ToolNames.SendToSession => SendPreview(arguments),
+            ToolNames.SpawnSession => SpawnPreview(arguments, scope),
+            ToolNames.MemoryWrite => MemoryPreview(arguments),
+            ToolNames.MemoryRead => $"memory_read · {Text(arguments, "scope")} · {Text(arguments, "name")}",
             // Not a preview of an action: there is nothing this call would do, so the line carries the question
             // itself. The card reads the stored arguments directly rather than this string — a question's text is
             // immutable model output and needs no freezing, unlike a diff of a file that can change under it.
-            "ask_user" => AskUserQuestion.Preview(argumentsJson),
-            "read_file" => $"read_file · {Text(arguments, "path")}",
-            "search_text" => $"search_text · {Text(arguments, "pattern")} · "
+            ToolNames.AskUser => AskUserQuestion.Preview(argumentsJson),
+            ToolNames.ReadFile => $"read_file · {Text(arguments, "path")}",
+            ToolNames.SearchText => $"search_text · {Text(arguments, "pattern")} · "
                              + $"{(Text(arguments, "glob") is { Length: > 0 } glob ? glob : "any text file")} · in "
                              + $"{DirectoryOf(arguments)}",
-            "list_directory" => $"list_directory · {DirectoryOf(arguments)} · depth {Number(arguments, "depth")}",
-            "find_files" => $"find_files · {Text(arguments, "glob")} · in {DirectoryOf(arguments)}",
+            ToolNames.ListDirectory => $"list_directory · {DirectoryOf(arguments)} · depth {Number(arguments, "depth")}",
+            ToolNames.FindFiles => $"find_files · {Text(arguments, "glob")} · in {DirectoryOf(arguments)}",
             _ => name,
         };
     }

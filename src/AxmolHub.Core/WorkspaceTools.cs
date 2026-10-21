@@ -123,7 +123,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     /// <summary>The one tool whose work is a command line, and therefore the one whose call grows a card while it
     /// prints and reports an exit code when it ends. Named here rather than quoted at each reader: the tier table,
     /// the card and the exit-code channel all have to be talking about the same name.</summary>
-    public const string RunCommandTool = "run_command";
+    public const string RunCommandTool = ToolNames.RunCommand;
 
     /// <summary>Sessions listed before the answer is cut, newest first — enough to pick a peer, short enough not
     /// to be the majority of a context window.</summary>

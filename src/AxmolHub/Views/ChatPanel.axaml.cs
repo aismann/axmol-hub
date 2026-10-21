@@ -3737,21 +3737,21 @@ public partial class ChatPanel : UserControl
 
         return name switch
         {
-            "read_file" when path.Length > 0
+            ToolNames.ReadFile when path.Length > 0
                 => string.Format(culture, HubStrings.Get("ActivityRowRead"), path),
-            "file_write" when path.Length > 0
+            ToolNames.FileWrite when path.Length > 0
                 => string.Format(culture, HubStrings.Get("ActivityRowEditFile"), path),
-            "search_text"
+            ToolNames.SearchText
                 => string.Format(culture, HubStrings.Get("ActivityRowSearch"),
                     ArgField(args, "pattern", "query") ?? ""),
-            "find_files"
+            ToolNames.FindFiles
                 => string.Format(culture, HubStrings.Get("ActivityRowFind"),
                     ArgField(args, "pattern", "query", "glob") ?? ""),
-            "list_directory"
+            ToolNames.ListDirectory
                 => string.Format(culture, HubStrings.Get("ActivityRowList"), path.Length > 0 ? path : "."),
-            "run_command" => HubStrings.Get("ActivityRowRunCommand"),
+            ToolNames.RunCommand => HubStrings.Get("ActivityRowRunCommand"),
             // Host and path only: the query is where a token hides, and this line is stored in the transcript.
-            "web_fetch" => string.Format(culture, HubStrings.Get("ActivityRowFetch"),
+            ToolNames.WebFetch => string.Format(culture, HubStrings.Get("ActivityRowFetch"),
                 WebFetch.Shown(ArgField(args, "url") ?? "")),
             _ => string.Format(culture, HubStrings.Get("ActivityRowGeneric"), name),
         };
