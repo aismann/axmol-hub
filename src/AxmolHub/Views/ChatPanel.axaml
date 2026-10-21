@@ -1328,7 +1328,9 @@
         </StackPanel>
       </Panel>
       <Border x:Name="PlanTasksHost" Grid.Row="1" IsVisible="False" MaxWidth="820"
-              MaxHeight="148" ClipToBounds="True" HorizontalAlignment="Stretch" Margin="0,0,0,6" />
+              MaxHeight="148" ClipToBounds="True" HorizontalAlignment="Stretch" Margin="0,0,0,6"
+              Background="{DynamicResource Hub.SurfaceAlt}"
+              BorderBrush="{DynamicResource Hub.Border}" BorderThickness="1" CornerRadius="10" />
       <Border x:Name="DecisionHost" Classes="decision-host" Grid.Row="2"
               IsVisible="False" />
       <Border x:Name="SteerConfirmHost" Classes="steer-confirm" Grid.Row="3"
