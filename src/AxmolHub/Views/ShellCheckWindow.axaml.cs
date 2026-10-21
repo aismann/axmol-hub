@@ -371,6 +371,24 @@ public partial class ShellCheckWindow : Window
               && shell.AssistantNewButtonForCheck.Width == 26
               && shell.AssistantNewButtonForCheck.Height == 26,
             "搜索和新建按钮同排右对齐于助手导航项，且尺寸比旧工具栏更紧凑");
+        foreach (var (button, name) in new[]
+                 {
+                     (shell.AssistantSearchButtonForCheck, "search"),
+                     (shell.AssistantNewButtonForCheck, "new"),
+                 })
+        {
+            var path = button.GetVisualDescendants().OfType<Avalonia.Controls.Shapes.Path>().Single();
+            var shot = System.IO.Path.Combine(scratchRoot, "navigation-" + name + ".png");
+            SmokeCapture.Capture(button, shot);
+            var found = GlyphInkIsCentered(shot, ((Avalonia.Media.ISolidColorBrush)path.Stroke!).Color,
+                out var dx, out var dy, out var inkWidth, out var inkHeight);
+            var expectedInkSize = name == "search" ? 14 : 16;
+            Check(found && Math.Abs(dx) <= 0.75 && Math.Abs(dy) <= 0.75
+                  && Math.Abs(inkWidth - expectedInkSize) <= 1 && Math.Abs(inkHeight - expectedInkSize) <= 1,
+                "导航图标 " + name + " 的实际墨迹在按钮内居中且尺寸紧凑（dx=" + Fmt(dx) + "，dy=" + Fmt(dy)
+                + "，墨迹 " + Fmt(inkWidth) + "×" + Fmt(inkHeight)
+                + "，路径边界 " + path.Data?.Bounds + "，绘制边界 " + path.RenderedGeometry?.Bounds + "）");
+        }
         Check(ToolTip.GetTip(shell.AssistantSearchButtonForCheck)?.ToString()
                   == HubStrings.Get("SearchConversationsTip")
               && ToolTip.GetTip(shell.AssistantNewButtonForCheck)?.ToString()
@@ -735,7 +753,7 @@ public partial class ShellCheckWindow : Window
             "停止方块在 24 网格上的包围盒仍是 9.4 见方且居中于 12,12（圆角只削角，不动边中点）");
         var glyphShot = System.IO.Path.Combine(ScratchDirectory.Resolve("send-glyph"), "send.png");
         var glyphFrame = SmokeCapture.Capture(panel.SendButtonForCheck, glyphShot);
-        var inkCentered = SendGlyphInkIsCentered(glyphShot, panel.SendGlyphColorForCheck,
+        var inkCentered = GlyphInkIsCentered(glyphShot, panel.SendGlyphColorForCheck,
             out var inkDx, out var inkDy, out var inkW, out var inkH);
         Check(!glyphFrame.IsBlank() && inkCentered && Math.Abs(inkDx) <= 0.75 && Math.Abs(inkDy) <= 0.75,
             "发送箭头的墨迹在圆钮内居中（dx=" + Fmt(inkDx) + "，dy=" + Fmt(inkDy)
@@ -12248,13 +12266,12 @@ public partial class ShellCheckWindow : Window
     private static string Fmt(double value) => value.ToString("F2", CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// Measures the send glyph's ink from its own rendered frame. <see cref="SmokeCapture.Capture"/> renders
-    /// at 96 DPI, so 1px = 1 DIP and the offsets do not depend on the desktop scale factor; capturing the
-    /// button alone inscribes the circle in the frame, so the circle's centre is the frame centre and only
-    /// the glyph needs detecting. The mask is a per-channel distance from the glyph's live colour — both the
-    /// accent fill and its border sit further away than the tolerance, so one mask is enough.
+    /// Measures a glyph's ink from its button's rendered frame. <see cref="SmokeCapture.Capture"/> renders
+    /// at 96 DPI, so 1px = 1 DIP and the offsets do not depend on the desktop scale factor. The mask is a
+    /// per-channel distance from the live glyph colour. Unpremultiplying also detects thin antialiased
+    /// strokes on transparent buttons, where no pixel necessarily reaches full opacity.
     /// </summary>
-    private static bool SendGlyphInkIsCentered(string png, Avalonia.Media.Color glyph,
+    private static bool GlyphInkIsCentered(string png, Avalonia.Media.Color glyph,
         out double dx, out double dy, out double inkWidth, out double inkHeight)
     {
         var pixels = SmokeCapture.ReadBgra(png, out var width, out var height, out var stride);
@@ -12268,10 +12285,11 @@ public partial class ShellCheckWindow : Window
             for (var x = 0; x < width; x++)
             {
                 var o = (y * stride) + (x * 4);
-                if (pixels[o + 3] < 250) continue;
-                if (Math.Abs(pixels[o] - glyph.B) > tolerance
-                    || Math.Abs(pixels[o + 1] - glyph.G) > tolerance
-                    || Math.Abs(pixels[o + 2] - glyph.R) > tolerance) continue;
+                var alpha = pixels[o + 3];
+                if (alpha < 96) continue;
+                if (Math.Abs(pixels[o] * 255.0 / alpha - glyph.B) > tolerance
+                    || Math.Abs(pixels[o + 1] * 255.0 / alpha - glyph.G) > tolerance
+                    || Math.Abs(pixels[o + 2] * 255.0 / alpha - glyph.R) > tolerance) continue;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
                 if (y < minY) minY = y;

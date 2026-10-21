@@ -786,7 +786,8 @@
               </RadioButton>
               <Button x:Name="AssistantSearchButton" Grid.Column="1" Classes="assistant-action"
                       IsVisible="False" VerticalAlignment="Center">
-                <Path Data="{StaticResource Hub.Icon.Search}" Width="14" Height="14" Stretch="Uniform" />
+                <Path Data="{StaticResource Hub.Icon.Search}" Width="12" Height="12" Stretch="Uniform"
+                      VerticalAlignment="Center" />
               </Button>
               <Button x:Name="AssistantNewButton" Grid.Column="2" Classes="assistant-action"
                       IsVisible="False" VerticalAlignment="Center">
