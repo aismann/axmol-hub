@@ -6844,21 +6844,14 @@ if (args.Contains("--check-ai-tool-policy"))
         throw new Exception("A synthetic result was written where the provider cannot replay it.");
     Console.WriteLine("PASS: a question nobody answered is closed as a question, beside its own call.");
 
-    // The session's own choice about being asked is three-state on purpose, and the third state is the one every
-    // file already on disk is in: no property means nobody ever turned it off.
-    var askRoundTrip = Conversation.Create("orcarouter");
-    askRoundTrip.AskUserEnabled = false;
-    policyStore.Save(askRoundTrip);
-    if (policyStore.Load(askRoundTrip.Id) is not { AskUserEnabled: false } switchedOff)
-        throw new Exception("A session that switched questions off came back asking.");
-    if (Conversation.Create("orcarouter").AskUserEnabled is not null)
-        throw new Exception("A new session does not default to allowed.");
-    // Deleted, like every other session this group saves. The scratch root is one directory reused across
-    // groups and across runs, so a leftover with today's engagement time sorts above the fixed 2026-01 dates
-    // the sessions group orders by — and that group fails on a later run for a reason that has nothing to do
-    // with it.
-    policyStore.Delete(askRoundTrip.Id);
-    Console.WriteLine("PASS: a session's choice about being asked round-trips, and silence from an old file means asked.");
+    var askPreferencesPath = Path.Combine(toolRoot, "ask-preferences.json");
+    var askPreferences = new HubPreferences { AllowAssistantQuestions = false };
+    new PreferencesStore(askPreferencesPath).Save(askPreferences);
+    if (new PreferencesStore(askPreferencesPath).Load().AllowAssistantQuestions)
+        throw new Exception("The app-wide question preference did not round-trip as disabled.");
+    if (!new HubPreferences().AllowAssistantQuestions)
+        throw new Exception("The app-wide question preference must default to enabled.");
+    Console.WriteLine("PASS: the app-wide choice-question preference round-trips and defaults to enabled.");
     return;
 }
 if (args.Contains("--check-ai-cross-session"))

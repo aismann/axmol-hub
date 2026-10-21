@@ -381,6 +381,10 @@ public static class HubTexts
             + "queues up in the task bar at the bottom. It only downloads — installing still waits for your "
             + "\"Restart to update\"."),
         ["AllowSpawnSessions"] = ("允许助手派生子会话", "Let the assistant spawn helper sessions"),
+        ["AllowAssistantQuestions"] = ("允许助手在需要时询问我", "Let the assistant ask me when needed"),
+        ["AllowAssistantQuestionsHint"] = (
+            "全局设置，适用于所有会话。开启后，助手遇到无法自行判断、需要你决定的选择时可以暂停并询问；关闭后则不提供询问功能。",
+            "A global setting for every conversation. When on, the assistant may pause and ask you to settle a choice it cannot determine; when off, the question tool is unavailable."),
         ["AllowSpawnSessionsHint"] = (
             "子会话在自己的上下文里干活，只把结论送回本会话——读一个大文件只要带回几行，就不必把它塞满当前窗口。"
             + "每一条都是要花钱的模型调用，并发槽也只有三个，所以默认关闭；一次回答最多派生一个，子会话自己不许再派生。",
@@ -906,14 +910,6 @@ public static class HubTexts
         ["ChatQuestionNotificationTitle"] = ("助手在等你回答", "The assistant has a question"),
         ["ChatQuestionNotificationBody"] = ("会话「{0}」中的助手需要你做一个选择。",
             "The assistant in 「{0}」 needs you to make a choice."),
-        // Named for what it does rather than for the word the mode selector already spent: this row is not about
-        // whether the assistant may act, and the tip has to say that, because 「完全访问」 reads as "stop asking
-        // me about anything" to everybody who has ever used a permission dialog.
-        ["ChatAskUserMenuItem"] = ("遇到选择时问我", "Ask me at a choice point"),
-        ["ChatAskUserMenuTip"] = ("助手拿不准、又只能由你定时停下来问一句。与审批模式无关：完全访问也不会替你回答，"
-            + "关掉它助手就自己决定，并把它选了哪个写进结果。",
-            "Stops to ask when only you can settle something. Independent of the approval mode: full access does "
-            + "not answer for you, and switching this off makes the assistant decide and record which option it took."),
         // ── Steering needs a second tap ──
         // A steer cancels the segment being generated and is the routing table's strongest signal, so the first
         // Enter only shows what would be sent. The consequence lives in the tooltip rather than as a second

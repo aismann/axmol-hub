@@ -192,6 +192,8 @@
                where to turn it on instead of letting the model retry. -->
           <CheckBox x:Name="SpawnCheck" Content="{DynamicResource AllowSpawnSessions}" Margin="0,12,0,0" />
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource AllowSpawnSessionsHint}" />
+          <CheckBox x:Name="AskQuestionsCheck" Content="{DynamicResource AllowAssistantQuestions}" Margin="0,12,0,0" />
+          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource AllowAssistantQuestionsHint}" />
 
           <!-- The outbound-network switch, like the one above, is not an approval tier either: tiers decide
                "should this one ask", this decides "is this machine allowed to be read". Default on: fetching

@@ -1443,23 +1443,6 @@ public partial class ChatPanel : UserControl
         // person is willing to be interrupted to settle something the repository cannot answer. It reads the
         // session on the way in and writes the session on the way out, so the tick cannot disagree with the
         // conversation it belongs to — which is the failure this menu's mode rows used to have.
-        var askUser = new MenuItem
-        {
-            Header = HubStrings.Get("ChatAskUserMenuItem"),
-            ToggleType = MenuItemToggleType.CheckBox,
-            IsChecked = _chat.ActiveAskUserEnabled,
-            Tag = "ask-user",
-        };
-        ToolTip.SetTip(askUser, HubStrings.Get("ChatAskUserMenuTip"));
-        askUser.Click += (_, _) =>
-        {
-            // Derived from the session, not from the row's own new tick: the two agree today, and the day they
-            // do not it is the control that is wrong.
-            _chat.SelectAskUserEnabled(!_chat.ActiveAskUserEnabled);
-            menu.Hide();
-        };
-        menu.Items.Add(askUser);
-
         var addFolder = new MenuItem { Header = HubStrings.Get("ChatAddLocalFolder") };
         addFolder.Click += async (_, _) => await AddLocalFolderAsync();
         menu.Items.Add(addFolder);

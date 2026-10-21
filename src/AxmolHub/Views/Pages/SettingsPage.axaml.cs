@@ -182,6 +182,7 @@ public partial class SettingsPage : UserControl
         CheckForUpdatesButton.Click += async (_, _) => await OnUpdateActionClickedAsync();
         AutoDownloadCheck.IsCheckedChanged += (_, _) => OnAutoDownloadChanged();
         SpawnCheck.IsCheckedChanged += (_, _) => OnSpawnChanged();
+        AskQuestionsCheck.IsCheckedChanged += (_, _) => OnAskQuestionsChanged();
         WebFetchCheck.IsCheckedChanged += (_, _) => OnWebFetchChanged();
         WebSearchCheck.IsCheckedChanged += (_, _) => OnWebSearchChanged();
         ShowThinkingCheck.IsCheckedChanged += (_, _) => OnShowThinkingChanged();
@@ -365,6 +366,7 @@ public partial class SettingsPage : UserControl
             AutoDownloadCheck.IsChecked = _preferences.AutoDownloadUpdates;
             AutoDownloadCheck.IsEnabled = UpdateService.Instance.IsInstalled;
             SpawnCheck.IsChecked = _preferences.AllowSpawnedSessions;
+            AskQuestionsCheck.IsChecked = _preferences.AllowAssistantQuestions;
             WebFetchCheck.IsChecked = _preferences.AllowOutboundWebFetch;
             WebSearchCheck.IsChecked = _preferences.AllowHostedWebSearch || _preferences.AllowDeepSeekWebApi;
             ShowThinkingCheck.IsChecked = _preferences.ShowThinking;
@@ -1076,6 +1078,15 @@ public partial class SettingsPage : UserControl
     /// <summary>Reads the switch the way the assistant does, for a self-check that has to prove the preference is
     /// the thing the tool consults rather than a checkbox that remembers nothing.</summary>
     internal bool AllowSpawnedSessionsForCheck => _preferences.AllowSpawnedSessions;
+
+    private void OnAskQuestionsChanged()
+    {
+        if (!_ready) return;
+        var value = AskQuestionsCheck.IsChecked == true;
+        if (value == _preferences.AllowAssistantQuestions) return;
+        _preferences.AllowAssistantQuestions = value;
+        _preferencesStore.Save(_preferences);
+    }
 
     /// <summary>Outbound fetching ships <b>on</b>, unlike spawning, so this checkbox is an exit rather than an
     /// entrance: its job is to let a person say "nothing this machine reads goes out without me deciding". The

@@ -456,18 +456,6 @@ public sealed class Conversation
     /// would have given then.</summary>
     public string Routing { get; set; } = ChatRouting.Manual;
 
-    /// <summary>Whether this session's model may stop and ask a question mid-run.
-    ///
-    /// <para>Nullable, and <c>null</c> means allowed: a session file written before this existed has no property
-    /// at all, and the honest reading of "nobody ever turned this off" is that it is on. Writing the default to
-    /// every session on first open would be a migration, and this store does not do those.</para>
-    ///
-    /// <para>Its own axis, deliberately: <see cref="Mode"/> decides what the session may reach and the approval
-    /// mode decides whether reaching it needs permission. Neither is a statement about whether a person is
-    /// willing to be asked, which is why turning this off removes the tool from the declaration list rather than
-    /// letting the model ask into a void.</para></summary>
-    public bool? AskUserEnabled { get; set; }
-
     /// <summary>
     /// The last token count the model itself reported for this session's input, and the companions that make it
     /// usable: which reply it belongs to, and which model said it.

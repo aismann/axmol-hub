@@ -106,6 +106,9 @@ public sealed class HubPreferences
     /// </summary>
     public bool AllowSpawnedSessions { get; set; }
 
+    /// <summary>Whether the assistant may ask the user to resolve a choice, shared across all conversations.</summary>
+    public bool AllowAssistantQuestions { get; set; } = true;
+
     /// <summary>
     /// Whether the assistant may read a web page it was pointed at (<c>web_fetch</c>). <b>On by default</b>, which
     /// is the deliberate opposite of <see cref="AllowSpawnedSessions"/>: fetching a URL the user or the model named

@@ -278,24 +278,16 @@ public sealed class ChatWorkspace : IDisposable
         return true;
     }
 
-    /// <summary>Whether the session on screen lets the model stop and ask a question. Read from the session every
-    /// time rather than kept beside the menu item, for the reason <see cref="ActiveMode"/> is: a copy in the view
-    /// is a state that a second conversation can inherit by not being re-read.</summary>
-    public bool ActiveAskUserEnabled => _active?.AskUserEnabled != false;
+    /// <summary>Whether the assistant may ask the user to resolve a choice, shared across conversations.</summary>
+    public bool ActiveAskUserEnabled => PreferencesProvider?.Invoke().AllowAssistantQuestions != false;
 
-    /// <summary>Turns the model's ability to ask a mid-run question on or off for this session.
-    ///
-    /// <para>Written to the session and nowhere else. With no session open there is nothing to decide about, so
-    /// this says so rather than banking a preference for whichever conversation arrives next.</para>
-    ///
-    /// <para>Its own axis, deliberately, from <see cref="SelectMode"/> and from the approval mode: the first says
-    /// what a session may reach, the second whether reaching it needs permission, and neither is a statement
-    /// about whether a person is willing to be asked. See <see cref="Conversation.AskUserEnabled"/>.</para>
-    /// </summary>
+    /// <summary>Updates the app-wide preference controlling whether the assistant may ask a choice question.</summary>
     public bool SelectAskUserEnabled(bool enabled)
     {
-        if (_active is null) return false;
-        _sessions.TryUpdate(_active.Id, conversation => conversation.AskUserEnabled = enabled);
+        var preferences = PreferencesProvider?.Invoke();
+        if (preferences is null) return false;
+        preferences.AllowAssistantQuestions = enabled;
+        PreferencesPersist?.Invoke(preferences);
         Changed?.Invoke();
         return true;
     }
@@ -532,7 +524,7 @@ public sealed class ChatWorkspace : IDisposable
     private ContextPrompt BuildContextPrompt(Conversation? conversation)
     {
         var mode = ChatModePrompt.For(NormalizeMode(conversation?.Mode ?? ChatModes.Agent),
-            conversation?.AskUserEnabled != false);
+            ActiveAskUserEnabled);
         if (conversation?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
                 && turn.PlanApprovalState == PlanApprovalStates.Approved)?.Plan?.Tasks is { Count: > 0 })
             mode += " An approved plan task list is visible above the composer. Use update_plan_task to mark the current step in_progress before starting it, and completed only after its work and checks succeed; leave future steps pending. Do not mark every task complete at once.";
@@ -685,7 +677,7 @@ public sealed class ChatWorkspace : IDisposable
             // Null on a session file written before the setting existed reads as allowed, which is the only
             // honest reading of "nobody ever turned it off". Read here rather than at the call site because the
             // tool list is assembled once per request and a parked question can be answered long after.
-            session?.AskUserEnabled != false,
+            ActiveAskUserEnabled,
             session?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
                 && turn.PlanApprovalState == PlanApprovalStates.Approved)?.Plan?.Tasks is { Count: > 0 },
             webProvider?.WebToolsBackend == WebToolBackends.DeepSeekApi,
@@ -3469,9 +3461,6 @@ public sealed class ChatWorkspace : IDisposable
             ModelName = source.ModelName,
             Mode = source.Mode,
             ReasoningEffort = source.ReasoningEffort,
-            // Carried like the workspace root: a fork continues the same task, and whether the person wants to be
-            // interrupted with a choice while it continues is a preference about that task, not about the copy.
-            AskUserEnabled = source.AskUserEnabled,
             // A fork continues the same task, so it continues in the same directory. Copied rather than left to be
             // picked again: the person asked for the same tree, not for the same question a second time.
             WorkspaceRoot = source.WorkspaceRoot,
