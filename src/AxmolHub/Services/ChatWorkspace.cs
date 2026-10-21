@@ -42,7 +42,8 @@ public sealed class ChatWorkspace : IDisposable
     private Conversation? _active;
     private string? _selectedProviderId;
     private string? _selectedModelName;
-    private string _selectedMode = ChatModes.Agent;
+    private string _selectedMode = ChatModes.Ask;
+    private bool _selectedModeExplicit;
     private string _selectedReasoningEffort = ChatReasoningEfforts.Default;
     private string? _selectedApprovalMode;
     private string? _selectedWorkspaceRoot;
@@ -271,6 +272,7 @@ public sealed class ChatWorkspace : IDisposable
     {
         if (mode is not (ChatModes.Ask or ChatModes.Plan or ChatModes.Agent)) return false;
         _selectedMode = mode;
+        _selectedModeExplicit = true;
         if (_active is not null) _sessions.TryUpdate(_active.Id, conversation => conversation.Mode = mode);
         Changed?.Invoke();
         return true;
@@ -2962,9 +2964,13 @@ public sealed class ChatWorkspace : IDisposable
         _selectedWorkspaceRoot = null;
         if (_active is not null)
         {
-            _selectedMode = ChatModes.Agent;
+            _selectedMode = ChatModes.Ask;
+            _selectedModeExplicit = false;
             _selectedReasoningEffort = ChatReasoningEfforts.Default;
         }
+        var mode = _selectedModeExplicit
+            ? _selectedMode
+            : workspaceRoot is null ? ChatModes.Ask : ChatModes.Agent;
         var choice = SelectedChatModel;
         var selectedProvider = providerId is null
             ? choice?.Provider
@@ -2974,7 +2980,9 @@ public sealed class ChatWorkspace : IDisposable
             : selectedProvider?.Model ?? "";
         var conversation = Conversation.Create(selectedProvider?.Id ?? "");
         conversation.ModelName = modelName;
-        conversation.Mode = _selectedMode;
+        conversation.Mode = mode;
+        _selectedMode = mode;
+        _selectedModeExplicit = false;
         var defaultEffort = ModelCatalog.DefaultReasoningEffort(selectedProvider, modelName);
         conversation.ReasoningEffort = _selectedReasoningEffort != ChatReasoningEfforts.Default
                                        && ModelCatalog.MaySendEffort(selectedProvider, modelName, _selectedReasoningEffort)
@@ -3101,7 +3109,8 @@ public sealed class ChatWorkspace : IDisposable
         measurement.LoadMs = LastSessionLoad.Milliseconds;
         measurement.Cached = cachedBefore;
         var approvalStarted = measurement.ElapsedMs;
-        _selectedMode = _active is null ? ChatModes.Agent : NormalizeMode(_active.Mode);
+        _selectedMode = _active is null ? ChatModes.Ask : NormalizeMode(_active.Mode);
+        _selectedModeExplicit = false;
         _selectedReasoningEffort = ChatReasoningEfforts.Normalize(_active?.ReasoningEffort);
         if (_active is { } opened)
         {

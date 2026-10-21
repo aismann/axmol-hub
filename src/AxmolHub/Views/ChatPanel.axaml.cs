@@ -358,7 +358,7 @@ public partial class ChatPanel : UserControl
         {
             if (GoalDraftSelectedForActiveConversation)
                 ClearGoalDraftSelection();
-            else if (_chat.ActiveMode == ChatModes.Plan)
+            else if (_chat.ActiveMode is ChatModes.Ask or ChatModes.Plan)
                 _chat.SelectMode(ChatModes.Agent);
             RefreshComposerChoices();
         };
@@ -723,13 +723,17 @@ public partial class ChatPanel : UserControl
         // successful send and follows the conversation currently being composed in; a session switch drops it.
         var mode = _chat.ActiveMode;
         var goalSelected = GoalDraftSelectedForActiveConversation && mode == ChatModes.Agent;
-        ModeIndicatorButton.IsVisible = goalSelected || mode == ChatModes.Plan;
+        ModeIndicatorButton.IsVisible = goalSelected || mode is ChatModes.Ask or ChatModes.Plan;
         var indicatorMode = goalSelected ? ChatModes.Agent : mode;
         ModeIndicatorIcon.Data = ThemeGeometry(ComposerModeIconKey(indicatorMode));
-        ModeIndicatorLabel.Text = HubStrings.Get(goalSelected ? "ChatModeGoal" : "ChatModePlan");
+        ModeIndicatorLabel.Text = HubStrings.Get(goalSelected ? "ChatModeGoal" : mode switch
+        {
+            ChatModes.Ask => "ChatModeAsk",
+            _ => "ChatModePlan",
+        });
         ToolTip.SetTip(ModeIndicatorButton, goalSelected
             ? HubStrings.Get("ChatGoalDraftResetHint")
-            : mode == ChatModes.Plan ? HubStrings.Get("ChatModeResetHint") : null);
+            : mode is ChatModes.Ask or ChatModes.Plan ? HubStrings.Get("ChatModeResetHint") : null);
         // The chip names the *effective* mode, not the one someone clicked: a session that merely follows a
         // permissive default is in it, and reading back the override would call that mode safe. With no session
         // on screen yet it names the mode the first one starts under, because before the first message is the
@@ -1392,21 +1396,18 @@ public partial class ChatPanel : UserControl
     private MenuFlyout BuildComposerMenu()
     {
         var menu = new MenuFlyout();
-        // Two modes rather than three. "提问" was the one with nothing behind it that the composer already
-        // says: an assistant with no tools offered is what answering a question without acting on it means, and
-        // a person who wants that simply does not pick 计划 or 目标. The mode itself stays — sessions that
-        // recorded "ask" keep running without tools — it just has no menu item any more.
         foreach (var (mode, key) in new[]
                  {
+                     (ChatModes.Ask, "ChatModeAsk"),
                      (ChatModes.Plan, "ChatModePlan"),
                      (ChatModes.Agent, "ChatModeGoal"),
                  })
         {
-            // Plan is a session mode. Goal selection starts a durable thread objective on send while retaining
-            // Agent as the tool-enabled working mode, so its check follows only the pending draft selection.
-            var ticks = mode == ChatModes.Plan
-                ? _chat.ActiveMode == ChatModes.Plan
-                : GoalDraftSelectedForActiveConversation;
+            // Ask and Plan are durable session modes. Goal starts a durable thread objective on send while
+            // retaining Agent as the tool-enabled working mode, so its check follows the pending draft selection.
+            var ticks = mode == ChatModes.Agent
+                ? GoalDraftSelectedForActiveConversation
+                : _chat.ActiveMode == mode;
             var item = new MenuItem
             {
                 Header = BuildComposerModeHeader(mode, key),
@@ -1416,10 +1417,10 @@ public partial class ChatPanel : UserControl
             };
             item.Click += (_, _) =>
             {
-                if (mode == ChatModes.Plan)
+                if (mode is ChatModes.Ask or ChatModes.Plan)
                 {
                     ClearGoalDraftSelection();
-                    _chat.SelectMode(ticks ? ChatModes.Agent : ChatModes.Plan);
+                    _chat.SelectMode(ticks ? ChatModes.Agent : mode);
                 }
                 else if (ticks)
                 {
