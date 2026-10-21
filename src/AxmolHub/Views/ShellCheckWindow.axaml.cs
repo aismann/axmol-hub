@@ -487,22 +487,24 @@ public partial class ShellCheckWindow : Window
             Check(rateRun.ApproximateTokensPerSecond is > 0
                   && ChatPanel.RequestSpeedTextForCheck(rateRun).Contains("tok/s", StringComparison.Ordinal),
                 "密集流式思考和正文无需间隔 350ms，也能当场显示约 tok/s");
+            var firstAverage = rateRun.ApproximateTokensPerSecond;
             await Task.Delay(2200);
-            Check(rateRun.ApproximateTokensPerSecond is null
-                  && ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedSampling"),
-                "输出暂停后不用陈旧的速度冒充实时速度，状态区分于首次等待");
+            Check(rateRun.ApproximateTokensPerSecond == firstAverage
+                  && ChatPanel.RequestSpeedTextForCheck(rateRun).Contains("tok/s", StringComparison.Ordinal),
+                "输出暂停后保留本轮生成均速，而不是反复退回等待状态");
             rateRun.AppendText(new string('d', 80));
+            Check(rateRun.ApproximateTokensPerSecond == firstAverage,
+                "暂停后的首块仅重新开采样区间，不把空等的两秒计入均速");
             rateRun.AppendText(new string('e', 80));
             Check(rateRun.ApproximateTokensPerSecond is > 0,
-                "暂停后恢复输出重新采样，速度不永久卡在等待态");
+                "暂停后继续输出才累计新的生成区间");
             rateRun.ParkForApproval();
-            Check(rateRun.ApproximateTokensPerSecond is null
-                  && ChatPanel.RequestSpeedTextForCheck(rateRun).Length == 0,
-                "等待审批时隐藏速度，不把人的等待时间当作模型生成速度");
+            Check(rateRun.ApproximateTokensPerSecond is > 0,
+                "等待审批时保留已有均速，不把人的等待时间当作生成时间");
             rateRun.RearmAfterApproval();
             rateRun.BeginSegment();
-            Check(rateRun.ApproximateTokensPerSecond is null,
-                "工具回合开启时清除上一轮的速度，不沿用过期读数");
+            Check(rateRun.ApproximateTokensPerSecond is > 0,
+                "工具回合开始后仍保留本轮累计均速，不用旧回合的时间稀释");
         }
         Check(panel.ComposerPlusCenteredForCheck,
             "添加上下文的圆形加号按钮在水平和垂直方向居中");
@@ -10639,6 +10641,11 @@ public partial class ShellCheckWindow : Window
                 Check(panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal)
                       && panel.ComposerSpeedForCheck != HubStrings.Get("ChatRequestSpeedWaiting"),
                     "密集输出后流仍未结束，真实界面底部立即显示速度（实际「" + panel.ComposerSpeedForCheck + "」）");
+                var steadySpeed = panel.ComposerSpeedForCheck;
+                await Task.Delay(2300);
+                Dispatcher.UIThread.RunJobs();
+                Check(panel.ComposerSpeedForCheck == steadySpeed,
+                    "流暂停两秒且定时器仍在刷新，底部速度保持可见且不跳回等待输出");
                 var originalWidth = shell.Width;
                 try
                 {
@@ -10672,6 +10679,10 @@ public partial class ShellCheckWindow : Window
                 afterBurst.TrySetResult(true);
                 await WaitForIdleAsync(chat);
             }
+            chat.OpenConversation(rateSession.Id);
+            panel.Reload();
+            Check(panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal),
+                "这一轮结束后底部保留最近的生成均速，切会话也不丢失");
 
             // Phase 1: a gateway that never says what a request cost. The session has to keep estimating — a
             // meter that read the absence of a report as zero would call an overflowing conversation empty.

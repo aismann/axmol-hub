@@ -97,6 +97,10 @@ public partial class ChatPanel : UserControl
     /// which is also what lets a session keep streaming while it is hidden.
     /// </summary>
     private LiveBubble? _live;
+    // The last visible speed belongs to its session, not the transient bubble. A run can finish or the reader
+    // can switch sessions between paints; neither event should revert an already measured rate to "waiting".
+    private readonly Dictionary<string, (double Rate, long ShownAt)> _sessionSpeeds = new(StringComparer.Ordinal);
+    private static readonly long SpeedRefreshTicks = 2 * System.Diagnostics.Stopwatch.Frequency;
 
     /// <summary>The build count of the bubble that was last on screen, kept because the bubble itself is
     /// discarded the moment the answer lands — and the number is only interesting once the stream is over.</summary>
@@ -338,6 +342,11 @@ public partial class ChatPanel : UserControl
         };
         _chat.RunCompleted += (conversationId, outcome) =>
         {
+            // The registry may have removed the run already. Capture its last cumulative reading before
+            // RenderMessages detaches the bubble, then leave that reading visible until another run earns one.
+            if (_live is { } finishing && finishing.Run.ConversationId == conversationId
+                && finishing.Run.ApproximateTokensPerSecond is > 0 and var finalRate)
+                _sessionSpeeds[conversationId] = (finalRate, System.Diagnostics.Stopwatch.GetTimestamp());
             var viewed = conversationId == _chat.ViewedConversationId;
             if (viewed) RenderMessages();
             // Filed for whichever session ended, ahead of the guard below: a run that finished while the person
@@ -822,7 +831,15 @@ public partial class ChatPanel : UserControl
 
     private void RenderComposerMetrics()
     {
-        RequestSpeedLabel.Text = RequestSpeedText(ViewedRun);
+        var run = ViewedRun;
+        var sessionId = _chat.ActiveConversation?.Id;
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (sessionId is not null && run?.ApproximateTokensPerSecond is > 0 and var rate
+            && (!_sessionSpeeds.TryGetValue(sessionId, out var previous)
+                || now - previous.ShownAt >= SpeedRefreshTicks))
+            _sessionSpeeds[sessionId] = (rate, now);
+        RequestSpeedLabel.Text = sessionId is not null && _sessionSpeeds.TryGetValue(sessionId, out var shown)
+            ? FormatRequestSpeed(shown.Rate) : RequestSpeedText(run);
         RequestSpeedLabel.IsVisible = RequestSpeedLabel.Text.Length > 0;
 
         var (send, session) = _chat.ActiveConversationBurn();
@@ -866,10 +883,13 @@ public partial class ChatPanel : UserControl
         if (run is not { IsStreaming: true, IsToolRunning: false, RetryWaiting: false }) return "";
         var rate = run.ApproximateTokensPerSecond;
         return rate is > 0
-            ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ChatRequestSpeedApproxFormat"), rate.Value)
+            ? FormatRequestSpeed(rate.Value)
             : HubStrings.Get(run.SegmentHasOutput ? "ChatRequestSpeedSampling" : "ChatRequestSpeedWaiting");
     }
+
+    private static string FormatRequestSpeed(double rate)
+        => string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get("ChatRequestSpeedApproxFormat"), rate);
 
     private static string CompactTokenCount(long tokens, System.Globalization.CultureInfo culture)
     {

@@ -74,18 +74,17 @@ internal sealed class ConversationRun : IDisposable
     private readonly object _gate = new();
     private readonly StringBuilder _text = new();
     private readonly StringBuilder _reasoning = new();
-    // Usage arrives at request boundaries, not per streamed chunk. Keep a short rolling output window
-    // for an explicitly approximate rate; never mistake a final usage report for live tokens.
-    private readonly Queue<(long At, long Units)> _outputSamples = new();
-    private long _sampleUnits;
-    private long _firstOutputAt;
+    // Usage arrives at request boundaries, not per streamed chunk. Estimate generation from text deltas,
+    // accumulating only intervals during which the model actually produced output. Tool and idle gaps do
+    // not become time charged to the model; the reading stays available after the stream goes quiet.
+    private long _generatedUnits;
+    private long _generationTicks;
     private long _lastOutputAt;
     private bool _segmentHasOutput;
     internal bool SegmentHasOutput
     {
         get { lock (_gate) return _segmentHasOutput; }
     }
-    private static readonly long RateWindow = 4 * Stopwatch.Frequency;
     private static readonly long RateIdle = 2 * Stopwatch.Frequency;
 
     internal double? ApproximateTokensPerSecond
@@ -93,18 +92,10 @@ internal sealed class ConversationRun : IDisposable
         get
         {
             lock (_gate)
-            {
-                if (!IsStreaming || IsToolRunning || RetryWaiting || _outputSamples.Count == 0) return null;
-                var now = Stopwatch.GetTimestamp();
-                TrimOutputSamples(now);
-                if (now - _lastOutputAt > RateIdle || _outputSamples.Count < 2) return null;
-                var span = (_lastOutputAt - _firstOutputAt) / (double)Stopwatch.Frequency;
-                // The first chunk has no measured starting time. A burst can arrive between two UI ticks;
-                // require two chunks, not a 350ms gap between them, and bound tiny intervals to avoid spikes.
-                var units = _sampleUnits - _outputSamples.Peek().Units;
-                return units > 0 ? units / (double)ContextTrimmer.CharactersPerToken
-                    / Math.Max(span, 0.25) : null;
-            }
+                return _generationTicks > 0 && _generatedUnits > 0
+                    ? _generatedUnits / (double)ContextTrimmer.CharactersPerToken
+                        / Math.Max(_generationTicks / (double)Stopwatch.Frequency, 0.25)
+                    : null;
         }
     }
 
@@ -113,27 +104,12 @@ internal sealed class ConversationRun : IDisposable
         if (chunk.Length == 0) return;
         _segmentHasOutput = true;
         var now = Stopwatch.GetTimestamp();
-        if (now - _lastOutputAt > RateIdle) ClearOutputSamples();
-        var units = TokenWeighing.Units(chunk);
-        _outputSamples.Enqueue((now, units));
-        _sampleUnits += units;
+        if (_lastOutputAt > 0 && now - _lastOutputAt <= RateIdle)
+        {
+            _generatedUnits += TokenWeighing.Units(chunk);
+            _generationTicks += Math.Max(1, now - _lastOutputAt);
+        }
         _lastOutputAt = now;
-        TrimOutputSamples(now);
-    }
-
-    private void TrimOutputSamples(long now)
-    {
-        while (_outputSamples.Count > 0 && now - _outputSamples.Peek().At > RateWindow)
-            _sampleUnits -= _outputSamples.Dequeue().Units;
-        _firstOutputAt = _outputSamples.Count > 0 ? _outputSamples.Peek().At : 0;
-    }
-
-    private void ClearOutputSamples()
-    {
-        _outputSamples.Clear();
-        _sampleUnits = 0;
-        _firstOutputAt = 0;
-        _lastOutputAt = 0;
     }
     // Where this segment's thinking stopped, on the run's clock, and whether that moment has been taken yet.
     // See <see cref="ReasoningElapsed"/> for why the freeze belongs at the thinking→answer boundary.
@@ -384,7 +360,7 @@ internal sealed class ConversationRun : IDisposable
             _filedReasoning += _reasoning.Length;
             _text.Clear();
             _reasoning.Clear();
-            ClearOutputSamples();
+            _lastOutputAt = 0;
             _segmentHasOutput = false;
             // The next segment thinks again, so its thinking is measured from here and not from the run's start.
             // <see cref="ThoughtFiledBefore"/> is deliberately not re-armed by this line — it answers "has this run
@@ -682,6 +658,7 @@ internal sealed class ConversationRun : IDisposable
     {
         if (_parked) return;
         Interlocked.Exchange(ref _retryWaiting, attempt);
+        lock (_gate) _lastOutputAt = 0;
         Interlocked.Exchange(ref _retryDelayTicks, delay.Ticks);
         Interlocked.Increment(ref _retryWaits);
         Interlocked.Add(ref _retryWaitedTicks, delay.Ticks);
@@ -788,6 +765,7 @@ internal sealed class ConversationRun : IDisposable
     {
         _parked = true;
         Phase = RunPhase.AwaitingApproval;
+        lock (_gate) _lastOutputAt = 0;
         // A person reading a card is not the answer working, so the elapsed clock banks what it has and stands
         // down for the length of the decision.
         FreezeClock();
