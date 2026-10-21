@@ -1,314 +1,445 @@
 using System;
+using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using AxmolHub.Core;
 
 namespace AxmolHub;
 
-/// <summary>
-/// The projects page. In the WPF version this page's logic was scattered across several
-/// <c>async void</c> event handlers in <c>MainWindow.xaml.cs</c>; here it's gathered into one
-/// UserControl, with the operations themselves still all forwarded to <see cref="HubWorkspace"/>.
-///
-/// This is the only one of the four pages with **cross-page coupling**: selecting a project decides
-/// both the top "recent build platform" card and whether the Android device bar appears, as well as
-/// the toolchains page's target dropdown. The coupling lands on
-/// <see cref="HubWorkspace.SelectedProject"/>, not some control — otherwise we'd be back to WPF's
-/// "fields in one window referencing each other" style.
-/// </summary>
+public sealed record ProjectListItem(ProjectEntry Project, bool IsPreviewRunning, bool CanOpenEditor)
+{
+    public string DisplayPath
+    {
+        get
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrEmpty(home)) return Project.Path;
+            var relative = System.IO.Path.GetRelativePath(home, Project.Path);
+            if (relative == ".") return "~";
+            return relative != ".." && !relative.StartsWith(".." + System.IO.Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !System.IO.Path.IsPathRooted(relative) ? "~" + System.IO.Path.DirectorySeparatorChar + relative : Project.Path;
+        }
+    }
+    public string Target => BuildTargets.Get(Project.Platform).Name;
+    public string ProjectTypeLabel => HubStrings.Get(Project.ProjectType);
+    public string Engine => Project.Version + (Project.Channel == "local" ? "" : " · " + Project.Channel);
+    public string ConfigurationAndStatus => Project.Configuration + " · " + HubStrings.Get(Project.BuildStatus);
+    public string ExactLastOpened => Project.LastOpened?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture) ?? HubStrings.Get("NeverOpened");
+    public string LastOpened => Project.LastOpened is not { } opened ? HubStrings.Get("NeverOpened")
+        : opened.ToLocalTime().Date == DateTime.Now.Date ? HubStrings.Get("TodayAt") + " " + opened.ToLocalTime().ToString("HH:mm", CultureInfo.CurrentCulture)
+        : opened.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.CurrentCulture);
+    public string CompactDetails => string.Join(" · ", Target, HubStrings.Get(Project.ProjectType), ConfigurationAndStatus, Engine, LastOpened);
+    public string RunCaption => HubStrings.Get(IsPreviewRunning ? "Stop" : "Run");
+    public string OpenEditorTooltip => CanOpenEditor ? HubStrings.Get("OpenInEditor") : HubStrings.Get("NoEditorConfigured");
+}
+
+public sealed record ProjectFilterChoice(string Label, string Value)
+{
+    public override string ToString() => Label;
+}
+
 public partial class ProjectsPage : UserControl
 {
     private readonly HubWorkspace _workspace;
     private bool _ready;
+    private int _sortMode;
+    private ProjectEntry? _pendingTrash;
+    private string _overlayMode = "";
 
-    /// <summary>For the XAML loader and design-time preview (missing it raises AVLN3001).</summary>
-    public ProjectsPage()
-    {
-        _workspace = null!;
-        InitializeComponent();
-    }
+    internal DataGrid GridForCheck => ProjectsGrid;
+    internal ProjectListItem[] RowsForCheck => ProjectsGrid.ItemsSource as ProjectListItem[] ?? [];
+    internal TextBox SearchForCheck => SearchBox;
+    internal ComboBox EngineFilterForCheck => EngineFilter;
+    internal ComboBox PlatformFilterForCheck => PlatformFilter;
+    internal Button SortForCheck => SortButton;
+    internal Button NewProjectForCheck => NewProjectButton;
+    internal Button CloseOverlayForCheck => OverlayCloseButton;
+    internal Button CancelOverlayForCheck => OverlayCancelButton;
+    internal TextBox ProjectNameForCheck => ProjectNameBox;
+    internal TextBlock TrashNameForCheck => TrashProjectName;
+    internal TextBlock TrashPathForCheck => TrashProjectPath;
+    internal void ShowTrashConfirmationForCheck(ProjectEntry project) => ShowTrashConfirmation(project);
+    internal bool OverlayVisibleForCheck => ProjectOverlay.IsVisible;
+    internal void SyncColumnsForCheck() => SyncColumns();
+
+    public ProjectsPage() { _workspace = null!; InitializeComponent(); }
 
     public ProjectsPage(HubWorkspace workspace)
     {
         _workspace = workspace;
         InitializeComponent();
-
         _workspace.Changed += Reload;
         _workspace.DevicesChanged += ReloadDevices;
-
+        SearchBox.TextChanged += (_, _) => ApplyView();
+        EngineFilter.SelectionChanged += (_, _) => ApplyView();
+        PlatformFilter.SelectionChanged += (_, _) => ApplyView();
+        SortButton.Click += (_, _) =>
+        {
+            _sortMode = (_sortMode + 1) % 3;
+            UpdateSortCaption();
+            ApplyView();
+        };
         ProjectsGrid.SelectionChanged += (_, _) =>
         {
-            if (!_ready)
+            if (!_ready) return;
+            if (ProjectsGrid.SelectedItem is ProjectListItem item && !ReferenceEquals(item.Project, _workspace.SelectedProject))
             {
-                return;
+                _workspace.SelectedProject = item.Project;
+                _workspace.Refresh();
             }
-
-            var picked = ProjectsGrid.SelectedItem as ProjectEntry;
-            // "The project didn't really change" must return immediately — otherwise it forms a loop
-            // with Reload() and pins the UI thread:
-            //
-            //   SelectionChanged → Refresh() → Changed → Reload()
-            //     → rebuild ItemsSource (new array, selection first cleared)
-            //     → reset SelectedItem (re-selected, another change)
-            //     → _ready = true → SelectionChanged → …
-            //
-            // Why the _ready gate can't stop it: the two assignments inside Reload() fire selection
-            // change events that aren't guaranteed to call back synchronously within the assignment
-            // statement (after ItemsSource swaps arrays, the selection goes through the selection
-            // model / layout recompute), so the event lands after _ready has already been restored to
-            // true — the gate is useless.
-            // Measured: Reload was called 4701 times in 45 seconds, and the window was "not
-            // responding" for 33 seconds.
-            //
-            // The criterion is "selection unchanged" rather than another gate: Reload() always syncs
-            // the workspace's SelectedProject to the grid's current selection, so on reentry they are
-            // necessarily equal here and the loop breaks on the **first turn**; when the user really
-            // clicked another row they differ, and refresh proceeds as normal.
-            if (ReferenceEquals(picked, _workspace.SelectedProject))
-            {
-                return;
-            }
-
-            _workspace.SelectedProject = picked;
-            // The selection changed, so the platform card and device bar must follow; the WPF version called SyncProjectTarget here.
-            _workspace.Refresh();
         };
-
-        AndroidDevicePicker.SelectionChanged += (_, _) =>
-            _workspace.SelectedDevice = (AndroidDevicePicker.SelectedItem as DeviceChoice)?.Device;
-
-        WireButtons();
+        ProjectsGrid.SizeChanged += (_, _) => SyncColumns();
+        ProjectsGrid.AddHandler(InputElement.DoubleTappedEvent, OnProjectDoubleTapped, RoutingStrategies.Bubble);
+        ProjectsGrid.AddHandler(InputElement.KeyDownEvent, OnProjectsKeyDown, RoutingStrategies.Tunnel);
+        AddHandler(InputElement.KeyDownEvent, OnOverlayKeyDown, RoutingStrategies.Tunnel);
+        OpenExistingButton.Click += OnOpenExisting;
+        NewProjectButton.Click += OnNewProject;
+        BrowseLocationButton.Click += async (_, _) =>
+        {
+            var folder = await PickFolderAsync(HubStrings.Get("Select parent location"));
+            if (folder is not null) ProjectLocationBox.Text = folder;
+        };
+        ProjectEnginePicker.SelectionChanged += (_, _) => RefreshPrebuiltChoice();
         Reload();
         _ready = true;
     }
 
-    /// <summary>One entry of the device dropdown. The WPF version used an anonymous type + DisplayMemberPath; Avalonia's ComboBox
-    /// has no DisplayMemberPath and renders via ToString(), so wrap it in a small record with ToString.</summary>
-    private sealed record DeviceChoice(AndroidDevice Device)
+    private sealed record ProjectEngineChoice(EngineEntry Engine, string Label)
     {
-        public override string ToString() => Device.Serial + " · " + HubStrings.Get(Device.State);
+        public override string ToString() => Label;
     }
 
-    private void WireButtons()
+    private async void OnOpenExisting(object? sender, RoutedEventArgs e)
     {
-        NewProjectButton.Click += (_, _) =>
-        {
-            var opening = !NewProjectPanel.IsVisible;
-            if (opening && string.IsNullOrWhiteSpace(ProjectLocationBox.Text))
-            {
-                // The default parent directory is filled once only when the panel opens. Putting it in Reload() would mean any refresh after the user clears the box bounces it back to the default — the input is no longer "text the user can edit".
-                ProjectLocationBox.Text = _workspace.ProjectDirectory;
-            }
-
-            NewProjectPanel.IsVisible = opening;
-        };
-        CancelNewProjectButton.Click += (_, _) => NewProjectPanel.IsVisible = false;
-
-        OpenExistingButton.Click += async (_, _) =>
-        {
-            var picked = await PickFolderAsync(HubStrings.Get("Select Axmol project folder"));
-            if (picked is not null)
-            {
-                await _workspace.OpenProjectAsync(picked);
-            }
-        };
-
-        BrowseLocationButton.Click += async (_, _) =>
-        {
-            var picked = await PickFolderAsync(HubStrings.Get("Select parent location"));
-            if (picked is not null)
-            {
-                ProjectLocationBox.Text = picked;
-            }
-        };
-
-        CreateProjectButton.Click += async (_, _) =>
-        {
-            await _workspace.CreateProjectAsync(
-                ProjectNameBox.Text ?? "",
-                ProjectLocationBox.Text ?? "",
-                ProjectEnginePicker.SelectedItem as EngineEntry,
-                LuaScripting.IsChecked == true ? "lua" : "cpp",
-                usePrebuilt: PrebuiltCheck.IsChecked == true);
-            NewProjectPanel.IsVisible = false;
-        };
-
-        // Changing the engine changes "does this tree have a prebuilt library", so the hint must follow.
-        ProjectEnginePicker.SelectionChanged += (_, _) => RefreshPrebuiltChoice();
-
-        BuildButton.Click += async (_, _) => await _workspace.BuildAsync(configureOnly: false);
-        ConfigureButton.Click += async (_, _) => await _workspace.BuildAsync(configureOnly: true);
-        RunButton.Click += async (_, _) => await _workspace.RunAsync();
-
-        AndroidReleaseButton.Click += async (_, _) =>
-        {
-            if (_workspace.SelectedProject is { } project)
-            {
-                await _workspace.EditAndroidReleaseAsync(project);
-            }
-        };
-
-        PrebuiltSettingsButton.Click += async (_, _) =>
-        {
-            if (_workspace.SelectedProject is { } project)
-            {
-                await _workspace.EditPrebuiltAsync(project);
-            }
-        };
-
-        OpenFolderButton.Click += async (_, _) => await _workspace.OpenProjectFolderAsync();
-        OpenOutputsButton.Click += async (_, _) => await _workspace.OpenBuildOutputsAsync();
-        EditorButton.Click += async (_, _) => await _workspace.OpenEditorAsync();
-        EditorMenuButton.Click += (_, _) => ShowEditorMenu();
-        RemoveProjectButton.Click += async (_, _) => await _workspace.RemoveProjectAsync();
-
-        RefreshDevicesButton.Click += async (_, _) => await _workspace.QueryDevicesAsync();
+        var picked = await PickFolderAsync(HubStrings.Get("Select Axmol project folder"));
+        if (picked is null) return;
+        var project = await _workspace.OpenProjectAsync(picked);
+        if (project is null) return;
+        ClearSearchAndFilters();
+        _workspace.SelectedProject = project;
+        Reload();
     }
 
-    /// <summary>
-    /// The "open with…" menu: the editors detected on this machine to open this project once, then the two
-    /// persistent answers — project default and global default — and, when this project already carries its own
-    /// choice, the way back to the default.
-    ///
-    /// It hangs off its own button rather than off the main one because a Button's flyout swallows the click that
-    /// would otherwise open the project, and "the button I press to open things opens a menu" is the wrong
-    /// surprise even when it is the tidier markup.
-    /// </summary>
-    private void ShowEditorMenu()
+    private void OnNewProject(object? sender, RoutedEventArgs e)
     {
-        var menu = new MenuFlyout();
-        var detected = _workspace.DetectedEditors;
-        if (detected.Count > 0)
-        {
-            menu.Items.Add(new MenuItem { Header = HubStrings.Get("EditorUseOnce"), IsEnabled = false });
-            foreach (var binding in detected)
-            {
-                var once = new MenuItem { Header = binding.Preset.DisplayName };
-                once.Click += async (_, _) => await _workspace.OpenEditorAsync(binding.Preset.Id);
-                menu.Items.Add(once);
-            }
+        if (string.IsNullOrWhiteSpace(ProjectLocationBox.Text)) ProjectLocationBox.Text = _workspace.ProjectDirectory;
+        _overlayMode = "create";
+        _pendingTrash = null;
+        CreatePanel.IsVisible = true;
+        TrashConfirmPanel.IsVisible = false;
+        OverlayTitle.Text = HubStrings.Get("NewProject");
+        OverlayPrimaryButton.Content = HubStrings.Get("Create");
+        OverlayPrimaryButton.Classes.Remove("danger");
+        OverlayPrimaryButton.IsEnabled = true;
+        OverlayCancelButton.IsEnabled = true;
+        ProjectOverlay.IsVisible = true;
+        SyncOverlaySize();
+        ProjectNameBox.Focus();
+    }
 
-            menu.Items.Add(new Separator());
-            menu.Items.Add(EditorScopeMenu("EditorForProject", global: false, detected));
-            menu.Items.Add(EditorScopeMenu("EditorForAll", global: true, detected));
+    private async void OnOpenProject(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ProjectEntry project }) await _workspace.OpenEditorAsync(requested: project);
+    }
+
+    private async void OnBuildProject(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ProjectEntry project }) await _workspace.BuildAsync(configureOnly: false, requested: project);
+    }
+
+    private async void OnRunProject(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ProjectEntry project }) await _workspace.RunAsync(project);
+    }
+
+    private void OnProjectDoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (e.Source is Control control && IsAction(control)) return;
+        if (ProjectsGrid.SelectedItem is ProjectListItem item && _workspace.EffectiveEditor(item.Project) is not null)
+            _ = _workspace.OpenEditorAsync(requested: item.Project);
+    }
+
+    private void OnProjectsKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || e.Source is Button || ProjectsGrid.SelectedItem is not ProjectListItem item) return;
+        if (_workspace.EffectiveEditor(item.Project) is not null)
+        {
+            _ = _workspace.OpenEditorAsync(requested: item.Project);
+            e.Handled = true;
         }
+    }
 
-        if (_workspace.SelectedProject?.CodeEditor is not null)
+    private static bool IsAction(Control control)
+    {
+        for (var current = control; current is not null; current = current.Parent as Control)
+            if (current is Button) return true;
+        return false;
+    }
+
+    private void OnProjectMenu(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: ProjectEntry project } button) return;
+        var menu = new MenuFlyout();
+        var editor = _workspace.EffectiveEditor(project);
+        Add("OpenInEditor", async () => await _workspace.OpenEditorAsync(requested: project), editor is not null);
+        var editorMenu = new MenuItem { Header = HubStrings.Get("OpenWith") };
+        var defaultEditorMenu = new MenuItem { Header = HubStrings.Get("DefaultEditor") };
+        foreach (var binding in _workspace.DetectedEditors)
+        {
+            var once = new MenuItem { Header = binding.Preset.DisplayName };
+            once.Click += async (_, _) => await _workspace.OpenEditorAsync(binding.Preset.Id, project);
+            editorMenu.Items.Add(once);
+
+            var makeDefault = new MenuItem
+            {
+                Header = binding.Preset.DisplayName,
+                IsChecked = _workspace.State.CodeEditor?.Id == binding.Preset.Id
+                    && _workspace.State.CodeEditor.Path == binding.Path,
+            };
+            makeDefault.Click += async (_, _) => await _workspace.SelectEditorAsync(binding.Preset.Id, binding.Path, global: true);
+            defaultEditorMenu.Items.Add(makeDefault);
+        }
+        editorMenu.Items.Add(new Separator());
+        var projectEditor = new MenuItem { Header = HubStrings.Get("EditorForProject") };
+        foreach (var binding in _workspace.DetectedEditors)
+        {
+            var choice = new MenuItem { Header = binding.Preset.DisplayName };
+            choice.Click += async (_, _) => await _workspace.SelectEditorAsync(binding.Preset.Id, binding.Path, global: false, requested: project);
+            projectEditor.Items.Add(choice);
+        }
+        editorMenu.Items.Add(projectEditor);
+        editorMenu.Items.Add(defaultEditorMenu);
+        if (project.CodeEditor is not null)
         {
             var follow = new MenuItem { Header = HubStrings.Get("EditorFollowDefault") };
-            follow.Click += (_, _) => _workspace.ClearProjectEditor();
-            menu.Items.Add(follow);
+            follow.Click += (_, _) => _workspace.ClearProjectEditor(project);
+            editorMenu.Items.Add(follow);
         }
-
-        if (menu.Items.Count > 0)
+        menu.Items.Add(editorMenu);
+        menu.Items.Add(new Separator());
+        Add("Configure", async () => await _workspace.BuildAsync(configureOnly: true, requested: project));
+        Add("OpenFolder", async () => await _workspace.OpenProjectFolderAsync(project));
+        Add("OpenOutputs", async () => await _workspace.OpenBuildOutputsAsync(project));
+        Add("PrebuiltSettings", async () => await _workspace.EditPrebuiltAsync(project));
+        if (BuildTargets.Get(project.Platform).Family == "android")
         {
-            menu.ShowAt(EditorMenuButton);
+            Add("AndroidReleaseSettings", async () => await _workspace.EditAndroidReleaseAsync(project));
+            var devices = new MenuItem { Header = HubStrings.Get("AndroidDevice") };
+            foreach (var device in _workspace.Devices)
+            {
+                var pick = new MenuItem { Header = device.Serial + " · " + HubStrings.Get(device.State), IsChecked = _workspace.SelectedDevice?.Serial == device.Serial };
+                pick.Click += (_, _) => _workspace.SelectedDevice = device;
+                devices.Items.Add(pick);
+            }
+            devices.Items.Add(new Separator());
+            var refresh = new MenuItem { Header = HubStrings.Get("RefreshDevices") };
+            refresh.Click += async (_, _) => await _workspace.QueryDevicesAsync();
+            devices.Items.Add(refresh);
+            menu.Items.Add(devices);
+        }
+        menu.Items.Add(new Separator());
+        var remove = new MenuItem { Header = HubStrings.Get("RemoveFromList") };
+        remove.Click += async (_, _) => await _workspace.RemoveProjectAsync(project);
+        menu.Items.Add(remove);
+        var trash = new MenuItem { Header = HubStrings.Get("MoveProjectToTrash"), Classes = { "danger" } };
+        trash.Click += (_, _) => ShowTrashConfirmation(project);
+        menu.Items.Add(trash);
+        menu.ShowAt(button);
+
+        void Add(string key, Func<Task> action, bool enabled = true)
+        {
+            var item = new MenuItem { Header = HubStrings.Get(key), IsEnabled = enabled };
+            item.Click += async (_, _) => await action();
+            menu.Items.Add(item);
         }
     }
 
-    private MenuItem EditorScopeMenu(string headerKey, bool global, IReadOnlyList<EditorBinding> detected)
+    private void ShowTrashConfirmation(ProjectEntry project)
     {
-        var scope = new MenuItem { Header = HubStrings.Get(headerKey) };
-        foreach (var binding in detected)
-        {
-            var item = new MenuItem { Header = binding.Preset.DisplayName };
-            item.Click += async (_, _) => await _workspace.SelectEditorAsync(binding.Preset.Id, binding.Path, global);
-            scope.Items.Add(item);
-        }
+        try { _workspace.ValidateProjectTrashAvailability(project); }
+        catch (Exception ex) { _ = HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window, HubStrings.Get("MoveProjectToTrash"), ex.Message); return; }
+        _pendingTrash = project;
+        _overlayMode = "trash";
+        CreatePanel.IsVisible = false;
+        TrashConfirmPanel.IsVisible = true;
+        OverlayTitle.Text = HubStrings.Get("MoveProjectToTrash");
+        TrashConfirmMessage.Text = HubStrings.Get("MoveProjectToTrashPrompt");
+        TrashProjectName.Text = project.Name;
+        TrashProjectPath.Text = project.Path;
+        OverlayPrimaryButton.Content = HubStrings.Get("MoveProjectToTrash");
+        OverlayPrimaryButton.Classes.Add("danger");
+        OverlayPrimaryButton.IsEnabled = true;
+        OverlayCancelButton.IsEnabled = true;
+        ProjectOverlay.IsVisible = true;
+        SyncOverlaySize();
+        OverlayCancelButton.Focus();
+    }
 
-        return scope;
+    private async void OnOverlayPrimary(object? sender, RoutedEventArgs e)
+    {
+        if (_overlayMode == "create")
+        {
+            var created = await _workspace.CreateProjectAsync(ProjectNameBox.Text ?? "", ProjectLocationBox.Text ?? "",
+                ProjectEnginePicker.SelectedItem is ProjectEngineChoice choice ? choice.Engine : null,
+                LuaScripting.IsChecked == true ? "lua" : "cpp", PrebuiltCheck.IsChecked == true);
+            if (created is null) return;
+            ProjectNameBox.Text = "HelloAxmol";
+            ProjectLocationBox.Text = _workspace.ProjectDirectory;
+            CloseOverlay();
+            ClearSearchAndFilters();
+            _workspace.SelectedProject = created;
+            Reload();
+            return;
+        }
+        if (_overlayMode != "trash" || _pendingTrash is not { } project) return;
+        OverlayPrimaryButton.IsEnabled = false;
+        OverlayCancelButton.IsEnabled = false;
+        try
+        {
+            var moved = await _workspace.MoveProjectToTrashAsync(project);
+            if (!moved)
+            {
+                OverlayPrimaryButton.IsEnabled = true;
+                OverlayCancelButton.IsEnabled = true;
+                return;
+            }
+            CloseOverlay();
+            Reload();
+        }
+        catch (Exception ex)
+        {
+            await HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window, HubStrings.Get("MoveProjectToTrash"), ex.Message);
+            OverlayPrimaryButton.IsEnabled = true;
+            OverlayCancelButton.IsEnabled = true;
+        }
+    }
+
+    private void OnCloseOverlay(object? sender, RoutedEventArgs e) => CloseOverlay();
+
+    private void CloseOverlay()
+    {
+        ProjectOverlay.IsVisible = false;
+        _overlayMode = "";
+        _pendingTrash = null;
+        OverlayPrimaryButton.Classes.Remove("danger");
+    }
+
+    private void OnOverlayKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!ProjectOverlay.IsVisible || e.Key != Key.Escape) return;
+        if (ProjectEnginePicker.IsDropDownOpen) return;
+        CloseOverlay();
+        e.Handled = true;
+    }
+
+    private void OnClearFilters(object? sender, RoutedEventArgs e)
+    {
+        ClearSearchAndFilters();
+        ApplyView();
+    }
+
+    private void ClearSearchAndFilters()
+    {
+        SearchBox.Text = "";
+        if (EngineFilter.ItemCount > 0) EngineFilter.SelectedIndex = 0;
+        if (PlatformFilter.ItemCount > 0) PlatformFilter.SelectedIndex = 0;
     }
 
     private async Task<string?> PickFolderAsync(string title)
     {
-        var topLevel = TopLevel.GetTopLevel(this);
-        if (topLevel is null)
-        {
-            return null;
-        }
-
-        var result = await Pickers.PickFolderAsync(topLevel, title);
+        var top = TopLevel.GetTopLevel(this);
+        if (top is null) return null;
+        var result = await Pickers.PickFolderAsync(top, title);
         if (result.Outcome == PickOutcome.NotLocal)
-        {
-            await HubDialog.ShowAsync(topLevel as Window, HubStrings.Get("OperationFailed"),
-                HubStrings.Get("LocalPathRequired"));
-        }
-
+            await HubDialog.ShowAsync(top as Window, HubStrings.Get("OperationFailed"), HubStrings.Get("LocalPathRequired"));
         return result.Outcome == PickOutcome.Picked ? result.Path : null;
     }
 
-    /// <summary>The projects-page portion of the WPF <c>Refresh()</c>.</summary>
     public void Reload()
     {
-        if (_workspace is null)
-        {
-            return;
-        }
+        if (_workspace is null) return;
+        var engineItems = _workspace.State.Engines
+            .OrderBy(engine => engine.Version, StringComparer.OrdinalIgnoreCase)
+            .Select(engine => new ProjectEngineChoice(engine, engine.Version + " · " + engine.Channel)).ToArray();
+        ProjectEnginePicker.ItemsSource = engineItems;
+        ProjectEnginePicker.SelectedItem = engineItems.FirstOrDefault(e => e.Engine.Path == _workspace.State.DefaultEnginePath)
+                                           ?? engineItems.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(ProjectLocationBox.Text)) ProjectLocationBox.Text = _workspace.ProjectDirectory;
 
-        _ready = false;
-        var state = _workspace.State;
-
-        ProjectEnginePicker.ItemsSource = state.Engines.ToArray();
-        ProjectEnginePicker.SelectedItem = state.Engines.FirstOrDefault(e => e.Path == state.DefaultEnginePath)
-                                           ?? state.Engines.FirstOrDefault();
-
-        var selected = _workspace.SelectedProject;
-        ProjectsGrid.ItemsSource = state.Projects.ToArray();
-        ProjectsGrid.SelectedItem = state.Projects.FirstOrDefault(p => selected is not null && p.Path == selected.Path)
-                                    ?? state.Projects.FirstOrDefault();
-        _workspace.SelectedProject = ProjectsGrid.SelectedItem as ProjectEntry;
-
-        ProjectCount.Text = state.Projects.Count.ToString();
-        EngineCount.Text = state.Engines.Count.ToString();
-
-        EmptyProjects.Text = HubStrings.Get("EmptyProjects");
-        EmptyProjects.IsVisible = state.Projects.Count == 0;
-
-        // Headers follow the language, so they're reset on every refresh — that's what WPF's SetHeaders did.
-        var headers = HubWorkspace.GridHeaders("projects");
-        for (var index = 0; index < headers.Length && index < ProjectsGrid.Columns.Count; index++)
-        {
-            ProjectsGrid.Columns[index].Header = HubStrings.Get(headers[index]);
-        }
-
-        var target = _workspace.ProjectTarget;
-        BuildTargetName.Text = target?.Name ?? "";
-        BuildHostHint.Text = _workspace.BuildHostHint;
-
-        // 运行 doubles as 停止 for the one thing Hub keeps hold of: the wasm preview server it started itself.
-        // A launched game is left alone, so that button keeps saying 运行 — the label is the difference between
-        // "you may close it whenever you like" and "this is still running and here is how to stop it".
-        RunButton.Content = HubStrings.Get(_workspace.WebPreviewRunning ? "Stop" : "Run");
-
-        AndroidDevicePanel.IsVisible = target?.Family == "android";
-        ReloadDevices();
-
-        // The caption names the editor that will actually launch — the setting holds one default and this project
-        // may override it, so the button is where those two facts meet. Disabled when nothing usable is configured:
-        // a press that can only fail is not an invitation.
-        var editor = _workspace.EffectiveEditor(_workspace.SelectedProject);
-        EditorButton.Content = editor is null
-            ? HubStrings.Get("OpenInEditor")
-            : HubStrings.Get("OpenInEditor") + " · " + editor.Preset.DisplayName;
-        EditorButton.IsEnabled = editor is not null;
-        ToolTip.SetTip(EditorMenuButton, editor is null ? HubStrings.Get("NoEditorFound") : HubStrings.Get("OpenWith"));
-
-        // Deliberately **doesn't touch** ProjectLocationBox here: the parent directory is an editable single-line input, and rewriting it on refresh erases what the user is typing. The default is filled by NewProjectButton when the panel opens.
-        // Same as above: the prebuilt toggle is likewise "the user's choice"; refresh only changes availability and hint copy, never the checked state.
+        var previousEngine = (EngineFilter.SelectedItem as ProjectFilterChoice)?.Value ?? "";
+        var previousPlatform = (PlatformFilter.SelectedItem as ProjectFilterChoice)?.Value ?? "";
+        EngineFilter.ItemsSource = new[] { new ProjectFilterChoice(HubStrings.Get("AllEngines"), "") }
+            .Concat(_workspace.State.Projects.Select(p => p.Version + "|" + p.Channel).Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new ProjectFilterChoice(x.Replace('|', ' '), x))).ToArray();
+        PlatformFilter.ItemsSource = new[] { new ProjectFilterChoice(HubStrings.Get("AllPlatforms"), "") }
+            .Concat(_workspace.State.Projects.Select(p => p.Platform).Distinct(StringComparer.Ordinal)
+                .Select(id => new ProjectFilterChoice(BuildTargets.Get(id).Name, id)).OrderBy(x => x.Label, StringComparer.CurrentCulture)).ToArray();
+        EngineFilter.SelectedItem = EngineFilter.Items.Cast<ProjectFilterChoice>().FirstOrDefault(x => x.Value == previousEngine) ?? EngineFilter.Items[0];
+        PlatformFilter.SelectedItem = PlatformFilter.Items.Cast<ProjectFilterChoice>().FirstOrDefault(x => x.Value == previousPlatform) ?? PlatformFilter.Items[0];
+        UpdateSortCaption();
+        ApplyView();
         RefreshPrebuiltChoice();
-        _ready = true;
+        SyncColumns();
     }
 
-    /// <summary>
-    /// Availability and hint of the "use prebuilt library" toggle.
-    ///
-    /// Two deliberate trade-offs:
-    /// <list type="number">
-    /// <item>When the engine isn't built yet, checking is **still allowed** — the user can create the project first and build from the engines page later; true unavailability fails clearly at build time (rather than silently falling back to source build).</item>
-    /// <item>When the host doesn't support it (non-Windows), **force unchecked and disable** — that combination can never work, and leaving it only deceives.</item>
-    /// </list>
-    /// </summary>
+    private void ApplyView()
+    {
+        if (_workspace is null) return;
+        var needle = SearchBox.Text?.Trim() ?? "";
+        var engine = (EngineFilter.SelectedItem as ProjectFilterChoice)?.Value ?? "";
+        var platform = (PlatformFilter.SelectedItem as ProjectFilterChoice)?.Value ?? "";
+        var filtered = _workspace.State.Projects.Where(project =>
+                (needle.Length == 0 || project.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                    || project.Path.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                && (engine.Length == 0 || (project.Version + "|" + project.Channel).Equals(engine, StringComparison.OrdinalIgnoreCase))
+                && (platform.Length == 0 || project.Platform == platform))
+            .ToArray();
+        var ordered = _sortMode switch
+        {
+            1 => filtered.OrderByDescending(p => p.LastOpened.HasValue).ThenBy(p => p.LastOpened).ThenBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase),
+            2 => filtered.OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase),
+            _ => filtered.OrderByDescending(p => p.LastOpened.HasValue).ThenByDescending(p => p.LastOpened).ThenBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase),
+        };
+        var items = ordered.ThenBy(p => p.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(p => new ProjectListItem(p, _workspace.IsProjectPreviewRunning(p), _workspace.EffectiveEditor(p) is not null)).ToArray();
+        _ready = false;
+        ProjectsGrid.ItemsSource = items;
+        ProjectsGrid.SelectedItem = items.FirstOrDefault(item => _workspace.SelectedProject is not null
+            && item.Project.Path.Equals(_workspace.SelectedProject.Path, StringComparison.OrdinalIgnoreCase));
+        _ready = true;
+
+        ResultCount.Text = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ProjectResultCount"), items.Length, _workspace.State.Projects.Count);
+        var noProjects = _workspace.State.Projects.Count == 0;
+        EmptyProjectsPanel.IsVisible = items.Length == 0;
+        EmptyActions.IsVisible = noProjects;
+        ClearFiltersButton.IsVisible = !noProjects;
+        EmptyProjects.Text = HubStrings.Get(noProjects ? "EmptyProjects" : "NoProjectsMatch");
+    }
+
+    private void SyncColumns()
+    {
+        if (ProjectsGrid.Bounds.Width <= 0) return;
+        var compact = ProjectsGrid.Bounds.Width < 840;
+        ProjectsGrid.Columns[0].IsVisible = !compact;
+        ProjectsGrid.Columns[1].IsVisible = !compact;
+        ProjectsGrid.Columns[2].IsVisible = !compact;
+        ProjectsGrid.Columns[3].IsVisible = !compact;
+        ProjectsGrid.Columns[5].IsVisible = compact;
+        if (compact) ProjectsGrid.Columns[5].Width = new DataGridLength(Math.Max(200, ProjectsGrid.Bounds.Width - 300));
+    }
+
+    private void UpdateSortCaption() => SortButton.Content = HubStrings.Get(_sortMode switch
+    {
+        1 => "SortRecentAscending",
+        2 => "SortByName",
+        _ => "SortRecentDescending",
+    });
+
     private void RefreshPrebuiltChoice()
     {
         var hint = HubStrings.Get("PrebuiltHint");
@@ -319,19 +450,18 @@ public partial class ProjectsPage : UserControl
             PrebuiltHint.Text = hint + "\n" + HubStrings.Get("PrebuiltUnsupportedHost");
             return;
         }
-
         PrebuiltCheck.IsEnabled = true;
-        var availability = _workspace.PrebuiltStatusOf(ProjectEnginePicker.SelectedItem as EngineEntry);
+        var selected = ProjectEnginePicker.SelectedItem is ProjectEngineChoice choice ? choice.Engine : null;
+        var availability = _workspace.PrebuiltStatusOf(selected);
         PrebuiltHint.Text = hint + "\n" + HubStrings.Get(availability?.Usable == true ? "PrebuiltReadyHint" : "PrebuiltNotBuiltHint");
     }
 
-    private void ReloadDevices()
+    private void ReloadDevices() { }
+
+    private void SyncOverlaySize()
     {
-        var devices = _workspace.Devices;
-        AndroidDevicePicker.ItemsSource = devices.Select(device => new DeviceChoice(device)).ToArray();
-        AndroidDevicePicker.SelectedItem = _workspace.SelectedDevice is { } selected
-            ? devices.Where(d => d.Serial == selected.Serial).Select(d => new DeviceChoice(d)).FirstOrDefault()
-            : null;
-        AndroidDeviceStatus.Text = devices.Count == 0 ? HubStrings.Get("AndroidNoDevices") : devices.Count.ToString();
+        var available = Bounds;
+        OverlayCard.Width = Math.Clamp(available.Width - 32, 360, 760);
+        OverlayCard.MaxHeight = Math.Max(300, available.Height - 32);
     }
 }

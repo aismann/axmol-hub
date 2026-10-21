@@ -173,6 +173,7 @@ public partial class ShellCheckWindow : Window
         await CheckCjkFontNoticeAsync();
         CheckEveryXamlResourceKeyResolves();
         var shell = CheckShell(scratchRoot);
+        await CheckProjectTrashFlowAsync(shell.Workspace, scratchRoot);
         if (Environment.GetEnvironmentVariable("AXMOL_VIRTUAL_CHECK_ONLY") == "1")
         {
             var panel = shell.OpenAssistant();
@@ -202,6 +203,76 @@ public partial class ShellCheckWindow : Window
         CheckWorkspaceGroups(scratchRoot, shell);
         await CheckDataRootSwitch(scratchRoot, shell);
         await CheckRealRender(shell);
+    }
+
+    private async Task CheckProjectTrashFlowAsync(HubWorkspace workspace, string scratchRoot)
+    {
+        var projectPath = Path.Combine(scratchRoot, "trash-flow-project");
+        var trashPath = Path.Combine(scratchRoot, "trash-flow-sink");
+        Directory.CreateDirectory(Path.Combine(projectPath, "assets"));
+        File.WriteAllText(Path.Combine(projectPath, "assets", "fixture.txt"), "trash fixture");
+        var project = new ProjectEntry
+        {
+            Name = "Trash flow fixture", Path = projectPath, Version = "2.11.5", Channel = "local",
+            Platform = "macos-arm64", Configuration = "Debug", ProjectType = "cpp",
+        };
+        var originalProjects = workspace.State.Projects.ToArray();
+        var previousHandler = SystemTrash.MoveHandlerForCheck;
+        var previousSuppressDialogs = workspace.SuppressDialogs;
+        try
+        {
+            workspace.SuppressDialogs = true;
+            workspace.State.Projects.Clear();
+            workspace.State.Projects.Add(project);
+            workspace.Store.Save(workspace.State);
+            var nestedPath = Path.Combine(projectPath, "nested-project");
+            Directory.CreateDirectory(nestedPath);
+            var nested = new ProjectEntry { Name = "Nested fixture", Path = nestedPath };
+            workspace.State.Projects.Add(nested);
+            Check(Throws<InvalidOperationException>(() => workspace.ValidateProjectTrashAvailability(project)),
+                "项目目录包含另一条登记项目时拒绝整体回收");
+            workspace.State.Projects.Remove(nested);
+            var protectedRoot = new ProjectEntry { Name = "Protected data root", Path = workspace.Store.Root };
+            workspace.State.Projects.Add(protectedRoot);
+            Check(Throws<InvalidOperationException>(() => workspace.ValidateProjectTrashAvailability(protectedRoot)),
+                "Hub 数据根登记项不能被移到系统回收站");
+            workspace.State.Projects.Remove(protectedRoot);
+
+            var linkPath = Path.Combine(scratchRoot, "trash-flow-link");
+            Directory.CreateSymbolicLink(linkPath, projectPath);
+            var linkProject = new ProjectEntry { Name = "Link fixture", Path = linkPath };
+            workspace.State.Projects.Add(linkProject);
+            Check(Throws<InvalidOperationException>(() => workspace.ValidateProjectTrashAvailability(linkProject)),
+                "项目根目录是符号链接时拒绝回收");
+            workspace.State.Projects.Remove(linkProject);
+            Directory.Delete(linkPath);
+            workspace.Store.Save(workspace.State);
+            SystemTrash.MoveHandlerForCheck = (_, _) => Task.FromResult(new TrashResult(TrashResultKind.Unsupported, "fixture failure"));
+            var failed = await workspace.MoveProjectToTrashAsync(project);
+            Check(!failed && workspace.State.Projects.Contains(project) && Directory.Exists(projectPath),
+                "回收服务失败时项目目录和登记记录都保留");
+
+            SystemTrash.MoveHandlerForCheck = (path, _) =>
+            {
+                Directory.CreateDirectory(trashPath);
+                Directory.Move(path, Path.Combine(trashPath, Path.GetFileName(path)));
+                return Task.FromResult(new TrashResult(TrashResultKind.Moved));
+            };
+            var moved = await workspace.MoveProjectToTrashAsync(project);
+            Check(moved && !workspace.State.Projects.Contains(project)
+                  && File.Exists(Path.Combine(trashPath, "trash-flow-project", "assets", "fixture.txt")),
+                "只有回收服务成功后项目记录才移出列表，整个目录进入回收站结果");
+        }
+        finally
+        {
+            SystemTrash.MoveHandlerForCheck = previousHandler;
+            workspace.SuppressDialogs = previousSuppressDialogs;
+            workspace.State.Projects.Clear();
+            workspace.State.Projects.AddRange(originalProjects);
+            workspace.Store.Save(workspace.State);
+            if (Directory.Exists(projectPath)) Directory.Delete(projectPath, recursive: true);
+            if (Directory.Exists(trashPath)) Directory.Delete(trashPath, recursive: true);
+        }
     }
 
     private async Task VerifyDeepSeekWebApiTransportAsync()
@@ -15064,34 +15135,96 @@ public partial class ShellCheckWindow : Window
         Check(shell.CurrentPage is ToolchainsPage,
             "从菜单进浮层也不换底下那页：浮层是一次覆盖，不是一次导航");
 
-        // The projects page's action bar is a deliberate two-row layout: row 1 = build/run/configure plus
-        // the two project-setting dialogs, row 2 = the open/launch commands with the destructive "remove"
-        // docked at the far right. Ten commands are now spread over three different containers, so a
-        // future regrouping can silently drop one — and a missing button does not fail to build, it just
-        // disappears from a screenshot. Assert all ten by name, plus the one deliberate positional rule
-        // (that "remove" stays isolated from the build buttons);
-        // it is the reason the row exists and would be easy to undo while "tidying up" the markup.
         var projects = (ProjectsPage)shell.NavigateTo("Projects");
         projects.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
+        Check(NamedDescendant<TextBox>(projects, "SearchBox") is { IsVisible: true }
+              && NamedDescendant<Button>(projects, "OpenExistingButton") is { IsVisible: true }
+              && NamedDescendant<Button>(projects, "NewProjectButton") is { IsVisible: true }
+              && projects.GridForCheck.Columns.Count == 6,
+            "项目页以搜索/添加/新建为主入口，列表保留完整信息列和紧凑列");
 
-        var commands = new[]
+        var originalProjects = shell.Workspace.State.Projects.ToArray();
+        var projectA = new ProjectEntry
         {
-            "BuildButton", "RunButton", "ConfigureButton", "AndroidReleaseButton", "PrebuiltSettingsButton",
-            "OpenFolderButton", "OpenOutputsButton", "EditorButton", "EditorMenuButton", "RemoveProjectButton",
+            Name = "Very long project name that must wrap without clipping 世界项目",
+            Path = System.IO.Path.Combine(scratchRoot, "fixture-project-alpha"),
+            Version = "3.0.0", Channel = "official-preview", Platform = "macos-arm64",
+            Configuration = "Release", ProjectType = "lua", BuildStatus = "Succeeded",
+            LastOpened = DateTimeOffset.Now.AddDays(-2),
         };
-        var missing = commands
-            .Where(name => NamedDescendant<Button>(projects, name) is not { IsVisible: true })
-            .ToArray();
-        Check(missing.Length == 0,
-            "项目页动作条十项命令都还在且可见（重排成两行不能丢按钮，缺：" + string.Join(", ", missing) + "）");
+        var projectB = new ProjectEntry
+        {
+            Name = "SecondFixture", Path = System.IO.Path.Combine(scratchRoot, "fixture-project-beta"),
+            Version = "2.11.5", Channel = "local", Platform = "wasm32",
+            Configuration = "Debug", ProjectType = "cpp", BuildStatus = "Not built",
+            LastOpened = DateTimeOffset.Now,
+        };
+        shell.Workspace.State.Projects.Clear();
+        shell.Workspace.State.Projects.AddRange([projectA, projectB]);
+        projects.Reload();
+        var allRows = projects.RowsForCheck;
+        Check(allRows.Length == 2 && allRows[0].Project == projectB
+              && allRows.Any(x => x.Target.Length > 0 && x.Engine.Contains("official-preview", StringComparison.Ordinal)
+                  && x.ConfigurationAndStatus.Contains(HubStrings.Get("Succeeded"), StringComparison.Ordinal)
+                  && x.LastOpened.Length > 0 && x.CompactDetails.Contains("lua", StringComparison.Ordinal)),
+            "项目行提供完整目标/配置状态/引擎渠道/时间及脚本类型，默认按最近打开倒序");
+        projects.GridForCheck.SelectedItem = allRows[0];
+        projects.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var rowActions = projects.GetVisualDescendants().OfType<Button>()
+            .Where(button => button.Classes.Contains("project-row-action")).ToArray();
+        Check(rowActions.Length >= 8 && rowActions.Count(button => button.Tag is ProjectEntry entry && entry == projectB) >= 4
+              && rowActions.Where(button => button.Tag is ProjectEntry).All(button => button.Content is not null),
+            "项目行在键盘选择后显示打开/构建/运行/更多动作且带无障碍名称");
 
-        // The editor button is no longer host-gated: one settings slot holds the editor, so one button serves every
-        // platform, and its caption names the editor the press will actually launch.
-        var editorButton = NamedDescendant<Button>(projects, "EditorButton");
-        Check(editorButton is { IsVisible: true } && editorButton.Content is string caption && caption.Length > 0
-              && NamedDescendant<Button>(projects, "EditorMenuButton") is { IsVisible: true },
-            "编辑器按钮与「打开方式」在任何平台都显示，标题写明将用哪个编辑器（实际 " + editorButton?.Content + "）");
+        projects.SearchForCheck.Text = "FIXTURE-PROJECT-ALPHA";
+        Check(projects.RowsForCheck.Select(x => x.Project).SequenceEqual([projectA])
+              && ReferenceEquals(shell.Workspace.SelectedProject, projectB),
+            "项目搜索忽略大小写匹配完整路径，筛选不改动共享的已选项目");
+        projects.SearchForCheck.Text = "no-such-project";
+        Check(projects.RowsForCheck.Length == 0 && NamedDescendant<Button>(projects, "ClearFiltersButton") is { IsVisible: true },
+            "无匹配结果和清除条件入口会显示");
+        projects.SearchForCheck.Text = "";
+        projects.EngineFilterForCheck.SelectedItem = projects.EngineFilterForCheck.Items.Cast<ProjectFilterChoice>().Single(x => x.Value == "3.0.0|official-preview");
+        projects.PlatformFilterForCheck.SelectedItem = projects.PlatformFilterForCheck.Items.Cast<ProjectFilterChoice>().Single(x => x.Value == "macos-arm64");
+        projects.Reload();
+        Check(projects.RowsForCheck.Select(x => x.Project).SequenceEqual([projectA]),
+            "刷新后仍保留组合引擎与平台筛选");
+        projects.SearchForCheck.Text = "";
+        projects.EngineFilterForCheck.SelectedIndex = 0;
+        projects.PlatformFilterForCheck.SelectedIndex = 0;
+        projects.SortForCheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        projects.UpdateLayout();
+        projects.SyncColumnsForCheck();
+        Check(projects.GridForCheck.Columns[5].IsVisible
+              == (projects.GridForCheck.Bounds.Width < 840),
+            "项目列表窄于 840px 时切换到含全部元数据的紧凑布局");
+        projects.NewProjectForCheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        projects.ProjectNameForCheck.Text = "Draft retained on close";
+        projects.CloseOverlayForCheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        projects.NewProjectForCheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Check(projects.OverlayVisibleForCheck && projects.ProjectNameForCheck.Text == "Draft retained on close",
+            "关闭并重新打开新建覆盖层会保留草稿");
+        projects.CancelOverlayForCheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Directory.CreateDirectory(projectA.Path);
+        projects.ShowTrashConfirmationForCheck(projectA);
+        projects.UpdateLayout();
+        Check(projects.OverlayVisibleForCheck && projects.TrashNameForCheck.Text == projectA.Name
+              && projects.TrashPathForCheck.Text == projectA.Path && projects.CancelOverlayForCheck.IsFocused,
+            "回收确认显示项目名和绝对路径，并将默认焦点留给取消");
+        projects.CloseOverlayForCheck.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Check(!projects.OverlayVisibleForCheck && Directory.Exists(projectA.Path)
+              && shell.Workspace.State.Projects.Contains(projectA),
+            "关闭回收确认等同取消，不触碰目录或项目记录");
+        shell.Workspace.State.Projects.Clear();
+        shell.Workspace.State.Projects.AddRange(originalProjects);
+        projects.Reload();
+        Directory.Delete(projectA.Path);
+        Check(NamedDescendant<StackPanel>(projects, "EmptyProjectsPanel") is { IsVisible: true }
+              && NamedDescendant<StackPanel>(projects, "EmptyActions") is { IsVisible: true }
+              && NamedDescendant<Button>(projects, "ClearFiltersButton") is { IsVisible: false },
+            "尚无项目时显示添加/新建入口，与无匹配结果状态区分");
 
         // The launch plan is the one part of this flow that fails **outside** the process: a wrong switch makes
         // devenv print "Invalid Command Line. Unknown Switch" and exit instead of opening, and a bundle handed to
@@ -15107,10 +15240,6 @@ public partial class ShellCheckWindow : Window
               && !CodeEditors.Accepts(scratchRoot),
             "启动方式由路径决定：可执行文件直接带目录，应用包交给 open -a（都不带开关，devenv 的 /OpenFolder 会直接报错"
             + "而不打开），且普通目录不会被当成编辑器（实际 " + string.Join(" ", bundlePlan.Arguments) + "）");
-
-        Check(NamedDescendant<Button>(projects, "RemoveProjectButton") is { } removeProject
-              && DockPanel.GetDock(removeProject) == Dock.Right,
-            "「移出列表」停在动作条最右侧（破坏性操作不与构建按钮相邻，避免误触）");
 
         Check(Throws<ArgumentException>(() => shell.NavigateTo("Nope")),
             "未知页面键抛 ArgumentException（而不是显示一个空宿主）");

@@ -5,244 +5,216 @@
              x:Class="AxmolHub.ProjectsPage"
              x:DataType="local:ProjectsPage">
 
-  <!--
-    Projects page. A port of <Grid x:Name="ProjectsPage"> from the WPF version's MainWindow.xaml, copied
-    line by line in structure: title row → three stat cards → new-project panel (collapsed by default) →
-    project table → Android device bar + two-row action bar.
-    The header text is reset by code on every refresh (it must follow language changes), so no fixed
-    Chinese Header is written here.
-  -->
-
   <UserControl.Styles>
-    <!--
-      The action bar owns its own gaps. Button's ControlTheme carries Margin 0,0,8,0, so if the bar used
-      WrapPanel.ItemSpacing on top of that every horizontal gap would double to 16px while the vertical
-      gap (which the theme has none of) stayed at the value ItemSpacing/LineSpacing provide. Zeroing the
-      trailing margin here makes ItemSpacing/LineSpacing the single source of truth for both directions.
-    -->
-    <Style Selector="WrapPanel.actions > Button">
-      <Setter Property="Margin" Value="0" />
+    <Style Selector="DataGridRow Button.project-row-action">
+      <Setter Property="IsVisible" Value="False" />
     </Style>
-
-    <!-- Group separator inside row 1: visually splits "operate on the project" from "project settings".
-         Height is fixed (a contentless Border measures 0 high otherwise) and it is vertically centred
-         rather than stretched, so the divider never dictates the row height. -->
-    <Style Selector="Border.sep">
-      <Setter Property="Width" Value="1" />
-      <Setter Property="Height" Value="22" />
-      <Setter Property="VerticalAlignment" Value="Center" />
-      <Setter Property="Background" Value="{DynamicResource Hub.Border}" />
-      <Setter Property="Margin" Value="7,0,12,0" />
+    <Style Selector="DataGridRow:pointerover Button.project-row-action">
+      <Setter Property="IsVisible" Value="True" />
+    </Style>
+    <Style Selector="DataGridRow:selected Button.project-row-action">
+      <Setter Property="IsVisible" Value="True" />
+    </Style>
+    <Style Selector="DataGridRow:focus-within Button.project-row-action">
+      <Setter Property="IsVisible" Value="True" />
+    </Style>
+    <Style Selector="MenuItem.danger">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
     </Style>
   </UserControl.Styles>
 
-  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">
+  <Grid>
+    <Grid RowDefinitions="Auto,Auto,*">
+      <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,14">
+        <TextBox x:Name="SearchBox" PlaceholderText="{DynamicResource SearchProjects}"
+                 VerticalAlignment="Center" Margin="0,0,10,0" />
+        <Button Grid.Column="1" x:Name="OpenExistingButton" Content="{DynamicResource OpenExisting}"
+                Classes="quiet more" Margin="0,0,8,0" />
+        <Button Grid.Column="2" x:Name="NewProjectButton" Content="{DynamicResource NewProject}"
+                Classes="primary" />
+      </Grid>
 
-    <!-- ==================== Title row ==================== -->
-    <DockPanel Grid.Row="0" Margin="0,0,0,22">
-      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
-                  HorizontalAlignment="Right" VerticalAlignment="Center">
-        <Button x:Name="OpenExistingButton" Content="{DynamicResource OpenExisting}" Classes="quiet more" />
-        <Button x:Name="NewProjectButton" Content="{DynamicResource NewProject}"
-                Classes="primary" Margin="8,0,0,0" />
-      </StackPanel>
-      <StackPanel>
-        <TextBlock Text="{DynamicResource Projects}" FontSize="28" FontWeight="SemiBold" />
-        <TextBlock Text="{DynamicResource ProjectsHint}" Classes="muted" Margin="0,8,12,0" />
-      </StackPanel>
-    </DockPanel>
+      <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,*,Auto" Margin="0,0,0,10">
+        <ComboBox x:Name="EngineFilter" MinWidth="155" Margin="0,0,8,0" />
+        <ComboBox Grid.Column="1" x:Name="PlatformFilter" MinWidth="145" />
+        <TextBlock Grid.Column="2" x:Name="ResultCount" Classes="muted"
+                   VerticalAlignment="Center" Margin="14,0,0,0" />
+        <Button Grid.Column="3" x:Name="SortButton" Classes="quiet" />
+      </Grid>
 
-    <!-- ==================== Three stat cards ==================== -->
-    <UniformGrid Grid.Row="1" Columns="3" Margin="0,0,0,20">
-      <Border Classes="card" Margin="0,0,12,0" Padding="18,14">
-        <StackPanel>
-          <TextBlock x:Name="ProjectCount" Text="0" FontSize="25" FontWeight="SemiBold" />
-          <TextBlock Text="{DynamicResource ProjectsCount}" Classes="muted" Margin="0,5,0,0" />
-        </StackPanel>
-      </Border>
-      <Border Classes="card" Margin="0,0,12,0" Padding="18,14">
-        <StackPanel>
-          <TextBlock x:Name="EngineCount" Text="0" FontSize="25" FontWeight="SemiBold" />
-          <TextBlock Text="{DynamicResource EnginesCount}" Classes="muted" Margin="0,5,0,0" />
-        </StackPanel>
-      </Border>
-      <Border Classes="card" Padding="18,14">
-        <StackPanel>
-          <TextBlock Text="{DynamicResource LastBuildPlatform}" Classes="muted" />
-          <!-- The platform is not chosen here: it follows the selected project, and the real entry point is
-               the dialog popped by the "Build" button. The WPF version likewise collapsed the ComboBox and
-               kept only a single line of text. -->
-          <TextBlock x:Name="BuildTargetName" FontSize="16" Margin="0,8,0,0" />
-          <TextBlock x:Name="BuildHostHint" Foreground="{DynamicResource Hub.TextSecondary}"
-                     FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,5,0,0" />
-        </StackPanel>
-      </Border>
-    </UniformGrid>
-
-    <!-- ==================== New project (collapsed by default) ==================== -->
-    <Border x:Name="NewProjectPanel" Grid.Row="2" Classes="card" Margin="0,0,0,20" IsVisible="False">
-      <StackPanel>
-        <DockPanel Margin="0,0,0,16">
-          <TextBlock Text="{DynamicResource Template}" Classes="muted"
-                     DockPanel.Dock="Right" HorizontalAlignment="Right" />
-          <TextBlock Text="{DynamicResource NewProject}" FontSize="16" FontWeight="SemiBold" />
-        </DockPanel>
-
-        <Grid ColumnDefinitions="180,*,225">
-          <StackPanel Grid.Column="0" Margin="0,0,16,0">
-            <TextBlock Text="{DynamicResource ProjectName}" />
-            <TextBox x:Name="ProjectNameBox" Text="HelloAxmol" Margin="0,6,0,0" />
-          </StackPanel>
-          <StackPanel Grid.Column="1" Margin="0,0,16,0">
-            <TextBlock Text="{DynamicResource Location}" />
-            <!-- Don't hard-code a Height on this DockPanel: the themed TextBox carries Margin 0,6,0,0 +
-                 Border 1px + Padding 10,9, so 40px leaves only 14px for text and a single line would be
-                 clipped vertically (showing "text is cut off and needs vertical scrolling inside the box").
-                 Let it size to its content, consistent with the two same-shaped layouts in SettingsPage. -->
-            <DockPanel>
-              <Button x:Name="BrowseLocationButton" Content="{DynamicResource Browse}" Classes="more"
-                      DockPanel.Dock="Right" Margin="6,0,0,0" Padding="10,8" />
-              <TextBox x:Name="ProjectLocationBox" />
-            </DockPanel>
-          </StackPanel>
-          <StackPanel Grid.Column="2">
-            <TextBlock Text="{DynamicResource EngineVersion}" />
-            <ComboBox x:Name="ProjectEnginePicker" Margin="0,6,0,0"
-                      HorizontalAlignment="Stretch" />
+      <Border Grid.Row="2" BorderBrush="{DynamicResource Hub.Border}"
+              BorderThickness="1" CornerRadius="7" ClipToBounds="True">
+        <Grid>
+          <DataGrid x:Name="ProjectsGrid" CanUserSortColumns="False" IsReadOnly="True">
+            <DataGrid.Columns>
+              <DataGridTemplateColumn Width="*">
+                <DataGridTemplateColumn.Header>
+                  <TextBlock Text="{DynamicResource Name}" />
+                </DataGridTemplateColumn.Header>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="local:ProjectListItem">
+                    <StackPanel Margin="4,2" Spacing="3">
+                      <TextBlock Text="{Binding Project.Name}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding ProjectTypeLabel}" Foreground="{DynamicResource Hub.TextSecondary}"
+                                 FontSize="11" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding DisplayPath}" Foreground="{DynamicResource Hub.TextSecondary}"
+                                 FontSize="11" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Project.Path}" />
+                      <TextBlock x:Name="CompactDetails" Text="{Binding CompactDetails}" IsVisible="False"
+                                 Foreground="{DynamicResource Hub.TextSecondary}" TextWrapping="Wrap"
+                                 ToolTip.Tip="{Binding ExactLastOpened}" />
+                    </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Width="180">
+                <DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource BuildTarget}" /></DataGridTemplateColumn.Header>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="local:ProjectListItem">
+                    <StackPanel Margin="2,2" Spacing="3">
+                      <TextBlock Text="{Binding Target}" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding ConfigurationAndStatus}" Classes="muted" TextWrapping="Wrap" />
+                    </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Width="130">
+                <DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource EngineVersion}" /></DataGridTemplateColumn.Header>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="local:ProjectListItem">
+                    <TextBlock Text="{Binding Engine}" Margin="2,2" TextWrapping="Wrap" ToolTip.Tip="{Binding Project.Channel}" />
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Width="145">
+                <DataGridTemplateColumn.Header>
+                  <TextBlock Text="{DynamicResource LastOpened}" />
+                </DataGridTemplateColumn.Header>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="local:ProjectListItem">
+                    <TextBlock Text="{Binding LastOpened}" Margin="2,2" TextWrapping="Wrap"
+                               ToolTip.Tip="{Binding ExactLastOpened}" />
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Width="276">
+                <DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource Actions}" /></DataGridTemplateColumn.Header>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="local:ProjectListItem">
+                    <StackPanel Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
+                      <Button Content="{DynamicResource Open}" Tag="{Binding Project}" Click="OnOpenProject"
+                              Classes="project-row-action quiet" Padding="7,5"
+                              IsEnabled="{Binding CanOpenEditor}"
+                              ToolTip.Tip="{Binding OpenEditorTooltip}"
+                              AutomationProperties.Name="{Binding OpenEditorTooltip}" />
+                      <Button Content="{DynamicResource Build}" Tag="{Binding Project}" Click="OnBuildProject"
+                              Classes="project-row-action quiet" Padding="7,5"
+                              AutomationProperties.Name="{DynamicResource Build}" />
+                      <Button Content="{Binding RunCaption}" Tag="{Binding Project}" Click="OnRunProject"
+                              Classes="project-row-action quiet" Padding="7,5"
+                              AutomationProperties.Name="{Binding RunCaption}" />
+                      <Button Content="⋯" Tag="{Binding Project}" Click="OnProjectMenu"
+                              Classes="project-row-action quiet" Padding="9,5" ToolTip.Tip="{DynamicResource MoreActions}"
+                              AutomationProperties.Name="{DynamicResource MoreActions}" />
+                    </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTemplateColumn Width="*" IsVisible="False">
+                <DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource Name}" /></DataGridTemplateColumn.Header>
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="local:ProjectListItem">
+                    <StackPanel Margin="4,2" Spacing="3">
+                      <TextBlock Text="{Binding Project.Name}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding DisplayPath}" Foreground="{DynamicResource Hub.TextSecondary}"
+                                 FontSize="11" TextWrapping="Wrap" ToolTip.Tip="{Binding Project.Path}" />
+                      <TextBlock Text="{Binding CompactDetails}" Foreground="{DynamicResource Hub.TextSecondary}"
+                                 TextWrapping="Wrap" ToolTip.Tip="{Binding ExactLastOpened}" />
+                    </StackPanel>
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+            </DataGrid.Columns>
+          </DataGrid>
+          <StackPanel x:Name="EmptyProjectsPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                      Spacing="10" IsVisible="False">
+            <TextBlock x:Name="EmptyProjects" Classes="muted" TextWrapping="Wrap"
+                       HorizontalAlignment="Center" />
+            <StackPanel x:Name="EmptyActions" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8">
+              <Button Content="{DynamicResource OpenExisting}" Click="OnOpenExisting" Classes="quiet more" />
+              <Button Content="{DynamicResource NewProject}" Click="OnNewProject" Classes="primary" />
+            </StackPanel>
+            <Button x:Name="ClearFiltersButton" Content="{DynamicResource ClearSearch}" Click="OnClearFilters"
+                    Classes="quiet" IsVisible="False" />
           </StackPanel>
         </Grid>
-
-        <StackPanel Margin="0,14,0,0">
-          <TextBlock Text="{DynamicResource Scripting}" />
-          <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-            <RadioButton x:Name="CppScripting" GroupName="ProjectScripting"
-                         Content="{DynamicResource cpp}" IsChecked="True" Margin="0,0,8,0" />
-            <RadioButton x:Name="LuaScripting" GroupName="ProjectScripting"
-                         Content="{DynamicResource lua}" />
-          </StackPanel>
-          <TextBlock Text="{DynamicResource ScriptingHint}" Classes="muted" Margin="0,8,0,0" />
-        </StackPanel>
-
-        <!--
-          Prebuilt engine library. The panel has no target/configuration selector (that's BuildTargetDialog's
-          job), so here the availability of a prebuilt library can only be judged by the **host target**; the real
-          "target + configuration" consistency is enforced by Core at build time (a mismatch fails the build and
-          points the way), and the hint text must spell this out.
-        -->
-        <StackPanel Margin="0,14,0,0">
-          <CheckBox x:Name="PrebuiltCheck" Content="{DynamicResource UsePrebuilt}" />
-          <TextBlock x:Name="PrebuiltHint" Classes="muted" TextWrapping="Wrap" Margin="0,8,0,0" />
-        </StackPanel>
-
-        <DockPanel Margin="0,14,0,0">
-          <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-            <Button x:Name="CancelNewProjectButton" Content="{DynamicResource Cancel}"
-                    Classes="quiet" Margin="16,0,8,0" />
-            <Button x:Name="CreateProjectButton" Content="{DynamicResource Create}"
-                    Classes="primary" />
-          </StackPanel>
-          <TextBlock Text="{DynamicResource BuildPlatformHint}" Classes="muted" />
-        </DockPanel>
-      </StackPanel>
-    </Border>
-
-    <!-- ==================== Project table ==================== -->
-    <Border Grid.Row="3" BorderBrush="{DynamicResource Hub.Border}"
-            BorderThickness="1" CornerRadius="7" ClipToBounds="True">
-      <Grid>
-        <DataGrid x:Name="ProjectsGrid">
-          <DataGrid.Columns>
-            <DataGridTemplateColumn Width="*">
-              <DataGridTemplateColumn.CellTemplate>
-                <DataTemplate x:DataType="core:ProjectEntry">
-                  <StackPanel Margin="8,0">
-                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
-                    <TextBlock Text="{Binding Path}" Foreground="{DynamicResource Hub.TextSecondary}"
-                               FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"
-                               ToolTip.Tip="{Binding Path}" />
-                  </StackPanel>
-                </DataTemplate>
-              </DataGridTemplateColumn.CellTemplate>
-            </DataGridTemplateColumn>
-            <!-- DataGridTextColumn does **not inherit** the page's x:DataType: compiled bindings require each
-                 column to declare its own row type, otherwise the page type is used to look up Version/ProjectType
-                 and the build errors out (AVLN2000). -->
-            <DataGridTextColumn Binding="{Binding Version}" Width="85" x:DataType="core:ProjectEntry" />
-            <DataGridTextColumn Binding="{Binding ProjectType}" Width="110" x:DataType="core:ProjectEntry" />
-            <DataGridTextColumn Binding="{Binding BuildStatus}" Width="125" x:DataType="core:ProjectEntry" />
-            <DataGridTextColumn Binding="{Binding LastOpened, StringFormat=yyyy-MM-dd HH:mm}" Width="150" x:DataType="core:ProjectEntry" />
-          </DataGrid.Columns>
-        </DataGrid>
-        <TextBlock x:Name="EmptyProjects" Classes="muted"
-                   HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
-      </Grid>
-    </Border>
-
-    <!-- ==================== Device bar + action buttons ==================== -->
-    <StackPanel Grid.Row="4">
-      <Border x:Name="AndroidDevicePanel" IsVisible="False"
-              Background="{DynamicResource Hub.Surface}" CornerRadius="6"
-              Padding="14,12" Margin="0,14,0,0">
-        <StackPanel>
-          <DockPanel>
-            <Button x:Name="RefreshDevicesButton" Content="{DynamicResource RefreshDevices}"
-                    DockPanel.Dock="Right" Margin="12,0,0,0" />
-            <TextBlock Text="{DynamicResource AndroidDevice}" Margin="0,0,14,0" />
-            <ComboBox x:Name="AndroidDevicePicker" Width="310" HorizontalAlignment="Left" />
-            <TextBlock x:Name="AndroidDeviceStatus" Foreground="{DynamicResource Hub.TextSecondary}"
-                       Margin="14,0,0,0" />
-          </DockPanel>
-          <TextBlock Text="{DynamicResource AndroidDeviceHint}" Classes="muted" Margin="0,8,0,0" />
-        </StackPanel>
       </Border>
+    </Grid>
 
-      <!--
-        Action bar. Ten commands do not fit on one line even at the window's minimum width
-        (MinWidth 1080 → ~800px of content), and letting a single WrapPanel break them wherever it
-        happens to run out of room produced a cramped second row whose contents read as arbitrary.
-        It is laid out as two deliberate rows instead:
-
-          row 1  build / run / configure  │  the two project-scoped setting dialogs
-          row 2  open / launch actions                                       … remove (far right)
-
-        Grouping rule: row 1 is "operate on this project", row 2 is "go somewhere / launch something".
-        The destructive "remove from list" is isolated at the right edge of row 2 so it can never be hit
-        by accident while reaching for a neighbouring button.
-
-        Each row stays a WrapPanel so a narrow window still degrades gracefully, and ItemSpacing/LineSpacing
-        (rather than the theme's trailing-margin spacing — see UserControl.Styles) supply the horizontal gap
-        **and** the vertical gap between wrapped lines. The missing vertical gap is what made the old
-        two-row layout look crowded.
-      -->
-      <StackPanel Margin="0,18,0,6" Spacing="8">
-        <!-- "more" marks a button that opens a dialog or picker first, so the click does not act yet:
-             Build / Configure pop the target picker, the other two open project settings windows.
-             Run is deliberately left unmarked — it really does launch straight away. -->
-        <WrapPanel Classes="actions" ItemSpacing="8" LineSpacing="8">
-          <Button x:Name="BuildButton" Content="{DynamicResource Build}" Classes="primary more" />
-          <Button x:Name="RunButton" Content="{DynamicResource Run}" />
-          <Button x:Name="ConfigureButton" Content="{DynamicResource Configure}" Classes="quiet more" />
-          <Border Classes="sep" />
-          <Button x:Name="AndroidReleaseButton" Content="{DynamicResource AndroidReleaseSettings}" Classes="quiet more" />
-          <Button x:Name="PrebuiltSettingsButton" Content="{DynamicResource PrebuiltSettings}" Classes="quiet more" />
-        </WrapPanel>
-
-        <DockPanel>
-          <!-- destructive: acts on click with no dialog, so it carries the red ink instead of an ellipsis. -->
-          <Button x:Name="RemoveProjectButton" Content="{DynamicResource RemoveFromList}" Classes="destructive"
-                  ToolTip.Tip="{DynamicResource RemoveProjectHint}"
-                  DockPanel.Dock="Right" Margin="16,0,0,0" />
-          <WrapPanel Classes="actions" ItemSpacing="8" LineSpacing="8">
-            <Button x:Name="OpenFolderButton" Content="{DynamicResource OpenFolder}" Classes="quiet" />
-            <Button x:Name="OpenOutputsButton" Content="{DynamicResource OpenOutputs}" Classes="quiet" />
-            <!-- One editor button, labelled with the editor that will launch; the chevron beside it offers the
-                 editors detected here without changing any default (see ProjectsPage.ShowEditorMenu). -->
-            <Button x:Name="EditorButton" Classes="quiet" />
-            <Button x:Name="EditorMenuButton" Content="▾" Classes="quiet" />
-          </WrapPanel>
-        </DockPanel>
-      </StackPanel>
-    </StackPanel>
-
+    <Grid x:Name="ProjectOverlay" IsVisible="False" ClipToBounds="True" Panel.ZIndex="10">
+      <Border Classes="settings-scrim" />
+      <Border x:Name="OverlayCard" Classes="settings-card" Width="760" MaxHeight="680"
+              HorizontalAlignment="Center" VerticalAlignment="Center" Padding="0">
+        <Grid RowDefinitions="56,*,Auto">
+          <Grid ColumnDefinitions="*,Auto" Margin="22,0,16,0">
+            <TextBlock x:Name="OverlayTitle" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <Button Grid.Column="1" x:Name="OverlayCloseButton" Classes="viewer-action" VerticalAlignment="Center"
+                    Content="×" Click="OnCloseOverlay" ToolTip.Tip="{DynamicResource CloseWindow}" />
+          </Grid>
+          <Border Grid.Row="1" BorderBrush="{DynamicResource Hub.BorderSubtle}" BorderThickness="0,1,0,0">
+            <ScrollViewer x:Name="OverlayScrollViewer" VerticalScrollBarVisibility="Auto">
+              <Grid x:Name="OverlayContent" Margin="24,20">
+                <StackPanel x:Name="CreatePanel" Spacing="14" IsVisible="False">
+                  <TextBlock Text="{DynamicResource Template}" Classes="muted" />
+                  <StackPanel Spacing="12">
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="{DynamicResource ProjectName}" />
+                      <TextBox x:Name="ProjectNameBox" Text="HelloAxmol" />
+                    </StackPanel>
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="{DynamicResource Location}" />
+                      <DockPanel>
+                        <Button x:Name="BrowseLocationButton" Content="{DynamicResource Browse}"
+                                DockPanel.Dock="Right" Margin="6,0,0,0" Padding="10,8" />
+                        <TextBox x:Name="ProjectLocationBox" />
+                      </DockPanel>
+                    </StackPanel>
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="{DynamicResource EngineVersion}" />
+                      <ComboBox x:Name="ProjectEnginePicker" />
+                    </StackPanel>
+                  </StackPanel>
+                  <StackPanel Spacing="7">
+                    <TextBlock Text="{DynamicResource Scripting}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <RadioButton x:Name="CppScripting" GroupName="ProjectScripting"
+                                   Content="{DynamicResource cpp}" IsChecked="True" />
+                      <RadioButton x:Name="LuaScripting" GroupName="ProjectScripting"
+                                   Content="{DynamicResource lua}" />
+                    </StackPanel>
+                    <TextBlock Text="{DynamicResource ScriptingHint}" Classes="muted" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <StackPanel Spacing="7">
+                    <CheckBox x:Name="PrebuiltCheck" Content="{DynamicResource UsePrebuilt}" />
+                    <TextBlock x:Name="PrebuiltHint" Classes="muted" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <TextBlock Text="{DynamicResource BuildPlatformHint}" Classes="muted" TextWrapping="Wrap" />
+                </StackPanel>
+                <StackPanel x:Name="TrashConfirmPanel" Spacing="12" IsVisible="False">
+                  <TextBlock x:Name="TrashConfirmMessage" TextWrapping="Wrap" />
+                  <TextBlock x:Name="TrashProjectName" FontWeight="SemiBold" TextWrapping="Wrap" />
+                  <TextBlock x:Name="TrashProjectPath" Classes="muted" TextWrapping="Wrap" />
+                </StackPanel>
+              </Grid>
+            </ScrollViewer>
+          </Border>
+          <StackPanel Grid.Row="2" x:Name="OverlayActions" Orientation="Horizontal" HorizontalAlignment="Right"
+                      Margin="16,12,20,16" Spacing="8">
+            <Button x:Name="OverlayCancelButton" Content="{DynamicResource Cancel}" Click="OnCloseOverlay"
+                    Classes="quiet" />
+            <Button x:Name="OverlayPrimaryButton" Classes="primary" Click="OnOverlayPrimary" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
   </Grid>
 </UserControl>

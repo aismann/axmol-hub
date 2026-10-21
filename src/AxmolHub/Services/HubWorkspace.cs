@@ -64,6 +64,7 @@ public sealed class HubWorkspace : IDisposable
     /// outlives the request that started it, and the 运行 button has to find it again as 停止.
     /// </summary>
     private PlatformBuildService.WebPreview? _webPreview;
+    private string? _webPreviewProjectPath;
     /// <summary>
     /// The pid of a game Hub launched, per project path — and the only thing kept about a process it does not
     /// own. It answers two questions and nothing else: did it die on contact, and is it still holding the
@@ -1024,8 +1025,9 @@ public sealed class HubWorkspace : IDisposable
 
     // ───────────────────────── Projects ─────────────────────────
 
-    public async Task CreateProjectAsync(string name, string parent, EngineEntry? engine, string projectType, bool usePrebuilt = false)
+    public async Task<ProjectEntry?> CreateProjectAsync(string name, string parent, EngineEntry? engine, string projectType, bool usePrebuilt = false)
     {
+        ProjectEntry? created = null;
         await ExecuteAsync("Create project", async token =>
         {
             var target = engine ?? throw new InvalidOperationException("Install or import an engine first.");
@@ -1038,39 +1040,133 @@ public sealed class HubWorkspace : IDisposable
 
             State.Projects.Add(project);
             SelectedProject = project;
+            created = project;
         });
+        return created;
     }
 
-    public async Task OpenProjectAsync(string? path)
+    public async Task<ProjectEntry?> OpenProjectAsync(string? path)
     {
         if (path is null)
         {
-            return;
+            return null;
         }
 
+        var fullPath = Path.GetFullPath(path);
         await ExecuteAsync("Open project", _ =>
         {
-            var project = StateStore.ReadProject(path);
-            if (!File.Exists(StateStore.MetadataPath(path)))
+            var project = StateStore.ReadProject(fullPath);
+            if (!File.Exists(StateStore.MetadataPath(fullPath)))
             {
                 StateStore.LockProject(project);
             }
 
-            if (!State.Projects.Any(p => p.Path.Equals(path, StringComparison.OrdinalIgnoreCase)))
+            if (!State.Projects.Any(p => PathEquals(p.Path, fullPath)))
             {
                 State.Projects.Add(project);
             }
 
             return Task.CompletedTask;
         });
+        return State.Projects.FirstOrDefault(p => PathEquals(p.Path, fullPath));
     }
 
-    public async Task RemoveProjectAsync() => await ExecuteAsync("Remove project from list", _ =>
+    public async Task RemoveProjectAsync(ProjectEntry? requested = null) => await ExecuteAsync("Remove project from list", _ =>
     {
-        var project = RequiredProject();
+        var project = requested ?? RequiredProject();
         State.Projects.Remove(project);
         return Task.CompletedTask;
     });
+
+    public async Task<bool> MoveProjectToTrashAsync(ProjectEntry project)
+    {
+        ValidateProjectTrashAvailability(project);
+
+        var moved = false;
+        await ExecuteAsync("Move project to Trash", async token =>
+        {
+            ValidateProjectTrashPath(project);
+            if (_launchedGames.TryGetValue(project.Path, out var pid) && ProcessRunner.IsRunning(pid))
+                throw new InvalidOperationException(HubStrings.Get("ProjectStillRunning"));
+            if (PathEquals(_webPreviewProjectPath, project.Path))
+                throw new InvalidOperationException(HubStrings.Get("StopProjectPreviewFirst"));
+            var result = await SystemTrash.MoveAsync(project.Path, token);
+            if (result.Kind != TrashResultKind.Moved)
+                throw new IOException(string.Format(HubStrings.Get("MoveProjectToTrashFailed"), result.Error ?? ""));
+
+            State.Projects.Remove(project);
+            try
+            {
+                Store.Save(State);
+            }
+            catch (Exception ex)
+            {
+                State.Projects.Add(project);
+                throw new IOException(HubStrings.Get("ProjectMovedButListSaveFailed"), ex);
+            }
+            moved = true;
+        });
+        return moved;
+    }
+
+    public void ValidateProjectTrashAvailability(ProjectEntry project)
+    {
+        if (IsBusy) throw new InvalidOperationException(HubStrings.Get("DeepLinkBusy"));
+        ValidateProjectTrashPath(project);
+        if (_launchedGames.TryGetValue(project.Path, out var pid) && ProcessRunner.IsRunning(pid))
+            throw new InvalidOperationException(HubStrings.Get("ProjectStillRunning"));
+        if (PathEquals(_webPreviewProjectPath, project.Path))
+            throw new InvalidOperationException(HubStrings.Get("StopProjectPreviewFirst"));
+    }
+
+    internal void ValidateProjectTrashPath(ProjectEntry project)
+    {
+        if (!State.Projects.Any(item => PathEquals(item.Path, project.Path)))
+            throw new InvalidOperationException(HubStrings.Get("ProjectNoLongerRegistered"));
+
+        var path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(project.Path));
+        var root = Path.GetPathRoot(path);
+        if (root is not null && PathEquals(path, Path.TrimEndingDirectorySeparator(root)))
+            throw new InvalidOperationException(HubStrings.Get("UnsafeProjectTrashPath"));
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (IsSameOrParent(path, home) || IsSameOrParent(path, Store.Root))
+            throw new InvalidOperationException(HubStrings.Get("UnsafeProjectTrashPath"));
+
+        foreach (var engine in State.Engines)
+        {
+            if (IsSameOrParent(path, engine.Path))
+                throw new InvalidOperationException(HubStrings.Get("UnsafeProjectTrashPath"));
+        }
+
+        foreach (var other in State.Projects)
+        {
+            if (!PathEquals(other.Path, project.Path) && IsWithin(other.Path, path))
+                throw new InvalidOperationException(string.Format(HubStrings.Get("ProjectContainsRegisteredProject"), other.Name));
+        }
+
+        if (!Directory.Exists(path))
+            throw new DirectoryNotFoundException(path);
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidOperationException(HubStrings.Get("UnsafeProjectTrashPath"));
+    }
+
+    private static bool PathEquals(string? left, string? right)
+        => left is not null && right is not null && string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static bool IsWithin(string candidate, string parent)
+    {
+        var fullCandidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
+        var fullParent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return fullCandidate.StartsWith(fullParent + Path.DirectorySeparatorChar, comparison);
+    }
+
+    private static bool IsSameOrParent(string candidate, string protectedPath)
+        => PathEquals(candidate, protectedPath) || IsWithin(protectedPath, candidate);
 
     private ProjectEntry RequiredProject() => SelectedProject
         ?? throw new InvalidOperationException("Select a project first.");
@@ -1092,14 +1188,15 @@ public sealed class HubWorkspace : IDisposable
     /// "select build platform" dialog (corresponding to WPF's <c>PickBuildTarget</c>); when a
     /// selection already exists it runs directly.
     /// </summary>
-    public async Task BuildAsync(bool configureOnly, (BuildTarget Target, string Configuration)? selection = null)
+    public async Task BuildAsync(bool configureOnly, (BuildTarget Target, string Configuration)? selection = null, ProjectEntry? requested = null)
     {
         if (RefuseIfBusy())
         {
             return;
         }
 
-        if (SelectedProject is not { } selected)
+        var selected = requested ?? SelectedProject;
+        if (selected is null)
         {
             return;
         }
@@ -1136,7 +1233,7 @@ public sealed class HubWorkspace : IDisposable
             selected.Name + " · " + target.Name,
             async (task, token) =>
         {
-            var project = RequiredProject();
+            var project = selected;
             BuildTargets.Select(project, target.Id, configuration);
             var engine = RequiredEngine(project);
 
@@ -1196,9 +1293,9 @@ public sealed class HubWorkspace : IDisposable
     /// window" into an error dialog. Two things stay Hub's own failures: the process that never came up, and
     /// the one that died on contact.
     /// </summary>
-    public async Task RunAsync()
+    public async Task RunAsync(ProjectEntry? requested = null)
     {
-        if (_webPreview is not null)
+        if (_webPreview is not null && (requested is null || PathEquals(_webPreviewProjectPath, requested.Path)))
         {
             StopWebPreview();
             return;
@@ -1206,7 +1303,9 @@ public sealed class HubWorkspace : IDisposable
 
         try
         {
-            var project = RequiredProject();
+            var project = requested ?? RequiredProject();
+            if (_webPreview is not null)
+                throw new InvalidOperationException(HubStrings.Get("AnotherProjectPreviewRunning"));
             if (project.BuildStatus != "Succeeded")
             {
                 throw new InvalidOperationException("Build successfully before Run.");
@@ -1288,6 +1387,7 @@ public sealed class HubWorkspace : IDisposable
     /// <summary>Whether the wasm preview server is up — the answer the 运行 button needs in order to say
     /// 停止 instead, and the reason this is a property rather than a local in <see cref="RunAsync"/>.</summary>
     public bool WebPreviewRunning => _webPreview is not null;
+    public bool IsProjectPreviewRunning(ProjectEntry project) => PathEquals(_webPreviewProjectPath, project.Path);
 
     /// <summary>Verification hook (<c>--verify-shell</c>): records a pid as the game Hub launched for this
     /// workspace. The suite has no built artifact to start, and what the ruling is about is not the launch —
@@ -1305,6 +1405,7 @@ public sealed class HubWorkspace : IDisposable
     {
         var preview = await _platformBuilds.StartWebPreviewAsync(project, engine, openBrowser: true, CancellationToken.None);
         _webPreview = preview;
+        _webPreviewProjectPath = project.Path;
         SetStatus(HubStrings.Get("Run project") + " · " + preview.Url);
         Changed?.Invoke();
 
@@ -1319,6 +1420,7 @@ public sealed class HubWorkspace : IDisposable
             }
 
             _webPreview = null;
+            _webPreviewProjectPath = null;
             preview.Stop.Dispose();
             Dispatcher.UIThread.Post(() => Changed?.Invoke());
         }, TaskScheduler.Default);
@@ -1378,15 +1480,15 @@ public sealed class HubWorkspace : IDisposable
 
     public void Open(string path, params string[] arguments) => _runner.Open(path, arguments.Length == 0 ? null : arguments);
 
-    public async Task OpenProjectFolderAsync() => await ExecuteAsync("Open project folder", _ =>
+    public async Task OpenProjectFolderAsync(ProjectEntry? requested = null) => await ExecuteAsync("Open project folder", _ =>
     {
-        Open(RequiredProject().Path);
+        Open((requested ?? RequiredProject()).Path);
         return Task.CompletedTask;
     });
 
-    public async Task OpenBuildOutputsAsync() => await ExecuteAsync("Open build outputs", _ =>
+    public async Task OpenBuildOutputsAsync(ProjectEntry? requested = null) => await ExecuteAsync("Open build outputs", _ =>
     {
-        var project = RequiredProject();
+        var project = requested ?? RequiredProject();
         var directory = BuildTargets.Get(project.Platform).Family == "android"
             ? Path.Combine(AndroidPackageService.StageDirectory(project), "app/build/outputs")
             : BuildTargets.BuildDirectory(project);
@@ -1533,9 +1635,9 @@ public sealed class HubWorkspace : IDisposable
     public EditorBinding? EffectiveEditor(ProjectEntry? project) => CodeEditors.Resolve(project, DetectedEditors, State);
 
     /// <summary>Opens the project in the effective editor, or in <paramref name="presetId"/> for this one time.</summary>
-    public async Task OpenEditorAsync(string? presetId = null) => await ExecuteAsync("OpenInEditor", _ =>
+    public async Task OpenEditorAsync(string? presetId = null, ProjectEntry? requested = null) => await ExecuteAsync("OpenInEditor", _ =>
     {
-        var project = RequiredProject();
+        var project = requested ?? RequiredProject();
         var binding = presetId is null
             ? EffectiveEditor(project)
             : DetectedEditors.FirstOrDefault(candidate => candidate.Preset.Id == presetId);
@@ -1559,7 +1661,7 @@ public sealed class HubWorkspace : IDisposable
     /// The caller gets the verdict because "select an editor" failing silently is how a saved application came to
     /// look unselected forever; an unacceptable path is refused here and said out loud by the page.
     /// </summary>
-    public async Task<bool> SelectEditorAsync(string id, string path, bool global)
+    public async Task<bool> SelectEditorAsync(string id, string path, bool global, ProjectEntry? requested = null)
     {
         var editor = new CodeEditor(id, path);
         if (CodeEditors.Bind(editor) is not { } binding)
@@ -1576,7 +1678,7 @@ public sealed class HubWorkspace : IDisposable
         {
             State.CodeEditor = editor;
         }
-        else if (SelectedProject is { } project)
+        else if ((requested ?? SelectedProject) is { } project)
         {
             project.CodeEditor = editor;
         }
@@ -1593,9 +1695,9 @@ public sealed class HubWorkspace : IDisposable
     }
 
     /// <summary>Drops a project's own choice, so it follows the default again.</summary>
-    public void ClearProjectEditor()
+    public void ClearProjectEditor(ProjectEntry? requested = null)
     {
-        if (SelectedProject is not { CodeEditor: not null } project)
+        if ((requested ?? SelectedProject) is not { CodeEditor: not null } project)
         {
             return;
         }
