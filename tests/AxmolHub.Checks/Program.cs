@@ -5836,15 +5836,34 @@ if (args.Contains("--check-ai-web-search"))
     var ask = WebSearchHosted.Decide(declared, ModelProtocols.Chat, true);
     var plan = WebSearchHosted.Decide(declared, ModelProtocols.Chat, true);
     var silent = WebSearchHosted.Decide([], ModelProtocols.Chat, true);
+    var openAiOAuth = new ModelProvider
+    {
+        Id = "openai",
+        Credential = new ProviderCredential { AuthKind = "openaiOAuth", Secret = "fixture" },
+    };
+    var openAiApiKey = new ModelProvider
+    {
+        Id = "openai",
+        Credential = new ProviderCredential { AuthKind = "apiKey", Secret = "fixture" },
+    };
+    var oauthSearch = WebSearchHosted.DecideForProvider(openAiOAuth, ModelProtocols.Responses, true);
+    var oauthOff = WebSearchHosted.DecideForProvider(openAiOAuth, ModelProtocols.Responses, false);
+    var oauthWrongWire = WebSearchHosted.DecideForProvider(openAiOAuth, ModelProtocols.Chat, true);
+    var apiKeySearch = WebSearchHosted.DecideForProvider(openAiApiKey, ModelProtocols.Responses, true);
     if (chatOn.Verdict != WebSearchHostedVerdict.On || chatOn.WireField != WebSearchHosted.ChatWireField
         || responsesOn.Verdict != WebSearchHostedVerdict.On
         || responsesOn.WireField != WebSearchHosted.ResponsesWireField
         || switched.Verdict != WebSearchHostedVerdict.SwitchedOff
         || ask.Verdict != WebSearchHostedVerdict.On
         || plan.Verdict != WebSearchHostedVerdict.On
-        || silent.Verdict != WebSearchHostedVerdict.NotDeclared)
+        || silent.Verdict != WebSearchHostedVerdict.NotDeclared
+        || oauthSearch.Verdict != WebSearchHostedVerdict.On
+        || oauthSearch.WireField != WebSearchHosted.ResponsesWireField
+        || oauthOff.Verdict != WebSearchHostedVerdict.SwitchedOff
+        || oauthWrongWire.Verdict != WebSearchHostedVerdict.NotDeclared
+        || apiKeySearch.Verdict != WebSearchHostedVerdict.NotDeclared)
         throw new Exception("The hosted-search decision table answered one of its three questions wrong.");
-    Console.WriteLine("PASS: hosted search requires both provider capability and the separate opt-in in every mode.");
+    Console.WriteLine("PASS: hosted search requires opt-in; OpenAI OAuth gets Responses search while API keys and other routes stay explicit.");
 
     // Each refusal has to say what would change it, because the ordinary failure of this feature is silence: the
     // person sees no search and nothing on screen ever claimed one was possible.

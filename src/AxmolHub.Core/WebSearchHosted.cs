@@ -82,6 +82,20 @@ public static class WebSearchHosted
     /// <summary>The array on the responses body, named by the tool entry it gains.</summary>
     public const string ResponsesWireField = "tools[].type=web_search";
 
+    /// <summary>
+    /// OpenAI's signed-in Codex route is fixed to Responses and supports its native hosted search. Keep this
+    /// implicit capability scoped to that credential: API keys and compatible gateways still need an explicit
+    /// provider declaration because their endpoint support cannot be inferred from the provider name.
+    /// </summary>
+    public static WebSearchHostedDecision DecideForProvider(ModelProvider provider, string? protocol, bool searchAllowed)
+    {
+        var declaresSearch = ProviderServerTools.DeclaresWebSearch(provider.ServerTools)
+            || (provider.IsOpenAiOAuth
+                && string.Equals(protocol, ModelProtocols.Responses, StringComparison.OrdinalIgnoreCase));
+        return Decide(declaresSearch ? [ProviderServerTools.WebSearch] : provider.ServerTools,
+            protocol, searchAllowed);
+    }
+
     /// <summary>Which request field carries the declaration on this wire. Unknown protocols answer as chat, the
     /// same way <see cref="ModelCapabilities.Protocol"/> and the client factory do — silence is chat, because every
     /// provider but Copilot publishes nothing about endpoints.</summary>

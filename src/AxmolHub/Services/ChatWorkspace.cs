@@ -3654,6 +3654,8 @@ public sealed class ChatWorkspace : IDisposable
     internal string? PlansDirectoryForCheck => PlanStore.DirectoryFor(_dataRoot);
 
     internal int PreparedHistoryCountForCheck(string conversationId) => PrepareRequest(conversationId)?.History.Count ?? -1;
+    internal IReadOnlyList<AITool> PreparedToolsForCheck(string conversationId)
+        => PrepareRequest(conversationId)?.Tools ?? [];
 
     /// <summary>How many of the attachment names this session's transcript carries resolve back to bytes in the
     /// request about to be built. The name is what survives a restart, and a name that no longer matches a file is
@@ -5925,15 +5927,13 @@ public sealed class ChatWorkspace : IDisposable
             System.Collections.Concurrent.ConcurrentQueue<DeepSeekWebApiCall>>(StringComparer.Ordinal);
         var scope = ScopeFor(conversationId, choice.Provider, webApiCalls);
         var tools = ChatTools.CreateFor(mode, scope);
-        // Whether this endpoint gets told it may search for itself. The table is three facts and one answer, so the
-        // reason a session has no search is something the audit can state instead of something a person infers from
-        // the absence of a line. Nothing is appended in the common case: the declaration ships empty for every
-        // provider, because honouring it is per-gateway and only a real request can say (see WebSearchHosted).
-        var search = WebSearchHosted.Decide(choice.Provider.ServerTools,
-            ChatClientFactory.ProtocolFor(choice.Provider, modelName),
-            IsWebSearchEnabled());
+        // Whether this endpoint gets told it may search for itself. OpenAI OAuth is the one built-in route whose
+        // Responses protocol and native search support are known; API keys and compatible gateways still require
+        // an explicit provider declaration. The real hosted tool replaces the refusal stub with the same name.
+        var protocol = ChatClientFactory.ProtocolFor(choice.Provider, modelName);
+        var search = WebSearchHosted.DecideForProvider(choice.Provider, protocol, IsWebSearchEnabled());
         if (!scope.DeepSeekWebApiMode && search.Verdict == WebSearchHostedVerdict.On)
-            tools = [.. tools, new HostedWebSearchTool()];
+            tools = [.. tools.Where(tool => tool.Name != ProviderServerTools.WebSearch), new HostedWebSearchTool()];
         else if (!scope.DeepSeekWebApiMode && ProviderServerTools.DeclaresWebSearch(choice.Provider.ServerTools))
             Audit(conversationId, $"Hosted search not offered: {WebSearchHosted.Explain(search)}");
         // What this mode's declarations cost is remembered for the meter: building the tools is the only place
