@@ -1,25 +1,58 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Interactivity;
 using AxmolHub.Core;
 
 namespace AxmolHub;
 
-/// <summary>
-/// The engines page (WPF's InstallsPage). The seven buttons map one-to-one to the seven buttons in
-/// the WPF version's WrapPanel, same order: add module / set default / open folder / verify /
-/// repair / uninstall / remove from list.
-/// </summary>
+public sealed record EngineListItem(EngineEntry Engine, bool IsDefault,
+    string MirrorLabel, string MirrorTooltip, bool MirrorWarning,
+    string PrebuiltLabel, string PrebuiltTooltip, bool PrebuiltWarning, bool IsCompact)
+{
+    public bool CanSetDefault => !IsDefault;
+
+    public string DisplayPath
+    {
+        get
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrEmpty(home)) return Engine.Path;
+            var relative = Path.GetRelativePath(home, Engine.Path);
+            return relative == "." ? "~"
+                : relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                    && !Path.IsPathRooted(relative) ? "~" + Path.DirectorySeparatorChar + relative : Engine.Path;
+        }
+    }
+
+}
+
+public sealed record EngineFilterChoice(string Label, string Value)
+{
+    public override string ToString() => Label;
+}
+
 public partial class InstallsPage : UserControl
 {
     private readonly HubWorkspace _workspace;
     private bool _ready;
+    private bool _compact;
+    private int _sortMode;
 
-    /// <summary>For the XAML loader and design-time preview (missing it raises AVLN3001).</summary>
-    public InstallsPage()
-    {
-        _workspace = null!;
-        InitializeComponent();
-    }
+    internal DataGrid GridForCheck => EnginesGrid;
+    internal EngineListItem[] RowsForCheck => EnginesGrid.ItemsSource as EngineListItem[] ?? [];
+    internal TextBox SearchForCheck => SearchBox;
+    internal ComboBox ChannelFilterForCheck => ChannelFilter;
+    internal Button SortForCheck => SortButton;
+    internal Button ImportForCheck => ImportButton;
+    internal Button InstallForCheck => InstallButton;
+
+    public InstallsPage() { _workspace = null!; InitializeComponent(); }
 
     public InstallsPage(HubWorkspace workspace)
     {
@@ -27,98 +60,207 @@ public partial class InstallsPage : UserControl
         InitializeComponent();
 
         _workspace.Changed += Reload;
-
+        SearchBox.TextChanged += (_, _) =>
+        {
+            ClearSearchButton.IsVisible = !string.IsNullOrEmpty(SearchBox.Text);
+            ApplyView();
+        };
+        ClearSearchButton.Click += (_, _) =>
+        {
+            SearchBox.Text = "";
+            SearchBox.Focus();
+        };
+        ChannelFilter.SelectionChanged += (_, _) => ApplyView();
+        SortButton.Click += (_, _) =>
+        {
+            _sortMode = (_sortMode + 1) % 3;
+            UpdateSortCaption();
+            ApplyView();
+        };
         EnginesGrid.SelectionChanged += (_, _) =>
         {
-            if (!_ready)
-            {
-                return;
-            }
-
-            _workspace.SelectedEngine = EnginesGrid.SelectedItem as EngineEntry;
-            ReloadMirrorStatus();
-            ReloadPrebuiltStatus();
+            if (!_ready) return;
+            if (EnginesGrid.SelectedItem is EngineListItem item)
+                _workspace.SelectedEngine = item.Engine;
         };
+        EnginesGrid.SizeChanged += (_, _) => SyncColumns();
 
-        ImportButton.Click += async (_, _) =>
-        {
-            var picked = await PickFolderAsync(HubStrings.Get("Select Axmol engine root"));
-            if (picked is not null)
-            {
-                await _workspace.ImportEngineAsync(picked);
-            }
-        };
-
-        InstallButton.Click += async (_, _) => await _workspace.ChooseAndInstallEngineAsync();
-        MirrorButton.Click += async (_, _) => await SwitchMirrorAsync();
-        BuildEngineButton.Click += async (_, _) => await _workspace.BuildEngineAsync();
-        DefaultButton.Click += async (_, _) => await _workspace.SetDefaultEngineAsync();
-        OpenFolderButton.Click += async (_, _) => await _workspace.OpenEngineFolderAsync();
-        VerifyButton.Click += async (_, _) => await _workspace.VerifyEngineAsync();
-        RepairButton.Click += async (_, _) => await _workspace.RepairEngineAsync();
-        UninstallButton.Click += async (_, _) => await _workspace.UninstallEngineAsync();
-        RemoveButton.Click += async (_, _) => await _workspace.RemoveEngineAsync();
-
+        ImportButton.Click += OnImportEngine;
+        InstallButton.Click += OnInstallEngine;
         Reload();
-        _ready = true;
     }
 
-    private async System.Threading.Tasks.Task<string?> PickFolderAsync(string title)
+    private async void OnImportEngine(object? sender, RoutedEventArgs e)
+    {
+        var picked = await PickFolderAsync(HubStrings.Get("Select Axmol engine root"));
+        if (picked is null) return;
+        var imported = await _workspace.ImportEngineAsync(picked);
+        if (imported is not null) FocusEngine(imported);
+    }
+
+    private async void OnInstallEngine(object? sender, RoutedEventArgs e)
+    {
+        var installed = await _workspace.ChooseAndInstallEngineAsync();
+        if (installed is not null) FocusEngine(installed);
+    }
+
+    private async Task<string?> PickFolderAsync(string title)
     {
         var topLevel = TopLevel.GetTopLevel(this);
-        if (topLevel is null)
-        {
-            return null;
-        }
-
+        if (topLevel is null) return null;
         var result = await Pickers.PickFolderAsync(topLevel, title);
         return result.Outcome == PickOutcome.Picked ? result.Path : null;
     }
 
-    /// <summary>The engines-page portion of the WPF <c>Refresh()</c>.</summary>
     public void Reload()
     {
-        if (_workspace is null)
-        {
-            return;
-        }
-
-        _ready = false;
+        if (_workspace is null) return;
         var state = _workspace.State;
-        var selected = _workspace.SelectedEngine;
+        if (_workspace.SelectedEngine is { } selected
+            && !state.Engines.Any(engine => SamePath(engine.Path, selected.Path)))
+            _workspace.SelectedEngine = state.Engines.FirstOrDefault();
+        else if (_workspace.SelectedEngine is null)
+            _workspace.SelectedEngine = state.Engines.FirstOrDefault();
 
-        EnginesGrid.ItemsSource = state.Engines.ToArray();
-        EnginesGrid.SelectedItem = state.Engines.FirstOrDefault(e => selected is not null && e.Path == selected.Path)
-                                   ?? state.Engines.FirstOrDefault();
-        _workspace.SelectedEngine = EnginesGrid.SelectedItem as EngineEntry;
+        var previousChannel = (ChannelFilter.SelectedItem as EngineFilterChoice)?.Value ?? "";
+        ChannelFilter.ItemsSource = new[] { new EngineFilterChoice(HubStrings.Get("AllChannels"), "") }
+            .Concat(state.Engines.Select(engine => engine.Channel)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(channel => channel, StringComparer.CurrentCultureIgnoreCase)
+                .Select(channel => new EngineFilterChoice(channel, channel)))
+            .ToArray();
+        ChannelFilter.SelectedItem = ChannelFilter.Items.Cast<EngineFilterChoice>()
+            .FirstOrDefault(choice => choice.Value == previousChannel) ?? ChannelFilter.Items[0];
 
-        EmptyEngines.Text = HubStrings.Get("EmptyEngines");
-        EmptyEngines.IsVisible = state.Engines.Count == 0;
-
-        var headers = HubWorkspace.GridHeaders("engines");
-        for (var index = 0; index < headers.Length && index < EnginesGrid.Columns.Count; index++)
-        {
-            EnginesGrid.Columns[index].Header = HubStrings.Get(headers[index]);
-        }
-
-        ReloadMirrorStatus();
-        ReloadPrebuiltStatus();
-        _ready = true;
+        ClearSearchButton.IsVisible = !string.IsNullOrEmpty(SearchBox.Text);
+        UpdateSortCaption();
+        ApplyView();
     }
 
-    /// <summary>
-    /// Opens the mirror dialog for the selected engine. An engine whose layout Hub can't map to a
-    /// mirror mechanism (neither <c>1k/.env</c> nor <c>1k/.gitee</c>) gets told so instead of a
-    /// dialog that would fail on apply.
-    /// </summary>
-    private async System.Threading.Tasks.Task SwitchMirrorAsync()
+    private void ApplyView()
     {
-        var engine = _workspace.SelectedEngine;
-        if (engine is null)
-        {
-            return;
-        }
+        if (_workspace is null) return;
+        var needle = SearchBox.Text?.Trim() ?? "";
+        var channel = (ChannelFilter.SelectedItem as EngineFilterChoice)?.Value ?? "";
+        var items = _workspace.State.Engines
+            .Where(engine => (needle.Length == 0
+                    || engine.Version.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                    || engine.Channel.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                    || engine.Path.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                && (channel.Length == 0 || engine.Channel.Equals(channel, StringComparison.OrdinalIgnoreCase)))
+            .Select(engine =>
+            {
+                var mirror = MirrorStatus(engine);
+                var prebuilt = GetPrebuiltStatus(engine);
+                return new EngineListItem(engine,
+                    SamePath(_workspace.State.DefaultEnginePath, engine.Path),
+                    mirror.Label, mirror.Tooltip, mirror.Warning,
+                    prebuilt.Label, prebuilt.Tooltip, prebuilt.Warning, _compact);
+            })
+            .ToArray();
 
+        var ordered = _sortMode switch
+        {
+            1 => items.OrderBy(item => item.Engine, EngineVersionComparer.Instance),
+            2 => items.OrderBy(item => item.Engine.Path, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(item => item.Engine.Version, StringComparer.OrdinalIgnoreCase),
+            _ => items.OrderByDescending(item => item.Engine, EngineVersionComparer.Instance),
+        };
+        var visible = ordered.ThenBy(item => item.Engine.Channel, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Engine.Path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        _ready = false;
+        EnginesGrid.ItemsSource = visible;
+        var selected = _workspace.SelectedEngine;
+        EnginesGrid.SelectedItem = visible.FirstOrDefault(item => selected is not null
+            && SamePath(item.Engine.Path, selected.Path));
+        _ready = true;
+
+        ResultCount.Text = string.Format(CultureInfo.CurrentCulture,
+            HubStrings.Get("EngineResultCount"), visible.Length, _workspace.State.Engines.Count);
+        var hasNoEngines = _workspace.State.Engines.Count == 0;
+        EmptyEnginesPanel.IsVisible = visible.Length == 0;
+        EmptyActions.IsVisible = hasNoEngines;
+        ClearFiltersButton.IsVisible = !hasNoEngines;
+        EmptyEngines.Text = HubStrings.Get(hasNoEngines ? "EmptyEngines" : "NoEnginesMatch");
+    }
+
+    private void SyncColumns()
+    {
+        if (EnginesGrid.Bounds.Width <= 0 || EnginesGrid.Columns.Count < 4) return;
+        var compact = EnginesGrid.Bounds.Width < 840;
+        if (compact == _compact) return;
+        _compact = compact;
+        EnginesGrid.Columns[0].Width = compact
+            ? new DataGridLength(1, DataGridLengthUnitType.Star)
+            : new DataGridLength(165);
+        EnginesGrid.Columns[1].IsVisible = !compact;
+        EnginesGrid.Columns[2].IsVisible = !compact;
+        EnginesGrid.Columns[3].Width = new DataGridLength(compact ? 150 : 180);
+        ApplyView();
+    }
+
+    private void UpdateSortCaption() => SortButton.Content = HubStrings.Get(_sortMode switch
+    {
+        1 => "SortEngineVersionAscending",
+        2 => "SortEnginePath",
+        _ => "SortEngineVersionDescending",
+    });
+
+    private void OnClearFilters(object? sender, RoutedEventArgs e)
+    {
+        SearchBox.Text = "";
+        if (ChannelFilter.ItemCount > 0) ChannelFilter.SelectedIndex = 0;
+        SearchBox.Focus();
+    }
+
+    private void FocusEngine(EngineEntry engine)
+    {
+        SearchBox.Text = "";
+        if (ChannelFilter.ItemCount > 0) ChannelFilter.SelectedIndex = 0;
+        _workspace.SelectedEngine = engine;
+        ApplyView();
+    }
+
+    private async void OnSetDefault(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.Tag is EngineEntry engine)
+            await _workspace.SetDefaultEngineAsync(engine);
+    }
+
+    private async void OnEngineMenu(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.Tag is not EngineEntry engine) return;
+        var menu = new MenuFlyout();
+        var mirror = new MenuItem { Header = HubStrings.Get("SwitchMirror"), IsEnabled = _workspace.MirrorOptionsOf(engine).Count > 0 };
+        mirror.Click += async (_, _) => await SwitchMirrorAsync(engine);
+        menu.Items.Add(mirror);
+        Add("BuildEngine", async () => await _workspace.BuildEngineAsync(engine), _workspace.PrebuiltHostTarget is not null,
+            _workspace.PrebuiltHostTarget is null ? HubStrings.Get("PrebuiltUnsupportedHost") : null);
+        menu.Items.Add(new Separator());
+        Add("OpenFolder", async () => await _workspace.OpenEngineFolderAsync(engine));
+        Add("VerifyEngine", async () => await _workspace.VerifyEngineAsync(engine));
+        menu.Items.Add(new Separator());
+        Add("Repair", async () => await _workspace.RepairEngineAsync(engine));
+        var uninstall = Add("Uninstall", async () => await _workspace.UninstallEngineAsync(engine));
+        uninstall.Classes.Add("danger");
+        var remove = Add("RemoveFromList", async () => await _workspace.RemoveEngineAsync(engine));
+        remove.Classes.Add("danger");
+        menu.ShowAt((Control)sender);
+
+        MenuItem Add(string key, Func<Task> action, bool enabled = true, string? tip = null)
+        {
+            var item = new MenuItem { Header = HubStrings.Get(key), IsEnabled = enabled };
+            if (tip is not null) ToolTip.SetTip(item, tip);
+            item.Click += async (_, _) => await action();
+            menu.Items.Add(item);
+            return item;
+        }
+    }
+
+    private async Task SwitchMirrorAsync(EngineEntry engine)
+    {
         var options = _workspace.MirrorOptionsOf(engine);
         if (options.Count == 0)
         {
@@ -128,52 +270,97 @@ public partial class InstallsPage : UserControl
         }
 
         var picked = await EngineMirrorDialog.PickAsync(TopLevel.GetTopLevel(this) as Window, engine, options);
-        if (picked is null)
-        {
-            return;
-        }
-
-        await _workspace.ApplyEngineMirrorAsync(picked.Id);
+        if (picked is not null) await _workspace.ApplyEngineMirrorAsync(picked.Id, engine);
     }
 
-    /// <summary>
-    /// The mirror readout. Only the **current value** is shown — the list of choices belongs to the
-    /// dialog, because it is engine-specific data (v3 reads it out of <c>1k/sources.json</c>).
-    /// </summary>
-    private void ReloadMirrorStatus()
+    private (string Label, string Tooltip, bool Warning) MirrorStatus(EngineEntry engine)
     {
-        var engine = _workspace.SelectedEngine;
-        MirrorStatus.Text = string.Format(HubStrings.Get("MirrorStatusFormat"), _workspace.MirrorOf(engine));
-        MirrorButton.IsEnabled = engine is not null && _workspace.MirrorOptionsOf(engine).Count > 0;
+        var options = _workspace.MirrorOptionsOf(engine);
+        var mirror = _workspace.MirrorOf(engine);
+        if (options.Count == 0)
+            return (HubStrings.Get("MirrorUnknownLabel"), HubStrings.Get("MirrorUnknown"), true);
+
+        var labelKey = mirror switch
+        {
+            EngineMirror.OriginId or EngineMirror.GithubId => "MirrorLabelOfficial",
+            EngineMirror.AtomGitId => "MirrorLabelAtomGit",
+            EngineMirror.GiteeId => "MirrorLabelGitee",
+            EngineMirror.TencentId => "MirrorLabelTencent",
+            _ => "",
+        };
+
+        if (labelKey.Length == 0)
+        {
+            var unknown = string.Format(CultureInfo.CurrentCulture,
+                HubStrings.Get("MirrorDeclaredUnknownFormat"), mirror);
+            return (mirror, unknown, true);
+        }
+
+        var option = options.FirstOrDefault(candidate => candidate.Id.Equals(mirror, StringComparison.OrdinalIgnoreCase));
+        var description = option is null
+            ? HubStrings.Get(mirror == EngineMirror.OriginId ? "MirrorOrigin" : "MirrorGithub")
+            : HubStrings.Get(option.TextKey);
+        if (option?.NoteKey.Length > 0)
+            description += HubStrings.Get(option.NoteKey);
+        if (mirror is EngineMirror.AtomGitId or EngineMirror.GiteeId or EngineMirror.TencentId)
+            description += "\n" + HubStrings.Get("MirrorFallbackNote");
+
+        return (HubStrings.Get(labelKey), description, false);
     }
 
-    /// <summary>
-    /// The prebuilt-library status readout. The source of truth for the judgment is
-    /// <see cref="EnginePrebuilt"/> (records + directory content check); here we only tell the user.
-    /// When the host doesn't support it (non-Windows) the button is disabled — clicking would fail
-    /// for sure.
-    /// </summary>
-    private void ReloadPrebuiltStatus()
+    private (string Label, string Tooltip, bool Warning) GetPrebuiltStatus(EngineEntry engine)
     {
-        var host = _workspace.PrebuiltHostTarget;
-        BuildEngineButton.IsEnabled = host is not null;
+        if (_workspace.PrebuiltHostTarget is null)
+            return (HubStrings.Get("PrebuiltLabelUnsupported"), HubStrings.Get("PrebuiltUnsupportedHost"), true);
 
-        var engine = _workspace.SelectedEngine;
-        if (host is null)
+        var availability = _workspace.PrebuiltStatusOf(engine);
+        if (availability?.Usable == true)
+            return (HubStrings.Get("PrebuiltLabelReady"),
+                string.Format(CultureInfo.CurrentCulture, HubStrings.Get("PrebuiltReadyFormat"),
+                    availability.Label, availability.RelativeDirectory), false);
+
+        var status = availability?.Status switch
         {
-            PrebuiltStatus.Text = HubStrings.Get("PrebuiltStatus") + "：" + HubStrings.Get("PrebuiltUnsupportedHost");
-            return;
+            PrebuiltStatus.PlatformUnsupported => ("PrebuiltLabelTargetUnsupported", true),
+            PrebuiltStatus.NotBuilt => ("PrebuiltLabelNotBuilt", false),
+            PrebuiltStatus.EngineChanged => ("PrebuiltLabelRebuild", true),
+            PrebuiltStatus.TargetMismatch => ("PrebuiltLabelTargetMismatch", true),
+            PrebuiltStatus.ConfigurationMissing => ("PrebuiltLabelConfigurationMissing", true),
+            PrebuiltStatus.MissingCache or PrebuiltStatus.MissingContents => ("PrebuiltLabelIncomplete", true),
+            _ => ("PrebuiltLabelNotBuilt", false),
+        };
+        var tooltip = HubStrings.Get(availability?.TextKey ?? "PrebuiltReasonNotBuilt");
+        return (HubStrings.Get(status.Item1), tooltip, status.Item2);
+    }
+
+    private static bool SamePath(string? left, string? right)
+    {
+        if (left is null || right is null) return false;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)), comparison);
+    }
+
+    private sealed class EngineVersionComparer : IComparer<EngineEntry>
+    {
+        public static EngineVersionComparer Instance { get; } = new();
+
+        public int Compare(EngineEntry? left, EngineEntry? right)
+        {
+            if (ReferenceEquals(left, right)) return 0;
+            if (left is null) return -1;
+            if (right is null) return 1;
+            var leftVersion = ComparableVersion(left.Version);
+            var rightVersion = ComparableVersion(right.Version);
+            var result = leftVersion.CompareTo(rightVersion);
+            return result != 0 ? result : StringComparer.OrdinalIgnoreCase.Compare(left.Version, right.Version);
         }
 
-        if (engine is null)
+        private static Version ComparableVersion(string value)
         {
-            PrebuiltStatus.Text = HubStrings.Get("PrebuiltStatus") + "：" + HubStrings.Get("PrebuiltNone");
-            return;
+            var end = value.IndexOfAny(['-', '+']);
+            var numeric = end < 0 ? value : value[..end];
+            return Version.TryParse(numeric, out var parsed) ? parsed : new Version(0, 0);
         }
-
-        var availability = _workspace.PrebuiltStatusOf(engine) ?? throw new InvalidOperationException("Prebuilt inspection is unavailable on this host.");
-        PrebuiltStatus.Text = HubStrings.Get("PrebuiltStatus") + "：" + (availability.Usable
-            ? string.Format(HubStrings.Get("PrebuiltReadyFormat"), availability.Label, availability.RelativeDirectory)
-            : HubStrings.Get(availability.TextKey));
     }
 }

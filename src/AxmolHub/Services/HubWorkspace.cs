@@ -695,21 +695,23 @@ public sealed class HubWorkspace : IDisposable
 
     // ───────────────────────── Engines ─────────────────────────
 
-    public async Task ImportEngineAsync(string? path)
+    public async Task<EngineEntry?> ImportEngineAsync(string? path)
     {
         if (path is null)
         {
-            return;
+            return null;
         }
 
+        EngineEntry? imported = null;
         await ExecuteAsync("Import engine", _ =>
         {
-            AddEngine(StateStore.ValidateEngine(path));
+            imported = AddEngine(StateStore.ValidateEngine(path));
             return Task.CompletedTask;
         });
+        return imported;
     }
 
-    public async Task ChooseAndInstallEngineAsync()
+    public async Task<EngineEntry?> ChooseAndInstallEngineAsync()
     {
         // No busy guard here any more: an engine download is a transfer, and a transfer does not own the
         // app. The picker is the place that stops asking for a version that is already arriving.
@@ -720,10 +722,10 @@ public sealed class HubWorkspace : IDisposable
             engine => EngineIsTransferring(engine.Version, engine.Channel));
         if (release is null)
         {
-            return;
+            return null;
         }
 
-        await InstallEngineAsync(release.Version);
+        return await InstallEngineAsync(release.Version);
     }
 
     /// <summary>The installable official engine versions. Remote index first; the built-in manifest when the pull fails.</summary>
@@ -738,14 +740,15 @@ public sealed class HubWorkspace : IDisposable
     /// lock: the returned task still completes when the transfer settles (so <c>await</c> means what it
     /// meant), but the page stays live while it runs and a second engine can arrive alongside it.
     /// </summary>
-    public Task InstallEngineAsync(string? version = null, string? downloadSourceOverride = null)
+    public async Task<EngineEntry?> InstallEngineAsync(string? version = null, string? downloadSourceOverride = null)
     {
         if (downloadSourceOverride is not null && !DownloadSources.IsKnown(downloadSourceOverride))
         {
             throw new InvalidOperationException("The requested engine download source is not supported.");
         }
 
-        return EnqueueTask(
+        EngineEntry? installed = null;
+        await EnqueueTask(
             EngineInstallIdentity(version),
             "TaskEnginePackage",
             version,
@@ -771,8 +774,9 @@ public sealed class HubWorkspace : IDisposable
 
                 var package = WithDownloadSource(release.Package, downloadSourceOverride);
                 var path = await _installer.InstallAsync(package, ByteProgress(item), token, item.MarkFinalizing);
-                AddEngine(StateStore.ValidateEngine(path, package.Channel));
+                installed = AddEngine(StateStore.ValidateEngine(path, package.Channel));
             });
+        return installed;
     }
 
     /// <summary>
@@ -804,26 +808,26 @@ public sealed class HubWorkspace : IDisposable
         return resolved;
     }
 
-    private void AddEngine(EngineEntry engine)
+    private EngineEntry AddEngine(EngineEntry engine)
     {
-        if (!State.Engines.Any(e => e.Path.Equals(engine.Path, StringComparison.OrdinalIgnoreCase)))
-        {
-            State.Engines.Add(engine);
-        }
+        var registered = State.Engines.FirstOrDefault(e => e.Path.Equals(engine.Path, StringComparison.OrdinalIgnoreCase));
+        if (registered is null) State.Engines.Add(registered = engine);
 
         State.DefaultEnginePath ??= engine.Path;
+        SelectedEngine = registered;
+        return registered;
     }
 
-    public async Task SetDefaultEngineAsync() => await ExecuteAsync("Set default engine", _ =>
+    public async Task SetDefaultEngineAsync(EngineEntry? requested = null) => await ExecuteAsync("Set default engine", _ =>
     {
-        var engine = RequiredEngine();
+        var engine = RequiredEngine(requested);
         State.DefaultEnginePath = engine.Path;
         return Task.CompletedTask;
     });
 
-    public async Task VerifyEngineAsync() => await ExecuteAsync("Verify engine", _ =>
+    public async Task VerifyEngineAsync(EngineEntry? requested = null) => await ExecuteAsync("Verify engine", _ =>
     {
-        var engine = RequiredEngine();
+        var engine = RequiredEngine(requested);
         if (StateStore.ValidateEngine(engine.Path).Version != engine.Version)
         {
             throw new InvalidDataException("Engine version changed.");
@@ -832,9 +836,9 @@ public sealed class HubWorkspace : IDisposable
         return Task.CompletedTask;
     });
 
-    public async Task RemoveEngineAsync() => await ExecuteAsync("Remove engine from list", _ =>
+    public async Task RemoveEngineAsync(EngineEntry? requested = null) => await ExecuteAsync("Remove engine from list", _ =>
     {
-        var engine = RequiredEngine();
+        var engine = RequiredEngine(requested);
         State.Engines.Remove(engine);
         if (State.DefaultEnginePath == engine.Path)
         {
@@ -863,12 +867,12 @@ public sealed class HubWorkspace : IDisposable
     /// has no window of its own to hold a dialog against, and a modal that surfaces after the user has
     /// moved on to another page is the thing this queue exists to stop.
     /// </summary>
-    public async Task RepairEngineAsync()
+    public async Task RepairEngineAsync(EngineEntry? requested = null)
     {
         EngineEntry engine;
         try
         {
-            engine = RequiredEngine();
+            engine = RequiredEngine(requested);
             RequireEngineAtRest(engine);
         }
         catch (Exception ex)
@@ -940,7 +944,7 @@ public sealed class HubWorkspace : IDisposable
     /// answers and then watches get refused — and it must keep <see cref="RequireEngineAtRest"/> as the guard
     /// against deleting a tree a transfer is still writing into.
     /// </summary>
-    public async Task UninstallEngineAsync()
+    public async Task UninstallEngineAsync(EngineEntry? requested = null)
     {
         if (RefuseIfBusy())
         {
@@ -951,7 +955,7 @@ public sealed class HubWorkspace : IDisposable
         PackageEntry package;
         try
         {
-            engine = RequiredEngine();
+            engine = RequiredEngine(requested);
             RequireEngineAtRest(engine);
             package = ManagedEnginePackage(engine);
             if (State.Projects.Any(p => p.Version == engine.Version && p.Channel == engine.Channel))
@@ -988,7 +992,7 @@ public sealed class HubWorkspace : IDisposable
         });
     }
 
-    private EngineEntry RequiredEngine() => SelectedEngine
+    private EngineEntry RequiredEngine(EngineEntry? requested = null) => requested ?? SelectedEngine
         ?? throw new InvalidOperationException("Select an engine first.");
 
     // ───────────────────────── Engine mirror ─────────────────────────
@@ -1015,9 +1019,9 @@ public sealed class HubWorkspace : IDisposable
     /// setting the next time it fetches (setup / configure / build), which is exactly why the dialog
     /// says so.
     /// </summary>
-    public async Task ApplyEngineMirrorAsync(string mirror) => await ExecuteAsync("SwitchEngineMirror", _ =>
+    public async Task ApplyEngineMirrorAsync(string mirror, EngineEntry? requested = null) => await ExecuteAsync("SwitchEngineMirror", _ =>
     {
-        var engine = RequiredEngine();
+        var engine = RequiredEngine(requested);
         EngineMirror.Apply(engine, mirror);
         Log.Write($"Engine mirror: {engine.Path} -> {mirror} (now {EngineMirror.Current(engine)})");
         return Task.CompletedTask;
@@ -1501,9 +1505,9 @@ public sealed class HubWorkspace : IDisposable
         return Task.CompletedTask;
     });
 
-    public async Task OpenEngineFolderAsync() => await ExecuteAsync("Open engine folder", _ =>
+    public async Task OpenEngineFolderAsync(EngineEntry? requested = null) => await ExecuteAsync("Open engine folder", _ =>
     {
-        Open(RequiredEngine().Path);
+        Open(RequiredEngine(requested).Path);
         return Task.CompletedTask;
     });
 
@@ -1532,14 +1536,14 @@ public sealed class HubWorkspace : IDisposable
     /// (which changes the global environment), so a confirmation window first lets the user pick a
     /// configuration and be informed.
     /// </summary>
-    public async Task BuildEngineAsync()
+    public async Task BuildEngineAsync(EngineEntry? requested = null)
     {
         if (RefuseIfBusy())
         {
             return;
         }
 
-        var engine = RequiredEngine();
+        var engine = RequiredEngine(requested);
         var host = PrebuiltHostTarget ?? throw new InvalidOperationException(HubStrings.Get("PrebuiltUnsupportedHost"));
 
         var configuration = await EngineBuildWindow.PickAsync(Owner, engine, host);

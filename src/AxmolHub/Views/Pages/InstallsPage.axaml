@@ -1,85 +1,183 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:core="using:AxmolHub.Core"
              xmlns:local="using:AxmolHub"
              x:Class="AxmolHub.InstallsPage"
              x:DataType="local:InstallsPage">
 
-  <!--
-    Engines page. The WPF version called it InstallsPage (the nav text Key is likewise "Installs"), and the
-    same name is kept here. Structure copied verbatim: title row → engine table → seven action buttons.
-  -->
-
   <UserControl.Styles>
-    <!-- Same rule as the projects page action bar: the theme puts Margin 0,0,8,0 on every Button, so
-         the bar zeroes it and lets ItemSpacing/LineSpacing own both gaps (a wrapped second line had
-         none before, which read as cramped). -->
-    <Style Selector="WrapPanel.actions > Button">
-      <Setter Property="Margin" Value="0" />
+    <Style Selector="DataGridRow Button.engine-row-action">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
+    <Style Selector="DataGridRow:pointerover Button.engine-row-action">
+      <Setter Property="IsVisible" Value="True" />
+    </Style>
+    <Style Selector="DataGridRow:selected Button.engine-row-action">
+      <Setter Property="IsVisible" Value="True" />
+    </Style>
+    <Style Selector="DataGridRow:focus-within Button.engine-row-action">
+      <Setter Property="IsVisible" Value="True" />
+    </Style>
+    <Style Selector="Border.engine-search:focus-within">
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Accent}" />
+      <Setter Property="BorderThickness" Value="2" />
+    </Style>
+    <Style Selector="MenuItem.danger">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
+    </Style>
+    <Style Selector="Border.engine-status.warning">
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.DangerBorder}" />
+    </Style>
+    <Style Selector="Border.engine-status.warning TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
     </Style>
   </UserControl.Styles>
 
-  <Grid RowDefinitions="Auto,*,Auto,Auto">
+  <Grid RowDefinitions="Auto,Auto,*">
+    <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,14">
+      <Border Classes="engine-search" MinWidth="120" MaxWidth="420" Height="42" VerticalAlignment="Center"
+              Background="{DynamicResource Hub.SurfaceSunken}" BorderBrush="{DynamicResource Hub.BorderStrong}"
+              BorderThickness="1" CornerRadius="6" Margin="0,0,10,0">
+        <Grid ColumnDefinitions="40,*,36">
+          <Path Grid.Column="0" Data="{StaticResource Hub.Icon.Search}" Width="18" Height="18"
+                Stretch="Uniform" Fill="Transparent" Stroke="{DynamicResource Hub.TextSecondary}"
+                StrokeThickness="1.7" StrokeLineCap="Round" StrokeJoin="Round"
+                HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
+          <TextBox x:Name="SearchBox" Grid.Column="1" PlaceholderText="{DynamicResource SearchEngines}"
+                   Background="Transparent" BorderThickness="0" Padding="0" Margin="0"
+                   PlaceholderForeground="{DynamicResource Hub.TextSecondary}"
+                   VerticalContentAlignment="Center" />
+          <Button x:Name="ClearSearchButton" Grid.Column="2" Classes="quiet" Padding="0"
+                  Width="28" Height="28" VerticalAlignment="Center" IsVisible="False"
+                  ToolTip.Tip="{DynamicResource ClearSearch}">
+            <Path Data="{StaticResource Hub.Icon.Close}" Width="14" Height="14" Stretch="Uniform"
+                  Stroke="{DynamicResource Hub.TextSecondary}" StrokeThickness="1.7" />
+          </Button>
+        </Grid>
+      </Border>
+      <Button Grid.Column="1" x:Name="ImportButton" Content="{DynamicResource ImportEngine}"
+              Classes="quiet more" Margin="0,0,8,0" />
+      <Button Grid.Column="2" x:Name="InstallButton" Content="{DynamicResource InstallOfficial}"
+              Classes="primary" />
+    </Grid>
 
-    <DockPanel Grid.Row="0" Margin="0,0,0,22">
-      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
-                  HorizontalAlignment="Right" VerticalAlignment="Center">
-        <Button x:Name="ImportButton" Content="{DynamicResource ImportEngine}" Classes="quiet more" />
-        <Button x:Name="InstallButton" Content="{DynamicResource InstallOfficial}"
-                Classes="primary more" Margin="8,0,0,0" />
-      </StackPanel>
-      <StackPanel>
-        <TextBlock Text="{DynamicResource Installs}" FontSize="28" FontWeight="SemiBold" />
-        <TextBlock Text="{DynamicResource EnginesHint}" Classes="muted" Margin="0,8,12,0" />
-      </StackPanel>
-    </DockPanel>
+    <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,10">
+      <ComboBox x:Name="ChannelFilter" MinWidth="155" />
+      <TextBlock Grid.Column="1" x:Name="ResultCount" Classes="muted"
+                 VerticalAlignment="Center" Margin="14,0,0,0" />
+      <Button Grid.Column="2" x:Name="SortButton" Classes="quiet" />
+    </Grid>
 
-    <Border Grid.Row="1" BorderBrush="{DynamicResource Hub.Border}"
-            BorderThickness="1" CornerRadius="7">
+    <Border Grid.Row="2" BorderBrush="{DynamicResource Hub.Border}"
+            BorderThickness="1" CornerRadius="7" ClipToBounds="True">
       <Grid>
-        <DataGrid x:Name="EnginesGrid">
+        <DataGrid x:Name="EnginesGrid" CanUserSortColumns="False" IsReadOnly="True">
           <DataGrid.Columns>
-            <DataGridTextColumn Binding="{Binding Version}" Width="100" x:DataType="core:EngineEntry" />
-            <DataGridTextColumn Binding="{Binding Channel}" Width="140" x:DataType="core:EngineEntry" />
-            <DataGridTextColumn Binding="{Binding Path}" Width="*" x:DataType="core:EngineEntry" />
+            <DataGridTemplateColumn Width="165">
+              <DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource Version}" /></DataGridTemplateColumn.Header>
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="local:EngineListItem">
+                  <StackPanel Margin="4,2" Spacing="3" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <TextBlock Text="{Binding Engine.Version}" FontWeight="SemiBold" TextWrapping="NoWrap" />
+                      <Border Background="{DynamicResource Hub.AccentSoft}" CornerRadius="4" Padding="5,1"
+                              VerticalAlignment="Center" IsVisible="{Binding IsDefault}">
+                        <TextBlock Text="{DynamicResource Default}" FontSize="10" TextWrapping="NoWrap" />
+                      </Border>
+                    </StackPanel>
+                    <StackPanel IsVisible="{Binding IsCompact}" Spacing="3">
+                      <TextBlock Text="{Binding Engine.Channel}" Classes="muted" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding DisplayPath}" Classes="muted" TextWrapping="Wrap"
+                                 ToolTip.Tip="{Binding Engine.Path}" />
+                      <WrapPanel Orientation="Horizontal">
+                        <Border Classes="engine-status" Classes.warning="{Binding MirrorWarning}"
+                                Background="{DynamicResource Hub.SurfaceSunken}" BorderBrush="{DynamicResource Hub.Border}"
+                                BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                                ToolTip.Tip="{Binding MirrorTooltip}" Focusable="True"
+                                AutomationProperties.Name="{Binding MirrorLabel}"
+                                AutomationProperties.HelpText="{Binding MirrorTooltip}">
+                          <TextBlock Text="{Binding MirrorLabel}" FontSize="11" TextWrapping="NoWrap" />
+                        </Border>
+                        <Border Classes="engine-status" Classes.warning="{Binding PrebuiltWarning}"
+                                Background="{DynamicResource Hub.SurfaceSunken}" BorderBrush="{DynamicResource Hub.Border}"
+                                BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                                ToolTip.Tip="{Binding PrebuiltTooltip}" Focusable="True"
+                                AutomationProperties.Name="{Binding PrebuiltLabel}"
+                                AutomationProperties.HelpText="{Binding PrebuiltTooltip}">
+                          <TextBlock Text="{Binding PrebuiltLabel}" FontSize="11" TextWrapping="NoWrap" />
+                        </Border>
+                      </WrapPanel>
+                    </StackPanel>
+                  </StackPanel>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+            <DataGridTemplateColumn Width="125">
+              <DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource Channel}" /></DataGridTemplateColumn.Header>
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="local:EngineListItem">
+                  <TextBlock Text="{Binding Engine.Channel}" Margin="3,2" TextWrapping="Wrap" />
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+            <DataGridTemplateColumn Width="*">
+              <DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource EngineDirectory}" /></DataGridTemplateColumn.Header>
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="local:EngineListItem">
+                  <StackPanel Margin="3,2" Spacing="3">
+                    <TextBlock Text="{Binding DisplayPath}" TextTrimming="CharacterEllipsis"
+                               ToolTip.Tip="{Binding Engine.Path}" />
+                    <WrapPanel Orientation="Horizontal">
+                      <Border Classes="engine-status" Classes.warning="{Binding MirrorWarning}"
+                              Background="{DynamicResource Hub.SurfaceSunken}" BorderBrush="{DynamicResource Hub.Border}"
+                              BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                              ToolTip.Tip="{Binding MirrorTooltip}" Focusable="True"
+                              AutomationProperties.Name="{Binding MirrorLabel}"
+                              AutomationProperties.HelpText="{Binding MirrorTooltip}">
+                        <TextBlock Text="{Binding MirrorLabel}" FontSize="11" TextWrapping="NoWrap" />
+                      </Border>
+                      <Border Classes="engine-status" Classes.warning="{Binding PrebuiltWarning}"
+                              Background="{DynamicResource Hub.SurfaceSunken}" BorderBrush="{DynamicResource Hub.Border}"
+                              BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                              ToolTip.Tip="{Binding PrebuiltTooltip}" Focusable="True"
+                              AutomationProperties.Name="{Binding PrebuiltLabel}"
+                              AutomationProperties.HelpText="{Binding PrebuiltTooltip}">
+                        <TextBlock Text="{Binding PrebuiltLabel}" FontSize="11" TextWrapping="NoWrap" />
+                      </Border>
+                    </WrapPanel>
+                  </StackPanel>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+            <DataGridTemplateColumn Width="180">
+              <DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource Actions}" /></DataGridTemplateColumn.Header>
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="local:EngineListItem">
+                  <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                    <Button Content="{DynamicResource SetDefault}" Tag="{Binding Engine}" Click="OnSetDefault"
+                            Classes="engine-row-action quiet" Padding="7,5" IsEnabled="{Binding CanSetDefault}"
+                            ToolTip.Tip="{DynamicResource SetDefault}"
+                            AutomationProperties.Name="{DynamicResource SetDefault}" />
+                    <Button Content="⋯" Tag="{Binding Engine}" Click="OnEngineMenu"
+                            Classes="engine-row-action quiet" Padding="9,5"
+                            ToolTip.Tip="{DynamicResource MoreActions}"
+                            AutomationProperties.Name="{DynamicResource MoreActions}" />
+                  </StackPanel>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
           </DataGrid.Columns>
         </DataGrid>
-        <TextBlock x:Name="EmptyEngines" Classes="muted"
-                   HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
+        <StackPanel x:Name="EmptyEnginesPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Spacing="10" IsVisible="False">
+          <TextBlock x:Name="EmptyEngines" Classes="muted" TextWrapping="Wrap" HorizontalAlignment="Center" />
+          <StackPanel x:Name="EmptyActions" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8">
+            <Button Content="{DynamicResource ImportEngine}" Click="OnImportEngine" Classes="quiet more" />
+            <Button Content="{DynamicResource InstallOfficial}" Click="OnInstallEngine" Classes="primary" />
+          </StackPanel>
+          <Button x:Name="ClearFiltersButton" Content="{DynamicResource ClearSearch}" Click="OnClearFilters"
+                  Classes="quiet" IsVisible="False" />
+        </StackPanel>
       </Grid>
     </Border>
-
-    <!-- Two status readouts above the action bar: the engine's dependency mirror (which the user can
-         change here) and the prebuilt-library state that projects align to. -->
-    <StackPanel Grid.Row="2" Margin="0,14,0,0">
-      <TextBlock x:Name="MirrorStatus" Classes="muted" TextWrapping="Wrap" />
-      <TextBlock x:Name="PrebuiltStatus" Classes="muted" TextWrapping="Wrap" Margin="0,4,0,0" />
-    </StackPanel>
-
-    <!--
-      Eight buttons used to be indistinguishable here, which is exactly the problem this bar is the
-      worst case for: Repair re-downloads the whole engine tree, Uninstall asks first, and Remove
-      just drops the entry — three different behaviours behind one look.
-
-        more         the click opens a dialog first: mirror and engine build need configuration,
-                     repair and uninstall need a confirmation (both pop one now).
-        destructive  acts on click. Remove is the only one left in that tier, and it is marked so
-                     its silence is visible rather than assumed.
-
-      Verify / Open folder / Set default are unmarked because they really do just run and are cheap.
-    -->
-    <WrapPanel Grid.Row="3" Classes="actions" ItemSpacing="8" LineSpacing="8" Margin="0,18,0,6">
-      <Button x:Name="MirrorButton" Content="{DynamicResource SwitchMirror}" Classes="more" />
-      <Button x:Name="BuildEngineButton" Content="{DynamicResource BuildEngine}" Classes="more" />
-      <Button x:Name="DefaultButton" Content="{DynamicResource SetDefault}" />
-      <Button x:Name="OpenFolderButton" Content="{DynamicResource OpenFolder}" Classes="quiet" />
-      <Button x:Name="VerifyButton" Content="{DynamicResource VerifyEngine}" Classes="quiet" />
-      <Button x:Name="RepairButton" Content="{DynamicResource Repair}" Classes="quiet more"
-              ToolTip.Tip="{DynamicResource RepairHint}" />
-      <Button x:Name="UninstallButton" Content="{DynamicResource Uninstall}" Classes="quiet more" />
-      <Button x:Name="RemoveButton" Content="{DynamicResource RemoveFromList}" Classes="destructive"
-              ToolTip.Tip="{DynamicResource RemoveEngineHint}" />
-    </WrapPanel>
-
   </Grid>
 </UserControl>
