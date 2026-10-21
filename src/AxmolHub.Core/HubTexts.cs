@@ -589,6 +589,10 @@ public static class HubTexts
         // measured spend: every request of the round summed, because a tool loop pays for the transcript again
         // each time it re-sends it. Wording keeps 占用 and 消耗 apart on purpose; the two numbers disagree and
         // both are right.
+        ["ChatRequestSpeedApproxFormat"] = ("约 {0:0} tok/s", "~{0:0} tok/s"),
+        ["ChatRequestSpeedWaiting"] = ("等待输出…", "Waiting for output…"),
+        ["ChatSessionTokensFormat"] = ("{0} tok", "{0} tok"),
+        ["ChatSessionCacheFormat"] = ("缓存命中 {0}%", "cache hit {0}%"),
         ["ChatContextBurnSendLabel"] = ("本轮实测消耗（tokens）：", "This reply measured (tokens): "),
         ["ChatContextBurnSessionLabel"] = ("本会话累计（tokens）：", "Session total (tokens): "),
         ["ChatContextBurnInFormat"] = ("输入 {0}", "input {0}"),

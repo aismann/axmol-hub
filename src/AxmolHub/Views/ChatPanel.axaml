@@ -987,11 +987,8 @@
       <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
     <Style Selector="Button.context-ring-button">
-      <Setter Property="Width" Value="30" />
-      <Setter Property="Height" Value="30" />
-      <Setter Property="MinWidth" Value="30" />
       <Setter Property="MinHeight" Value="30" />
-      <Setter Property="Padding" Value="0" />
+      <Setter Property="Padding" Value="5,0" />
       <Setter Property="CornerRadius" Value="15" />
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
@@ -1001,6 +998,13 @@
     </Style>
     <Style Selector="Button.context-ring-button:pointerover">
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    </Style>
+    <!-- The compact readouts share the composer column, but never steal width from the context button. -->
+    <Style Selector="TextBlock.composer-metric">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
     </Style>
     <Style Selector="Border.context-popover">
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceAlt}" />
@@ -1303,8 +1307,7 @@
          Row 1 is the decision host — a pending call or a pending plan; row 2 the steer-confirm strip, where a
          second tap stands between Enter and a steer, because a steer is the routing table's strongest signal and
          worth reading once before it is said. Nothing is cancelled either way: the sentence waits for the step in
-         flight. Row 5 is the workspace picker's slot — outside the frame on purpose, and collapsed to nothing once
-         the chat has started.
+         flight. Row 5 aligns the workspace picker, per-request metrics and context button below the frame.
          Both strips are siblings of the frame, never children of it: the input box stays live and its draft stays
          visible while a question is waiting, which is the whole reason they moved. -->
     <!-- The composer, and every question that may stand above it, sit in the reading column with the same gutter
@@ -1393,9 +1396,6 @@
             </WrapPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="9"
                         VerticalAlignment="Center" Margin="8,0,0,0">
-              <Button x:Name="ContextButton" Classes="context-ring-button" VerticalAlignment="Center">
-                <local:ContextUsageRing x:Name="ContextRing" Width="20" Height="20" />
-              </Button>
               <Button x:Name="ModelPicker" Classes="chip model-picker"
                       HorizontalAlignment="Left" VerticalAlignment="Center">
                 <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
@@ -1413,20 +1413,32 @@
         </Grid>
       </Border>
 
-      <!-- The sandbox the file and command tools are confined to, named by the folder itself. It sits outside
-           the frame because it is not a per-request setting: the directory is what the session is born into,
-           and the row collapses to nothing once the first message has been sent (see RefreshComposerChoices). -->
-      <StackPanel Grid.Row="5" MaxWidth="820" HorizontalAlignment="Stretch" Margin="0,2,0,4">
-        <Button x:Name="WorkspaceChip" Classes="workspace-chip">
+      <!-- Workspace and model metrics occupy one bottom baseline, with separate controls: the folder
+           never drops lower when measurements arrive. The context button keeps its width at narrow sizes. -->
+      <Grid Grid.Row="5" ColumnDefinitions="Auto,*,*,Auto" MaxWidth="820" HorizontalAlignment="Stretch"
+            Margin="0,3,0,4" MinHeight="30" ColumnSpacing="10">
+        <Button x:Name="WorkspaceChip" Grid.Column="0" Classes="workspace-chip" MaxWidth="160">
           <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
             <Path Width="12" Height="12" Stretch="Uniform" Data="{StaticResource Hub.Icon.Folder}"
                   Fill="Transparent" StrokeThickness="1.7" StrokeLineCap="Round" StrokeJoin="Round"
                   VerticalAlignment="Center" />
-            <TextBlock x:Name="WorkspaceChipLabel" VerticalAlignment="Center" />
+            <TextBlock x:Name="WorkspaceChipLabel" VerticalAlignment="Center" MaxWidth="120"
+                       TextTrimming="CharacterEllipsis" />
             <Path Classes="chip-caret" Data="{StaticResource Hub.Icon.Caret}" />
           </StackPanel>
         </Button>
-      </StackPanel>
+        <TextBlock x:Name="RequestSpeedLabel" Classes="composer-metric" Grid.Column="1"
+                   IsVisible="False" />
+        <TextBlock x:Name="SessionBurnLabel" Classes="composer-metric" Grid.Column="2"
+                   IsVisible="False" />
+        <Button x:Name="ContextButton" Grid.Column="3" Classes="context-ring-button"
+                VerticalAlignment="Center">
+          <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <local:ContextUsageRing x:Name="ContextRing" Width="20" Height="20" />
+            <TextBlock x:Name="ContextPercentLabel" Classes="composer-metric" />
+          </StackPanel>
+        </Button>
+      </Grid>
     </Grid>
     <Popup x:Name="ContextPopup" IsLightDismissEnabled="True">
     <Border Classes="context-popover">

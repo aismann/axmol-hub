@@ -74,6 +74,57 @@ internal sealed class ConversationRun : IDisposable
     private readonly object _gate = new();
     private readonly StringBuilder _text = new();
     private readonly StringBuilder _reasoning = new();
+    // Usage arrives at request boundaries, not per streamed chunk. Keep a short rolling character window
+    // for an explicitly approximate output rate; never mistake a final usage report for live tokens.
+    private readonly Queue<(long At, int Characters)> _outputSamples = new();
+    private int _sampleCharacters;
+    private long _firstOutputAt;
+    private long _lastOutputAt;
+    private static readonly long RateWindow = 4 * Stopwatch.Frequency;
+    private static readonly long RateIdle = 2 * Stopwatch.Frequency;
+
+    internal double? ApproximateTokensPerSecond
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (!IsStreaming || IsToolRunning || RetryWaiting || _outputSamples.Count == 0) return null;
+                var now = Stopwatch.GetTimestamp();
+                TrimOutputSamples(now);
+                if (now - _lastOutputAt > RateIdle || _outputSamples.Count < 2) return null;
+                var span = (_lastOutputAt - _firstOutputAt) / (double)Stopwatch.Frequency;
+                // The first chunk has no measured starting time; count only output arriving after it.
+                return span >= 0.35 ? (_sampleCharacters - _outputSamples.Peek().Characters) / 4d / span : null;
+            }
+        }
+    }
+
+    private void SampleOutput(string chunk)
+    {
+        if (chunk.Length == 0) return;
+        var now = Stopwatch.GetTimestamp();
+        if (now - _lastOutputAt > RateIdle) ClearOutputSamples();
+        _outputSamples.Enqueue((now, chunk.Length));
+        _sampleCharacters += chunk.Length;
+        _lastOutputAt = now;
+        TrimOutputSamples(now);
+    }
+
+    private void TrimOutputSamples(long now)
+    {
+        while (_outputSamples.Count > 0 && now - _outputSamples.Peek().At > RateWindow)
+            _sampleCharacters -= _outputSamples.Dequeue().Characters;
+        _firstOutputAt = _outputSamples.Count > 0 ? _outputSamples.Peek().At : 0;
+    }
+
+    private void ClearOutputSamples()
+    {
+        _outputSamples.Clear();
+        _sampleCharacters = 0;
+        _firstOutputAt = 0;
+        _lastOutputAt = 0;
+    }
     // Where this segment's thinking stopped, on the run's clock, and whether that moment has been taken yet.
     // See <see cref="ReasoningElapsed"/> for why the freeze belongs at the thinking→answer boundary.
     private long _reasoningTicks;
@@ -255,6 +306,7 @@ internal sealed class ConversationRun : IDisposable
             }
 
             _text.Append(chunk);
+            SampleOutput(chunk);
         }
     }
 
@@ -298,7 +350,11 @@ internal sealed class ConversationRun : IDisposable
 
     internal void AppendReasoning(string chunk)
     {
-        lock (_gate) _reasoning.Append(chunk);
+        lock (_gate)
+        {
+            _reasoning.Append(chunk);
+            SampleOutput(chunk);
+        }
     }
 
     /// <summary>Starts the next segment. The previous one was written to the transcript, so the buffer must not
@@ -318,6 +374,7 @@ internal sealed class ConversationRun : IDisposable
             _filedReasoning += _reasoning.Length;
             _text.Clear();
             _reasoning.Clear();
+            ClearOutputSamples();
             // The next segment thinks again, so its thinking is measured from here and not from the run's start.
             // <see cref="ThoughtFiledBefore"/> is deliberately not re-armed by this line — it answers "has this run
             // already filed thinking", and a run is one answer however many rounds of tool calls it took to get
@@ -705,6 +762,8 @@ internal sealed class ConversationRun : IDisposable
     /// <summary>Takes the one call that may fold this run's burn into the session. A run can close through more
     /// than one door — the pump, and the supersede path that disposes a parked run without reaching the pump —
     /// and spend that counted twice would be a bill invented by the client.</summary>
+    internal bool BurnCommitted => Volatile.Read(ref _burnCommitted) != 0;
+
     internal bool TryTakeBurnCommit() => Interlocked.Exchange(ref _burnCommitted, 1) == 0;
 
     internal void RequestStop() => _stop.Cancel();

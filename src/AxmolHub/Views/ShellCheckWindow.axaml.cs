@@ -464,8 +464,38 @@ public partial class ShellCheckWindow : Window
             "模型选择器按模型名称内容自适应宽度，不再固定占用过宽空间");
         Check(panel.ComposerChipsShareLineCaretForCheck,
             "权限与模型两个胶囊右侧是同一枚两笔画的尖角线，而不是会糊成一团的填充三角");
-        Check(panel.ContextRingPrecedesModelForCheck,
-            "上下文用量圆环位于模型选择器左侧");
+        Check(panel.ContextRingBelowComposerForCheck,
+            "上下文用量圆环和占用率位于发送框下方，而不挤在模型选择器旁边");
+        Check(panel.ComposerMetricsTrimForCheck,
+            "窄窗口优先截断速度与消耗读数，右侧上下文按钮保留可点击宽度");
+        Check(ChatPanel.CompactTokenCountForCheck(999, CultureInfo.InvariantCulture) == "999"
+              && ChatPanel.CompactTokenCountForCheck(1_200, CultureInfo.InvariantCulture) == "1.2K"
+              && ChatPanel.CompactTokenCountForCheck(999_999, CultureInfo.InvariantCulture) == "1M"
+              && ChatPanel.CompactTokenCountForCheck(5_974_032, CultureInfo.InvariantCulture) == "5.97M"
+              && ChatPanel.CompactTokenCountForCheck(1_000_000_000, CultureInfo.InvariantCulture) == "1B",
+            "底部 token 数用 K/M/B 缩写，小于千保留整数，进位边界不显示 1000K");
+        using (var rateRun = new ConversationRun("rate-check", TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(2)))
+        {
+            Check(rateRun.ApproximateTokensPerSecond is null
+                  && ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedWaiting"),
+                "请求尚无流式输出时显示等待状态，不显示虚构的模型速度");
+            rateRun.AppendReasoning(new string('a', 80));
+            Check(ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedWaiting"),
+                "首个输出块没有采样区间，仍不报告速度");
+            await Task.Delay(420);
+            rateRun.AppendText(new string('b', 80));
+            Check(rateRun.ApproximateTokensPerSecond is > 0
+                  && ChatPanel.RequestSpeedTextForCheck(rateRun).Contains("tok/s", StringComparison.Ordinal),
+                "流式思考和正文共用短窗口估算速度，底部随流显示 tok/s");
+            rateRun.ParkForApproval();
+            Check(rateRun.ApproximateTokensPerSecond is null
+                  && ChatPanel.RequestSpeedTextForCheck(rateRun).Length == 0,
+                "等待审批时隐藏速度，不把人的等待时间当作模型生成速度");
+            rateRun.RearmAfterApproval();
+            rateRun.BeginSegment();
+            Check(rateRun.ApproximateTokensPerSecond is null,
+                "工具回合开启时清除上一轮的速度，不沿用过期读数");
+        }
         Check(panel.ComposerPlusCenteredForCheck,
             "添加上下文的圆形加号按钮在水平和垂直方向居中");
         // Avalonia's TextBox carries no context menu of its own, so the box a person writes in had none while the
@@ -10600,6 +10630,7 @@ public partial class ShellCheckWindow : Window
             var quietRows = panel.ContextCategoryRowsForCheck;
             panel.CloseContextPopoverForCheck();
             Check(!panel.ContextBurnVisibleForCheck && quietBurn.Length == 0
+                  && panel.ComposerBurnForCheck.Length == 0 && panel.ComposerSpeedForCheck.Length == 0
                   && !panel.CacheHitVisibleForCheck && panel.CacheHitValueForCheck.Length == 0
                   && quiet?.BurnedInputTotal == 0 && quiet.BurnedRequestCount == 0
                   && quiet.Messages.All(turn => turn.Burned is null)
@@ -10796,6 +10827,11 @@ public partial class ShellCheckWindow : Window
                   && twice.Messages.Count(turn => turn.Burned?.Input == burnInput) == 2
                   && sessionText.Contains(HubStrings.Get("ChatContextBurnSessionLabel"), StringComparison.Ordinal)
                   && sessionText.Contains(sessionInput.ToString("N0", culture), StringComparison.Ordinal)
+                  && panel.ComposerBurnForCheck.Contains(
+                      ChatPanel.CompactTokenCountForCheck(sessionInput + 2 * (600 + 200), culture), StringComparison.Ordinal)
+                  && panel.ComposerBurnTooltipForCheck.Contains(
+                      (sessionInput + 2 * (600 + 200)).ToString("N0", culture), StringComparison.Ordinal)
+                  && panel.ComposerBurnForCheck.Contains(HubStrings.Get("ChatSessionCacheFormat").Split('{')[0], StringComparison.Ordinal)
                   && sessionText.Split('\n').Length == 2,
                 "第二轮之后累计另起一行写" + sessionInput.ToString("N0", culture)
                 + "，本轮那一行仍然只是这一轮的——账不重复也不合并");

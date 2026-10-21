@@ -780,11 +780,13 @@ public partial class ChatPanel : UserControl
         ContextRing.Usage = Math.Clamp(usage.Fill, 0, 1);
         var percent = (int)Math.Round(usage.Fill * 100);
         ContextPopoverPercent.Text = percent.ToString(System.Globalization.CultureInfo.CurrentCulture) + "%";
+        ContextPercentLabel.Text = ContextPopoverPercent.Text;
         UpdateContextProgressFill(usage);
         RefreshContextCompressionButton();
         RenderCacheHit();
         RenderContextBreakdown(usage);
         RenderContextBurn();
+        RenderComposerMetrics();
         // Two different claims, so two different sentences. "预计" over a number the model itself reported is a
         // lie, and the measured reading is the one thing on this screen a person can hold the gateway to.
         ToolTip.SetTip(ContextButton, string.Format(
@@ -796,6 +798,65 @@ public partial class ChatPanel : UserControl
     }
 
     private ContextUsage CurrentContextUsage() => _chat.EstimateContextUsage(InputBox.Text ?? "");
+
+    private void RenderComposerMetrics()
+    {
+        RequestSpeedLabel.Text = RequestSpeedText(ViewedRun);
+        RequestSpeedLabel.IsVisible = RequestSpeedLabel.Text.Length > 0;
+
+        var (send, session) = _chat.ActiveConversationBurn();
+        // The stored session total excludes a run until it closes. A filed send is already inside that total.
+        var live = ViewedRun is { BurnCommitted: false } ? send : null;
+        var input = (session?.Input ?? 0) + (live?.Input ?? 0);
+        var output = (session?.Output ?? 0) + (live?.Output ?? 0);
+        var cached = (session?.CachedInput ?? 0) + (live?.CachedInput ?? 0);
+        var hasReading = session is not null || live is not null;
+        SessionBurnLabel.IsVisible = hasReading;
+        if (!hasReading)
+        {
+            SessionBurnLabel.Text = "";
+            return;
+        }
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        var total = input + output;
+        var cacheText = input > 0 && cached > 0
+            ? " · " + string.Format(culture, HubStrings.Get("ChatSessionCacheFormat"),
+                Math.Clamp(cached * 100d / input, 0d, 100d).ToString("F1", culture))
+            : "";
+        SessionBurnLabel.Text = string.Format(culture, HubStrings.Get("ChatSessionTokensFormat"),
+            CompactTokenCount(total, culture)) + cacheText;
+        // Keep the unrounded reading available when the short label is hovered.
+        ToolTip.SetTip(SessionBurnLabel, string.Format(culture, HubStrings.Get("ChatSessionTokensFormat"),
+            total.ToString("N0", culture)) + cacheText);
+    }
+
+    private static string RequestSpeedText(ConversationRun? run)
+    {
+        // A request may spend its first seconds without a measurable delta. Keep the status slot visible
+        // rather than leaving an unexplained blank, but never show a numeric speed while a tool or retry waits.
+        if (run is not { IsStreaming: true, IsToolRunning: false, RetryWaiting: false }) return "";
+        var rate = run.ApproximateTokensPerSecond;
+        return rate is > 0
+            ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatRequestSpeedApproxFormat"), rate.Value)
+            : HubStrings.Get("ChatRequestSpeedWaiting");
+    }
+
+    private static string CompactTokenCount(long tokens, System.Globalization.CultureInfo culture)
+    {
+        if (tokens < 1_000) return tokens.ToString("N0", culture);
+        var divisor = tokens >= 1_000_000_000 ? 1_000_000_000d
+            : tokens >= 1_000_000 ? 1_000_000d : 1_000d;
+        var suffix = divisor == 1_000_000_000d ? "B" : divisor == 1_000_000d ? "M" : "K";
+        var rounded = Math.Round(tokens / divisor, 2);
+        if (rounded >= 1_000 && suffix != "B")
+        {
+            divisor *= 1_000;
+            suffix = divisor == 1_000_000d ? "M" : "B";
+            rounded = Math.Round(tokens / divisor, 2);
+        }
+        return rounded.ToString("0.##", culture) + suffix;
+    }
 
     /// <summary>
     /// The session's input cache hit rate, drawn as the panel's first figure: bolder than every row under it, and
@@ -4682,6 +4743,7 @@ public partial class ChatPanel : UserControl
             if (_live is not { } current) return;
             current.Frame++;
             current.Elapsed.Text = FormatDuration(current.Run.Elapsed);
+            RenderComposerMetrics();
             RefreshGlyphPhase(current);
             // The command card's clock ticks with the bubble's rather than on one of its own: it is a number about
             // the same run, and a second timer would only be a second thing to stop.
@@ -6771,9 +6833,25 @@ public partial class ChatPanel : UserControl
     internal bool ComposerPlusCenteredForCheck
         => AddContextButton.HorizontalContentAlignment == HorizontalAlignment.Center
            && AddContextButton.VerticalContentAlignment == VerticalAlignment.Center;
-    internal bool ContextRingPrecedesModelForCheck
-        => ContextButton.Parent is Panel panel
-           && panel.Children.IndexOf(ContextButton) < panel.Children.IndexOf(ModelPicker);
+    internal bool ContextRingBelowComposerForCheck
+        => ContextButton.Parent is Grid row && Grid.GetRow(row) == 5
+           && Grid.GetColumn(ContextButton) == 3
+           && ReferenceEquals(WorkspaceChip.Parent, row)
+           && ContextPercentLabel.Text == ContextPopoverPercent.Text;
+    internal string ComposerSpeedForCheck => RequestSpeedLabel.Text ?? "";
+    internal static string RequestSpeedTextForCheck(ConversationRun? run) => RequestSpeedText(run);
+    internal string ComposerBurnForCheck => SessionBurnLabel.Text ?? "";
+    internal string ComposerBurnTooltipForCheck => ToolTip.GetTip(SessionBurnLabel)?.ToString() ?? "";
+    internal static string CompactTokenCountForCheck(long tokens, System.Globalization.CultureInfo culture)
+        => CompactTokenCount(tokens, culture);
+    internal bool ComposerMetricsTrimForCheck
+        => RequestSpeedLabel.TextTrimming == TextTrimming.CharacterEllipsis
+           && SessionBurnLabel.TextTrimming == TextTrimming.CharacterEllipsis
+           && RequestSpeedLabel.Parent is Grid row
+           && ReferenceEquals(row, SessionBurnLabel.Parent)
+           && row.ColumnDefinitions[1].Width.IsStar
+           && row.ColumnDefinitions[2].Width.IsStar
+           && row.ColumnDefinitions[3].Width.IsAuto;
     internal bool PermissionChipFollowsPlusForCheck
         => PermissionChip.Parent is Panel panel
            && panel.Children.IndexOf(PermissionChip) == panel.Children.IndexOf(AddContextButton) + 1;
