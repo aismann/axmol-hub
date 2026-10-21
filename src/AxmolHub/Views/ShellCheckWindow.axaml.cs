@@ -9449,17 +9449,25 @@ public partial class ShellCheckWindow : Window
             // the prepared request directly so this regression check never contacts OpenAI or relies on a response
             // claiming that it searched. The same-name refusal function must be replaced, not sent beside it.
             //
-            // The provider is looked up without throwing: this suite runs against the repository's own data root,
-            // where the OpenAI preset may legitimately be absent, and a missing fixture must fail this one group
-            // rather than abort every check after it.
+            // A fresh install seeds only the manifest's default provider, so on this suite's scratch root the
+            // OpenAI preset is a *catalogue* entry, not a configured provider. The fixture adopts it for the length
+            // of this group — the route under test is the one a user gets after adding OpenAI from that catalogue —
+            // and puts the list back afterwards so nothing downstream counts an extra provider. The manifest names
+            // no model on purpose (a shipped model id goes stale), so the fixture names one the way the catalog
+            // would after a sign-in: a provider with no model builds no request at all, and every assertion below
+            // would then read an empty tool list and blame the search decision for it.
+            var adoptedOpenAi = chat.Providers.All(provider => provider.Id != "openai") && chat.AddPreset("openai") is not null;
             if (chat.Providers.FirstOrDefault(provider => provider.Id == "openai") is { } openAiProvider)
             {
                 var previousOpenAiCredential = openAiProvider.Credential;
+                var previousOpenAiModels = openAiProvider.Models.ToList();
                 var previousHostedSearch = appPreferences.AllowHostedWebSearch;
                 var previousDeepSeekSearch = appPreferences.AllowDeepSeekWebApi;
                 try
                 {
+                    openAiProvider.Model = "gpt-6-luna";
                     var oauthSession = StartAgentSession(chat, openAiProvider.Id);
+                    appPreferences.AllowHostedWebSearch = true;
                     openAiProvider.Credential = new ProviderCredential
                     {
                         ProviderId = openAiProvider.Id,
@@ -9500,13 +9508,15 @@ public partial class ShellCheckWindow : Window
                 finally
                 {
                     openAiProvider.Credential = previousOpenAiCredential;
+                    openAiProvider.Models = previousOpenAiModels;
                     appPreferences.AllowHostedWebSearch = previousHostedSearch;
                     appPreferences.AllowDeepSeekWebApi = previousDeepSeekSearch;
+                    if (adoptedOpenAi) chat.RemoveProvider(openAiProvider.Id);
                 }
             }
             else
             {
-                Check(false, "这份数据根里没有内置 openai provider，OpenAI OAuth 搜索的三条断言未执行（现有 provider："
+                Check(false, "清单里没有 openai 预设，无法采纳它来验证 OpenAI OAuth 搜索（现有 provider："
                     + string.Join(",", chat.Providers.Select(provider => provider.Id)) + "）");
             }
 
