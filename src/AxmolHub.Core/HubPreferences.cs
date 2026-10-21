@@ -128,11 +128,20 @@ public sealed class HubPreferences
     /// <summary>
     /// Legacy storage for the global web-search switch. Kept to read existing preference files; Settings keeps
     /// this and <see cref="AllowDeepSeekWebApi"/> synchronized.
+    ///
+    /// <para><b>On by default.</b> This started as an opt-in, on the argument that search is the one capability
+    /// with neither an approval card nor a run cap — the endpoint searches mid-reply and Hub cannot ask or stop
+    /// it. The owner turned the default around on 2026-10-21: a tool nobody is told about is a tool nobody gets
+    /// value from, and the switch still exists for the person who does not want the spend. The cost is stated in
+    /// the setting's own hint rather than left to be discovered, and the DeepSeek route reports its call count
+    /// and estimate in the session that spent it. A stored file keeps whatever it says, so this only decides
+    /// what a fresh install gets.</para>
     /// </summary>
-    public bool AllowHostedWebSearch { get; set; }
+    public bool AllowHostedWebSearch { get; set; } = true;
 
-    /// <summary>Legacy storage for the global web-search switch, kept for existing preference files.</summary>
-    public bool AllowDeepSeekWebApi { get; set; }
+    /// <summary>Legacy storage for the global web-search switch, kept for existing preference files. Same
+    /// default and the same reasoning as <see cref="AllowHostedWebSearch"/>.</summary>
+    public bool AllowDeepSeekWebApi { get; set; } = true;
 
     /// <summary>
     /// Whether a model's own thinking is put on screen. <b>On by default</b>, and deliberately in the same

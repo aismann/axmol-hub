@@ -14936,17 +14936,24 @@ public partial class ShellCheckWindow : Window
             "数据目录显示的是实际数据根而不是默认目录");
 
         settings.SelectCategoryForCheck("permission");
+        // Both switches ship on, and the pair still has to prove that they are independent and that this one
+        // checkbox writes both stored keys — the checkbox is the product's single answer even though two legacy
+        // preferences carry it.
         Check(NamedDescendant<CheckBox>(settings, "WebFetchCheck")?.IsChecked == true
-              && NamedDescendant<CheckBox>(settings, "WebSearchCheck")?.IsChecked == false
-              && !settings.AllowWebSearchForCheck,
-            "网页抓取默认开启，联网搜索由一个默认关闭的总开关控制");
+              && NamedDescendant<CheckBox>(settings, "WebSearchCheck")?.IsChecked == true
+              && settings.AllowWebSearchForCheck,
+            "网页抓取与联网搜索默认开启，联网搜索由一个总开关控制");
         var webSearchCheck = NamedDescendant<CheckBox>(settings, "WebSearchCheck");
+        if (webSearchCheck is not null) webSearchCheck.IsChecked = false;
+        var optedOutPreferences = new PreferencesStore(preferencesPath).Load();
+        Check(!settings.AllowWebSearchForCheck && !optedOutPreferences.AllowHostedWebSearch
+              && !optedOutPreferences.AllowDeepSeekWebApi && optedOutPreferences.AllowOutboundWebFetch,
+            "关掉联网搜索总开关会同时写入两个旧偏好，且不改变网页抓取权限");
         if (webSearchCheck is not null) webSearchCheck.IsChecked = true;
         var optedInPreferences = new PreferencesStore(preferencesPath).Load();
         Check(settings.AllowWebSearchForCheck && optedInPreferences.AllowHostedWebSearch
               && optedInPreferences.AllowDeepSeekWebApi && optedInPreferences.AllowOutboundWebFetch,
-            "开启联网搜索总开关会持久化并覆盖旧开关，且不改变网页抓取权限");
-        if (webSearchCheck is not null) webSearchCheck.IsChecked = false;
+            "再打开联网搜索总开关会把两个旧偏好一起写回开启状态");
 
         var projectLocation = NamedDescendant<TextBox>(settings, "DefaultProjectLocation")?.Text;
         Check(projectLocation == HubTexts.Get("NotSelected", HubStrings.Language),

@@ -409,8 +409,8 @@ public static class HubTexts
             + "command sandbox — and in 「询问审批」 every fetch still asks for approval on a card."),
         ["AllowWebSearch"] = ("允许联网搜索", "Allow web search"),
         ["AllowWebSearchHint"] = (
-            "默认关闭。开启后，Hub 按提供商配置自动选择搜索方式：DeepSeek 预设使用官方 Search/Fetch API，可能按成功请求次数收费；其他声明支持联网搜索的提供商使用其托管搜索，也可能产生服务商费用。DeepSeek 调用次数和估算费用会显示在当前会话。",
-            "Off by default. When enabled, Hub chooses the search route from the provider configuration: the DeepSeek preset uses its official Search/Fetch API, which may charge per successful request; other providers that declare hosted search use that route and may charge as well. DeepSeek call counts and estimated cost appear in the current conversation."),
+            "默认开启。Hub 按提供商配置自动选择搜索方式：DeepSeek 预设使用官方 Search/Fetch API，可能按成功请求次数收费；其他声明支持联网搜索的提供商使用其托管搜索，也可能产生服务商费用。DeepSeek 调用次数和估算费用会显示在当前会话。不想产生这笔费用就关掉它——之后需要联网的问题，助手只能直接说明它查不了。",
+            "On by default. Hub chooses the search route from the provider configuration: the DeepSeek preset uses its official Search/Fetch API, which may charge per successful request; other providers that declare hosted search use that route and may charge as well. DeepSeek call counts and estimated cost appear in the current conversation. Turn it off if you do not want the spend — a question that needs the web then gets a plain answer saying it could not search."),
         ["DeepSeekWebUsageFormat"] = ("DeepSeek 网页工具：搜索 {0} 次（{1} 次计费），抓取 {2} 次（{3} 次计费）；估算费用 ¥{4:F3}", "DeepSeek web tools: {0} searches ({1} billable), {2} fetches ({3} billable); estimated cost ¥{4:F3}"),
         // The one switch on the appearance pane that is not about appearance. It sits there rather than under
         // permission because it decides what a person reads, never what the assistant may do — and its hint has

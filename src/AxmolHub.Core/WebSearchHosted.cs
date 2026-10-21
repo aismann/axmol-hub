@@ -67,8 +67,12 @@ public readonly record struct WebSearchHostedDecision(WebSearchHostedVerdict Ver
 /// real request to the user's own endpoint can tell which. That is why <c>serverTools</c> ships empty everywhere
 /// and why the field is user-editable — the switch to try it is a line in a JSON file, not a build.</para>
 ///
-/// <para>A separate opt-in is necessary: the endpoint chooses whether and how often to search during generation,
-/// so Hub cannot show a per-call approval card or enforce a call limit.</para>
+/// <para><b>A switch, not a card.</b> The endpoint chooses whether and how often to search during generation, so
+/// Hub can neither show a per-call approval card nor cap a run: the only instrument left is on/off. It ships on
+/// (2026-10-21, the owner's call): a capability nobody is offered is one nobody benefits from, and the route that
+/// costs money says so in the setting's own hint while the DeepSeek path counts its calls and estimate into the
+/// session that spent them. Turning it off is the way to stop the spend, and the refusal a model then gets says
+/// plainly that nothing was searched.</para>
 /// </summary>
 public static class WebSearchHosted
 {

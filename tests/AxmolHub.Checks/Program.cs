@@ -5793,25 +5793,27 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception($"A card promised an action the tool would refuse:{Environment.NewLine}{cardOff}{Environment.NewLine}{cardBad}");
     Console.WriteLine("PASS: the fetch card names the host, and says out loud when the call is going to be refused.");
 
-    // The two switches are independent: page fetch ships on, but an endpoint's autonomous search is opt-in.
+    // The two switches are independent, and both ship on. Page fetch is bounded and free; search is neither, yet a
+    // capability nobody is offered is one nobody uses — its cost is stated where the switch is and its calls are
+    // counted in the session that spent them, so the default is on and the switch is the way to stop.
     var webPreferences = Path.Combine(toolRoot, "webfetch-settings.json");
     File.WriteAllText(webPreferences, "{}");
     var defaults = new PreferencesStore(webPreferences).Load();
-    if (!defaults.AllowOutboundWebFetch || defaults.AllowHostedWebSearch)
-        throw new Exception("The default must allow named-page fetch and keep hosted search off.");
+    if (!defaults.AllowOutboundWebFetch || !defaults.AllowHostedWebSearch || !defaults.AllowDeepSeekWebApi)
+        throw new Exception("A fresh install must offer named-page fetch and web search.");
     File.WriteAllText(webPreferences, """{"AllowOutboundWebFetch":false}""");
     var fetchOff = new PreferencesStore(webPreferences).Load();
-    if (fetchOff.AllowOutboundWebFetch || fetchOff.AllowHostedWebSearch)
-        throw new Exception("An explicit fetch off was ignored or enabled hosted search.");
+    if (fetchOff.AllowOutboundWebFetch || !fetchOff.AllowHostedWebSearch)
+        throw new Exception("An explicit fetch off was ignored, or it turned hosted search off with it.");
     File.WriteAllText(webPreferences, """{"AllowOutboundWebFetch":true}""");
     var fetchOn = new PreferencesStore(webPreferences).Load();
-    if (!fetchOn.AllowOutboundWebFetch || fetchOn.AllowHostedWebSearch)
+    if (!fetchOn.AllowOutboundWebFetch || !fetchOn.AllowHostedWebSearch)
         throw new Exception("Enabling page fetch changed the independent hosted-search switch.");
-    File.WriteAllText(webPreferences, """{"AllowOutboundWebFetch":false,"AllowHostedWebSearch":true}""");
-    var searchOn = new PreferencesStore(webPreferences).Load();
-    if (searchOn.AllowOutboundWebFetch || !searchOn.AllowHostedWebSearch)
-        throw new Exception("The hosted-search switch did not round-trip independently.");
-    Console.WriteLine("PASS: page fetching defaults on, hosted search defaults off, and the permissions round-trip independently.");
+    File.WriteAllText(webPreferences, """{"AllowOutboundWebFetch":false,"AllowHostedWebSearch":false}""");
+    var searchOff = new PreferencesStore(webPreferences).Load();
+    if (searchOff.AllowOutboundWebFetch || searchOff.AllowHostedWebSearch)
+        throw new Exception("The hosted-search switch did not round-trip independently of page fetch.");
+    Console.WriteLine("PASS: page fetching and web search both default on, and the two permissions round-trip independently.");
 
     log.Write("self-check finished");
     Directory.Delete(toolRoot, recursive: true);
