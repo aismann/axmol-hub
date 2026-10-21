@@ -45,6 +45,7 @@ public sealed class ProjectService(ProcessRunner runner, EngineCommandLine comma
         if (project.Version != engine.Version) throw new InvalidDataException("Created project engine version does not match selected engine.");
         if (project.ProjectType != projectType) throw new InvalidDataException("Created project scripting type does not match selection.");
         project.Channel = engine.Channel;
+        project.Platform = BuildTargets.DefaultForHost(engine.Version).Id;
         StateStore.LockProject(project);
         return project;
     }

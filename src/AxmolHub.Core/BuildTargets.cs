@@ -103,6 +103,19 @@ public static class BuildTargets
         => ForVersion(version)
             .Where(target => target.CanBuildOn(Host) && target.CanCrossBuild(HostArch))
             .ToArray();
+
+    /// <summary>The new-project default for a host. Windows keeps its established x64 default; macOS and Linux use the host architecture.</summary>
+    public static BuildTarget DefaultForHost(string version, string? host = null, string? hostArch = null)
+    {
+        host ??= Host;
+        hostArch ??= HostArch;
+        if (host == "windows") return Get("windows-x64");
+        if (host is not ("macos" or "linux")) return Get("windows-x64");
+
+        return ForVersion(version).FirstOrDefault(target => target.Family == host && SameArch(target.Architecture, hostArch))
+            ?? throw new PlatformNotSupportedException($"Axmol {version} has no {host} target for host architecture {hostArch}.");
+    }
+
     public static string BuildDirectory(ProjectEntry project)
     {
         BuildConfigurations.Validate(project.Configuration);

@@ -8965,6 +8965,14 @@ var parent = Path.Combine(root, "projects " + Guid.NewGuid().ToString("N"));
 var project = await service.CreateAsync("HelloAxmol", parent, engine);
 Check(File.Exists(Path.Combine(project.Path, "Source/AppDelegate.cpp")) && StateStore.ReadProject(project.Path).Version == engine.Version, "Real official CLI creates project and exact version lock");
 Check(StateStore.ReadProject(project.Path).ProjectType == "cpp", "Default creation uses the official C++ template");
+Check(project.Platform == BuildTargets.DefaultForHost(engine.Version).Id
+    && StateStore.ReadProject(project.Path).Platform == project.Platform,
+    "New project locks the host default build target and reads it back");
+Check(BuildTargets.DefaultForHost("3.0.0", "macos", "arm64").Id == "macos-arm64"
+    && BuildTargets.DefaultForHost("3.0.0", "macos", "x64").Id == "macos-x64",
+    "macOS project defaults match the host architecture");
+Check(BuildTargets.DefaultForHost("3.0.0", "windows", "arm64").Id == "windows-x64",
+    "Windows project default remains x64");
 // When the engine creates a project from a source tree that has .git, engine_version carries the short commit hash
 // (axmol.ps1 appends -<hash>). The hash holds no compatibility information, so Hub accepts it and normalises to
 // x.y.z; pre-release tags are still refused — the exact-version discipline is not relaxed.
