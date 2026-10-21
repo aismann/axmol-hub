@@ -4073,6 +4073,33 @@ public partial class ShellCheckWindow : Window
             shell.ClickPictureViewerButtonForCheck(1);
             Check(!shell.PictureViewerOpenForCheck, "查看器上的 × 也关得住（与 Esc 是同一条路，不是同一个按钮）");
 
+            // A Computer Use capture belongs to the tool result, not to a user message. It must still be visible
+            // in the conversation and join the same picture viewer set as user attachments.
+            var pictureConversation = panel.ActiveConversationForCheck!;
+            var capturedFixture = pictureConversation.Messages
+                .Last(turn => turn.Role == ChatRoles.User && turn.Images.Count > 0).Images[0];
+            pictureConversation.Messages.Add(ChatTurn.FunctionCall("call_capture_picture", "computer_use",
+                "{\"application\":\"Fixture App\",\"action\":\"screenshot\"}"));
+            pictureConversation.Messages.Add(ChatTurn.FunctionResult("call_capture_picture",
+                "Captured application window \"Fixture App\".", images: [capturedFixture]));
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            panel.ExpandVirtualGroupsForCheck();
+            Relayout(shell, panel, measure: true);
+            await WaitUntilAsync(() => panel.RenderedPictureCountForCheck == 2);
+            Check(panel.RenderedPictureCountForCheck == 2,
+                "Computer Use 工具结果的截图直接显示在会话中（含原附件共 2 张缩略图，实际 "
+                + panel.RenderedPictureCountForCheck + " 张）");
+            panel.ClickRenderedPictureForCheck(1);
+            Check(shell.PictureViewerOpenForCheck && shell.PictureViewerSizeForCheck == (8, 8),
+                "点开工具结果中的截图会显示捕获图，而不是只显示文件名");
+            shell.PressViewerKeyForCheck(Key.Escape);
+            pictureConversation.Messages.RemoveRange(pictureConversation.Messages.Count - 2, 2);
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+
             // ── An unsent draft must be viewable too ──
             panel.AddImageForCheck(png);
             panel.ClickPendingPictureForCheck(0);
@@ -8362,7 +8389,8 @@ public partial class ShellCheckWindow : Window
         var screenClient = new ApprovalChatClient
         {
             ToolName = "capture_screen",
-            Arguments = new Dictionary<string, object?> { ["target"] = "", ["fullscreen"] = true },
+            Arguments = new Dictionary<string, object?>
+                { ["target"] = "Axmol Hub Desktop Preview - Multi Monitor Session", ["fullscreen"] = false },
         };
         // One page, from an address that has never been sent anywhere and never will be: the transport below is
         // the stub that keeps the whole scenario zero-network, exactly like the scripted chat client keeps the
@@ -8704,10 +8732,10 @@ public partial class ShellCheckWindow : Window
                 new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "schema", [], null, null)));
             var schema = string.Join("\n", agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
                 .Select(tool => tool.JsonSchema.GetRawText()));
-            // Twenty-one rather than twenty since the search name is declared with a refusing body when it is not
+            // Twenty-two rather than twenty since the search name is declared with a refusing body when it is not
             // offered: the transcript keeps an earlier call's name in front of the model either way, and a name the
             // request does not declare is the one the invoking client will not run.
-            Check(agentTools.Count == 21
+            Check(agentTools.Count == 22
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Select(tool => tool.Name)
                       .All(name => name.Contains('_', StringComparison.Ordinal))
                   && schema.Contains("old_string") && schema.Contains("new_string")
@@ -8715,11 +8743,23 @@ public partial class ShellCheckWindow : Window
                   && schema.Contains("ignore_case") && schema.Contains("max_matches")
                   && schema.Contains("fullscreen") && schema.Contains("inherit_workspace")
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "capture_screen")
+                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "computer_use")
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "spawn_session")
                   && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "web_search")
                   && !schema.Contains("oldString") && !schema.Contains("ignoreCase"),
-                "Agent 档注册二十一个工具、名字都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
+                "Agent 档注册二十二个工具（包含 computer_use）、名字都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
                 + agentTools.Count + " 个）");
+            var computerGrantRoundTrip = new Conversation();
+            ComputerUseGrants.Add(computerGrantRoundTrip.AllowedComputerApps, "Editor App");
+            var grantSessionCopy = System.Text.Json.JsonSerializer.Deserialize<Conversation>(
+                System.Text.Json.JsonSerializer.Serialize(computerGrantRoundTrip));
+            var grantPreferences = new HubPreferences();
+            ComputerUseGrants.Add(grantPreferences.TrustedComputerApps, "Editor App");
+            var grantPreferencesCopy = System.Text.Json.JsonSerializer.Deserialize<HubPreferences>(
+                System.Text.Json.JsonSerializer.Serialize(grantPreferences));
+            Check(ComputerUseGrants.Contains(grantSessionCopy?.AllowedComputerApps, "Editor App")
+                  && ComputerUseGrants.Contains(grantPreferencesCopy?.TrustedComputerApps, "Editor App"),
+                "对话级与应用级 Computer Use 授权都能往返保存到 JSON 状态");
 
             // The capability this build took away, pinned where the list itself is: the model may ask for a directory
             // the task or the user named, and has no way at all to move the session's own root — a name that is gone
@@ -9327,24 +9367,85 @@ public partial class ShellCheckWindow : Window
             chat.TryResolveApproval(commitAskSession.Id, commitAskedCallId ?? "", approved: false, alwaysAllow: false, out _);
             await WaitForIdleAsync(chat);
 
-            // The tier no grant can open. Its card has two answers rather than three, because a 「总是允许」 the
-            // gate would ignore is a button that teaches the ladder is decoration — so it is not drawn at all, and
-            // the refusal that follows cannot leave a name on the settings page.
+            // A named screen target uses the dedicated application gate, independently of the ordinary tool tier.
+            chat.ScreenCaptureBridgeProvider = () => new ScreenCaptureBridge(() => [], _ => null);
+            chat.SetApprovalMode(screenSession.Id, ToolApprovalModes.Full);
             chat.OpenConversation(screenSession.Id);
             chat.TryEnqueueSend(screenSession.Id, "看看屏幕上是什么", null, out _);
             var screenCallId = await WaitForPendingCallAsync(screenSession);
+            panel.SetInputForCheck("preserved computer use draft");
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             Check(screenCallId is not null
-                  && panel.ApprovalCardActionsForCheck.SequenceEqual(new[] { "ApprovalDeny", "ApprovalAllow" },
-                      StringComparer.Ordinal),
-                "抓屏那张卡上没有「以后都不问」——越出沙箱的那一档，任何信任都不开门（实际 "
+                  && panel.ApprovalCardTextForCheck.Contains("Axmol Hub Desktop Preview - Multi Monitor Session", StringComparison.Ordinal)
+                  && panel.ApprovalCardActionsForCheck.SequenceEqual(new[]
+                      { "ComputerUseAlwaysAllow", "ComputerUseDeny", "ComputerUseAllowConversation" },
+                      StringComparer.Ordinal)
+                  && panel.ComposerInputEnabledForCheck
+                  && panel.InputTextForCheck == "preserved computer use draft",
+                "完全访问模式下应用授权仍出现；长应用名、三个选择和输入草稿都保留（实际 "
                 + string.Join(",", panel.ApprovalCardActionsForCheck) + "）");
+            var computerCard = panel.ApprovalCardForCheck;
+            var appTitle = computerCard is null ? null : NamedDescendant<TextBlock>(computerCard, "ComputerUseApplicationTitle");
+            var question = computerCard is null ? null : NamedDescendant<TextBlock>(computerCard, "ComputerUseQuestion");
+            var description = computerCard is null ? null : NamedDescendant<TextBlock>(computerCard, "ComputerUseGrantDescription");
+            var applicationIcon = computerCard is null ? null
+                : NamedDescendant<Avalonia.Controls.Shapes.Path>(computerCard, "ComputerUseApplicationIcon");
+            var alwaysButton = computerCard is null ? null : NamedDescendant<Button>(computerCard, "ComputerUseAlwaysAllowButton");
+            var denyButton = computerCard is null ? null : NamedDescendant<Button>(computerCard, "ComputerUseDenyButton");
+            var allowButton = computerCard is null ? null : NamedDescendant<Button>(computerCard, "ComputerUseAllowConversationButton");
+            var titlePosition = appTitle?.TranslatePoint(default, computerCard!);
+            var questionPosition = question?.TranslatePoint(default, computerCard!);
+            var descriptionPosition = description?.TranslatePoint(default, computerCard!);
+            var denyPosition = denyButton?.TranslatePoint(default, computerCard!);
+            var allowPosition = allowButton?.TranslatePoint(default, computerCard!);
+            Check(titlePosition is { } titlePoint
+                  && questionPosition is { } questionPoint
+                  && descriptionPosition is { } descriptionPoint
+                  && Math.Abs(titlePoint.X - questionPoint.X) < 1
+                  && Math.Abs(titlePoint.X - descriptionPoint.X) < 1
+                  && applicationIcon is not null
+                  && alwaysButton?.HorizontalAlignment == Avalonia.Layout.HorizontalAlignment.Left
+                  && alwaysButton.Classes.Contains("approval-action")
+                  && !alwaysButton.Classes.Contains("approval-secondary")
+                  && alwaysButton.BorderThickness.Left > 0
+                  && denyPosition is { } denyPoint && allowPosition is { } allowPoint
+                  && denyPoint.X < allowPoint.X
+                  && allowPoint.X + allowButton!.Bounds.Width <= computerCard!.Bounds.Width,
+                "应用窗口图标清晰可辨；始终允许显示为按钮并贴左，拒绝和会话授权并排靠右");
+            Check(HubTexts.Get("ComputerUseAllowConversation", HubTexts.EnglishLanguage) == "Allow this session",
+                "应用授权按钮的英文把「会话」统一译为 session");
             chat.TryResolveApproval(screenSession.Id, screenCallId ?? "", approved: false, alwaysAllow: false, out _);
+            panel.SetInputForCheck("");
             await WaitForIdleAsync(chat);
-            Check(!ToolTrust.Contains(chat.TrustedTools, "capture_screen"),
-                "拒绝那次抓屏，也不会把它顺手记进信任清单");
+            var deniedScreen = chat.StoredCopyForCheck(screenSession.Id);
+            Check(!ComputerUseGrants.Contains(chat.TrustedComputerApps, "Axmol Hub")
+                  && deniedScreen?.AllowedComputerApps.Count == 0
+                  && deniedScreen?.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                      && turn.ToolCallId == screenCallId && turn.Text == ToolApprovalResults.Denied) == true,
+                "拒绝目标应用后工具收到拒绝结果，没有执行，也没有写入应用或对话授权");
+            screenClient.CallsRemaining = 1;
+            screenClient.Arguments = new Dictionary<string, object?>
+                { ["target"] = "Axmol Hub Preview", ["fullscreen"] = false };
+            chat.TryEnqueueSend(screenSession.Id, "截取 Axmol Hub Preview", null, out _);
+            var conversationGrantCallId = await WaitForPendingCallAsync(screenSession);
+            Check(conversationGrantCallId is not null
+                  && chat.TryResolveApproval(screenSession.Id, conversationGrantCallId ?? "",
+                      approved: true, alwaysAllow: false, out _),
+                "允许此对话会恢复指定应用的 Computer Use 调用");
+            await WaitForIdleAsync(chat);
+            Check(ComputerUseGrants.Contains(chat.StoredCopyForCheck(screenSession.Id)?.AllowedComputerApps,
+                      "Axmol Hub Preview")
+                  && !ComputerUseGrants.Contains(chat.TrustedComputerApps, "Axmol Hub Preview"),
+                "对话授权只保存在当前对话，不会进入全局应用清单");
+            chat.ScreenCaptureBridgeProvider = null;
+            Check(chat.TrustComputerApp("Axmol Hub Preview")
+                  && ComputerUseGrants.Contains(new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root))
+                      .Load().TrustedComputerApps, "Axmol Hub Preview")
+                  && chat.RevokeTrustedComputerApp("Axmol Hub Preview")
+                  && !ComputerUseGrants.Contains(chat.TrustedComputerApps, "Axmol Hub Preview"),
+                "始终允许应用写入偏好文件，并能通过设置对应的撤销入口移除");
 
             // The other half of the same ladder, reached through the tool that leaves the machine. A page fetch
             // parks in 询问审批 like the capture does, and its card has the third button the capture card is
@@ -10226,6 +10327,16 @@ public partial class ShellCheckWindow : Window
             Check(settings.TrustedToolsEmptyShownForCheck && settings.TrustedToolRowsShownForCheck == 0
                   && settings.TrustedToolsForCheck.Length == 0,
                 "信任清单为空时设置页说明还没有信任过任何工具，而不是画一个空列表");
+            Check(settings.TrustedComputerAppsEmptyShownForCheck
+                  && settings.TrustedComputerAppRowsForCheck == 0
+                  && settings.TrustComputerAppForCheck("Computer Use Fixture App")
+                  && settings.TrustedComputerAppRowsForCheck == 1
+                  && settings.TrustedComputerAppsForCheck.SequenceEqual(new[] { "Computer Use Fixture App" })
+                  && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedComputerApps
+                      .SequenceEqual(new[] { "Computer Use Fixture App" })
+                  && settings.RevokeTrustedComputerAppForCheck("Computer Use Fixture App")
+                  && settings.TrustedComputerAppsEmptyShownForCheck,
+                "设置页显示始终允许的应用，持久保存，并能逐项撤销回空状态");
             Check(settings.TrustToolForCheck("run_command")
                   && settings.TrustedToolsForCheck.SequenceEqual(new[] { "run_command" }, StringComparer.Ordinal)
                   && settings.TrustedToolRowsShownForCheck == 1,

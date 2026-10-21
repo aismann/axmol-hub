@@ -25,6 +25,13 @@ public sealed record ScreenCaptureBridge(
     Func<IReadOnlyList<CapturableWindow>> Windows,
     Func<CapturableWindow?, CapturedFrame?> Grab);
 
+internal sealed record ComputerActionRequest(string Action, int X = 0, int Y = 0, string? Text = null,
+    string? Key = null, int Scroll = 0);
+
+/// <summary>Host operations bound to a previously resolved top-level window.</summary>
+internal sealed record ComputerUseBridge(
+    Func<CapturableWindow, ComputerActionRequest, string?> Operate);
+
 /// <summary>
 /// Turning "the Axmol window" into one window, or into a refusal that says why it could not. Kept apart from the
 /// capture itself because this half is arithmetic over a list, and it is the half that decides whether the

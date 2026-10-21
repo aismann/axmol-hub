@@ -561,6 +561,9 @@ public partial class ChatPanel
     private Control BuildToolApprovalCard(string conversationId, string callId, ChatTurn turn,
         IReadOnlyList<ChatTurn> group)
     {
+        if (ComputerUseGrants.IsComputerUseTool(turn.ToolName))
+            return BuildComputerUseApprovalCard(conversationId, callId, turn);
+
         // Not a StackPanel: the host clips at its own MaxHeight and the detail block grows past that on expand, so
         // the middle row has to be the one that gives way. A star row takes whatever the fixed rows leave, which
         // keeps the answer buttons inside the clip at every height — the footer is the part that must be reachable.
@@ -753,6 +756,105 @@ public partial class ChatPanel
         Grid.SetRow(footer, 3);
         card.Children.Add(footer);
 
+        return card;
+    }
+
+    private Control BuildComputerUseApprovalCard(string conversationId, string callId, ChatTurn turn)
+    {
+        var app = ComputerUseGrants.ApplicationForTool(turn.ToolName, turn.ToolArguments);
+        if (app.Length == 0) app = HubStrings.Get("ComputerUseApprovalTitle");
+        var card = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto"), RowSpacing = 10 };
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), ColumnSpacing = 10 };
+        var icon = new Path
+        {
+            Name = "ComputerUseApplicationIcon",
+            Data = ThemeGeometry("Hub.Icon.Application"),
+            Width = 18,
+            Height = 18,
+            Stretch = Stretch.Uniform,
+        };
+        icon.Bind(Path.FillProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        var appIcon = new Border
+        {
+            Width = 32,
+            Height = 32,
+            CornerRadius = new CornerRadius(8),
+            Child = icon,
+        };
+        appIcon.Bind(Border.BackgroundProperty, new DynamicResourceExtension("Hub.SurfaceRaised"));
+        header.Children.Add(appIcon);
+        var title = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        title.Children.Add(new TextBlock
+        {
+            Name = "ComputerUseApplicationTitle",
+            Classes = { "approval-title" },
+            Text = app,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 680,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+        title.Children.Add(new TextBlock
+        {
+            Name = "ComputerUseQuestion",
+            Text = HubStrings.Get("ComputerUseApprovalTitle"),
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+        title.Children.Add(new TextBlock
+        {
+            Name = "ComputerUseGrantDescription",
+            Classes = { "muted" },
+            Text = HubStrings.Get("ComputerUseGrantHint"),
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+        Grid.SetColumn(title, 1);
+        header.Children.Add(title);
+        card.Children.Add(header);
+
+        var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 4, 0, 0) };
+        var always = new Button
+        {
+            Name = "ComputerUseAlwaysAllowButton",
+            Classes = { "approval-action" },
+            Content = HubStrings.Get("ComputerUseAlwaysAllow"),
+            Tag = "ComputerUseAlwaysAllow",
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        always.Click += (_, _) => ResolveApproval(conversationId, callId, approved: true, alwaysAllow: true);
+        footer.Children.Add(always);
+
+        var actions = new StackPanel
+        {
+            Name = "ComputerUsePrimaryActions",
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var deny = new Button
+        {
+            Name = "ComputerUseDenyButton",
+            Classes = { "approval-action", "approval-deny" },
+            Content = HubStrings.Get("ApprovalDeny"),
+            Tag = "ComputerUseDeny",
+        };
+        deny.Click += (_, _) => ResolveApproval(conversationId, callId, approved: false, alwaysAllow: false);
+        var allow = new Button
+        {
+            Name = "ComputerUseAllowConversationButton",
+            Classes = { "approval-action", "approval-allow" },
+            Content = HubStrings.Get("ComputerUseAllowConversation"),
+            Tag = "ComputerUseAllowConversation",
+        };
+        allow.Click += (_, _) => ResolveApproval(conversationId, callId, approved: true, alwaysAllow: false);
+        actions.Children.Add(deny);
+        actions.Children.Add(allow);
+        Grid.SetColumn(actions, 1);
+        footer.Children.Add(actions);
+        Grid.SetRow(footer, 1);
+        card.Children.Add(footer);
         return card;
     }
 

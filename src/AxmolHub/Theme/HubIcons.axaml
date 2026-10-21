@@ -145,6 +145,8 @@
 
   <!-- A panel with a divider = sidebar toggle, matching the shape GitHub Copilot Desktop uses. Stroked. -->
   <StreamGeometry x:Key="Hub.Icon.Panel">M4.5 5H19.5V19H4.5 Z M10 5V19</StreamGeometry>
+  <!-- A desktop application window: outer frame, title bar, and clear content area. -->
+  <StreamGeometry x:Key="Hub.Icon.Application">F0 M3 4H21V20H3Z M5 6V18H19V6Z M5 8H19V9.3H5Z</StreamGeometry>
 
   <!-- The same plate with the divider on the right, so the two top-bar toggles read as a mirrored pair: the left
        one opens the conversation list, this one the review column. Bounded 15×15 centred on the 24 grid —

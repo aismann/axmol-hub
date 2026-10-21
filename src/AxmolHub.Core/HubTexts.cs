@@ -389,7 +389,7 @@ public static class HubTexts
         ["AllowAssistantQuestions"] = ("允许助手在需要时询问我", "Let the assistant ask me when needed"),
         ["AllowAssistantQuestionsHint"] = (
             "全局设置，适用于所有会话。开启后，助手遇到无法自行判断、需要你决定的选择时可以暂停并询问；关闭后则不提供询问功能。",
-            "A global setting for every conversation. When on, the assistant may pause and ask you to settle a choice it cannot determine; when off, the question tool is unavailable."),
+            "A global setting for every session. When on, the assistant may pause and ask you to settle a choice it cannot determine; when off, the question tool is unavailable."),
         ["AllowSpawnSessionsHint"] = (
             "子会话在自己的上下文里干活，只把结论送回本会话——读一个大文件只要带回几行，就不必把它塞满当前窗口。"
             + "每一条都是要花钱的模型调用，并发槽也只有三个，所以默认关闭；一次回答最多派生一个，子会话自己不许再派生。",
@@ -412,7 +412,7 @@ public static class HubTexts
         ["AllowWebSearch"] = ("允许联网搜索", "Allow web search"),
         ["AllowWebSearchHint"] = (
             "默认开启。Hub 按提供商配置自动选择搜索方式：DeepSeek 预设使用官方 Search/Fetch API，可能按成功请求次数收费；其他声明支持联网搜索的提供商使用其托管搜索，也可能产生服务商费用。DeepSeek 调用次数和估算费用会显示在当前会话。不想产生这笔费用就关掉它——之后需要联网的问题，助手只能直接说明它查不了。",
-            "On by default. Hub chooses the search route from the provider configuration: the DeepSeek preset uses its official Search/Fetch API, which may charge per successful request; other providers that declare hosted search use that route and may charge as well. DeepSeek call counts and estimated cost appear in the current conversation. Turn it off if you do not want the spend — a question that needs the web then gets a plain answer saying it could not search."),
+            "On by default. Hub chooses the search route from the provider configuration: the DeepSeek preset uses its official Search/Fetch API, which may charge per successful request; other providers that declare hosted search use that route and may charge as well. DeepSeek call counts and estimated cost appear in the current session. Turn it off if you do not want the spend — a question that needs the web then gets a plain answer saying it could not search."),
         ["DeepSeekWebUsageFormat"] = ("DeepSeek 网页工具：搜索 {0} 次（{1} 次计费），抓取 {2} 次（{3} 次计费）；估算费用 ¥{4:F3}", "DeepSeek web tools: {0} searches ({1} billable), {2} fetches ({3} billable); estimated cost ¥{4:F3}"),
         // The one switch on the appearance pane that is not about appearance. It sits there rather than under
         // permission because it decides what a person reads, never what the assistant may do — and its hint has
@@ -624,7 +624,7 @@ public static class HubTexts
             "This session's own reading corrected the window from {0} to {1}."),
         ["ChatContextDroppedFormat"] = ("最早 {0} 轮没有发出去，只发了最近的部分", "{0} oldest turns were not sent — only the newest part goes out"),
         ["ChatContextOverfull"] = ("已经超出这个会话可用的窗口：先压缩，或去掉一个附件。",
-            "Past the room this conversation has: compress it, or drop an attachment."),
+            "Past the room this session has: compress it, or drop an attachment."),
         ["ChatCompressContext"] = ("压缩上下文", "Compress context"),
         ["ChatCompressingContext"] = ("正在压缩上下文…", "Compressing context…"),
         // The run goes silent while the summariser works: no token, no tool call, nothing that would prove it is
@@ -813,6 +813,13 @@ public static class HubTexts
         ["ApprovalAllow"] = ("批准", "Allow"),
         ["ApprovalAllowAlways"] = ("总是允许", "Always allow"),
         ["ApprovalDeny"] = ("拒绝", "Deny"),
+        ["ComputerUseApprovalTitle"] = ("允许 AI 使用此应用？", "Allow AI to use this app?"),
+        ["ComputerUseAllowConversation"] = ("允许此会话", "Allow this session"),
+        ["ComputerUseAlwaysAllow"] = ("始终允许", "Always allow"),
+        ["ComputerUseGrantHint"] = ("仅授权此应用的截图和输入操作。", "Grants screenshot and input actions for this app only."),
+        ["TrustedComputerAppsTitle"] = ("始终允许的桌面应用", "Always allowed desktop apps"),
+        ["TrustedComputerAppsHint"] = ("这些应用可在没有重复审批的情况下接受 Computer Use 操作。", "These apps can receive Computer Use actions without another approval."),
+        ["TrustedComputerAppsNone"] = ("没有始终允许的应用。", "No apps are always allowed."),
         ["ChatPlanApprovalQuestion"] = ("是否按这个计划开始执行？", "Start implementing this plan?"),
         ["ChatPlanApprove"] = ("批准并执行", "Approve and implement"),
         ["ChatPlanRevise"] = ("退回修改", "Request revision"),

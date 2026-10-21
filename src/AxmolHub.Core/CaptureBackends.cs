@@ -23,6 +23,7 @@ public static class CaptureBackends
     public const string GdiPrintWindow = "gdi-printwindow";
     public const string MacOsScreenshot = "screencapture";
     public const string LinuxGrim = "grim";
+    public const string LinuxX11 = "x11-window-tools";
     public const string None = "none";
 
     public static CaptureBackend For(string host, bool grimAvailable)
@@ -41,5 +42,14 @@ public static class CaptureBackends
                         $"Refused: Hub has no screen capture backend for the host 「{host}」. Run the capture on "
                         + "Windows or macOS, or install a tool this build knows about; do not retry it here.");
 
-    public static CaptureBackend ForCurrent() => For(BuildTargets.Host, CommandShells.Resolve(LinuxGrim) is not null);
+    public static CaptureBackend ForCurrent()
+    {
+        var grim = CommandShells.Resolve(LinuxGrim) is not null;
+        var x11 = CommandShells.Resolve("wmctrl") is not null
+                  && (CommandShells.Resolve("maim") is not null || CommandShells.Resolve("import") is not null);
+        var backend = For(BuildTargets.Host, grim || x11);
+        return BuildTargets.Host.Equals("linux", StringComparison.OrdinalIgnoreCase) && !grim && x11
+            ? new CaptureBackend(LinuxX11, "X11 window capture")
+            : backend;
+    }
 }

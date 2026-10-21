@@ -330,6 +330,7 @@ public partial class SettingsPage : UserControl
             // row carries the tool name its revoke button has to write back — and the verb list below it is drawn
             // the same way, from the same signal.
             RebuildTrustedTools();
+            RebuildTrustedComputerApps();
             RebuildTrustedCommands();
             LocalizeUpdateChannelItems();
             SelectLanguage(HubStrings.Language);
@@ -708,6 +709,70 @@ public partial class SettingsPage : UserControl
             Grid.SetColumn(revoke, 1);
             TrustedCommandList.Children.Add(row);
         }
+    }
+
+    private void RebuildTrustedComputerApps()
+    {
+        TrustedComputerAppList.Children.Clear();
+        if (_chat is null) return;
+        var apps = _chat.TrustedComputerApps;
+        if (apps.Count == 0)
+        {
+            TrustedComputerAppList.Children.Add(new TextBlock
+            {
+                Text = HubStrings.Get("TrustedComputerAppsNone"),
+                Classes = { "muted" },
+                TextWrapping = TextWrapping.Wrap,
+                Tag = "trusted-computer-apps-none",
+            });
+            return;
+        }
+
+        foreach (var app in apps)
+        {
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Tag = "trusted-computer-app-row" };
+            row.Children.Add(new TextBlock
+            {
+                Text = app,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            var revoke = new Button
+            {
+                Classes = { "quiet" },
+                Content = HubStrings.Get("RevokeTrustedTool"),
+                Tag = app,
+            };
+            revoke.Click += (_, _) =>
+            {
+                if (_chat.RevokeTrustedComputerApp(app)) RebuildTrustedComputerApps();
+            };
+            Grid.SetColumn(revoke, 1);
+            row.Children.Add(revoke);
+            TrustedComputerAppList.Children.Add(row);
+        }
+    }
+
+    internal string[] TrustedComputerAppsForCheck => (_chat?.TrustedComputerApps ?? []).ToArray();
+
+    internal int TrustedComputerAppRowsForCheck
+        => TrustedComputerAppList.Children.OfType<Control>().Count(child => Equals(child.Tag, "trusted-computer-app-row"));
+
+    internal bool TrustedComputerAppsEmptyShownForCheck
+        => TrustedComputerAppList.Children.OfType<Control>().Any(child => Equals(child.Tag, "trusted-computer-apps-none"));
+
+    internal bool TrustComputerAppForCheck(string app)
+    {
+        var granted = _chat?.TrustComputerApp(app) == true;
+        if (granted) RebuildTrustedComputerApps();
+        return granted;
+    }
+
+    internal bool RevokeTrustedComputerAppForCheck(string app)
+    {
+        var revoked = _chat?.RevokeTrustedComputerApp(app) == true;
+        if (revoked) RebuildTrustedComputerApps();
+        return revoked;
     }
 
     private void RevokeTrustedCommand(string key)

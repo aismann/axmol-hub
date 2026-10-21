@@ -607,6 +607,12 @@ public sealed class ChatWorkspace : IDisposable
         var root = session?.WorkspaceRoot;
         var guards = new WorkspaceGuards(_dataRoot, EngineRootsProvider?.Invoke() ?? []);
         var snapshot = HubSnapshotProvider?.Invoke();
+        var screenBridge = ScreenCaptureBridgeProvider is { } screenProvider
+            ? screenProvider()
+            : OperatingSystem.IsWindows() ? WindowsScreenCapture.Bridge()
+            : OperatingSystem.IsMacOS() ? MacOsComputerUse.ScreenBridge()
+            : OperatingSystem.IsLinux() ? LinuxComputerUse.ScreenBridge()
+            : null;
         return new ChatToolScope(
             snapshot,
             new WorkspaceToolScope(
@@ -621,7 +627,7 @@ public sealed class ChatWorkspace : IDisposable
                 // The screen belongs to the host, not to Core: this is the one capability that has to know which
                 // operating system it is standing on, and a build that cannot draw a frame says so instead of
                 // sending the model a black picture.
-                OperatingSystem.IsWindows() ? WindowsScreenCapture.Bridge() : null,
+                screenBridge,
                 frames => RecordFrames(conversationId, frames),
                 // Reading a page is the one capability whose host is the same on every operating system, so this
                 // bridge is never null in a running Hub — which is what makes the null branch in Core (a build
@@ -668,6 +674,10 @@ public sealed class ChatWorkspace : IDisposable
                             _ => new System.Collections.Concurrent.ConcurrentQueue<DeepSeekWebApiCall>()).Enqueue(call))
                     : null)
             {
+                ComputerUse = OperatingSystem.IsWindows()
+                    ? new ComputerUseBridge(WindowsScreenCapture.Operate)
+                    : OperatingSystem.IsMacOS() ? MacOsComputerUse.InputBridge()
+                    : OperatingSystem.IsLinux() ? LinuxComputerUse.InputBridge() : null,
                 // Read from the session's own record rather than the screen: a parked call answered after a
                 // restart acts on the directories its card was shown for. Normalized here, with the guards in
                 // hand, because the list comes out of a user-editable session file — a root the guard refuses in
@@ -4179,8 +4189,40 @@ public sealed class ChatWorkspace : IDisposable
     /// having remembered it.</summary>
     internal Action<HubPreferences>? PreferencesPersist { get; set; }
 
+    internal Func<ScreenCaptureBridge?>? ScreenCaptureBridgeProvider { get; set; }
+
     /// <summary>The tools the whole app has been told to stop asking about, in the order they were granted.</summary>
     public IReadOnlyList<string> TrustedTools => PreferencesProvider?.Invoke()?.TrustedTools ?? [];
+
+    public IReadOnlyList<string> TrustedComputerApps => PreferencesProvider?.Invoke()?.TrustedComputerApps ?? [];
+
+    public bool TrustComputerApp(string app)
+    {
+        var preferences = PreferencesProvider?.Invoke();
+        if (preferences is null || !ComputerUseGrants.Add(preferences.TrustedComputerApps, app)) return false;
+        PersistPreferences(preferences);
+        NotifyAppSettingsChanged();
+        return true;
+    }
+
+    public bool RevokeTrustedComputerApp(string app)
+    {
+        var preferences = PreferencesProvider?.Invoke();
+        if (preferences is null || !ComputerUseGrants.Remove(preferences.TrustedComputerApps, app)) return false;
+        PersistPreferences(preferences);
+        NotifyAppSettingsChanged();
+        return true;
+    }
+
+    public bool RevokeAllTrustedComputerApps()
+    {
+        var preferences = PreferencesProvider?.Invoke();
+        if (preferences is null || preferences.TrustedComputerApps.Count == 0) return false;
+        preferences.TrustedComputerApps.Clear();
+        PersistPreferences(preferences);
+        NotifyAppSettingsChanged();
+        return true;
+    }
 
     /// <summary>Grants a tool for every session. The card's 「总是允许」 and the settings page both come through
     /// here, so one rule decides what a grant is written into and whether it was already there.</summary>
@@ -4556,14 +4598,20 @@ public sealed class ChatWorkspace : IDisposable
                 // the person answered for. It cannot walk past the ladder's first two rungs either, because those
                 // refuse a call before any verb is consulted — a missing sandbox root and a cache break are not verbs.
                 var verbGrant = ChatTools.GrantedCommandVerb(member.Name, member.ArgumentsJson, TrustedCommands);
-                var granted = verbGrant || (ToolApprovalPolicy.IsGrantable(risk)
+                var computerApp = ComputerUseGrants.ApplicationForTool(member.Name, member.ArgumentsJson);
+                var computerGrant = computerApp.Length > 0
+                                    && (ComputerUseGrants.Contains(conversation.AllowedComputerApps, computerApp)
+                                        || ComputerUseGrants.Contains(TrustedComputerApps, computerApp));
+                var granted = computerGrant || verbGrant || (ToolApprovalPolicy.IsGrantable(risk)
                               && (sessionGrant || ToolTrust.Contains(TrustedTools, member.Name)));
                 // Nothing to show, so nothing to wait on. Letting it through hands the call to the tool's own body,
                 // which answers with the sentence about what the model got wrong — the alternative is a card that
                 // renders an empty question and a run parked on it forever.
                 var malformed = asks && !AskUserQuestion.TryParse(member.ArgumentsJson, out _, out _, out _);
-                return new CallVerdict(member, risk, asks, malformed, granted, sessionGrant, verbGrant,
-                    !granted && !malformed && ToolApprovalPolicy.RequiresApproval(mode, risk));
+                var parks = ComputerUseGrants.IsComputerUseTool(member.Name)
+                    ? computerApp.Length > 0 && !computerGrant
+                    : !granted && !malformed && ToolApprovalPolicy.RequiresApproval(mode, risk);
+                return new CallVerdict(member, risk, asks, malformed, granted, sessionGrant, verbGrant, parks);
             }
 
             void AuditVerdict(CallVerdict verdict)
@@ -4602,6 +4650,7 @@ public sealed class ChatWorkspace : IDisposable
             // asked for together are answered together, and a card for one of them while another waits unstated
             // would be a question about half of what is about to happen.
             var group = new List<ParkedCall> { Of(thisCall) };
+            var computerUseHoldsBatch = batch.Any(member => ComputerUseGrants.IsComputerUseTool(member.Name));
             foreach (var sibling in batch)
             {
                 if (sibling.CallId == call.CallId) continue;
@@ -4610,8 +4659,8 @@ public sealed class ChatWorkspace : IDisposable
                 if (conversation.Messages.Any(turn => turn.ToolCallId == sibling.CallId
                                                       && turn.ApprovalState == ChatApprovalStates.Pending)) continue;
                 var verdict = Judge(sibling);
-                if (!verdict.Parks) continue;
-                AuditVerdict(verdict);
+                if (!verdict.Parks && !computerUseHoldsBatch) continue;
+                if (verdict.Parks) AuditVerdict(verdict);
                 group.Add(Of(verdict));
             }
 
@@ -4777,6 +4826,13 @@ public sealed class ChatWorkspace : IDisposable
         }
 
         var toolName = conversation.Messages[index].ToolName ?? "tool";
+        var computerApp = ComputerUseGrants.ApplicationForTool(toolName, conversation.Messages[index].ToolArguments);
+        var isComputerUse = ComputerUseGrants.IsComputerUseTool(toolName);
+        if (isComputerUse && computerApp.Length == 0)
+        {
+            refusalKey = "ChatApprovalGone";
+            return false;
+        }
         // The card only offers 「总是允许」 where a grant can land, and the same rule is decided here rather than
         // trusted from the caller: a tier that reaches past the sandbox ignores every grant, so remembering its
         // name would put a line on the settings page that buys nothing.
@@ -4789,15 +4845,39 @@ public sealed class ChatWorkspace : IDisposable
             ? ChatTools.TrustCandidateVerb(toolName, conversation.Messages[index].ToolArguments,
                 ScopeFor(conversationId).Workspace, TrustedCommands)
             : null;
+        var frozenComputerArguments = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (isComputerUse)
+        {
+            foreach (var owed in conversation.UnansweredCallsOfBatch(batchId))
+            {
+                if (owed.ApprovalState != ChatApprovalStates.Pending
+                    || !ComputerUseGrants.IsComputerUseTool(owed.ToolName)
+                    || !string.Equals(ComputerUseGrants.ApplicationForTool(owed.ToolName, owed.ToolArguments),
+                        computerApp, StringComparison.OrdinalIgnoreCase)
+                    || string.IsNullOrEmpty(owed.ToolCallId)) continue;
+                frozenComputerArguments[owed.ToolCallId] = FreezeComputerTargetArguments(
+                    conversationId, owed.ToolName!, owed.ToolArguments);
+            }
+        }
         _sessions.TryUpdate(conversationId, opened =>
         {
             foreach (var owed in opened.UnansweredCallsOfBatch(batchId))
             {
                 if (owed.ApprovalState != ChatApprovalStates.Pending) continue;
+                var owedIsComputerUse = ComputerUseGrants.IsComputerUseTool(owed.ToolName);
+                var owedApp = ComputerUseGrants.ApplicationForTool(owed.ToolName, owed.ToolArguments);
+                if (owedIsComputerUse && (!isComputerUse
+                    || !string.Equals(owedApp, computerApp, StringComparison.OrdinalIgnoreCase))) continue;
+                if (isComputerUse && !owedIsComputerUse) continue;
                 // A question is not answered by an approval, same as on the refusal side above.
                 if (owed.ToolName == AskUserTool.ToolName) continue;
                 var at = opened.IndexOfToolCall(owed.ToolCallId!);
-                opened.Messages[at] = opened.Messages[at] with { ApprovalState = ChatApprovalStates.Approved };
+                opened.Messages[at] = opened.Messages[at] with
+                {
+                    ApprovalState = ChatApprovalStates.Approved,
+                    ToolArguments = frozenComputerArguments.TryGetValue(owed.ToolCallId!, out var frozen)
+                        ? frozen : owed.ToolArguments,
+                };
             }
 
             // A card answer is the person engaging with this conversation, so it takes its place by that
@@ -4810,17 +4890,51 @@ public sealed class ChatWorkspace : IDisposable
             // was shown beside it.
             if (alwaysAllow && grantable && !ToolTrust.Contains(opened.AutoApprovedTools, toolName))
                 opened.AutoApprovedTools.Add(toolName);
+            if (isComputerUse && !alwaysAllow)
+                ComputerUseGrants.Add(opened.AllowedComputerApps, computerApp);
         });
         // Outside the session gate: the app-wide half is a different file, with a different owner, and the registry
         // lock must not be held while the settings store is written.
         if (alwaysAllow && grantable) TrustTool(toolName);
+        if (isComputerUse && alwaysAllow) TrustComputerApp(computerApp);
         // The verb grant is app-level only: the session list above is the tool answer's, and a second per-session
         // list for verbs would be a second place for the two to disagree.
         if (verbKey is not null) TrustCommand(verbKey);
-        AuditApproval(conversationId, verbKey ?? toolName, alwaysAllow ? "always allowed" : "allowed");
+        AuditApproval(conversationId, isComputerUse ? computerApp : verbKey ?? toolName,
+            isComputerUse
+                ? alwaysAllow ? "computer app always allowed" : "computer app allowed for conversation"
+                : alwaysAllow ? "always allowed" : "allowed");
         Changed?.Invoke();
         _ = PumpApprovedBatchAsync(run, batchId);
         return true;
+    }
+
+    private string FreezeComputerTargetArguments(string conversationId, string toolName, string? argumentsJson)
+    {
+        var app = ComputerUseGrants.ApplicationForTool(toolName, argumentsJson);
+        if (app.Length == 0 || argumentsJson is null) return argumentsJson ?? "{}";
+        var screen = ScopeFor(conversationId).Workspace.Screen;
+        if (screen is null) return argumentsJson;
+        try
+        {
+            var requestedPid = 0;
+            using (var document = System.Text.Json.JsonDocument.Parse(argumentsJson))
+            {
+                if (document.RootElement.TryGetProperty("process_id", out var pid)
+                    && pid.TryGetInt32(out var parsedPid)) requestedPid = parsedPid;
+            }
+            var match = ScreenCapture.Find(screen.Windows(), app, requestedPid);
+            if (!match.Ok || match.Window is not { } window) return argumentsJson;
+            var arguments = System.Text.Json.Nodes.JsonNode.Parse(argumentsJson) as System.Text.Json.Nodes.JsonObject;
+            if (arguments is null) return argumentsJson;
+            arguments["process_id"] = window.ProcessId;
+            return arguments.ToJsonString();
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                                  or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            return argumentsJson;
+        }
     }
 
     /// <summary>The run a decision has to resume into, and the reason there cannot be one.
@@ -5006,7 +5120,10 @@ public sealed class ChatWorkspace : IDisposable
             var conversation = _sessions.Peek(run.ConversationId);
             if (conversation is null) return null;
             var mode = NormalizeMode(conversation.Mode);
-            return conversation.UnansweredCallsOfBatch(batchId)
+            var unanswered = conversation.UnansweredCallsOfBatch(batchId);
+            var computerUseBatch = unanswered.Any(turn => ComputerUseGrants.IsComputerUseTool(turn.ToolName));
+            return unanswered
+                .Where(turn => !computerUseBatch || turn.ApprovalState == ChatApprovalStates.Approved)
                 .Select(turn => new ApprovedCall(turn.ToolName ?? "", turn.ToolArguments ?? "{}", mode,
                     turn.ToolCallId ?? "", turn.ToolName == AskUserTool.ToolName))
                 .ToList();

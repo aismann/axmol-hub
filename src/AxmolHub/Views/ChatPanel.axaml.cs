@@ -2294,7 +2294,6 @@ public partial class ChatPanel : UserControl
         for (var index = 0; index < conversation.Messages.Count; index++)
         {
             var turn = conversation.Messages[index];
-            if (turn.Role != ChatRoles.User) continue;
             foreach (var image in turn.Images)
             {
                 var file = image.File;
@@ -2647,10 +2646,9 @@ public partial class ChatPanel : UserControl
             // selecting the reply to it.
             body.Children.Add(OwnWordsBlock(turn.Text));
 
-        // What the person attached is shown from the file Hub kept, not from anything this view remembers: the
-        // transcript is the only copy of "this message had a picture in it", and a row rebuilt after a restart
-        // has to look the same as the one that was sent. A frame the assistant captured itself stays out of the
-        // flow — its approval card already says which window was grabbed, and this row is about what the user said.
+        // Pictures are painted from the file Hub kept, not from anything this view remembers: the transcript is
+        // the record that a picture exists, and a row rebuilt after a restart has to show the same frame. User
+        // attachments sit under their message; assistant captures sit in the tool exchange row that produced them.
         if (fromUser && turn.Images.Count > 0) body.Children.Add(BuildTurnPictures(conversationId, turn.Images));
 
         Control? approvalSurface = null;
@@ -3211,10 +3209,16 @@ public partial class ChatPanel : UserControl
         };
         toggle.IsChecked = IsFoldOpen(_expandedRows, conversationId, foldKey);
 
+        var content = new StackPanel { Spacing = 0 };
+        content.Children.Add(toggle);
+        if (result.Images.Count > 0)
+            content.Children.Add(BuildTurnPictures(conversationId, result.Images));
+        content.Children.Add(detail);
+
         return new Border
         {
             Classes = { "activity-row-shell" },
-            Child = new StackPanel { Spacing = 0, Children = { toggle, detail } },
+            Child = content,
         };
     }
 

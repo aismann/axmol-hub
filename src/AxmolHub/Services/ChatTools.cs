@@ -148,6 +148,7 @@ internal static class ChatTools
         // tool was thought about" must not read the same in this table.
         // "spawn_session" is spelled out for the same reason: a new session spends money on nobody's click.
         "capture_screen" => ToolRisk.SystemCommand,
+        "computer_use" => ToolRisk.SystemCommand,
         "spawn_session" => ToolRisk.SystemCommand,
         // The one tier no mode ever asks for, which is exactly why the reading of the scope has to fail closed:
         // a scope this cannot name is not a workspace note, it is a write whose destination is unknown, and an
@@ -362,6 +363,7 @@ internal static class ChatTools
             // family even though only this half has a Hub body. The method behind it is FetchWebPage because
             // WebFetch is the rules class in Core's namespace, and a method of that name would shadow it here.
             AIFunctionFactory.Create(tools.CaptureScreen, Options("capture_screen")),
+            AIFunctionFactory.Create(tools.ComputerUse, Options("computer_use")),
             AIFunctionFactory.Create(tools.RequestDirectory, Options("request_directory")),
             AIFunctionFactory.Create(tools.MemoryWrite, Options("memory_write")),
             AIFunctionFactory.Create(tools.SendToSession, Options("send_to_session")),

@@ -176,6 +176,11 @@
           <Button x:Name="RevokeAllTrustedToolsButton" Classes="quiet" HorizontalAlignment="Left"
                   Content="{DynamicResource RevokeAllTrustedTools}" />
 
+          <TextBlock Text="{DynamicResource TrustedComputerAppsTitle}" FontSize="13" FontWeight="SemiBold"
+                     Margin="0,12,0,0" />
+          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource TrustedComputerAppsHint}" />
+          <StackPanel x:Name="TrustedComputerAppList" Spacing="4" />
+
           <!-- The other half of that list: the git write verbs a card's verb button stopped asking about. A
                separate list because the two grants are different sizes — one whole tool, one verb — and the
                revocation has to say which is which. Built in code, as the list above is. -->

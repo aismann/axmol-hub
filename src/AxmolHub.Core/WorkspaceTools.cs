@@ -80,6 +80,7 @@ public sealed record WorkspaceToolScope(
     Func<int, string, string>? UpdatePlanTask = null,
     DeepSeekWebApiBridge? DeepSeekWeb = null)
 {
+    internal ComputerUseBridge? ComputerUse { get; init; }
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
     public static WorkspaceToolScope Empty { get; } = new(null, new WorkspaceGuards(null, []), null, "", [], null);
@@ -793,52 +794,54 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         }
     }
 
-    [Description("Capture one window, or the whole display, as an image and put it in this conversation so you can "
-                 + "see what is on the screen: an error in another app, the state of a running game window, what "
-                 + "the user is looking at. The picture arrives attached to this result — read it from there. "
+    [Description("Capture one specifically named application window as an image and attach it to this conversation. "
+                 + "Hub asks for that app's Computer Use grant before capturing. Whole-display capture is unavailable. "
                  + "Nothing is written to the workspace.")]
     public string CaptureScreen(
-        [Description("Part of the window's title, matched case-insensitively. Leave it empty only when fullscreen "
-                     + "is true or process_id names the window; a target matching several windows is refused "
-                     + "rather than guessed.")]
+        [Description("Part of the named application window's title, matched case-insensitively. Required so Hub can "
+                     + "request a grant for the specific app; a target matching several windows is refused rather "
+                     + "than guessed.")]
         string target = "",
-        [Description("Capture the entire display instead of one window.")] bool fullscreen = false,
+        [Description("Whole-display capture is disabled. Leave false and use computer_use for a named app.")] bool fullscreen = false,
         [Description("The process that owns the window, when the title alone does not pick exactly one — two Hub "
                      + "windows can carry the same title, and the refusal lists each one's pid. Narrowing only: a "
                      + "pid owning several windows is still refused.")]
         int process_id = 0)
     {
-        // No path guard runs here, deliberately: this call reads the screen and stores into Hub's own session
-        // directory, so the sandbox has nothing to say about it. What does have something to say is the approval
-        // gate — capture_screen sits on the SystemCommand tier and asks in every mode but full.
+        if (fullscreen)
+            return "Refused: Computer Use only captures a named application window. Name the app and use computer_use with action=screenshot; do not capture the whole display.";
+        if (string.IsNullOrWhiteSpace(target))
+            return "Refused: capture_screen needs the named application window so Hub can request its Computer Use grant. Use computer_use with application and action=screenshot.";
+        // No path guard runs here: the dedicated app-grant gate decides whether this named window can be read.
         var backend = CaptureBackends.ForCurrent();
         if (!backend.Available) return backend.Refusal!;
         if (context.Screen is not { } host)
             return $"Refused: this build has no capture host for {backend.Label}. Ask the user for a screenshot "
                    + "instead; do not retry the capture.";
 
-        // The whole display is the one call with no address; anything else has to name exactly one window first —
-        // by title, by process, or by both.
+        // A named title is required so the approval card and the captured window refer to the same app.
         var wanted = (target ?? "").Trim();
-        CapturableWindow? window = null;
-        if (!fullscreen || wanted.Length > 0 || process_id > 0)
+        IReadOnlyList<CapturableWindow> windows;
+        try { windows = host.Windows(); }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
-            var match = ScreenCapture.Find(TryWindows(host), wanted, process_id);
-            if (!match.Ok) return match.Refusal!;
-            window = match.Window;
+            return $"Refused: {ex.Message} Check the operating system's screen or accessibility permission; do not retry until the required capability is available.";
         }
+        var match = ScreenCapture.Find(windows, wanted, process_id);
+        if (!match.Ok) return match.Refusal!;
+        var window = match.Window;
 
         // A grabber swallows its own failure and answers null, so what the model reads is a sentence about the
         // screen rather than a stack trace from the host.
         if (host.Grab(window) is not { } frame)
-            return $"Refused: the {backend.Label} capture of {Described(window, fullscreen)} returned no frame. The "
+            return $"Refused: the {backend.Label} capture of {Described(window, false)} returned no frame. The "
                    + "window may have closed, or the display may be locked; ask the user before capturing anything "
                    + "else.";
 
         // The blank check has to come before the store: a black frame is a valid PNG with a plausible byte count,
         // so every later step — admission, the file on disk, the wire — reads it as a capture that worked, and the
         // model then describes a screenshot that showed nothing. This is the one place that knows.
-        var what = Described(window, fullscreen);
+        var what = Described(window, false);
         if (frame.Stats.IsBlank())
             return $"Refused: the {backend.Label} capture of {what} came back a blank frame — {frame.Width}×"
                    + $"{frame.Height}, {frame.Stats.DistinctColors} distinct colour(s), variance "
@@ -860,18 +863,70 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                + "infer it from the title.";
     }
 
-    /// <summary>The window list, or an empty one. A host that cannot enumerate windows has not captured anything,
-    /// and "no visible window matches" with nothing listed is the truthful answer rather than a throw.</summary>
-    private static IReadOnlyList<CapturableWindow> TryWindows(ScreenCaptureBridge host)
+    [Description("Use one named application window. Supported actions are screenshot, click, type, press_key, and scroll. "
+                 + "Coordinates are relative to the window's top-left. The application must be named on every call.")]
+    internal string ComputerUse(
+        [Description("The exact visible application/window title used for the user's authorization.")] string application,
+        [Description("One action: screenshot, click, type, press_key, or scroll.")] string action,
+        [Description("Horizontal window-relative coordinate for click; otherwise 0.")] int x = 0,
+        [Description("Vertical window-relative coordinate for click; otherwise 0.")] int y = 0,
+        [Description("Text to type, up to 1000 characters.")] string? text = null,
+        [Description("Key name for press_key, such as Enter, Tab, Escape, or an A-Z/0-9 key.")] string? key = null,
+        [Description("Vertical scroll amount; positive scrolls up, negative down, from -10 to 10.")] int scroll = 0,
+        [Description("Narrow the target to this process id when titles are ambiguous.")] int process_id = 0)
     {
+        var app = ComputerUseGrants.NormalizeKey(application);
+        if (app.Length is 0 or > 256)
+            return "Refused: Computer Use needs one application window title, no more than 256 characters. Do not retry without a title.";
+        var normalizedAction = (action ?? "").Trim().ToLowerInvariant();
+        if (normalizedAction is not ("screenshot" or "click" or "type" or "press_key" or "scroll"))
+            return "Refused: Computer Use action must be screenshot, click, type, press_key, or scroll. Do not retry with another action name.";
+        if (normalizedAction == "type" && string.IsNullOrEmpty(text) || (text?.Length ?? 0) > 1000)
+            return "Refused: type needs 1 to 1000 characters. Do not split and retry automatically.";
+        if (normalizedAction == "press_key" && string.IsNullOrWhiteSpace(key))
+            return "Refused: press_key needs one named key. Do not retry without a key.";
+        if (normalizedAction == "scroll" && scroll is 0 or < -10 or > 10)
+            return "Refused: scroll must be between -10 and 10, excluding zero. Do not retry automatically.";
+
+        var backend = CaptureBackends.ForCurrent();
+        if (context.Screen is not { } host)
+            return $"Refused: Computer Use cannot enumerate or capture application windows on this {backend.Label} build. Ask the user to operate the app manually.";
+
+        CapturableWindow target;
         try
         {
-            return host.Windows();
+            var match = ScreenCapture.Find(host.Windows(), app, process_id);
+            if (!match.Ok || match.Window is null) return match.Refusal!;
+            target = match.Window;
         }
         catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
-            return [];
+            return $"Refused: {ex.Message} Check the operating system's screen or accessibility permission, then ask the user before trying again.";
         }
+
+        if (normalizedAction == "screenshot")
+        {
+            CapturedFrame? frame;
+            try { frame = host.Grab(target); }
+            catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+            {
+                return "Refused: the operating system denied screen capture for this app. Ask the user to grant screen recording access and retry only after they do.";
+            }
+            if (frame is null || frame.Stats.IsBlank())
+                return $"Refused: the capture backend returned no readable frame for \"{target.Title}\". Ask the user for a screenshot; do not retry this target.";
+            var verdict = ChatImageFormat.Admit(frame.Png, 0);
+            if (verdict != ChatImageVerdict.Accepted) return ChatImageFormat.ResultFor(verdict, frame.Png.LongLength);
+            if (context.Sessions is not { } store)
+                return "Refused: this conversation has no attachment storage. Ask the user for a screenshot.";
+            var image = store.SaveImage(context.ConversationId, frame.Png);
+            context.RecordFrames?.Invoke([image]);
+            return $"Captured application window \"{target.Title}\" ({frame.Width}×{frame.Height}); the image is attached to this result.";
+        }
+
+        if (context.ComputerUse is not { } operations)
+            return $"Refused: this {backend.Label} build can capture windows but has no input-control backend. Ask the user to perform this action.";
+        var refusal = operations.Operate(target, new ComputerActionRequest(normalizedAction, x, y, text, key, scroll));
+        return refusal ?? $"Completed {normalizedAction} in application window \"{target.Title}\".";
     }
 
     private static string Described(CapturableWindow? window, bool fullscreen)

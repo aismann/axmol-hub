@@ -414,6 +414,9 @@ public sealed class Conversation
     /// <summary>Durable references to every file revision this session can still reach. Kept outside the
     /// transcript so compaction, edit-and-resend and history trimming cannot erase file history.</summary>
     public List<string> ChangeHistoryIds { get; set; } = [];
+    /// <summary>Application names this conversation may control through Computer Use.</summary>
+    [System.Text.Json.Serialization.JsonInclude]
+    internal List<string> AllowedComputerApps { get; set; } = [];
     public string ContextSummary { get; set; } = "";
     public int ContextSummaryThroughMessageCount { get; set; }
 
