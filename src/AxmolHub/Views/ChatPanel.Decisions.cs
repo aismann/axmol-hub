@@ -81,8 +81,8 @@ public partial class ChatPanel
             switch (glyph)
             {
                 case ActivityGlyph activity:
-                    activity.Bind(ActivityGlyph.TrackBrushProperty, new DynamicResourceExtension("Hub.Border"));
-                    activity.Bind(ActivityGlyph.DotBrushProperty, new DynamicResourceExtension("Hub.Accent"));
+                    activity.Bind(ActivityGlyph.TrackBrushProperty, new DynamicResourceExtension("Hub.Accent"));
+                    activity.Bind(ActivityGlyph.DotBrushProperty, new DynamicResourceExtension("Hub.AccentBorder"));
                     break;
                 case Path tick:
                     tick.Bind(Path.FillProperty, new DynamicResourceExtension("Hub.Success"));

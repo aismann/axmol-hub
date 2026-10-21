@@ -197,9 +197,8 @@ public sealed class ActivityGlyph : Control
         // One cosine carries the sweep from a stub to nearly a full ring and back, so the two ends of the
         // segment never both sit still: the closing end races the opening one around the circle.
         var breath = 0.5 - 0.5 * Math.Cos(_clock / SweepPeriod % 1.0 * Math.PI * 2);
-        var sweep = 30 + 270 * breath;
+        var sweep = 35 + 265 * breath;
         var start = _clock * SpinDegreesPerSecond % 360;
-
         var geometry = new StreamGeometry();
         using (var path = geometry.Open())
         {
@@ -208,7 +207,9 @@ public sealed class ActivityGlyph : Control
                 sweep > 180, SweepDirection.Clockwise, true);
         }
 
-        context.DrawGeometry(null, new Pen(track, 1.6) { LineCap = PenLineCap.Round }, geometry);
+        context.DrawGeometry(null, new Pen(track, 2.2), geometry);
+        if (DotBrush is { } accent)
+            context.DrawGeometry(null, new Pen(accent, 2.8) { LineCap = PenLineCap.Round }, geometry);
     }
 
     private static Point PointOnCircle(Point center, double radius, double degrees)
