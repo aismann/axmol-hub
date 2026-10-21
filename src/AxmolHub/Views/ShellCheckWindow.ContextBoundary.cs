@@ -20,7 +20,7 @@ public partial class ShellCheckWindow
         Directory.CreateDirectory(workspace);
         var provider = chat.AddProvider("Boundary fixture", "https://offline.invalid/v1", "boundary-model", null)!;
         chat.SetModelContextTokens(provider.Id, "boundary-model", 32768);
-        var session = chat.StartConversation(provider.Id);
+        var session = StartAgentSession(chat, provider.Id);
         session.WorkspaceRoot = workspace;
         var burst = new ContextBurstClient();
         var summaries = 0;

@@ -141,6 +141,19 @@ public partial class ShellCheckWindow : Window
         }
     }
 
+    /// <summary>
+    /// Starts the fixture an assertion about tools needs. A chat with no directory attached now opens in 提问, and
+    /// that mode hands the model no tools at all — so a fixture that never leaves it has nothing to assert on, and
+    /// every card, declaration and tool result below would fail naming the wrong cause. The default itself is
+    /// asserted against the composer, from the fixtures this helper does not build.
+    /// </summary>
+    private static Conversation StartAgentSession(ChatWorkspace chat, string? providerId = null)
+    {
+        var session = chat.StartConversation(providerId);
+        if (session.Mode != ChatModes.Agent) chat.SelectMode(ChatModes.Agent);
+        return session;
+    }
+
     private async Task RunChecksAsync(string scratchRoot)
     {
         // The starting point must be Chinese: the assertions below hard-code "this is a Chinese UI".
@@ -372,30 +385,31 @@ public partial class ShellCheckWindow : Window
         // reason", so the reasoning picker could never open for the default gateway's 205 models — the tier
         // menu needs evidence to appear at all, and the evidence only comes back from a sent request. Now an
         // unknown model is still askable, but EffortsFor stays empty: being allowed to ask is not a license
-        // to invent a tier for it.
+        // to invent a tier for it. "Askable" is read off the menu a click builds, because the chip itself only
+        // speaks after a tier was picked, and a session that picked none wears no tier at all.
         Check(panel.SelectModelForCheck(checkProvider!.Id, checkModel)
               && panel.SelectedModelText.Contains(checkModel, StringComparison.Ordinal)
-              && panel.ReasoningPickerEnabledForCheck
-              && ModelCatalog.EffortsFor(checkProvider, checkModel).Count == 0,
-            "未知模型的推理档位问得出去，但没有任何一档是被臆测出来的");
+              && panel.SelectedModelReasoningEffortsForCheck.Length > 0
+              && ModelCatalog.EffortsFor(checkProvider, checkModel).Count == 0
+              && panel.ReasoningChipTextForCheck.Length == 0,
+            "未知模型的推理档位问得出去（菜单铺出整条阶梯），但没有任何一档是被臆测出来的，芯片也不替它写一个");
         checkProvider.ReasoningModels[checkModel] = new AiModelReasoning
         {
             Efforts = [ChatReasoningEfforts.Low, ChatReasoningEfforts.High],
         };
         panel.Reload();
         Check(panel.SelectModelForCheck(checkProvider.Id, checkModel)
-              && panel.ReasoningPickerEnabledForCheck,
-            "存在明确推理元数据的模型显示推理档位选项");
+              && panel.SelectedModelReasoningEffortsForCheck
+                  .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.High]),
+            "存在明确推理元数据的模型只在菜单里列出它报的那两档（实际 "
+            + string.Join("/", panel.SelectedModelReasoningEffortsForCheck) + "）");
         // 「自动」 now means Hub routing a request by task complexity, and the gateway has its own model id of
-        // that name; a session that never picked a tier reads "default". The chip is the resource text after its
-        // 「推理：」 prefix, so the assertion reads the same resource the label does.
-        var defaultLabel = HubStrings.Get("ChatReasoningDefault");
-        var labelSplit = defaultLabel.IndexOfAny(['：', ':']);
-        var expectedChip = (labelSplit >= 0 ? defaultLabel[(labelSplit + 1)..] : defaultLabel).Trim();
-        Check(panel.ReasoningChipTextForCheck == expectedChip
-              && !expectedChip.Contains("自动", StringComparison.Ordinal)
-              && !expectedChip.Contains("Auto", StringComparison.Ordinal),
-            "没手选过档位时芯片读「默认」而不是「自动」（实际「" + panel.ReasoningChipTextForCheck + "」）");
+        // that name. A tier is something the person picked, so a session that never picked one prints nothing at
+        // all rather than naming a default Hub invented for it — the request then goes out with no tier.
+        Check(panel.ReasoningChipTextForCheck.Length == 0
+              && panel.SelectedReasoningForCheck == ChatReasoningEfforts.Default,
+            "没手选过档位时芯片不写任何档位（「默认」不再是一档，也不替人念它）（实际「"
+            + panel.ReasoningChipTextForCheck + "」）");
 
         // ── Auto routing: the per-session switch, the chip wording, and that a manual pick can take over ──
         // Routing spends the user's money per request, so the switch is asserted where it is read (the chip),
@@ -488,13 +502,13 @@ public partial class ShellCheckWindow : Window
               && panel.ContextCompressButtonTextForCheck == HubStrings.Get("ChatCompressContext"),
             "没有足够对话历史时，压缩上下文按钮保持禁用");
         panel.CloseContextPopoverForCheck();
-        Check(panel.ComposerMenuModesForCheck.SequenceEqual([ChatModes.Plan, ChatModes.Agent])
-              && panel.CheckedComposerMenuModesForCheck.Length == 0
+        Check(panel.ComposerMenuModesForCheck.SequenceEqual([ChatModes.Ask, ChatModes.Plan, ChatModes.Agent])
+              && panel.CheckedComposerMenuModesForCheck.SequenceEqual([ChatModes.Ask])
               && panel.ComposerMenuModesAreCheckboxesForCheck
               && panel.ComposerMenuModeItemsCloseOnClickForCheck
-              && panel.ComposerMenuModesHaveIconsForCheck
-              && !panel.ModeIndicatorVisibleForCheck,
-            "加号菜单只提供带图标、可取消的计划与目标两档复选项，默认全部未勾选且点击后关闭（提问不再是菜单项）");
+              && panel.ComposerMenuModesHaveIconsForCheck,
+            "加号菜单铺出提问、计划、目标三档带图标、可取消的复选项，没有工作目录的新会话勾着提问，点击后关闭"
+            + "（实际勾着 " + string.Join("/", panel.CheckedComposerMenuModesForCheck) + "）");
         Check(panel.PermissionChipFollowsPlusForCheck && panel.ModeIndicatorFollowsPermissionForCheck,
             "工具权限按钮紧跟加号，启用的模式按钮按序排在权限按钮右侧");
         Check(panel.ClickComposerModeMenuForCheck(ChatModes.Plan)
@@ -565,28 +579,32 @@ public partial class ShellCheckWindow : Window
               && panel.ModeIndicatorLabelForCheck == HubStrings.Get("ChatModePlan"),
             "分叉沿用源会话的模式，胶囊当场就是计划（实际「" + panel.ModeIndicatorLabelForCheck + "」）");
         Check(shell.Chat.OpenConversation(markerPeer.Id) is not null
-              && panel.SelectedModeForCheck == ChatModes.Agent
+              && panel.SelectedModeForCheck == ChatModes.Ask
               && panel.ComposerModeMarkerForCheck is null
-              && !panel.ModeIndicatorVisibleForCheck,
-            "切到另一条会话，胶囊不再念上一条的计划：非计划的会话没有标记（实际模式「"
-            + panel.SelectedModeForCheck + "」）");
+              && panel.ModeIndicatorLabelForCheck == HubStrings.Get("ChatModeAsk"),
+            "切到另一条会话，胶囊不再念上一条的计划：它念的是这条会话自己的提问（实际模式「"
+            + panel.SelectedModeForCheck + "」，胶囊「" + panel.ModeIndicatorLabelForCheck + "」）");
         Check(shell.Chat.OpenConversation(markerSource.Id) is not null
               && panel.ModeIndicatorVisibleForCheck
               && panel.ComposerModeMarkerForCheck == ChatModes.Plan,
             "切回计划会话，标记照它自己的模式回来");
         Dispatcher.UIThread.RunJobs();
         Check(shell.Chat.StoredCopyForCheck(markerSource.Id)?.Mode == ChatModes.Plan
-              && shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Mode == ChatModes.Agent,
+              && shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Mode == ChatModes.Ask,
             "模式各写进自己会话的文件，重启读回按会话而不是按界面（实际源「"
             + shell.Chat.StoredCopyForCheck(markerSource.Id)?.Mode + "」/ 另一条「"
             + shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Mode + "」）");
-        // 提问 is deliberately unnamed here: it is a chat with no tools, not a mode the composer advertises. The
-        // assertion keeps that from being mistaken later for a marker that failed to paint.
+        // 提问 is a durable mode with no tools, and it says so twice: the chip names it and the ＋ menu ticks it.
+        // Both are read together, because a mode that is on but drawn nowhere is a mode the reader cannot leave.
         shell.Chat.SelectMode(ChatModes.Ask);
         Dispatcher.UIThread.RunJobs();
-        Check(panel.SelectedModeForCheck == ChatModes.Ask && !panel.ModeIndicatorVisibleForCheck
-              && panel.CheckedComposerMenuModesForCheck.Length == 0,
-            "提问模式不戴胶囊也不勾任何一档，模式照旧生效（实际模式「" + panel.SelectedModeForCheck + "」）");
+        Check(panel.SelectedModeForCheck == ChatModes.Ask
+              && panel.ModeIndicatorVisibleForCheck
+              && panel.ModeIndicatorLabelForCheck == HubStrings.Get("ChatModeAsk")
+              && panel.CheckedComposerMenuModesForCheck.SequenceEqual([ChatModes.Ask]),
+            "提问模式戴着写着提问的胶囊，加号菜单里也勾着提问，两处说的是同一档（实际模式「"
+            + panel.SelectedModeForCheck + "」，胶囊「" + panel.ModeIndicatorLabelForCheck
+            + "」，勾着 " + string.Join("/", panel.CheckedComposerMenuModesForCheck) + "）");
         shell.Chat.OpenConversation(markerPeer.Id);
         shell.Chat.SeedGoalForCheck(markerPeer.Id, "完成目标并依据证据核验");
         Dispatcher.UIThread.RunJobs();
@@ -858,7 +876,7 @@ public partial class ShellCheckWindow : Window
         var leakedCall = LeakedCallAfter("让我先确认「计划任务」到底记在哪。");
 
         var fixtureSession = shell.Chat.ActiveConversation?.Id;
-        var leakedSession = shell.Chat.StartConversation();
+        var leakedSession = StartAgentSession(shell.Chat);
         ScriptedChatClient? leakedClient = null;
         shell.Chat.ClientOverride = (_, _) => leakedClient = new ScriptedChatClient([leakedCall]);
         await panel.SendForCheckAsync("查一下计划任务记在哪");
@@ -902,7 +920,7 @@ public partial class ShellCheckWindow : Window
                           + "```cpp\n" + ridingFence + "\n```\n\n"
                           + "| 状态 | 点击 |\n| --- | --- |\n| 已就绪 | 继续 |";
         var ridingBefore = shell.Chat.ActiveConversation?.Id;
-        var ridingSession = shell.Chat.StartConversation();
+        var ridingSession = StartAgentSession(shell.Chat);
         var ridingClient = new ApprovalChatClient
         {
             Said = ridingReply,
@@ -2261,7 +2279,7 @@ public partial class ShellCheckWindow : Window
               && shell.Chat.StoredCopyForCheck(emptyConversation.Id) is null,
             "清空空会话移除从未使用的新会话");
 
-        var compressionSession = shell.Chat.StartConversation(checkProvider.Id);
+        var compressionSession = StartAgentSession(shell.Chat, checkProvider.Id);
         for (var i = 0; i < 10; i++)
             shell.Chat.SeedTurnForCheck(compressionSession.Id, $"较早的上下文 {i}: " + new string('x', 500));
         ScriptedChatClient? summaryRequest = null;
@@ -2308,7 +2326,7 @@ public partial class ShellCheckWindow : Window
         // teach every request that follows. What is asserted is the declaration on the wire and a summary that
         // reads back exactly as the model wrote it.
         var beforeLeaky = shell.Chat.ActiveConversation?.Id;
-        var leaky = shell.Chat.StartConversation();
+        var leaky = StartAgentSession(shell.Chat);
         for (var turn = 0; turn < 12; turn++)
             shell.Chat.SeedTurnForCheck(leaky.Id, turn == 5 ? leakedCall : "第 " + turn + " 条普通对话内容");
         ScriptedChatClient? leakySummarizer = null;
@@ -2324,7 +2342,7 @@ public partial class ShellCheckWindow : Window
             "摘要按模型写的样子落盘、后续提示词读得回来（存到「"
             + (leakyCopy?.ContextSummary ?? "null") + "」）");
         // An empty answer is a failed compaction, not a success: no summary text means nothing was summarized.
-        var emptyLeaky = shell.Chat.StartConversation();
+        var emptyLeaky = StartAgentSession(shell.Chat);
         for (var turn = 0; turn < 12; turn++)
             shell.Chat.SeedTurnForCheck(emptyLeaky.Id, "第 " + turn + " 条普通对话内容");
         var refusedAudits = new List<string>();
@@ -3508,7 +3526,7 @@ public partial class ShellCheckWindow : Window
 
         // What the model said before asking for a tool belongs ahead of that call in the record; a replay that
         // puts the words after the result is a transcript nobody can read back.
-        var ordered = chat.StartConversation();
+        var ordered = StartAgentSession(chat);
         chat.ClientOverride = (_, _) => new ToolCallingChatClient();
         chat.OpenConversation(ordered.Id);
         await panel.SendForCheckAsync("改之前先看一眼");
@@ -3602,15 +3620,15 @@ public partial class ShellCheckWindow : Window
     private async Task CheckCrossSessionAsync(MainWindow shell, ChatPanel panel, ChatSidebar sidebar)
     {
         var chat = shell.Chat;
-        var asker = chat.StartConversation();
-        var answerer = chat.StartConversation();
-        var writer = chat.StartConversation();
-        var reader = chat.StartConversation();
-        var budget = chat.StartConversation();
-        var woken = chat.StartConversation();
-        var waiting = chat.StartConversation();
-        var skipped = chat.StartConversation();
-        var doomed = chat.StartConversation();
+        var asker = StartAgentSession(chat);
+        var answerer = StartAgentSession(chat);
+        var writer = StartAgentSession(chat);
+        var reader = StartAgentSession(chat);
+        var budget = StartAgentSession(chat);
+        var woken = StartAgentSession(chat);
+        var waiting = StartAgentSession(chat);
+        var skipped = StartAgentSession(chat);
+        var doomed = StartAgentSession(chat);
 
         // The sender's mode is what gates its own calls; the peer is started by a wake and answers with text.
         foreach (var session in new[] { asker, answerer, writer, reader, budget, doomed })
@@ -3649,7 +3667,7 @@ public partial class ShellCheckWindow : Window
     private async Task CheckSpawnAsync(MainWindow shell, ChatPanel panel, ChatSidebar sidebar)
     {
         var chat = shell.Chat;
-        var parent = chat.StartConversation();
+        var parent = StartAgentSession(chat);
         chat.SetApprovalMode(parent.Id, ToolApprovalModes.Full);
         var savedPreferences = chat.PreferencesProvider;
         var savedOverride = chat.ClientOverride;
@@ -4695,7 +4713,7 @@ public partial class ShellCheckWindow : Window
                 + "]，期望「" + wanted + "」）");
 
             // ── a tool loop is one run, so it is one number on one turn ──
-            var loopSession = chat.StartConversation();
+            var loopSession = StartAgentSession(chat);
             chat.SetApprovalMode(loopSession.Id, ToolApprovalModes.Full);
             chat.OpenConversation(loopSession.Id);
             var loop = new ApprovalChatClient
@@ -7800,11 +7818,11 @@ public partial class ShellCheckWindow : Window
         var savedIdleTimeout = chat.IdleTimeout;
         var savedFirstFrameTimeout = chat.FirstFrameTimeout;
         var savedPreferencesProvider = chat.PreferencesProvider;
-        var observer = chat.StartConversation();
-        var cardSession = chat.StartConversation();
-        var skipSession = chat.StartConversation();
-        var owedSession = chat.StartConversation();
-        var longSession = chat.StartConversation();
+        var observer = StartAgentSession(chat);
+        var cardSession = StartAgentSession(chat);
+        var skipSession = StartAgentSession(chat);
+        var owedSession = StartAgentSession(chat);
+        var longSession = StartAgentSession(chat);
         var questionArguments = new Dictionary<string, object?>
         {
             ["question"] = "重试逻辑放在哪一层？",
@@ -7886,7 +7904,6 @@ public partial class ShellCheckWindow : Window
             // a question. Asserted through the real gate rather than the policy table, because the table cell
             // cannot tell "the tier is read before the mode" from "this call never reached the tier".
             chat.OpenConversation(cardSession.Id);
-            chat.SelectMode(ChatModes.Agent);
             Check(chat.SetApprovalMode(cardSession.Id, ToolApprovalModes.Full)
                   && chat.ApprovalModeFor(cardSession.Id) == ToolApprovalModes.Full,
                 "夹具会话确实跑在完全访问下（实际「" + chat.ApprovalModeFor(cardSession.Id) + "」）");
@@ -8088,64 +8105,64 @@ public partial class ShellCheckWindow : Window
         var savedIdleTimeout = chat.IdleTimeout;
         var savedFirstFrameTimeout = chat.FirstFrameTimeout;
         var savedPreferencesProvider = chat.PreferencesProvider;
-        var readSession = chat.StartConversation();
-        var parkSession = chat.StartConversation();
-        var denySession = chat.StartConversation();
-        var supersededSession = chat.StartConversation();
-        var restartSession = chat.StartConversation();
-        var badgeSession = chat.StartConversation();
-        var batchSession = chat.StartConversation();
+        var readSession = StartAgentSession(chat);
+        var parkSession = StartAgentSession(chat);
+        var denySession = StartAgentSession(chat);
+        var supersededSession = StartAgentSession(chat);
+        var restartSession = StartAgentSession(chat);
+        var badgeSession = StartAgentSession(chat);
+        var batchSession = StartAgentSession(chat);
         // The two sessions that decide whether this build's whole change is real: one command, one sandbox, run
         // under the two modes that disagree about it.
-        var autoRunSession = chat.StartConversation();
-        var askRunSession = chat.StartConversation();
+        var autoRunSession = StartAgentSession(chat);
+        var askRunSession = StartAgentSession(chat);
         // One response, two calls: a read, then a command. The read is free, the command is not, and the only honest
         // card is the one that names the directory the command will really start in — the root this request was
         // built with.
-        var movedSession = chat.StartConversation();
+        var movedSession = StartAgentSession(chat);
         // Two more sessions for the other half of a grant: the one that makes it, and a peer that has never been
         // asked anything, which is the only way to tell an app-wide trust from a session note.
-        var grantSession = chat.StartConversation();
-        var peerSession = chat.StartConversation();
+        var grantSession = StartAgentSession(chat);
+        var peerSession = StartAgentSession(chat);
         // A call on the tier no grant can open, so its card can be shown to have lost the button that would lie.
-        var screenSession = chat.StartConversation();
+        var screenSession = StartAgentSession(chat);
         // The same tier, reached through the sandbox's own tool rather than past it: a git write that moves a ref
         // starts in the directory the person chose and still belongs on the reach tier. This fixture is the one that
         // proves a grant on <c>run_command</c> does not open it — and it stays a fixture about *that* verb after the
         // local-write ruling: add and commit left this tier, the writes that leave the machine or rewrite it did not.
-        var gitWriteSession = chat.StartConversation();
+        var gitWriteSession = StartAgentSession(chat);
         // The verb the ruling moved off the asking rung, and the same command under the two modes that disagree
         // about it: one session to prove 自动审批 runs a commit with no card at all, one to prove 询问审批 still asks.
         // Asserted as a pair for the standing reason — "the mode let it through" and "the gate stopped asking about
         // git" look identical from one side.
-        var commitAutoSession = chat.StartConversation();
-        var commitAskSession = chat.StartConversation();
+        var commitAutoSession = StartAgentSession(chat);
+        var commitAskSession = StartAgentSession(chat);
         // The tier a grant <i>can</i> open, reached through the tool that leaves the machine: web_fetch shares it
         // with a sandbox command, so its card is the pair to the capture card below — one ladder, two answers, and
         // a fixture that only ever shows one of them cannot say which button the gate actually reads.
-        var fetchSession = chat.StartConversation();
+        var fetchSession = StartAgentSession(chat);
         // A write whose preview is long enough to reach the card's own ceiling, for the expanded state below.
-        var longCardSession = chat.StartConversation();
+        var longCardSession = StartAgentSession(chat);
         // One response asking for three writes. This is the shape the batch card exists for: three decisions the
         // person is asked to make as one, in one card that has to fit above the composer without covering it.
-        var tripleSession = chat.StartConversation();
+        var tripleSession = StartAgentSession(chat);
         // The one call 完全访问 must still ask about: clearing what the user already built. Kept a session of its own
         // rather than folded into the full-access fixtures above, because those answer with a read or a
         // `Get-Location` — commands whose tier the mode is allowed to wave through — and this cell's whole claim is
         // that the mode does <b>not</b> reach a deletion. It is refused, never approved: `rm -rf build` is exactly the
         // thing the rule exists to ask about, and a self-check that ran it would be answering its own question.
-        var buildSession = chat.StartConversation();
+        var buildSession = StartAgentSession(chat);
         // …and its mirror, which is the half the user named in person: building is not a question. A build that fails
         // and gets tried again after an edit is the work, so the same mode has to let a real build through with no
         // card at all. A nonexistent project is the safe way to prove that — graded as a build by its verb, present
         // wherever this suite runs, and leaving no half-built tree behind it.
-        var quietBuildSession = chat.StartConversation();
+        var quietBuildSession = StartAgentSession(chat);
         // A command that goes quiet while it is still running, driven through the window three times: one answer
         // clicked, another answer clicked, and nobody answering the third. The first two prove the card's buttons
         // reach the process; the third is the one that matters most, because it is the only road where the card has
         // to disappear by itself — a question about a command that finished is a question the user should not have
         // to close.
-        var stallSession = chat.StartConversation();
+        var stallSession = StartAgentSession(chat);
         var readClient = new ApprovalChatClient();
         var parkClient = new ApprovalChatClient();
         var denyClient = new ApprovalChatClient();
@@ -8240,8 +8257,8 @@ public partial class ShellCheckWindow : Window
         // for. Each fixture holds its stream open on a gate so the bubble's label is read while that is the only
         // thing that has happened — a client that answers instantly can only ever show the end state, which is
         // already asserted from the stored turn.
-        var searchSession = chat.StartConversation();
-        var searchedSession = chat.StartConversation();
+        var searchSession = StartAgentSession(chat);
+        var searchedSession = StartAgentSession(chat);
         var searchGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var searchedGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var searchStartReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

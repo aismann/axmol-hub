@@ -6504,7 +6504,27 @@ public partial class ChatPanel : UserControl
     internal string SelectedModeForCheck => _chat.ActiveMode;
     internal string SelectedReasoningForCheck => _chat.ActiveReasoningEffort;
     internal string ReasoningChipTextForCheck => SelectedReasoningLabel.Text ?? "";
-    internal bool ReasoningPickerEnabledForCheck => SelectedReasoningLabel.IsVisible;
+    /// <summary>The tier entries the model menu offers the selected model, read off the menu a click builds.
+    /// "This tier can be asked for" is a fact about that menu, not about the chip: the chip only speaks after a
+    /// tier was actually picked, so it says nothing about a model that never reported one.</summary>
+    internal string[] SelectedModelReasoningEffortsForCheck
+    {
+        get
+        {
+            var selected = _chat.SelectedChatModel;
+            if (selected is null) return [];
+            var row = BuildModelMenu().Items.OfType<MenuItem>().FirstOrDefault(item =>
+                item.Tag is ChatWorkspace.ChatModelOption option
+                && option.Provider.Id == selected.Provider.Id
+                && string.Equals(option.ModelName, selected.ModelName, StringComparison.OrdinalIgnoreCase));
+            return row is null
+                ? []
+                : row.Items.OfType<MenuItem>()
+                    .Select(item => item.Tag as string ?? "")
+                    .Where(effort => effort.Length > 0)
+                    .ToArray();
+        }
+    }
     internal double ContextArcForCheck => ContextRing.Usage;
 
     /// <summary>The whole reading behind the ring, absolute numbers and all. A ratio alone cannot tell a session

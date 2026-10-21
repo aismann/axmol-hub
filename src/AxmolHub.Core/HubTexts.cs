@@ -545,7 +545,6 @@ public static class HubTexts
         ["ChatGoalClear"] = ("清除目标", "Clear goal"),
         ["ChatGoalCollapse"] = ("折叠目标卡", "Collapse goal card"),
         ["ChatGoalExpand"] = ("展开目标卡", "Expand goal card"),
-        ["ChatReasoningDefault"] = ("推理：默认", "Reasoning: Default"),
         ["ChatReasoningLow"] = ("推理：低", "Reasoning: Low"),
         ["ChatReasoningMedium"] = ("推理：中", "Reasoning: Medium"),
         ["ChatReasoningHigh"] = ("推理：高", "Reasoning: High"),
