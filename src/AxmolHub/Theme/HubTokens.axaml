@@ -104,7 +104,7 @@
       <SolidColorBrush x:Key="Hub.GridAlternate" Color="#292929" />
       <SolidColorBrush x:Key="Hub.GridHeader" Color="#2D2D2D" />
       <SolidColorBrush x:Key="Hub.RowHover" Color="#313131" />
-      <SolidColorBrush x:Key="Hub.RowSelected" Color="#3B3B3B" />
+      <SolidColorBrush x:Key="Hub.RowSelected" Color="#454545" />
 
       <SolidColorBrush x:Key="Hub.ScrollTrack" Color="#202020" />
       <SolidColorBrush x:Key="Hub.ScrollThumb" Color="#575757" />
@@ -215,7 +215,7 @@
       <SolidColorBrush x:Key="Hub.GridAlternate" Color="#FAFAFC" />
       <SolidColorBrush x:Key="Hub.GridHeader" Color="#F0F1F4" />
       <SolidColorBrush x:Key="Hub.RowHover" Color="#EFF2F7" />
-      <SolidColorBrush x:Key="Hub.RowSelected" Color="#DCE8F5" />
+      <SolidColorBrush x:Key="Hub.RowSelected" Color="#D0E2F8" />
 
       <SolidColorBrush x:Key="Hub.ScrollTrack" Color="#EFEFF2" />
       <SolidColorBrush x:Key="Hub.ScrollThumb" Color="#B9BAC2" />

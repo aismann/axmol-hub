@@ -37,7 +37,8 @@
                 BorderThickness="1" CornerRadius="6" Margin="0,0,10,0">
           <Grid ColumnDefinitions="40,*,36">
             <Path Grid.Column="0" Data="{StaticResource Hub.Icon.Search}" Width="18" Height="18"
-                  Stretch="Uniform" Fill="{DynamicResource Hub.TextSecondary}"
+                  Stretch="Uniform" Fill="Transparent" Stroke="{DynamicResource Hub.TextSecondary}"
+                  StrokeThickness="1.7" StrokeLineCap="Round" StrokeJoin="Round"
                   HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
             <TextBox x:Name="SearchBox" Grid.Column="1" PlaceholderText="{DynamicResource Search}"
                      Background="Transparent" BorderThickness="0" Padding="0" Margin="0"

@@ -328,5 +328,9 @@
     <Setter Property="Fill" Value="{DynamicResource Hub.RowSelected}" />
     <Setter Property="Opacity" Value="1" />
   </Style>
+  <!-- Keep keyboard focus on the selected row without the DataGrid's bright per-cell focus frame. -->
+  <Style Selector="DataGrid:focus DataGridCell:current /template/ Grid#FocusVisual">
+    <Setter Property="IsVisible" Value="False" />
+  </Style>
 
 </Styles>
