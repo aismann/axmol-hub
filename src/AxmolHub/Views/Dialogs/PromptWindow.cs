@@ -27,29 +27,27 @@ public sealed class PromptWindow : Window
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
+
         _input = new TextBox { Text = initialValue };
         if (placeholder is { Length: > 0 }) _input.PlaceholderText = placeholder;
 
-        var panel = new StackPanel { Spacing = 8 };
-        panel.Children.Add(new TextBlock { Text = title, FontSize = 18 });
-        panel.Children.Add(_input);
+        // The title is the caption bar's now, so the body is the field alone: the dialog says its title once —
+        // Window.Title — which is the same rule the header's caption follows.
+        var body = new StackPanel { Spacing = 8 };
+        body.Children.Add(_input);
 
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Spacing = 8,
-            Margin = new Thickness(0, 12, 0, 0),
-        };
-        var cancel = new Button { Content = HubStrings.Get("Cancel"), IsCancel = true };
-        cancel.Click += (_, _) => Close(HubDialogResult.Cancel);
-        var ok = new Button { Content = HubStrings.Get("Save"), IsDefault = true, Classes = { "primary" } };
-        ok.Click += (_, _) => Close(HubDialogResult.Ok);
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(ok);
-        panel.Children.Add(buttons);
+        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
+        Grid.SetRow(chrome.Header, 0);
+        Grid.SetRow(body, 1);
+        var (footer, _, _) = HubDialogChrome.Footer(HubStrings.Get("Save"), HubStrings.Get("Cancel"),
+            () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
+        Grid.SetRow(footer, 2);
+        layout.Children.Add(chrome.Header);
+        layout.Children.Add(body);
+        layout.Children.Add(footer);
 
-        Content = new Border { Child = panel, Padding = new Thickness(24) };
+        Content = new Border { Child = layout, Padding = new Thickness(24) };
 
         Opened += (_, _) => { _input.Focus(); _input.SelectAll(); };
     }

@@ -214,4 +214,42 @@ internal sealed class HubDialogChrome
         _press = null;
         e.Pointer.Capture(null);
     }
+
+    /// <summary>The row under a dialog's body: Cancel, then the confirm plate, right-aligned at the body's own
+    /// margin. Every dialog that drew its own chrome also drew its own version of this row, and the copies had
+    /// drifted apart in spacing and order — so the row lives here beside the header, with the same named-part
+    /// contract for the self-check: <c>DialogFooter</c>, <c>DialogCancelButton</c>, <c>DialogConfirmButton</c>.
+    ///
+    /// <para>The two labels arrive as text rather than resource keys: a dialog's confirm wording ("Save",
+    /// "Create", "Approve") is the caller's, and a language switch while the dialog is open is already not
+    /// followed by the copies this replaces.</para>
+    /// </summary>
+    internal static (Control Root, Button Confirm, Button Cancel) Footer(
+        string confirmText, string cancelText, Action confirm, Action cancel)
+    {
+        var row = new StackPanel
+        {
+            Name = "DialogFooter",
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+
+        var cancelButton = new Button { Name = "DialogCancelButton", Content = cancelText, IsCancel = true };
+        cancelButton.Click += (_, _) => cancel();
+
+        var confirmButton = new Button
+        {
+            Name = "DialogConfirmButton",
+            Content = confirmText,
+            IsDefault = true,
+            Classes = { "primary" },
+        };
+        confirmButton.Click += (_, _) => confirm();
+
+        row.Children.Add(cancelButton);
+        row.Children.Add(confirmButton);
+        return (row, confirmButton, cancelButton);
+    }
 }

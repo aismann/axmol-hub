@@ -35,29 +35,31 @@ public sealed class BuildTargetDialog : Window
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
-        var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = HubStrings.Get("ChooseBuildPlatform"), FontSize = 18 });
-        panel.Children.Add(_picker);
-        panel.Children.Add(new TextBlock { Text = HubStrings.Get("BuildConfiguration") });
-        panel.Children.Add(_configuration);
-        panel.Children.Add(_hint);
-        panel.Children.Add(new TextBlock
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
+
+        var body = new StackPanel();
+        body.Children.Add(_picker);
+        body.Children.Add(new TextBlock { Text = HubStrings.Get("BuildConfiguration") });
+        body.Children.Add(_configuration);
+        body.Children.Add(_hint);
+        body.Children.Add(new TextBlock
         {
             Text = HubStrings.Get("BuildPlatformHint"),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 16),
         });
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var cancel = new Button { Content = HubStrings.Get("Cancel"), IsCancel = true };
-        cancel.Click += (_, _) => Close(HubDialogResult.Cancel);
-        var build = new Button { Content = HubStrings.Get("Continue"), IsDefault = true, Classes = { "primary" } };
-        build.Click += (_, _) => Close(HubDialogResult.Ok);
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(build);
-        panel.Children.Add(buttons);
+        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
+        Grid.SetRow(chrome.Header, 0);
+        Grid.SetRow(body, 1);
+        var (footer, _, _) = HubDialogChrome.Footer(HubStrings.Get("Continue"), HubStrings.Get("Cancel"),
+            () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
+        Grid.SetRow(footer, 2);
+        layout.Children.Add(chrome.Header);
+        layout.Children.Add(body);
+        layout.Children.Add(footer);
 
-        Content = new Border { Child = panel, Padding = new Thickness(24) };
+        Content = new Border { Child = layout, Padding = new Thickness(24) };
 
         var available = BuildTargets.ForHost(project.Version);
         _picker.ItemsSource = available;

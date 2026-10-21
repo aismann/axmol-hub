@@ -72,10 +72,12 @@ public sealed class EngineVersionDialog : Window
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
-        // No title line in here on purpose: this is a window with a title bar of its own, and the bar
-        // already says it. A second copy at 18px inside the panel is the same sentence twice.
-        var panel = new StackPanel();
-        panel.Children.Add(new TextBlock
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
+
+        // No title line in here on purpose: the caption bar says it, and a second copy at 18px inside the panel
+        // is the same sentence twice.
+        var body = new StackPanel();
+        body.Children.Add(new TextBlock
         {
             Text = HubStrings.Get("EngineVersionHint"),
             TextWrapping = TextWrapping.Wrap,
@@ -84,27 +86,30 @@ public sealed class EngineVersionDialog : Window
         // Tell the user honestly where this list comes from. Falling back isn't a fault, but "where
         // the list comes from" must be visible — otherwise "there are 6 versions" and "only the
         // built-in few" look identical.
-        panel.Children.Add(new TextBlock
+        body.Children.Add(new TextBlock
         {
             Text = HubStrings.Get(fromRemoteIndex ? "EngineIndexRemote" : "EngineIndexBuiltIn"),
             Classes = { "muted" },
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 4, 0, 0),
         });
-        panel.Children.Add(_versions);
-        panel.Children.Add(_detail);
-        panel.Children.Add(_warning);
+        body.Children.Add(_versions);
+        body.Children.Add(_detail);
+        body.Children.Add(_warning);
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var cancel = new Button { Content = HubStrings.Get("Cancel"), IsCancel = true };
-        cancel.Click += (_, _) => Close(HubDialogResult.Cancel);
-        _install = new Button { Content = HubStrings.Get("InstallSelected"), IsDefault = true, Classes = { "primary" } };
-        _install.Click += (_, _) => Close(HubDialogResult.Ok);
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(_install);
-        panel.Children.Add(buttons);
+        var (footer, install, _) = HubDialogChrome.Footer(HubStrings.Get("InstallSelected"), HubStrings.Get("Cancel"),
+            () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
+        _install = install;
 
-        Content = new Border { Child = panel, Padding = new Thickness(24) };
+        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
+        Grid.SetRow(chrome.Header, 0);
+        Grid.SetRow(body, 1);
+        Grid.SetRow(footer, 2);
+        layout.Children.Add(chrome.Header);
+        layout.Children.Add(body);
+        layout.Children.Add(footer);
+
+        Content = new Border { Child = layout, Padding = new Thickness(24) };
 
         var rows = releases.Select(release => new Row(release, isInFlight)).ToArray();
         _versions.ItemsSource = rows;
