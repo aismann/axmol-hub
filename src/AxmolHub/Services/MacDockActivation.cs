@@ -30,7 +30,7 @@ namespace AxmolHub;
 /// about) belongs to the window's own <c>Activated</c> handler, which gates it on the window having genuinely left
 /// the foreground.</para>
 /// </summary>
-internal static class MacDockActivation
+internal static partial class MacDockActivation
 {
     /// <summary>The AppKit notification name. Written out rather than read from anywhere: the string <em>is</em> the
     /// contract, and a typo in it fails as "nothing ever happens", which no compiler sees.</summary>
@@ -161,26 +161,6 @@ internal static class MacDockActivation
         _originalReopen = null;
         _installed = false;
         _restore = null;
-    }
-
-    /// <summary>Posts the notification AppKit posts. A Dock click cannot be produced from a check, so the shell
-    /// self-check raises this one instead: what it proves is the half that can be wrong — that the observer really
-    /// is on the centre under the real name and that the registered callback really runs.</summary>
-    internal static void PostActivationForCheck()
-    {
-        var center = Send0(objc_getClass("NSNotificationCenter"), Selector("defaultCenter"));
-        SendPost(center, Selector("postNotificationName:object:"), ToNSString(BecameActiveNotification), IntPtr.Zero);
-    }
-
-    /// <summary>Sends the reopen event to the application delegate, which is what a Dock click does. The self-check
-    /// cannot click the icon, so it sends the message the click would send: what that proves is everything that can
-    /// silently be wrong — that the delegate really wears the subclass, that the override really runs, that the
-    /// original implementation is still consulted, and that the answer says "handled".</summary>
-    internal static byte PressReopenForCheck()
-    {
-        if (_reopenTarget == IntPtr.Zero) return 0;
-        var app = Send0(objc_getClass("NSApplication"), Selector("sharedApplication"));
-        return SendReopen(_reopenTarget, Selector("applicationShouldHandleReopen:hasVisibleWindows:"), app, 0);
     }
 
     /// <summary>The callback. AppKit posts and sends these on the main run loop, which is Avalonia's UI thread, so the
