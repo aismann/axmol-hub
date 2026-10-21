@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text;
 using System.Text.Json;
 using AxmolHub.Core;
 
@@ -91,16 +90,13 @@ public sealed class OpenAiOAuthFlow(HttpClient http)
         {
             while (!token.IsCancellationRequested)
             {
-                var context = await listener.GetContextAsync().WaitAsync(token).ConfigureAwait(false);
+                var context = await LoopbackCallback.AcceptAsync(listener, null, token).ConfigureAwait(false);
                 var url = context.Request.Url?.AbsoluteUri ?? "";
                 var accepted = context.Request.HttpMethod == "GET"
                     && attempt.Read(url).State is CallbackState.Accepted or CallbackState.Declined;
-                var bytes = Encoding.UTF8.GetBytes(accepted ? "Sign-in received. You can close this tab." : "This callback does not match the pending sign-in.");
-                context.Response.StatusCode = accepted ? 200 : 400;
-                context.Response.ContentType = "text/plain; charset=utf-8";
-                context.Response.ContentLength64 = bytes.Length;
-                try { await context.Response.OutputStream.WriteAsync(bytes, token).ConfigureAwait(false); }
-                finally { context.Response.Close(); }
+                await LoopbackCallback.AnswerAsync(context.Response, accepted ? 200 : 400,
+                        accepted ? "Sign-in received. You can close this tab." : "This callback does not match the pending sign-in.")
+                    .ConfigureAwait(false);
                 if (accepted) { attempt.Submit(url); return; }
             }
         }

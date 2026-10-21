@@ -226,19 +226,7 @@ public sealed class OrcaRouterOAuthFlow
     /// </summary>
     private async Task<string> ReceiveCodeAsync(HttpListener listener, string expectedState, CancellationToken cancellationToken)
     {
-        var contextTask = listener.GetContextAsync();
-        var completed = await Task.WhenAny(contextTask, Task.Delay(_timeout, cancellationToken)).ConfigureAwait(false);
-        if (completed != contextTask)
-        {
-            // The caller stops the listener on the way out, and a stopped listener faults the request still
-            // pending here. Nothing is left to await it, so observe the fault instead of leaving an unobserved
-            // task exception to surface later as a mystery rethrow.
-            _ = contextTask.ContinueWith(static abandoned => _ = abandoned.Exception, CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
-            throw new TimeoutException("The sign-in was not completed in time.");
-        }
-
-        var context = await contextTask.ConfigureAwait(false);
+        var context = await LoopbackCallback.AcceptAsync(listener, _timeout, cancellationToken).ConfigureAwait(false);
 
         // Answer the browser with something a person can read: the tab is left open on it, and a blank page
         // after approving says nothing about whether it worked.
@@ -270,7 +258,7 @@ public sealed class OrcaRouterOAuthFlow
         }
         finally
         {
-            await WriteResponseAsync(context.Response, status, message).ConfigureAwait(false);
+            await LoopbackCallback.AnswerAsync(context.Response, status, message).ConfigureAwait(false);
         }
     }
 
@@ -411,26 +399,6 @@ public sealed class OrcaRouterOAuthFlow
         var port = ((IPEndPoint)probe.LocalEndpoint).Port;
         probe.Stop();
         return port;
-    }
-
-    private static async Task WriteResponseAsync(HttpListenerResponse response, int status, string message)
-    {
-        try
-        {
-            response.StatusCode = status;
-            response.ContentType = "text/plain; charset=utf-8";
-            var bytes = Encoding.UTF8.GetBytes(message);
-            response.ContentLength64 = bytes.Length;
-            await response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // The browser may already have gone away; a failed courtesy page must never mask the real outcome.
-        }
-        finally
-        {
-            response.Close();
-        }
     }
 
     private sealed record DiscoveryDocument(
