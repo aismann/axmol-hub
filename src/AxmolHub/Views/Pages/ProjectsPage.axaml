@@ -21,6 +21,10 @@
     <Style Selector="MenuItem.danger">
       <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
     </Style>
+    <Style Selector="Border.project-search:focus-within">
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Accent}" />
+      <Setter Property="BorderThickness" Value="2" />
+    </Style>
   </UserControl.Styles>
 
   <Grid>
@@ -28,15 +32,16 @@
       <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto,Auto" Margin="0,0,0,14">
         <TextBlock Text="{DynamicResource Projects}" FontSize="28" FontWeight="SemiBold"
                    VerticalAlignment="Center" Margin="0,0,18,0" />
-        <Border Grid.Column="1" Width="380" MaxWidth="420" Height="42" VerticalAlignment="Center"
+        <Border Grid.Column="1" Classes="project-search" Width="400" MaxWidth="420" Height="42" VerticalAlignment="Center"
                 Background="{DynamicResource Hub.SurfaceSunken}" BorderBrush="{DynamicResource Hub.BorderStrong}"
                 BorderThickness="1" CornerRadius="6" Margin="0,0,10,0">
           <Grid ColumnDefinitions="40,*,36">
             <Path Grid.Column="0" Data="{StaticResource Hub.Icon.Search}" Width="18" Height="18"
                   Stretch="Uniform" Fill="{DynamicResource Hub.TextSecondary}"
                   HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
-            <TextBox x:Name="SearchBox" Grid.Column="1" PlaceholderText="{DynamicResource SearchProjects}"
+            <TextBox x:Name="SearchBox" Grid.Column="1" PlaceholderText="{DynamicResource Search}"
                      Background="Transparent" BorderThickness="0" Padding="0" Margin="0"
+                     PlaceholderForeground="{DynamicResource Hub.TextSecondary}"
                      VerticalContentAlignment="Center" />
             <Button x:Name="ClearSearchButton" Grid.Column="2" Classes="quiet" Padding="0"
                     Width="28" Height="28" VerticalAlignment="Center" IsVisible="False"

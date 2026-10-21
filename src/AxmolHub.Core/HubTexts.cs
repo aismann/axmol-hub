@@ -87,6 +87,7 @@ public static class HubTexts
         ["ProjectsHint"] = ("创建、构建并运行你的 Axmol 项目。", "Create, build and run your Axmol projects."),
         ["NewProject"] = ("新建项目", "New project"),
         ["OpenExisting"] = ("添加已有项目", "Add existing project"),
+        ["Search"] = ("搜索", "Search"),
         ["SearchProjects"] = ("按名称或路径搜索项目", "Search projects by name or path"),
         ["Actions"] = ("操作", "Actions"),
         ["BuildTarget"] = ("构建目标", "Build target"),
