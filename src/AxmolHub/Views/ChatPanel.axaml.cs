@@ -3310,16 +3310,13 @@ public partial class ChatPanel : UserControl
             Classes = { "activity-row", "running" },
             ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto"),
         };
-        // The status slot holds the mark, and the arrow trades places with it on hover — the same two glyphs in one
-        // cell the finished row uses, so nothing moves sideways when this row becomes that one. The mark is a
-        // gap-topped ring rather than a tick or a cross: a call in flight has no verdict yet, and either of the two
-        // would be a claim about how it ends. It is Hub.Icon.InProgress and not Hub.Icon.Refresh for the same
-        // reason: the arrowed arc is the regenerate button's face in this same panel, and a row nobody can press
-        // must not wear it.
+        // The status slot holds a terminal prompt while a command is in flight, not a success or failure
+        // verdict. The expander arrow trades places with it on hover in the same cell, so nothing moves sideways
+        // when this row becomes a finished one.
         grid.Children.Add(new Avalonia.Controls.Shapes.Path
         {
             Classes = { "activity-status" },
-            Data = ThemeGeometry("Hub.Icon.InProgress"),
+            Data = ThemeGeometry("Hub.Icon.CommandPrompt"),
         });
         grid.Children.Add(new Avalonia.Controls.Shapes.Path
         {
@@ -5415,17 +5412,15 @@ public partial class ChatPanel : UserControl
             .SelectMany(grid => grid.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>())
             .Where(path => path.Classes.Contains("activity-status"));
 
-    /// <summary>Whether a row with no verdict yet wears the gap-topped in-progress ring — and, the half that
-    /// actually pins the regression, whether the regenerate arrow is gone from it. Hub.Icon.Refresh is the
-    /// regenerate button's face in this same panel, so a row nobody can press must not wear it; identity rather
-    /// than shape is what this asserts, because a look-alike arc would pass a shape test.</summary>
+    /// <summary>Whether a command in flight wears the terminal prompt rather than a verdict or the
+    /// regenerate arrow. Identity pins the intended glyph instead of allowing a look-alike arc.</summary>
     internal bool ActivityRowRunningGlyphForCheck
     {
         get
         {
             var marks = RunningRowStatusPathsForCheck.ToList();
             return marks.Count > 0
-                && marks.All(mark => ReferenceEquals(mark.Data, ThemeGeometry("Hub.Icon.InProgress")))
+                && marks.All(mark => ReferenceEquals(mark.Data, ThemeGeometry("Hub.Icon.CommandPrompt")))
                 && marks.All(mark => !ReferenceEquals(mark.Data, ThemeGeometry("Hub.Icon.Refresh")));
         }
     }

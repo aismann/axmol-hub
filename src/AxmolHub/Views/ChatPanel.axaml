@@ -661,9 +661,8 @@
     <Style Selector="Grid.activity-row.thought Path.activity-status">
       <Setter Property="Stroke" Value="{DynamicResource Hub.TextTertiary}" />
     </Style>
-    <!-- The running row's mark. A call in flight has no verdict, so it wears neither the success tick nor the
-         failure cross — the same quiet ink the thinking row uses, on a gap-topped ring rather than a check or
-         the regenerate arrow. -->
+    <!-- The running command's terminal prompt has no verdict, so it wears neither the success tick nor the
+         failure cross — just the same quiet ink the thinking row uses. -->
     <Style Selector="Grid.activity-row.running Path.activity-status">
       <Setter Property="Stroke" Value="{DynamicResource Hub.TextTertiary}" />
     </Style>

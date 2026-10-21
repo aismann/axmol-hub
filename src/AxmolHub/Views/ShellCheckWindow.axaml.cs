@@ -5330,11 +5330,10 @@ public partial class ShellCheckWindow : Window
                       HubStrings.Get("ActivityRowCommandRunning"), StringComparison.Ordinal),
                 "工具真正拿到这段运行时，卡片说的是「正在执行」（实际「"
                 + panel.RunningCommandRowTextForCheck + "」）");
-            // The mark on a row with no verdict yet is a ring with no arrowhead. It used to be Hub.Icon.Refresh,
-            // which is also the regenerate button's glyph in the same panel, so a row nobody can press read as one
-            // they could — hence an identity assertion rather than a shape one.
+            // A command in flight uses a terminal prompt rather than a verdict or the regenerate button's arrow.
+            // Check the glyph identity so a visually similar but misleading icon cannot silently replace it.
             Check(panel.ActivityRowRunningGlyphForCheck,
-                "运行中的那一行用不带箭头的环形弧，不是可点击的重试箭头");
+                "运行中的命令行用终端提示符 >_，不是可点击的重试箭头");
             Check(!panel.RunningCommandExpandedForCheck,
                 "卡片默认收着：一行说清在跑什么，输出不替人把整列顶开");
             // The clock is what tells a silent command from a dead one, so it has to be there before the first line
