@@ -86,7 +86,13 @@ public static class EngineBuildLayout
         foreach (var executable in executables)
         {
             yield return Path.Combine(bin, executable);
-            yield return Path.Combine(bin, projectName + ".app/Contents/MacOS", projectName);
+        }
+
+        if (family == "macos")
+        {
+            // macOS bundles are emitted beside the bin directory, under <build>/<Config>/<App>.app.
+            yield return Path.Combine(buildDirectory, "build", configuration, projectName + ".app", "Contents", "MacOS", projectName);
+            yield return Path.Combine(buildDirectory, projectName + ".app", "Contents", "MacOS", projectName);
         }
     }
 }

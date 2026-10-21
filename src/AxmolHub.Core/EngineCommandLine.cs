@@ -15,8 +15,17 @@ namespace AxmolHub.Core;
 /// </summary>
 public sealed class EngineCommandLine(ProcessRunner runner, string wrapper)
 {
-    /// <summary>The engine script is PowerShell (on Unix the engine's own pwshi.sh guarantees pwsh exists).</summary>
-    private static string Shell => OperatingSystem.IsWindows() ? WindowsShell.PowerShell : "pwsh";
+    /// <summary>Uses the host PowerShell executable discovered by the shared host-shell probe.</summary>
+    private static string Shell
+    {
+        get
+        {
+            if (OperatingSystem.IsWindows()) return WindowsShell.PowerShell;
+            var status = HostPowerShell.Probe();
+            return status.Executable
+                ?? throw new InvalidOperationException("PowerShell 7 (pwsh) was not found. Install PowerShell 7 or add its executable to PATH, then retry.");
+        }
+    }
 
     /// <summary>The environment-preparation wrapper script, distributed in the same directory as the <c>axmol</c> wrapper.</summary>
     private string SetupWrapper => Path.Combine(Path.GetDirectoryName(wrapper)!, "Invoke-AxmolSetup.ps1");

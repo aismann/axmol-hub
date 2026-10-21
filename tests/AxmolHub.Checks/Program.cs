@@ -9047,6 +9047,12 @@ Check(EngineBuildLayout.FindBuildDirectory(layoutProject)!.EndsWith("build_decla
 Check(EngineBuildLayout.FindArtifact(scannedBuild, "Fixture", "Release", "windows") is null
     && EngineBuildLayout.FindArtifact(scannedBuild, "Fixture", "Debug", "wasm") is null,
     "Artifact discovery never borrows another configuration's or target's output");
+var macBuild = Path.Combine(buildFixture, "build", "build");
+var macBundleExecutable = Path.Combine(macBuild, "Debug", "Fixture.app", "Contents", "MacOS", "Fixture");
+Directory.CreateDirectory(Path.GetDirectoryName(macBundleExecutable)!);
+File.WriteAllText(macBundleExecutable, "binary");
+Check(EngineBuildLayout.FindArtifact(macBuild, "Fixture", "Debug", "macos") == macBundleExecutable,
+    "macOS app bundles are discovered from the configuration directory beside bin");
 
 await Reject<InvalidDataException>(() => Task.Run(() => PackageInstaller.SafePath(root, "../escape")), "Manifest path traversal rejected");
 await Reject<InvalidDataException>(() => Task.Run(() => PackageInstaller.SafePath(root, "C:\\escape")), "Absolute manifest path rejected");
