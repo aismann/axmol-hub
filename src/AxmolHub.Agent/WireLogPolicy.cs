@@ -15,8 +15,38 @@ namespace AxmolHub.Agent;
 /// </summary>
 public static class WireLog
 {
-    /// <summary>The recording directory, or null when the feature is off.</summary>
-    public static string? Directory { get; set; }
+    private static readonly object gate = new();
+    private static string? configured;
+    private static string? launch;
+
+    /// <summary>The recording directory the host asked for, or null when the feature is off.</summary>
+    public static string? Directory
+    {
+        get { lock (gate) return configured; }
+        set { lock (gate) { configured = value; launch = null; } }
+    }
+
+    /// <summary>The directory this process actually writes into: one folder per launch, named for the start time
+    /// and the pid.
+    ///
+    /// <para><b>Why the extra level.</b> <see cref="NextPair"/> counts from one in every process, so two launches
+    /// pointed at the same directory overwrite each other's pairs file for file. Measured on 2026-10-21: a failure
+    /// was recorded, four launches shared one directory, and by the time the recording was read the failing pair
+    /// had been replaced by a later launch's request — 83 index lines against 36 pairs on disk, with the evidence
+    /// in the missing ones. A folder per launch makes the collision impossible rather than a rule somebody has to
+    /// remember.</para></summary>
+    private static string? Root
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (configured is null) return null;
+                return launch ??= System.IO.Path.Combine(configured,
+                    $"{DateTime.Now:yyyyMMdd-HHmmss}-{Environment.ProcessId}");
+            }
+        }
+    }
 
     private static int sequence;
 
@@ -24,12 +54,12 @@ public static class WireLog
     /// line for a turn all carry the same number.</summary>
     public static int NextPair() => Interlocked.Increment(ref sequence);
 
-    /// <summary>Writes one file under <see cref="Directory"/>. Never throws: a recording that cannot be written
+    /// <summary>Writes one file under <see cref="Root"/>. Never throws: a recording that cannot be written
     /// must not be the reason a request fails. The text is <b>not</b> folded to LF on purpose — these are the
     /// bytes the wire carried, and <see cref="WireLogPolicy"/> exists so a claim can be checked against them.</summary>
     public static void TryWrite(string name, string text)
     {
-        var root = Directory;
+        var root = Root;
         if (root is null) return;
         try
         {
@@ -42,17 +72,21 @@ public static class WireLog
         }
     }
 
-    /// <summary>Appends one line to the index. Same no-throw rule as <see cref="TryWrite"/>.</summary>
+    /// <summary>Appends one line to the index, prefixed with the moment the request went out. Same no-throw rule
+    /// as <see cref="TryWrite"/>. The timestamp is not decoration: the only other trace of a turn is a log line
+    /// written elsewhere, and without a time on the index there is no way to say which pair a failure belongs to
+    /// — which is exactly the question a recording is kept to answer.</summary>
     public static void TryAppendIndex(string line)
     {
-        var root = Directory;
+        var root = Root;
         if (root is null) return;
         try
         {
             System.IO.Directory.CreateDirectory(root);
             // The index is Hub's own line, unlike the recordings above, so it is LF even when a field carried in
             // from the body — a raw `thinking` object — spans more than one line.
-            File.AppendAllText(Path.Combine(root, "index.log"), TextEol.ToLf(line) + "\n");
+            File.AppendAllText(Path.Combine(root, "index.log"),
+                TextEol.ToLf($"{DateTimeOffset.Now:O} {line}") + "\n");
         }
         catch (Exception)
         {

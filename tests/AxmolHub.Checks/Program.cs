@@ -6030,6 +6030,34 @@ if (args.Contains("--check-ai-web-search"))
     Console.WriteLine("PASS: a session file written before this field existed still loads, and saving it back "
         + "adds no search record.");
 
+    // The recorder that exists to answer "what actually went out" is only worth keeping if a later launch cannot
+    // overwrite it. Pair numbers restart at one in every process, so a shared directory quietly replaced the
+    // evidence of a failure with another launch's request — measured on 2026-10-21, when a failure was recorded and
+    // gone by the time it was read (83 index lines against 36 pairs on disk). One folder per launch, plus a time on
+    // every index line so a log line can be matched to the pair it belongs to.
+    var wireRoot = Path.Combine(root, "wire-launch");
+    WireLog.Directory = wireRoot;
+    try
+    {
+        WireLog.TryWrite("0001.request.json", "{}");
+        WireLog.TryAppendIndex("0001 completions tools=0");
+        var launches = Directory.GetDirectories(wireRoot);
+        if (launches.Length != 1 || !File.Exists(Path.Combine(launches[0], "0001.request.json")))
+            throw new Exception("The wire recording did not get a folder of its own per launch: "
+                + $"{(launches.Length == 0 ? "nothing was written" : string.Join(", ", launches))}.");
+        var indexLine = File.ReadAllLines(Path.Combine(launches[0], "index.log")).Single();
+        var space = indexLine.IndexOf(' ', StringComparison.Ordinal);
+        if (space <= 0 || !DateTimeOffset.TryParse(indexLine[..space], out _))
+            throw new Exception($"A wire index line carries no timestamp to match a failure against: 「{indexLine}」");
+    }
+    finally
+    {
+        WireLog.Directory = null;
+        if (Directory.Exists(wireRoot)) Directory.Delete(wireRoot, recursive: true);
+    }
+
+    Console.WriteLine("PASS: the wire recording lands in one folder per launch, and every index line is timestamped.");
+
     return;
 }
 
