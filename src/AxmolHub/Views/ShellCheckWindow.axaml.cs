@@ -833,6 +833,7 @@ public partial class ShellCheckWindow : Window
         Check(chipProbe.Found && chipProbe.ClickEmpty && chipProbe.NoWholeChipTint,
             "单击行内代码清除选区，不出现整块模拟选中状态（选区为空=" + chipProbe.ClickEmpty + "）");
         await VerifyInlineCodeSurfacesAsync();
+        await VerifyCodeBlockGeometryAsync();
         Check(chipProbe.Found && chipProbe.DraggedCopied,
             "跨行内代码块的选区把它自己的代码也算进要复制的文本（读到「" + chipProbe.DraggedText + "」）");
         Check(panel.MarkdownSelectionMenuForCheck(),
@@ -929,6 +930,7 @@ public partial class ShellCheckWindow : Window
             "Markdown 链接与回复中的裸 URL 均生成可点击链接");
         Check(panel.HasThemedMarkdownLink(),
             "Markdown 链接使用 Hub 主题配色而非默认纯蓝");
+        await VerifyStreamingCodeBlockAsync(shell, panel);
 
         // ── A tool call that arrived as prose ──
         // The fixture lives with the plan check below, which needs the same bytes; see <see cref="LeakedCall"/>.

@@ -335,7 +335,7 @@ internal static class MarkdownMessageRenderer
     }
 
     /// <summary>
-    /// The host scrolls, not the viewer.
+    /// The host scrolls the document; nested code editors and tables still scroll horizontally.
     ///
     /// <para>The viewer wraps its document in a <see cref="ScrollViewer"/> of its own, and that bar is drawn over
     /// the document's right edge: Hub's ScrollBar theme is opaque, always visible and 10px
@@ -352,6 +352,10 @@ internal static class MarkdownMessageRenderer
             viewer.LayoutUpdated -= layoutUpdated;
             foreach (var scroll in viewer.GetVisualDescendants().OfType<ScrollViewer>())
             {
+                // Only the document hands scrolling to the inspector host. A fenced code editor and a
+                // wide table still own their horizontal scrolling inside that document.
+                if (scroll.GetVisualAncestors().OfType<TextEditor>().Any()
+                    || scroll.Classes.Contains("markdown-table-scroll")) continue;
                 scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
                 scroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
             }
@@ -421,7 +425,11 @@ internal static class MarkdownMessageRenderer
 
         var content = new Grid { Margin = new Avalonia.Thickness(12, 6, 12, 10) };
         content.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
-        content.RowDefinitions.Add(new RowDefinition(1, GridUnitType.Star));
+        content.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+        // AvaloniaEdit measures the editor to exactly the text's height, but draws its horizontal bar over
+        // the bottom of that viewport. Reserve the bar's own height below the glyphs (not extra height on
+        // the outer border): otherwise a long one-line command has only 6px visible above a 10px bar.
+        editor.Padding = new Avalonia.Thickness(0, 0, 0, HubMetrics.ScrollBarThickness);
 
         var copyButton = new Button();
         copyButton.Classes.Add("markdown-code-copy");
