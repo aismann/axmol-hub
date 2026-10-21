@@ -109,8 +109,12 @@ internal static class LinuxIntegrationSelfCheck
         Check(!argv.Contains("--print-id"),
             "no --print-id: it would prepend the notification id to the stdout the action key is read from");
         var body = argv[^1];
-        Check(body.Contains($"<a href=\"axmolhub://conversation/{conversationId}\">", StringComparison.Ordinal),
-            "the body carries the conversation deep link as a markup anchor, the route that works with the app closed");
+        Check(body.Contains($"<a href=\"axmolhub://sessions/{conversationId}\">", StringComparison.Ordinal),
+            "the body carries the session deep link as a markup anchor, the route that works with the app closed");
+        Check(SystemAttentionService.TryGetConversationId($"axmolhub://sessions/{conversationId}", out var sessionLinkId)
+              && sessionLinkId == conversationId
+              && !SystemAttentionService.TryGetConversationId($"axmolhub://conversation/{conversationId}", out _),
+            "only the plural sessions deep-link route resolves to the session id");
         Check(body.Contains("fix &lt;A&gt; &amp; B", StringComparison.Ordinal) && !body.Contains("<A>", StringComparison.Ordinal),
             "a session title holding markup characters is escaped instead of breaking the whole body");
         Check(SystemAttentionService.IsActivationActionKey("axmolhub-open")

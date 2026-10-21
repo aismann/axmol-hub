@@ -198,7 +198,7 @@ internal sealed class SystemAttentionService : IDisposable
         conversationId = "";
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
             || !uri.Scheme.Equals("axmolhub", StringComparison.OrdinalIgnoreCase)
-            || !uri.Host.Equals("conversation", StringComparison.OrdinalIgnoreCase))
+            || !uri.Host.Equals("sessions", StringComparison.OrdinalIgnoreCase))
             return false;
 
         var id = Uri.UnescapeDataString(uri.AbsolutePath.Trim('/'));
@@ -220,7 +220,7 @@ internal sealed class SystemAttentionService : IDisposable
 
     private void ShowWindowsToast(string title, string body, string conversationId)
     {
-        var link = $"axmolhub://conversation/{Uri.EscapeDataString(conversationId)}";
+        var link = $"axmolhub://sessions/{Uri.EscapeDataString(conversationId)}";
         var xml = new XmlDocument();
         var toast = xml.CreateElement("toast");
         toast.SetAttribute("activationType", "protocol");
@@ -272,7 +272,7 @@ internal sealed class SystemAttentionService : IDisposable
     /// <para>Three click routes are packed into these arguments, because no single one covers every desktop and
     /// every moment:</para>
     /// <list type="number">
-    /// <item>the body carries an <c>axmolhub://conversation/…</c> anchor, and GNOME activates body links through
+    /// <item>the body carries an <c>axmolhub://sessions/…</c> anchor, and GNOME activates body links through
     /// the registered <c>x-scheme-handler</c> — exact, and it works even when Hub is not running;</item>
     /// <item>the action identifier is <see cref="LinuxActivationActionKey"/>, which servers that dispatch
     /// <c>ActionInvoked</c> hand back to the waiting helper — exact, but only while the helper lives;</item>
@@ -289,7 +289,7 @@ internal sealed class SystemAttentionService : IDisposable
     internal static IReadOnlyList<string> BuildLinuxNotificationArguments(
         string desktopEntryId, string title, string body, string actionLabel, string conversationId)
     {
-        var link = $"axmolhub://conversation/{Uri.EscapeDataString(conversationId)}";
+        var link = $"axmolhub://sessions/{Uri.EscapeDataString(conversationId)}";
         return new[]
         {
             "--app-name=Axmol Hub",

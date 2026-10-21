@@ -515,14 +515,14 @@ public static class HubTexts
         // Built-in AI assistant. The protocol baseline is OpenAI-compatible; the first phase's providers = OrcaRouter + custom.
         ["Assistant"] = ("AI 助手", "AI assistant"),
         ["AssistantHint"] = ("向助手提问 Axmol 相关问题。模型由你配置的 provider 提供。", "Ask the assistant about Axmol. Answers come from the provider you configure."),
-        ["AssistantEmpty"] = ("开始新的对话。", "Start a new conversation."),
-        ["NewConversation"] = ("新建对话", "New conversation"),
-        ["DeleteConversation"] = ("删除对话", "Delete conversation"),
-        ["SearchConversations"] = ("搜索对话", "Search conversations"),
-        ["NoSearchResults"] = ("没有匹配的对话。", "No matching conversations."),
-        ["ConversationActions"] = ("对话操作", "Conversation actions"),
-        ["Conversation"] = ("对话", "Conversation"),
-        ["NoConversations"] = ("还没有对话。", "No conversations yet."),
+        ["AssistantEmpty"] = ("开始新的对话。", "Start a new session."),
+        ["NewConversation"] = ("新建对话", "New session"),
+        ["DeleteConversation"] = ("删除对话", "Delete session"),
+        ["SearchConversations"] = ("搜索对话", "Search sessions"),
+        ["NoSearchResults"] = ("没有匹配的对话。", "No matching sessions."),
+        ["ConversationActions"] = ("对话操作", "Session actions"),
+        ["Conversation"] = ("对话", "Session"),
+        ["NoConversations"] = ("还没有对话。", "No sessions yet."),
         ["NoAvailableChatModels"] = ("请先在设置中鉴权并添加可用模型。", "Authenticate a provider and add an available model in Settings first."),
         ["Send"] = ("发送", "Send"),
         ["Stop"] = ("停止", "Stop"),
@@ -632,7 +632,7 @@ public static class HubTexts
         // says what the session is doing, not what a control would do. Drawn on the bubble's status line while a
         // run is on screen, and in the strip below the transcript when none is.
         ["ChatCompactingContext"] = ("上下文压缩中…", "Compacting context…"),
-        ["ChatContextCompressUnavailable"] = ("当前对话没有足够的早期内容可供压缩。", "There is not enough earlier conversation to compress yet."),
+        ["ChatContextCompressUnavailable"] = ("当前对话没有足够的早期内容可供压缩。", "There is not enough earlier session content to compress yet."),
         ["ChatContextCompressFailed"] = ("压缩上下文失败：", "Could not compress context: "),
         ["ChatContextCompressing"] = ("上下文压缩完成前，暂时不能发送或重试消息。", "Sending or retrying is unavailable until context compression finishes."),
         ["ChatAddContext"] = ("添加上下文", "Add context"),
@@ -835,17 +835,17 @@ public static class HubTexts
         ["ChatRunTimedOutNotificationTitle"] = ("助手任务超时", "Assistant task timed out"),
         ["ChatRunNotificationBody"] = ("会话「{0}」中的助手任务已结束。", "The assistant task in 「{0}」 has finished."),
         ["ChatToolApprovalNotificationTitle"] = ("操作等待批准", "Action awaiting approval"),
-        ["ChatToolApprovalNotificationBody"] = ("会话「{0}」需要你批准一项操作。", "A conversation 「{0}」 needs you to approve an action."),
+        ["ChatToolApprovalNotificationBody"] = ("会话「{0}」需要你批准一项操作。", "Session 「{0}」 needs you to approve an action."),
         ["AttentionDiagnosticTitle"] = ("Axmol Hub 通知测试", "Axmol Hub notification test"),
         ["AttentionDiagnosticBody"] = ("这是系统通知测试；任务栏标记将在 30 秒后恢复。", "This is a system notification test; the taskbar badge will reset after 30 seconds."),
         // Linux notifications carry this twice: as the notify-send action label, and as the anchor text of the
         // open-in-Hub link appended to the body. It is the only click target that names the conversation exactly.
-        ["NotificationActionOpen"] = ("打开会话", "Open conversation"),
+        ["NotificationActionOpen"] = ("打开会话", "Open session"),
         // After the decision the card collapses to one of these lines — the record stays in the transcript, the
         // buttons do not.
         ["ChatApprovalResolvedApproved"] = ("已批准", "Allowed"),
         ["ChatApprovalResolvedDenied"] = ("已拒绝", "Refused"),
-        ["ChatApprovalResolvedSuperseded"] = ("未执行（换了话题）", "Not run (the conversation moved on)"),
+        ["ChatApprovalResolvedSuperseded"] = ("未执行（换了话题）", "Not run (the session moved on)"),
         // The write's own record and its one exit. A call that never had to ask still changed the file, so the
         // line names the file; the button only rides along while there is a copy to go back to — and it stays
         // visible instead of waiting for a hover, because an undo nobody can find is a mistake that cannot be fixed.
@@ -920,7 +920,7 @@ public static class HubTexts
         ["ChatQuestionSkip"] = ("跳过", "Skip"),
         ["ChatQuestionWaitingLine"] = ("{0} 在等你回答，答案在输入区", "{0} is waiting for your answer in the composer"),
         ["ChatQuestionResolved"] = ("已回答", "Answered"),
-        ["ChatQuestionResolvedSuperseded"] = ("没回答（换了话题）", "Unanswered (the conversation moved on)"),
+        ["ChatQuestionResolvedSuperseded"] = ("没回答（换了话题）", "Unanswered (the session moved on)"),
         // The card keeps 「继续」 dead until something is armed, so this is a race between a click and a repaint
         // rather than a thing a person does on purpose — which is why it is a notice and not a disabled button.
         ["ChatQuestionUnanswered"] = ("没有选中任何一项，也没有写答案", "Nothing was chosen and nothing was written"),
@@ -1166,33 +1166,33 @@ public static class HubTexts
         ["ScrollToBottom"] = ("回到底部", "Scroll to bottom"),
         // Session management (the session list in the left column).
         ["RenameConversation"] = ("重命名", "Rename"),
-        ["RenameConversationTitle"] = ("重命名对话", "Rename conversation"),
-        // The id is what the session's own file, a log line and an axmolhub://conversation/… link all key on, and it
+        ["RenameConversationTitle"] = ("重命名对话", "Rename session"),
+        // The id is what the session's own file, a log line and an axmolhub://sessions/… link all key on, and it
         // is otherwise only readable off the disk. The copy says so in words because a clipboard write is invisible.
         ["CopyConversationId"] = ("复制会话 ID", "Copy session ID"),
         ["ConversationIdCopied"] = ("会话 ID 已复制到剪贴板。", "The session ID is on the clipboard."),
-        ["CopyConversationDeepLink"] = ("复制会话深度链接", "Copy conversation deep link"),
-        ["ConversationDeepLinkCopied"] = ("会话深度链接已复制到剪贴板。", "The conversation deep link is on the clipboard."),
-        ["CopyConversationFilePath"] = ("复制会话文件路径", "Copy conversation file path"),
-        ["ConversationFilePathCopied"] = ("会话文件路径已复制到剪贴板。", "The conversation file path is on the clipboard."),
+        ["CopyConversationDeepLink"] = ("复制会话深度链接", "Copy session deep link"),
+        ["ConversationDeepLinkCopied"] = ("会话深度链接已复制到剪贴板。", "The session deep link is on the clipboard."),
+        ["CopyConversationFilePath"] = ("复制会话文件路径", "Copy session file path"),
+        ["ConversationFilePathCopied"] = ("会话文件路径已复制到剪贴板。", "The session file path is on the clipboard."),
         ["PinConversation"] = ("置顶", "Pin"),
         ["UnpinConversation"] = ("取消置顶", "Unpin"),
         // Session grouping: workspaces first, conversations with no working directory all go to the trailing "Chats" group, archived ones sink to the very bottom.
         // Time buckets gave way to directory grouping — conversations of one project scattered over "Today" and "Earlier" no longer read as one project.
         ["GroupWorkspaces"] = ("工作区", "Workspace"),
-        ["GroupChats"] = ("对话", "Chats"),
+        ["GroupChats"] = ("对话", "Sessions"),
         ["GroupArchived"] = ("已归档", "Archived"),
         ["ToggleGroup"] = ("展开或折叠这一组", "Expand or collapse this group"),
         // The "+" at the right of a group header: the workspace root node picks a directory first, the other groups create a session or a chat per what that group means.
         ["GroupNewSessionTip"] = ("新建会话", "New session"),
-        ["GroupNewChatTip"] = ("新建对话", "New chat"),
+        ["GroupNewChatTip"] = ("新建对话", "New session"),
         ["GroupNewWorkspaceTip"] = ("新建工作区", "New workspace"),
-        ["ArchiveConversation"] = ("归档对话", "Archive conversation"),
-        ["RestoreConversation"] = ("恢复对话", "Restore conversation"),
+        ["ArchiveConversation"] = ("归档对话", "Archive session"),
+        ["RestoreConversation"] = ("恢复对话", "Restore session"),
         ["RestoreAllArchived"] = ("全部恢复", "Restore all archived"),
         ["ArchiveWorkspace"] = ("归档工作区", "Archive workspace"),
         ["ArchiveWorkspaceConfirmFormat"] = ("归档「{0}」和它的 {1} 个对话？它们会从列表里收起，记录一条都不删。",
-            "Archive “{0}” and its {1} conversations? They fold out of the list; nothing is deleted."),
+            "Archive “{0}” and its {1} sessions? They fold out of the list; nothing is deleted."),
         ["EditWorkspacePath"] = ("编辑路径…", "Edit path…"),
         ["EditWorkspacePathTitle"] = ("这个工作区的新路径", "New path for this workspace"),
         ["WorkspaceActions"] = ("工作区操作", "Workspace actions"),
@@ -1201,12 +1201,12 @@ public static class HubTexts
         ["NoWorkspaceSessions"] = ("暂无会话", "No sessions yet"),
         ["RemoveWorkspace"] = ("移除工作区", "Remove workspace"),
         ["WorkspaceRemovedFormat"] = ("「{0}」已从列表移除，对话记录一条都没删",
-            "Removed “{0}” from the list; no conversation was deleted"),
+            "Removed “{0}” from the list; no session was deleted"),
         // The re-path of a workspace with no sessions left: nothing moved, so the sentence must not count anything.
         ["WorkspacePathUpdatedFormat"] = ("「{0}」现在指向：{1}", "“{0}” now points at: {1}"),
 
         ["WorkspaceMovedFormat"] = ("「{0}」的 {1} 个对话已改用：{2}",
-            "{1} conversations in “{0}” now work in: {2}"),
+            "{1} sessions in “{0}” now work in: {2}"),
         // Provider management (a custom provider = an endpoint the user brings; the main way to attach a local model).
         ["AddProvider"] = ("添加提供商", "Add provider"),
         ["EditProvider"] = ("编辑提供商", "Edit provider"),
@@ -1284,7 +1284,7 @@ public static class HubTexts
         ["ProviderNoCredential"] = ("此提供商无需密钥，可直接使用。", "This provider needs no key and works as-is."),
         ["RemoveProviderIcon"] = ("移除", "Remove"),
         ["Models"] = ("模型", "Models"),
-        ["ModelsHint"] = ("同一提供商可保存多个模型，标为「使用中」的是默认模型；每个对话也可单独选择模型。", "A provider can hold several models; \"In use\" is its default, and each conversation can choose a model independently."),
+        ["ModelsHint"] = ("同一提供商可保存多个模型，标为「使用中」的是默认模型；每个对话也可单独选择模型。", "A provider can hold several models; \"In use\" is its default, and each session can choose a model independently."),
         ["AddModel"] = ("添加模型", "Add model"),
         ["RefreshModels"] = ("刷新", "Refresh"),
         ["RefreshModelsHint"] = ("从提供商重新拉取可用模型列表。", "Fetch the available model list from the provider again."),
@@ -1303,7 +1303,7 @@ public static class HubTexts
         // correction path is named here rather than shown as a control on purpose: `MaxContextTokens` is the
         // exact casing ProviderStore writes, so what this sentence advertises is what the file actually holds.
         ["ModelContextSourceHint"] = ("Hub 按这个数字决定这段对话什么时候压缩。来源：{0}。要纠正，编辑数据目录里的 ai/providers.json，给这个模型写 MaxContextTokens。",
-            "Hub compacts a conversation against this number. Source: {0}. To correct it, edit ai/providers.json in the data folder and set MaxContextTokens on this model."),
+            "Hub compacts a session against this number. Source: {0}. To correct it, edit ai/providers.json in the data folder and set MaxContextTokens on this model."),
         ["CapabilitySourceEndpoint"] = ("模型自报", "reported"),
         ["CapabilitySourceManifest"] = ("预设声明", "preset"),
         ["CapabilitySourceOverride"] = ("手动设置", "yours"),
@@ -1391,8 +1391,8 @@ public static class HubTexts
         ["TrayShowWindow"] = ("显示主窗口", "Show main window"),
         ["TrayExit"] = ("退出", "Exit"),
         ["BottomMenuTip"] = ("设置、外观与语言", "Settings, appearance and language"),
-        ["SearchConversationsTip"] = ("搜索对话", "Search conversations"),
-        ["NewConversationTip"] = ("新建对话", "New conversation"),
+        ["SearchConversationsTip"] = ("搜索对话", "Search sessions"),
+        ["NewConversationTip"] = ("新建对话", "New session"),
         ["AssistantGreeting"] = ("你好，我是 Axmol 助手", "Hi, I'm your Axmol assistant"),
         // The subtitle is the scope of the whole assistant, so it must not name only engines: an Axmol-unrelated
         // question is in scope. The four chips below are the same promise stated as things to do.

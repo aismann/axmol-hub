@@ -752,7 +752,7 @@ public partial class ChatSidebar : UserControl
 
         var copyDeepLinkItem = new MenuItem { Header = HubStrings.Get("CopyConversationDeepLink") };
         copyDeepLinkItem.Click += (_, _) => _ = CopyConversationTextAsync(
-            $"axmolhub://conversation/{Uri.EscapeDataString(summary.Id)}", "ConversationDeepLinkCopied");
+            $"axmolhub://sessions/{Uri.EscapeDataString(summary.Id)}", "ConversationDeepLinkCopied");
         menu.Items.Add(copyDeepLinkItem);
 
         var copyFilePathItem = new MenuItem { Header = HubStrings.Get("CopyConversationFilePath") };
