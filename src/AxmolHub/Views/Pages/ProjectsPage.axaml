@@ -235,8 +235,10 @@
           <WrapPanel Classes="actions" ItemSpacing="8" LineSpacing="8">
             <Button x:Name="OpenFolderButton" Content="{DynamicResource OpenFolder}" Classes="quiet" />
             <Button x:Name="OpenOutputsButton" Content="{DynamicResource OpenOutputs}" Classes="quiet" />
-            <Button x:Name="VisualStudioButton" Content="Visual Studio" Classes="quiet" />
-            <Button x:Name="CodeButton" Content="VS Code" Classes="quiet" />
+            <!-- One editor button, labelled with the editor that will launch; the chevron beside it offers the
+                 editors detected here without changing any default (see ProjectsPage.ShowEditorMenu). -->
+            <Button x:Name="EditorButton" Classes="quiet" />
+            <Button x:Name="EditorMenuButton" Content="▾" Classes="quiet" />
           </WrapPanel>
         </DockPanel>
       </StackPanel>

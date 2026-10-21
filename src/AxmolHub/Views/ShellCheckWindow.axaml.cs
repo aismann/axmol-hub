@@ -14594,7 +14594,7 @@ public partial class ShellCheckWindow : Window
         var commands = new[]
         {
             "BuildButton", "RunButton", "ConfigureButton", "AndroidReleaseButton", "PrebuiltSettingsButton",
-            "OpenFolderButton", "OpenOutputsButton", "CodeButton", "RemoveProjectButton",
+            "OpenFolderButton", "OpenOutputsButton", "EditorButton", "EditorMenuButton", "RemoveProjectButton",
         };
         var missing = commands
             .Where(name => NamedDescendant<Button>(projects, name) is not { IsVisible: true })
@@ -14602,22 +14602,27 @@ public partial class ShellCheckWindow : Window
         Check(missing.Length == 0,
             "项目页动作条十项命令都还在且可见（重排成两行不能丢按钮，缺：" + string.Join(", ", missing) + "）");
 
-        // Visual Studio is Windows-only, so unlike the other nine it is shown conditionally — assert the
-        // gate itself rather than assume it is always visible (it isn't on macOS/Linux).
-        var vsButton = NamedDescendant<Button>(projects, "VisualStudioButton");
-        Check(vsButton is not null && vsButton.IsVisible == OperatingSystem.IsWindows(),
-            "Visual Studio 按钮仅 Windows 显示（devenv.exe 是 Windows 专属）");
+        // The editor button is no longer host-gated: one settings slot holds the editor, so one button serves every
+        // platform, and its caption names the editor the press will actually launch.
+        var editorButton = NamedDescendant<Button>(projects, "EditorButton");
+        Check(editorButton is { IsVisible: true } && editorButton.Content is string caption && caption.Length > 0
+              && NamedDescendant<Button>(projects, "EditorMenuButton") is { IsVisible: true },
+            "编辑器按钮与「打开方式」在任何平台都显示，标题写明将用哪个编辑器（实际 " + editorButton?.Content + "）");
 
-        // The launch arguments are the one part of this flow that fails **outside** the process: a wrong
-        // switch makes devenv print "Invalid Command Line. Unknown Switch" and exit instead of opening.
-        // Nothing in the build catches it, so pin the exact list (folder path only, no switch) here.
-        var editorPath = System.IO.Path.Combine(scratchRoot, "SampleProject");
-        var vsArgs = HubWorkspace.EditorArguments(visualStudio: true, editorPath);
-        var codeArgs = HubWorkspace.EditorArguments(visualStudio: false, editorPath);
-        Check(vsArgs.Length == 1 && vsArgs[0] == editorPath
-              && codeArgs.Length == 1 && codeArgs[0] == editorPath,
-            "两种编辑器的启动参数都只有项目路径、不带任何开关（devenv 没有 /OpenFolder 这类开关，"
-            + "传开关会直接报错而不打开：VS=[" + string.Join(" ", vsArgs) + "] Code=[" + string.Join(" ", codeArgs) + "]）");
+        // The launch plan is the one part of this flow that fails **outside** the process: a wrong switch makes
+        // devenv print "Invalid Command Line. Unknown Switch" and exit instead of opening, and a bundle handed to
+        // the process starter throws "FileName should not be a directory". Nothing in the build catches either, so
+        // pin both conventions — and pin the refusal, since a folder mistaken for an editor is that same crash.
+        var editorFolder = System.IO.Path.Combine(scratchRoot, "SampleProject");
+        var plainPlan = CodeEditors.LaunchPlan(System.IO.Path.Combine(scratchRoot, "sample-editor.exe"), editorFolder);
+        var bundlePlan = CodeEditors.LaunchPlan("/Applications/Visual Studio Code.app", editorFolder);
+        Check(plainPlan.FileName == System.IO.Path.Combine(scratchRoot, "sample-editor.exe")
+              && plainPlan.Arguments.SequenceEqual(new[] { editorFolder })
+              && bundlePlan.FileName == "/usr/bin/open"
+              && bundlePlan.Arguments.SequenceEqual(new[] { "-a", "/Applications/Visual Studio Code.app", editorFolder })
+              && !CodeEditors.Accepts(scratchRoot),
+            "启动方式由路径决定：可执行文件直接带目录，应用包交给 open -a（都不带开关，devenv 的 /OpenFolder 会直接报错"
+            + "而不打开），且普通目录不会被当成编辑器（实际 " + string.Join(" ", bundlePlan.Arguments) + "）");
 
         Check(NamedDescendant<Button>(projects, "RemoveProjectButton") is { } removeProject
               && DockPanel.GetDock(removeProject) == Dock.Right,
@@ -14847,20 +14852,50 @@ public partial class ShellCheckWindow : Window
               && defaultEngine != HubTexts.Get("NoDefault", HubStrings.Language),
             "默认引擎显示的是 fixture 里那个引擎（实际 " + defaultEngine + "）");
 
-        // Editor validation is extracted as a pure function, so this most-easily-missed branch can be automated.
-        // The probe paths are composed with the host's own separator on purpose: what is under test is "judged by
-        // file name, case-insensitively, and the two editors are not interchangeable", and a literal Windows path
-        // would instead test Path.GetFileName on a host where a backslash is an ordinary character in a name — so
-        // the branch would read as broken on every platform whose separator is not "\".
-        var vsEditor = Path.Combine("Tools", "VS", "devenv.exe");
-        var codeEditor = Path.Combine("Tools", "Code.exe");
-        Check(SettingsPage.MatchesEditorExecutable(true, vsEditor)
-              && SettingsPage.MatchesEditorExecutable(true, vsEditor.ToUpperInvariant())
-              && SettingsPage.MatchesEditorExecutable(false, codeEditor)
-              && !SettingsPage.MatchesEditorExecutable(true, codeEditor)
-              && !SettingsPage.MatchesEditorExecutable(false, Path.Combine("Tools", "devenv.exe")),
-            "编辑器校验按文件名判定、不区分大小写，且两种编辑器不可互换（探针 "
-            + vsEditor + " / " + codeEditor + "）");
+        // The launch convention follows the *path*, never the product's name or its catalog row: VS Code is an
+        // executable on Windows and a bundle on macOS, and a bundle started as a program is the crash that reached
+        // the user ("FileName should not be a directory"). An id the catalog does not know must keep working too —
+        // a browsed-in application becomes a custom preset instead of a binding nothing can launch.
+        var bundlePath = "/Applications/Visual Studio Code.app";
+        var executablePath = Path.Combine("Tools", "Code.exe");
+        var customPreset = CodeEditors.Preset(new CodeEditor(CodeEditors.CustomId, bundlePath));
+        Check(CodeEditors.LaunchFor(bundlePath) == EditorLaunch.MacBundle
+              && CodeEditors.LaunchFor(executablePath) == EditorLaunch.Executable
+              && CodeEditors.LaunchFor(Path.Combine("Tools", "code")) == EditorLaunch.Executable
+              && customPreset.DisplayName == "Visual Studio Code",
+            "启动方式由路径判定（.app 走 open -a，其余直接执行），未知 id 也能还原成可用编辑器（探针 " + bundlePath + "）");
+
+        // The two old slots must fold into the one default exactly once, carrying the path over untouched: a
+        // migration that re-validated would be a migration that can silently drop the user's choice.
+        var legacyState = new HubState { CodeExecutable = @"C:\Tools\Microsoft VS Code\Code.exe" };
+        Check(legacyState.MigrateEditors() && legacyState.CodeEditor is { Id: "vscode" } && legacyState.CodeExecutable is null
+              && !legacyState.MigrateEditors()
+              && legacyState.CodeEditor.Path == @"C:\Tools\Microsoft VS Code\Code.exe",
+            "旧的两个编辑器槽位一次性折叠成默认编辑器，路径原样保留且重复迁移不再改写");
+
+        // Which editor a press uses — the project's own, then the default, then what was detected — is the whole
+        // reason one settings slot can serve someone who owns two IDEs, and the reason a deleted application falls
+        // through instead of stranding the button on "not selected".
+        var detectedPath = Path.Combine(scratchRoot, "detected-editor.exe");
+        var globalPath = Path.Combine(scratchRoot, "global-editor.exe");
+        var projectPath = Path.Combine(scratchRoot, "project-editor.exe");
+        File.WriteAllText(detectedPath, "");
+        File.WriteAllText(globalPath, "");
+        File.WriteAllText(projectPath, "");
+        var editorProject = new ProjectEntry { Name = "SampleProject", Path = Path.Combine(scratchRoot, "SampleProject"), Platform = "windows-x64" };
+        var editorState = new HubState { CodeEditor = new CodeEditor(CodeEditors.CustomId, globalPath) };
+        var editorDetected = new[] { new EditorBinding(new EditorPreset("vscode", "VS Code"), detectedPath) };
+        var byDefault = CodeEditors.Resolve(editorProject, editorDetected, editorState);
+        editorProject.CodeEditor = new CodeEditor(CodeEditors.CustomId, projectPath);
+        var byProject = CodeEditors.Resolve(editorProject, editorDetected, editorState);
+        editorProject.CodeEditor = new CodeEditor(CodeEditors.CustomId, Path.Combine(scratchRoot, "removed-editor.exe"));
+        var byFallback = CodeEditors.Resolve(editorProject, editorDetected, editorState);
+        editorState.CodeEditor = null;
+        var byDetection = CodeEditors.Resolve(editorProject, editorDetected, editorState);
+        Check(byDefault?.Path == globalPath && byProject?.Path == projectPath && byFallback?.Path == globalPath
+              && byDetection?.Path == detectedPath,
+            "编辑器解析顺序：项目自身 → 全局默认 → 探测结果，项目路径失效时回落（实际 "
+            + byDefault?.Path + " / " + byProject?.Path + " / " + byFallback?.Path + " / " + byDetection?.Path + "）");
 
         // The download-speed tooltip rests on two pure functions that fail **silently** if wrong: a wrong
         // total still yields a plausible-looking rate, and an off-by-1024 still reads like a speed.

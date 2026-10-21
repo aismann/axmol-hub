@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
+using AxmolHub.Core;
 
 namespace AxmolHub;
 
@@ -82,6 +83,25 @@ public static class Pickers
         });
 
         return Translate(files.Count > 0 ? files[0] : null);
+    }
+
+    /// <summary>
+    /// An editor: an application on macOS, an executable elsewhere. The two hosts disagree about what one *is* —
+    /// a bundle is a directory, so a <c>*.app</c> type filter greys out every application and a folder picker
+    /// walks into <c>Contents</c> — so the platform's own answer is resolved here, once, rather than in each page
+    /// that needs to ask. The returned path is what the user pointed at, folded up to the bundle that contains it;
+    /// whether it is an acceptable editor is <see cref="CodeEditors"/>' question, not this one's.
+    /// </summary>
+    public static async Task<PickResult> PickEditorAsync(TopLevel owner, string title)
+    {
+        var picked = await PickFileAsync(owner, title,
+            OperatingSystem.IsWindows() ? [new FilePickerFileType("Executable") { Patterns = ["*.exe"] }] : null);
+        if (picked.Outcome != PickOutcome.Picked)
+        {
+            return picked;
+        }
+
+        return PickResult.Picked(CodeEditors.ApplicationBundle(picked.Path!) ?? picked.Path!);
     }
 
     public static async Task<PickResult> SaveFileAsync(

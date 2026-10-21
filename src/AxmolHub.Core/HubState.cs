@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace AxmolHub.Core;
@@ -18,14 +19,67 @@ public sealed class ProjectEntry
     public string ProjectType { get; set; } = "cpp";
     public DateTimeOffset? LastOpened { get; set; }
     public string BuildStatus { get; set; } = "Not built";
+
+    /// <summary>
+    /// This project's own editor, when it should not follow the default. Null is the normal state and means
+    /// "whatever <see cref="HubState.CodeEditor"/> says" — a per-project choice, not a second global slot.
+    /// </summary>
+    public CodeEditor? CodeEditor { get; set; }
 }
 public sealed class HubState
 {
     public List<EngineEntry> Engines { get; set; } = [];
     public List<ProjectEntry> Projects { get; set; } = [];
     public string? DefaultEnginePath { get; set; }
+
+    /// <summary>The one default editor. A project may override it (<see cref="ProjectEntry.CodeEditor"/>).</summary>
+    public CodeEditor? CodeEditor { get; set; }
+
+    /// <summary>
+    /// The two slots this replaced — one per hard-coded editor, each holding a Windows executable path. Kept only
+    /// so an existing data root keeps its choice (<see cref="MigrateEditors"/>); never written again, and a null
+    /// here is dropped from the file rather than serialized as a tombstone.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? VisualStudioExecutable { get; set; }
+
+    /// <inheritdoc cref="VisualStudioExecutable"/>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CodeExecutable { get; set; }
+
+    /// <summary>
+    /// Folds the two legacy slots into the single default editor. Runs on every load and is idempotent: the
+    /// legacy values are cleared once folded, so the second load finds nothing to do.
+    ///
+    /// This is a **mapping, not a re-validation** — the path is carried over as it stands, whatever its shape,
+    /// because a migration that judges the path is a migration that can silently drop the user's choice.
+    /// </summary>
+    public bool MigrateEditors()
+    {
+        var changed = false;
+        if (CodeEditor is null)
+        {
+            if (!string.IsNullOrWhiteSpace(CodeExecutable))
+            {
+                CodeEditor = new CodeEditor("vscode", CodeExecutable);
+                changed = true;
+            }
+            else if (!string.IsNullOrWhiteSpace(VisualStudioExecutable))
+            {
+                CodeEditor = new CodeEditor("visualstudio", VisualStudioExecutable);
+                changed = true;
+            }
+        }
+
+        if (CodeExecutable is not null || VisualStudioExecutable is not null)
+        {
+            CodeExecutable = null;
+            VisualStudioExecutable = null;
+            changed = true;
+        }
+
+        return changed;
+    }
 }
 
 public sealed class StateStore(string root)
@@ -39,9 +93,19 @@ public sealed class StateStore(string root)
         // the data root and are never embedded in HTML or a script, so relaxed is the right trade.
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
-    public HubState Load() => File.Exists(StatePath)
-        ? JsonSerializer.Deserialize<HubState>(File.ReadAllText(StatePath), Json) ?? throw new InvalidDataException("Empty Hub state.")
-        : new();
+    public HubState Load()
+    {
+        if (!File.Exists(StatePath))
+        {
+            return new();
+        }
+
+        var state = JsonSerializer.Deserialize<HubState>(File.ReadAllText(StatePath), Json)
+            ?? throw new InvalidDataException("Empty Hub state.");
+        // Every reader gets the folded shape, so no caller has to know the two-slot era existed.
+        state.MigrateEditors();
+        return state;
+    }
     private string StatePath => System.IO.Path.Combine(Root, "hub-state.json");
     public void Save(HubState state) => WriteJson(StatePath, state);
     public void Update(Action<HubState> change)

@@ -326,33 +326,27 @@
           </Grid>
         </StackPanel>
 
-        <!-- ─────────────── Code editors ─────────────── -->
+        <!-- ─────────────── Code editor ───────────────
+             One editor, the way Unity's External Script Editor is one. The list is what was detected on this
+             machine; choosing a row makes it the default. A project can override it on the projects page, which
+             is why one slot is enough — a second global slot would encode "which editors exist" into the state
+             file, and that is what adding Cursor or Rider used to cost. -->
         <StackPanel x:Name="PaneEditors" Spacing="16" IsVisible="False">
-          <TextBlock Classes="muted" Text="{DynamicResource EditorHint}" />
-
-          <!-- Visual Studio is Windows-only; the row is hidden on macOS/Linux by SettingsPage.Reload(). -->
-          <DockPanel x:Name="VisualStudioRow">
-            <Button x:Name="SelectVisualStudioButton" DockPanel.Dock="Right" Margin="12,0,0,0" Classes="more"
-                    Content="{DynamicResource SelectEditor}" />
-            <StackPanel>
-              <TextBlock Text="Visual Studio" FontWeight="SemiBold" />
-              <TextBlock x:Name="VisualStudioLocation" Classes="muted" TextTrimming="CharacterEllipsis" />
-            </StackPanel>
-          </DockPanel>
-
-          <!-- The rule between the two editors is visible exactly when there are two to divide: Reload hides
-               the Visual Studio row on a host without devenv.exe, and a rule left behind would sit under the
-               hint as if something had been removed from above it. -->
-          <Border x:Name="EditorRule" Height="1" Background="{DynamicResource Hub.BorderSubtle}" />
+          <TextBlock Classes="muted" Text="{DynamicResource EditorHint}" TextWrapping="Wrap" />
 
           <DockPanel>
-            <Button x:Name="SelectCodeButton" DockPanel.Dock="Right" Margin="12,0,0,0" Classes="more"
-                    Content="{DynamicResource SelectEditor}" />
-            <StackPanel>
-              <TextBlock Text="VS Code" FontWeight="SemiBold" />
-              <TextBlock x:Name="CodeLocation" Classes="muted" TextTrimming="CharacterEllipsis" />
-            </StackPanel>
+            <Button x:Name="BrowseEditorButton" DockPanel.Dock="Right" Margin="12,0,0,0" Classes="more"
+                    Content="{DynamicResource BrowseEditor}" />
+            <!-- Items are built in code from the detected list (see SettingsPage.RenderEditors): the rows are
+                 product names, which are not localized copy. -->
+            <ComboBox x:Name="EditorPicker" MinWidth="260" HorizontalAlignment="Stretch" />
           </DockPanel>
+
+          <StackPanel>
+            <Button x:Name="DetectEditorButton" Margin="0,0,0,6" Classes="more"
+                    Content="{DynamicResource DetectAgain}" />
+            <TextBlock x:Name="EditorLocation" Classes="muted" TextTrimming="CharacterEllipsis" />
+          </StackPanel>
         </StackPanel>
 
       </StackPanel>

@@ -159,11 +159,65 @@ public partial class ProjectsPage : UserControl
 
         OpenFolderButton.Click += async (_, _) => await _workspace.OpenProjectFolderAsync();
         OpenOutputsButton.Click += async (_, _) => await _workspace.OpenBuildOutputsAsync();
-        VisualStudioButton.Click += async (_, _) => await _workspace.OpenEditorAsync(visualStudio: true);
-        CodeButton.Click += async (_, _) => await _workspace.OpenEditorAsync(visualStudio: false);
+        EditorButton.Click += async (_, _) => await _workspace.OpenEditorAsync();
+        EditorMenuButton.Click += (_, _) => ShowEditorMenu();
         RemoveProjectButton.Click += async (_, _) => await _workspace.RemoveProjectAsync();
 
         RefreshDevicesButton.Click += async (_, _) => await _workspace.QueryDevicesAsync();
+    }
+
+    /// <summary>
+    /// The "open with…" menu: the editors detected on this machine to open this project once, then the two
+    /// persistent answers — project default and global default — and, when this project already carries its own
+    /// choice, the way back to the default.
+    ///
+    /// It hangs off its own button rather than off the main one because a Button's flyout swallows the click that
+    /// would otherwise open the project, and "the button I press to open things opens a menu" is the wrong
+    /// surprise even when it is the tidier markup.
+    /// </summary>
+    private void ShowEditorMenu()
+    {
+        var menu = new MenuFlyout();
+        var detected = _workspace.DetectedEditors;
+        if (detected.Count > 0)
+        {
+            menu.Items.Add(new MenuItem { Header = HubStrings.Get("EditorUseOnce"), IsEnabled = false });
+            foreach (var binding in detected)
+            {
+                var once = new MenuItem { Header = binding.Preset.DisplayName };
+                once.Click += async (_, _) => await _workspace.OpenEditorAsync(binding.Preset.Id);
+                menu.Items.Add(once);
+            }
+
+            menu.Items.Add(new Separator());
+            menu.Items.Add(EditorScopeMenu("EditorForProject", global: false, detected));
+            menu.Items.Add(EditorScopeMenu("EditorForAll", global: true, detected));
+        }
+
+        if (_workspace.SelectedProject?.CodeEditor is not null)
+        {
+            var follow = new MenuItem { Header = HubStrings.Get("EditorFollowDefault") };
+            follow.Click += (_, _) => _workspace.ClearProjectEditor();
+            menu.Items.Add(follow);
+        }
+
+        if (menu.Items.Count > 0)
+        {
+            menu.ShowAt(EditorMenuButton);
+        }
+    }
+
+    private MenuItem EditorScopeMenu(string headerKey, bool global, IReadOnlyList<EditorBinding> detected)
+    {
+        var scope = new MenuItem { Header = HubStrings.Get(headerKey) };
+        foreach (var binding in detected)
+        {
+            var item = new MenuItem { Header = binding.Preset.DisplayName };
+            item.Click += async (_, _) => await _workspace.SelectEditorAsync(binding.Preset.Id, binding.Path, global);
+            scope.Items.Add(item);
+        }
+
+        return scope;
     }
 
     private async Task<string?> PickFolderAsync(string title)
@@ -230,10 +284,15 @@ public partial class ProjectsPage : UserControl
         AndroidDevicePanel.IsVisible = target?.Family == "android";
         ReloadDevices();
 
-        // Visual Studio is Windows-only (devenv.exe). VS Code is cross-platform, so it always shows.
-        // Without this gate the button would appear on macOS/Linux and fail only when clicked,
-        // after the user has already gone looking for a devenv.exe that can never exist there.
-        VisualStudioButton.IsVisible = OperatingSystem.IsWindows();
+        // The caption names the editor that will actually launch — the setting holds one default and this project
+        // may override it, so the button is where those two facts meet. Disabled when nothing usable is configured:
+        // a press that can only fail is not an invitation.
+        var editor = _workspace.EffectiveEditor(_workspace.SelectedProject);
+        EditorButton.Content = editor is null
+            ? HubStrings.Get("OpenInEditor")
+            : HubStrings.Get("OpenInEditor") + " · " + editor.Preset.DisplayName;
+        EditorButton.IsEnabled = editor is not null;
+        ToolTip.SetTip(EditorMenuButton, editor is null ? HubStrings.Get("NoEditorFound") : HubStrings.Get("OpenWith"));
 
         // Deliberately **doesn't touch** ProjectLocationBox here: the parent directory is an editable single-line input, and rewriting it on refresh erases what the user is typing. The default is filled by NewProjectButton when the panel opens.
         // Same as above: the prebuilt toggle is likewise "the user's choice"; refresh only changes availability and hint copy, never the checked state.

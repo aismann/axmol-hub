@@ -174,8 +174,13 @@ public partial class SettingsPage : UserControl
         ChooseDataDirectoryButton.Click += async (_, _) => await ChooseDataDirectoryAsync();
         ChooseProjectDirectoryButton.Click += async (_, _) => await ChooseProjectDirectoryAsync();
         OpenDataFolderButton.Click += (_, _) => _openFolder(_workspace.Store.Root);
-        SelectVisualStudioButton.Click += async (_, _) => await SelectEditorAsync(visualStudio: true);
-        SelectCodeButton.Click += async (_, _) => await SelectEditorAsync(visualStudio: false);
+        BrowseEditorButton.Click += async (_, _) => await BrowseEditorAsync();
+        DetectEditorButton.Click += (_, _) =>
+        {
+            _workspace.RefreshDetectedEditors();
+            RenderEditors();
+        };
+        EditorPicker.SelectionChanged += (_, _) => OnEditorChanged();
         // One button, two jobs, decided by the phase the card is rendering (see RenderUpdateState): a check
         // while nothing is downloaded, and the restart once the bytes have landed — the same restart, through
         // the same armed gate, as the sidebar's update pill.
@@ -304,14 +309,6 @@ public partial class SettingsPage : UserControl
             ? HubTheme.Normalize(tag)
             : HubTheme.DefaultTheme;
 
-    /// <summary>
-    /// The editor-executable validation rule (the WPF version wrote it once per branch).
-    /// Extracted into a pure static function so it **can be asserted** — actually popping a file picker can't be automated,
-    /// and "rejecting the wrong file" is exactly the branch most easily missed and hardest to spot in a few manual clicks.
-    /// </summary>
-    internal static bool MatchesEditorExecutable(bool visualStudio, string path)
-        => System.IO.Path.GetFileName(path).Equals(visualStudio ? "devenv.exe" : "Code.exe", StringComparison.OrdinalIgnoreCase);
-
     internal void Reload()
     {
         if (_workspace is null)
@@ -348,18 +345,11 @@ public partial class SettingsPage : UserControl
             var state = _workspace.State;
             var engine = state.Engines.FirstOrDefault(candidate => candidate.Path == state.DefaultEnginePath);
             DefaultEngine.Text = engine?.ToString() ?? HubStrings.Get("NoDefault");
-            VisualStudioLocation.Text = Display(state.VisualStudioExecutable);
-            CodeLocation.Text = Display(state.CodeExecutable);
+            RenderEditors();
             // The current-version line is read from the assembly; it is not localizable copy, so it
             // is safe to assign imperatively here and won't need a language-switch refresh.
             CurrentVersionLine.Text = HubStrings.Get("CurrentVersion") + "  v" +
                 (typeof(SettingsPage).Assembly.GetName().Version?.ToString(3) ?? "0.0.0");
-            // Visual Studio (devenv.exe) is Windows-only; hide its row on other hosts so the user isn't
-            // offered an editor that can never be installed there.
-            VisualStudioRow.IsVisible = OperatingSystem.IsWindows();
-            // The rule between the two editor rows divides one editor from two, so it follows the row that
-            // decides the count rather than being painted unconditionally.
-            EditorRule.IsVisible = VisualStudioRow.IsVisible;
             // The auto-download switch mirrors the preference. Assigning it here doesn't re-save:
             // _ready is false for the whole reload (the same gate the dropdowns rely on). It is
             // disabled on a dev/portable copy, where there is nothing to auto-update.
@@ -1029,7 +1019,73 @@ public partial class SettingsPage : UserControl
         }
     }
 
-    private async Task SelectEditorAsync(bool visualStudio)
+    /// <summary>
+    /// Draws the one editor row: what was detected here, plus the current choice when detection cannot see it (a
+    /// hand-picked application, or one installed where the catalog does not look). Showing that row is what makes
+    /// the page say what will actually be launched instead of an empty dropdown over a working setting.
+    ///
+    /// Imperative for the same reason <see cref="LocalizeThemeItems"/> is: a <see cref="ComboBoxItem"/> in
+    /// <c>Items</c> is not attached to the logical tree until the dropdown opens, so a <c>DynamicResource</c>
+    /// there resolves to nothing. The rows are product names — not localized copy — except the placeholder
+    /// and the "nothing found" line, which every <see cref="Reload"/> repaints.
+    /// </summary>
+    private void RenderEditors()
+    {
+        EditorPicker.Items.Clear();
+        EditorPicker.PlaceholderText = HubStrings.Get("NotSelected");
+
+        // One row per product. The saved choice wins over the one detection found — an older install, or a place the
+        // catalog does not look, is exactly what "Browse…" was for — and a saved editor that is gone is not shown at
+        // all, because the row is a promise that the press will launch something.
+        var saved = CodeEditors.Bind(_workspace.State.CodeEditor);
+        var rows = _workspace.DetectedEditors.Where(candidate => saved is null || candidate.Preset.Id != saved.Preset.Id).ToList();
+        if (saved is not null)
+        {
+            rows.Insert(0, saved);
+        }
+
+        // The tick marks what the press would launch right now, which is not the same question as what was saved:
+        // with nothing saved, the first detected editor is what opens the project.
+        var effective = _workspace.EffectiveEditor(_workspace.SelectedProject);
+        foreach (var binding in rows)
+        {
+            var item = new ComboBoxItem { Content = binding.Preset.DisplayName, Tag = new CodeEditor(binding.Preset.Id, binding.Path) };
+            EditorPicker.Items.Add(item);
+            if (effective is not null && binding.Preset.Id == effective.Preset.Id && binding.Path == effective.Path)
+            {
+                EditorPicker.SelectedItem = item;
+            }
+        }
+
+        EditorLocation.Text = effective?.Path ?? HubStrings.Get("NoEditorFound");
+    }
+
+    private void OnEditorChanged()
+    {
+        if (!_ready || EditorPicker.SelectedItem is not ComboBoxItem { Tag: CodeEditor editor })
+        {
+            return;
+        }
+
+        _ = ChooseEditorAsync(editor);
+    }
+
+    /// <summary>Makes an editor the default, and says so when the path could not be launched.</summary>
+    private async Task ChooseEditorAsync(CodeEditor editor)
+    {
+        if (!await _workspace.SelectEditorAsync(editor.Id, editor.Path, global: true))
+        {
+            await HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window, HubStrings.Get("OperationFailed"),
+                HubStrings.Get("NoEditorFound") + "\n" + editor.Path);
+        }
+    }
+
+    /// <summary>
+    /// Points at an application the catalog does not know. What an editor *is* differs per host — a bundle on
+    /// macOS, an executable elsewhere — and <see cref="Pickers.PickEditorAsync"/> is the one place that answer
+    /// lives; whether the result can be launched is <see cref="CodeEditors.Bind"/>'s question.
+    /// </summary>
+    private async Task BrowseEditorAsync()
     {
         var top = TopLevel.GetTopLevel(this);
         if (top is null)
@@ -1037,26 +1093,30 @@ public partial class SettingsPage : UserControl
             return;
         }
 
-        // Both the title and the rejection copy name the concrete executable: when picked wrong, the user should see at a glance which one to choose, not just be told "wrong pick".
-        var title = HubStrings.Get(visualStudio ? "Select devenv.exe" : "Select Code.exe");
-        var picked = await Pickers.PickFileAsync(top, title,
-            [new FilePickerFileType(visualStudio ? "devenv.exe" : "Code.exe") { Patterns = ["*.exe"] }]);
-
-        if (picked.Outcome != PickOutcome.Picked)
+        try
         {
-            if (picked.Outcome == PickOutcome.NotLocal)
+            var picked = await Pickers.PickEditorAsync(top, HubStrings.Get("SelectEditor"));
+            _workspace.Log.Write($"Editor picker: {picked.Outcome} · {picked.Path ?? "(no path)"}");
+            if (picked.Outcome != PickOutcome.Picked)
             {
-                await HubDialog.ShowAsync(top as Window, HubStrings.Get("OperationFailed"), HubStrings.Get("LocalPathRequired"));
+                if (picked.Outcome == PickOutcome.NotLocal)
+                {
+                    await HubDialog.ShowAsync(top as Window, HubStrings.Get("OperationFailed"), HubStrings.Get("LocalPathRequired"));
+                }
+
+                return;
             }
 
-            return;
+            await ChooseEditorAsync(new CodeEditor(CodeEditors.CustomId, picked.Path!));
         }
-
-        await _workspace.SelectEditorAsync(visualStudio, picked.Path);
-        Reload();
+        catch (Exception ex)
+        {
+            // An exception in an async event handler disappears into the dispatcher, which reads exactly like "the
+            // button does nothing". A picker that fails has to say so, in the log and on screen.
+            _workspace.Log.Write("Editor picker failed: " + ex);
+            await HubDialog.ShowAsync(top as Window, HubStrings.Get("OperationFailed"), ex.Message);
+        }
     }
-
-    private string Display(string? path) => path is { Length: > 0 } ? path : HubStrings.Get("NotSelected");
 
     /// <summary>
     /// Persists the "auto-download" choice and, when it is switched on with an update already known,

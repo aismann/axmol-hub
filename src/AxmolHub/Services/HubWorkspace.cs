@@ -1500,67 +1500,100 @@ public sealed class HubWorkspace : IDisposable
 
     private void NavigateTo(string page) => NavigateRequested?.Invoke(page);
 
-    public async Task OpenEditorAsync(bool visualStudio) => await ExecuteAsync(
-        visualStudio ? "Open Visual Studio" : "Open VS Code", _ =>
+    // ───────────────────────── Code editors ─────────────────────────
+
+    private IReadOnlyList<EditorBinding>? _detectedEditors;
+
+    /// <summary>
+    /// Editors found on this machine, probed on first use and then cached: a dozen existence tests plus one
+    /// <c>vswhere</c> spawn is not something a page should pay for on every repaint.
+    /// </summary>
+    public IReadOnlyList<EditorBinding> DetectedEditors => _detectedEditors ??= CodeEditors.Detect();
+
+    /// <summary>Probes again, for the editor the user installed while Hub was open.</summary>
+    public void RefreshDetectedEditors()
+    {
+        _detectedEditors = CodeEditors.Detect();
+        Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// What a project would open with right now: its own choice, then the default, then the first editor found.
+    /// Null means nothing usable is configured — a state the pages show, rather than an exception at launch time.
+    /// </summary>
+    public EditorBinding? EffectiveEditor(ProjectEntry? project) => CodeEditors.Resolve(project, DetectedEditors, State);
+
+    /// <summary>Opens the project in the effective editor, or in <paramref name="presetId"/> for this one time.</summary>
+    public async Task OpenEditorAsync(string? presetId = null) => await ExecuteAsync("OpenInEditor", _ =>
     {
         var project = RequiredProject();
-        var executable = visualStudio ? State.VisualStudioExecutable : State.CodeExecutable;
-        if (executable is null || !File.Exists(executable))
+        var binding = presetId is null
+            ? EffectiveEditor(project)
+            : DetectedEditors.FirstOrDefault(candidate => candidate.Preset.Id == presetId);
+        if (binding is null)
         {
-            throw new FileNotFoundException(visualStudio
-                ? "Select Visual Studio devenv.exe in Settings first."
-                : "Select VS Code executable in Settings first.");
+            throw new InvalidOperationException(HubStrings.Get("NoEditorFound"));
         }
 
-        Open(executable, EditorArguments(visualStudio, project.Path));
+        // Both kinds run as a child process: a bundle is `open -a <bundle> <folder>`, everything else is
+        // `<editor> <folder>`. Which one it is comes from the binding's path, not from the product — the same
+        // editor is an executable on Windows and a bundle on macOS. One function (CodeEditors.LaunchPlan) is
+        // what a check can pin, instead of a host test here.
+        var (fileName, arguments) = CodeEditors.LaunchPlan(binding.Path, EditorTargets.Default(project));
+        _runner.Launch(fileName, arguments);
         project.LastOpened = DateTimeOffset.Now;
         return Task.CompletedTask;
     });
 
     /// <summary>
-    /// Launch arguments that open <paramref name="path"/> in the selected editor.
-    ///
-    /// Both editors take the folder as a **positional** first argument: devenv's own usage line is
-    /// "devenv [solutionfile | projectfile | folder | anyfile.ext]", and a CMake project folder is
-    /// what makes Visual Studio pick up <c>CMakeLists.txt</c>. There is deliberately no switch here —
-    /// devenv has no <c>/OpenFolder</c> switch, and passing one aborts with
-    /// "Invalid Command Line. Unknown Switch : OpenFolder" **before** the IDE ever opens, which is a
-    /// failure no compiler can catch. Kept as a pure function so the shell check can pin the exact list.
-    ///
-    /// <paramref name="visualStudio"/> is intentionally not consulted: the two editors accept the same
-    /// positional form, and keeping the flag makes the call site read symmetrically on both branches so
-    /// someone "restoring" a VS-only switch has to see this comment first.
+    /// Records a choice — the global default, or this project's own — and returns whether the path was accepted.
+    /// The caller gets the verdict because "select an editor" failing silently is how a saved application came to
+    /// look unselected forever; an unacceptable path is refused here and said out loud by the page.
     /// </summary>
-    internal static string[] EditorArguments(bool visualStudio, string path) => [path];
-
-    /// <summary>Selects an editor executable. WPF's <c>SelectEditor</c>, including filename validation.</summary>
-    public async Task SelectEditorAsync(bool visualStudio, string? path)
+    public async Task<bool> SelectEditorAsync(string id, string path, bool global)
     {
-        if (path is null)
+        var editor = new CodeEditor(id, path);
+        if (CodeEditors.Bind(editor) is not { } binding)
         {
-            return;
+            // Say *why* in the log: "not found" and "a folder that is not an application" are different mistakes,
+            // and a silent refusal is what made browsing for an editor look like a button that does nothing.
+            var folded = CodeEditors.ApplicationBundle(path) ?? path;
+            Log.Write($"Editor selection rejected: {id} · {path} (bundle: {folded}, on disk: {File.Exists(folded) || Directory.Exists(folded)})");
+            SetStatus(HubStrings.Get("NoEditorFound"));
+            return false;
         }
 
-        var expected = visualStudio ? "devenv.exe" : "Code.exe";
-        if (!Path.GetFileName(path).Equals(expected, StringComparison.OrdinalIgnoreCase))
+        if (global)
         {
-            SetStatus($"Select {expected}.");
-            return;
+            State.CodeEditor = editor;
         }
-
-        if (visualStudio)
+        else if (SelectedProject is { } project)
         {
-            State.VisualStudioExecutable = path;
+            project.CodeEditor = editor;
         }
         else
         {
-            State.CodeExecutable = path;
+            return false;
         }
 
         Store.Save(State);
-        Log.Write($"Selected editor: {path}");
+        Log.Write($"Selected editor: {binding.Preset.DisplayName} · {binding.Path}");
         Refresh();
         await Task.CompletedTask;
+        return true;
+    }
+
+    /// <summary>Drops a project's own choice, so it follows the default again.</summary>
+    public void ClearProjectEditor()
+    {
+        if (SelectedProject is not { CodeEditor: not null } project)
+        {
+            return;
+        }
+
+        project.CodeEditor = null;
+        Store.Save(State);
+        Refresh();
     }
 
     // ───────────────────────── Toolchains ─────────────────────────
