@@ -1681,6 +1681,54 @@ public partial class MainWindow : Window
         FlyoutBase.ShowAttachedFlyout(BottomMenuButton);
     }
 
+    private void ToggleLogActionsMenu()
+    {
+        if (LogActionsMenuForCheck is { IsOpen: true } open)
+        {
+            open.Hide();
+            return;
+        }
+
+        FlyoutBase.SetAttachedFlyout(LogActionsButton, BuildLogActionsMenu());
+        FlyoutBase.ShowAttachedFlyout(LogActionsButton);
+    }
+
+    internal MenuFlyout? LogActionsMenuForCheck => FlyoutBase.GetAttachedFlyout(LogActionsButton) as MenuFlyout;
+
+    private MenuFlyout BuildLogActionsMenu()
+    {
+        var menu = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedRight };
+        var copy = new MenuItem { Header = HubStrings.Get("CopyError") };
+        copy.Click += async (_, _) =>
+        {
+            menu.Hide();
+            var text = _workspace.LastError.Length == 0 ? ReadRetainedLog() : _workspace.LastError;
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is not null)
+            {
+                await clipboard.SetTextAsync(text);
+            }
+        };
+        menu.Items.Add(copy);
+
+        var open = new MenuItem { Header = HubStrings.Get("OpenLogs") };
+        open.Click += (_, _) =>
+        {
+            menu.Hide();
+            _workspace.Open(_workspace.Log.Folder);
+        };
+        menu.Items.Add(open);
+
+        var clear = new MenuItem { Header = HubStrings.Get("ClearLog") };
+        clear.Click += (_, _) =>
+        {
+            menu.Hide();
+            ClearActivityLog();
+        };
+        menu.Items.Add(clear);
+        return menu;
+    }
+
     /// <summary>
     /// The bottom entry's popup: "Settings", and the "外观" row — the shell's own two switches. 外观 opens the two
     /// questions it answers, "界面语言" and "主题", and each of those opens its own answers. Every row is one
@@ -2364,18 +2412,7 @@ public partial class MainWindow : Window
         UpdateTaskSlot();
 
         CancelButton.Click += (_, _) => _workspace.Cancel();
-
-        CopyErrorButton.Click += async (_, _) =>
-        {
-            var text = _workspace.LastError.Length == 0 ? ReadRetainedLog() : _workspace.LastError;
-            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-            if (clipboard is not null)
-            {
-                await clipboard.SetTextAsync(text);
-            }
-        };
-
-        OpenLogsButton.Click += (_, _) => _workspace.Open(_workspace.Log.Folder);
+        LogActionsButton.Click += (_, _) => ToggleLogActionsMenu();
 
         // Closing is forbidden while an operation is running (handled in WPF's Closing), otherwise
         // child processes would be left behind.
@@ -3080,6 +3117,7 @@ public partial class MainWindow : Window
         // The settings gear is icon-only, so its tooltip is the only place the name "Settings" appears for it.
         // Set here rather than in ApplyLanguage so it is also in place at construction time.
         ToolTip.SetTip(SettingsButton, HubStrings.Get("Settings"));
+        ToolTip.SetTip(LogActionsButton, HubStrings.Get("LogActions"));
         // The update button's tip and pill label are state-dependent, so re-resolving the current state is the
         // whole language switch for them: SyncUpdateAction reads HubStrings fresh on every call, and a label
         // assigned once at construction would keep saying last language's sentence forever.

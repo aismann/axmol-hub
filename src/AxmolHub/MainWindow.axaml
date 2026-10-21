@@ -887,12 +887,8 @@
             <TextBlock Grid.Column="0" x:Name="LogTitleText" Text="{DynamicResource LogTitle}"
                        FontSize="12" VerticalAlignment="Center"
                        Foreground="{DynamicResource Hub.TextSecondary}" />
-            <StackPanel Grid.Column="1" Orientation="Horizontal">
-              <Button x:Name="CopyErrorButton" Content="{DynamicResource CopyError}"
-                      Classes="strip" Padding="10,4" />
-              <Button x:Name="OpenLogsButton" Content="{DynamicResource OpenLogs}"
-                      Classes="strip" Padding="10,4" Margin="8,0,0,0" />
-            </StackPanel>
+            <Button Grid.Column="1" x:Name="LogActionsButton" Content="⋯"
+                    Classes="strip" Padding="10,4" />
           </Grid>
           <TextBox Grid.Row="1" x:Name="ActivityLog" Classes="mono"
                    IsReadOnly="True" TextWrapping="NoWrap"

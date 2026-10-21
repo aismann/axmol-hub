@@ -260,9 +260,11 @@ public static class HubTexts
         ["DefaultEngine"] = ("默认引擎", "Default engine"),
         ["NoDefault"] = ("尚未安装引擎", "No engine installed"),
         ["LogTitle"] = ("活动与构建日志", "Activity and build log"),
+        ["LogActions"] = ("日志操作", "Log actions"),
         ["CopyError"] = ("复制错误", "Copy error"),
         ["CopyCode"] = ("复制代码", "Copy code"),
         ["OpenLogs"] = ("打开日志", "Open logs"),
+        ["ClearLog"] = ("清空日志", "Clear log"),
         ["Cancel"] = ("取消", "Cancel"),
         // Dialog buttons. These three used to be **hard-coded Chinese** inside HubDialog, so opening any dialog in
         // the English UI gave Chinese buttons — and the "missing CJK font" notice is closed by exactly this button (see CjkFontNotice).
