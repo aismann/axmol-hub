@@ -42,7 +42,7 @@ namespace AxmolHub;
 /// the ones that did not: a <see cref="SelectableTextBlock"/> — the person's own message — and a
 /// <see cref="TextBox"/> both take the focus when they are clicked, and this document did not.</para>
 /// </summary>
-internal static class SelectionMenu
+internal static partial class SelectionMenu
 {
     /// <summary>Target → the menu attached to it. Weak on the control on purpose: a transcript rebuilds its
     /// viewers as it scrolls, and a strong table would hold every document ever painted.</summary>
@@ -220,32 +220,6 @@ internal static class SelectionMenu
         box.ContextFlyout = menu;
         Attached.AddOrUpdate(box, menu);
     }
-
-    /// <summary>The rows a surface's menu offers, by their localized headers — empty when it has no menu. Read
-    /// from the checks, which is the only reason the table above is kept; the composer's menu is found through
-    /// <see cref="Control.ContextFlyout"/> instead, because that is where it lives, and reading it from there is
-    /// part of what a check asserts about it.</summary>
-    internal static IReadOnlyList<string> HeadersForCheck(Control target)
-        => MenuOf(target) is { } menu
-            ? menu.Items.OfType<MenuItem>().Select(item => item.Header?.ToString() ?? "").ToArray()
-            : [];
-
-    /// <summary>The row itself, for a check that presses it the way a hand does.</summary>
-    internal static MenuItem? ItemForCheck(Control target, string header)
-        => MenuOf(target)?.Items.OfType<MenuItem>()
-            .FirstOrDefault(item => item.Header?.ToString() == header);
-
-    /// <summary>Whether the surface's menu is up, for a check that has to see the popup open rather than only
-    /// read the rows it carries.</summary>
-    internal static bool IsOpenForCheck(Control target) => MenuOf(target) is { IsOpen: true };
-
-    /// <summary>Closes a menu a check opened, so the surface is left the way it was found.</summary>
-    internal static void HideForCheck(Control target) => MenuOf(target)?.Hide();
-
-    /// <summary>The rows as one line, for the message of a check that failed: "复制|引用", or empty when the
-    /// surface carries no menu. A boolean that cannot say which half of it was false costs a second run to
-    /// diagnose.</summary>
-    internal static string DescribeForCheck(Control target) => string.Join("|", HeadersForCheck(target));
 
     /// <summary>The menu a surface was given, wherever it was given: the table this file keeps first, because a
     /// menu this file attached is the one a check is asking about, then <see cref="Control.ContextFlyout"/> — which
