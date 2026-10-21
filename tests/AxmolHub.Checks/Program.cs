@@ -6844,7 +6844,7 @@ if (args.Contains("--check-ai-tool-policy"))
         throw new Exception("A synthetic result was written where the provider cannot replay it.");
     Console.WriteLine("PASS: a question nobody answered is closed as a question, beside its own call.");
 
-    var askPreferencesPath = Path.Combine(toolRoot, "ask-preferences.json");
+    var askPreferencesPath = Path.Combine(root, "ask-preferences.json");
     var askPreferences = new HubPreferences { AllowAssistantQuestions = false };
     new PreferencesStore(askPreferencesPath).Save(askPreferences);
     if (new PreferencesStore(askPreferencesPath).Load().AllowAssistantQuestions)
