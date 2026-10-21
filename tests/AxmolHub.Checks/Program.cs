@@ -4209,17 +4209,29 @@ if (args.Contains("--check-ai-tools"))
         || !tools.ReadFile("src/logo.png").Contains("not UTF-8", StringComparison.Ordinal))
         throw new Exception("read_file let an escaping path or a binary through.");
     File.WriteAllText(Path.Combine(workspace, "src", "huge.txt"), new string('x', WorkspaceTools.MaxReadFileBytes + 16));
-    if (!tools.ReadFile("src/huge.txt").Contains("read limit", StringComparison.Ordinal))
-        throw new Exception("An oversized file was read whole instead of being refused with a window hint.");
+    // Over the cap the file is streamed as a window rather than refused: the cap bounds what comes back, and the
+    // hint at the end is the refusal's replacement — one line bigger than the cap on its own is the case no
+    // window can serve, so that is what the sentence has to say.
+    var huge = tools.ReadFile("src/huge.txt");
+    if (!huge.Contains("on its own", StringComparison.Ordinal)
+        || !huge.Contains("run_command", StringComparison.Ordinal)
+        || huge.Contains("xxxx", StringComparison.Ordinal))
+        throw new Exception($"An oversized file was not streamed as a capped window:{Environment.NewLine}{huge}");
     Console.WriteLine("PASS: read_file returns a window of text only, and says what to do in every refusal.");
 
     // ── file_write: the five verdicts, the pre-image, and the same guards ──
     var edited = tools.FileWrite("src/main.cpp", "    return 0;", "    return 1;");
     if (!edited.Contains("Edited") || !File.ReadAllText(Path.Combine(workspace, "src", "main.cpp")).Contains("return 1;"))
         throw new Exception($"An anchored edit did not land:{Environment.NewLine}{edited}");
-    var undoPath = edited.Contains("Undo copy: ") ? edited[(edited.IndexOf("Undo copy: ", StringComparison.Ordinal) + 11)..].Trim() : "";
-    if (undoPath.Length == 0 || !File.Exists(undoPath) || !File.ReadAllText(undoPath).Contains("return 0;"))
-        throw new Exception($"The pre-image was not kept before the write ('{undoPath}').");
+    // The pre-image used to be a copy written beside the file and named in the result; it is the "before" half of a
+    // change record now, addressed by the id the result carries, and that record is what the undo row restores from.
+    var revisionId = ChatChangeStore.IdFromResult(edited);
+    ChatFileSnapshot? preImage = revisionId is null
+        ? null
+        : ChatChangeStore.ReadSnapshot(dataRoot, revisionId, out _);
+    if (revisionId is null || preImage is not { Before: { } before }
+        || !before.Contains("return 0;", StringComparison.Ordinal))
+        throw new Exception($"The pre-image was not kept before the write (id='{revisionId ?? "none"}').");
     var created = tools.FileWrite("src/notes.md", "", "# 记录\n");
     if (!created.Contains("Created"))
         throw new Exception("An empty anchor did not create the file.");
@@ -4412,18 +4424,23 @@ if (args.Contains("--check-ai-tools"))
     // ── the undo: one pre-image goes back over the one write it was made for, and over nothing else ──
     var undoRoot = ChatUndoStore.DirectoryFor(dataRoot, "conversation-1")!;
     var writeArgs = """{"path":"src/main.cpp","old_string":"    return 0;","new_string":"    return 1;"}""";
-    var copyName = Path.GetFileName(undoPath);
-    if (ChatUndoStore.NameFromResult(edited) != copyName)
-        throw new Exception("A write result did not hand back the copy name its revert button needs.");
-    if (ChatUndoStore.NameFromResult(created) is not null)
-        throw new Exception("A write that created a file claimed a pre-image it never kept.");
+    // The write path no longer leaves a copy beside the file: its result carries a change id and the pre-image is a
+    // ChatChangeStore snapshot (asserted above). The revert button still offers this reader for turns recorded before
+    // that change, so the fixtures below build the copy that path expects instead of waiting for today's write to
+    // make one — Store() is the call the old write path made, with the same text, for a file that has since moved on.
+    if (ChatUndoStore.NameFromResult(edited) is not null || ChatUndoStore.NameFromResult(created) is not null)
+        throw new Exception("A current write still advertises a legacy copy beside its change id.");
+    var copyName = ChatUndoStore.Store(dataRoot, "conversation-1", "src/main.cpp",
+        "int main()\n{\n    return 0;\n}\n") is { Stored: true, Path: { } copyPath }
+        ? Path.GetFileName(copyPath)
+        : throw new Exception("The legacy pre-image for src/main.cpp was not kept.");
 
     var reverted = ChatUndoStore.Restore(dataRoot, "conversation-1", copyName, workspace, guards, writeArgs, out var revertedTo);
     if (reverted != UndoVerdict.Reverted || revertedTo != "src/main.cpp")
         throw new Exception($"Reverting an untouched file refused ({reverted}, {revertedTo}).");
     if (!File.ReadAllText(Path.Combine(workspace, "src", "main.cpp")).Contains("return 0;"))
         throw new Exception("A revert reported success but left the assistant's edit in the file.");
-    if (File.Exists(undoPath))
+    if (File.Exists(Path.Combine(undoRoot, copyName)))
         throw new Exception("A revert kept the copy it just spent, so the same undo could be taken twice.");
     if (ChatUndoStore.Restore(dataRoot, "conversation-1", copyName, workspace, guards, writeArgs, out _)
         != UndoVerdict.CopyMissing)
@@ -4431,8 +4448,12 @@ if (args.Contains("--check-ai-tools"))
 
     // The guard is the reason a revert is a command rather than a file copy: somebody else may have edited the
     // file after the assistant, and their work is worth more than the regret.
-    var secondCopy = ChatUndoStore.NameFromResult(tools.FileWrite("src/main.cpp", "    return 0;", "    return 1;"))
-        ?? throw new Exception("The second write kept no pre-image to guard.");
+    var secondCopy = ChatUndoStore.Store(dataRoot, "conversation-1", "src/main.cpp",
+        "int main()\n{\n    return 0;\n}\n") is { Stored: true, Path: { } secondPath }
+        ? Path.GetFileName(secondPath)
+        : throw new Exception("The second legacy pre-image was not kept.");
+    if (ChatUndoStore.NameFromResult(tools.FileWrite("src/main.cpp", "    return 0;", "    return 1;")) is not null)
+        throw new Exception("A current write still advertises a legacy copy beside its change id.");
     File.AppendAllText(Path.Combine(workspace, "src", "main.cpp"), "// edited by hand\n");
     if (ChatUndoStore.Restore(dataRoot, "conversation-1", secondCopy, workspace, guards, writeArgs, out _)
         != UndoVerdict.ChangedSince)
@@ -4450,8 +4471,12 @@ if (args.Contains("--check-ai-tools"))
     const string eolBefore = "int main() {\r\n    return 0;\r\n}\r\n";
     const string eolAfterCrlf = "int main() {\r\n    return 3;\r\n}\r\n";
     File.WriteAllText(eolTarget, eolBefore);
-    var eolCopy = ChatUndoStore.NameFromResult(tools.FileWrite("src/eol.cpp", "    return 0;", "    return 3;"))
-        ?? throw new Exception("The newline-style undo write kept no pre-image.");
+    var eolCopy = ChatUndoStore.Store(dataRoot, "conversation-1", "src/eol.cpp", eolBefore) is
+        { Stored: true, Path: { } eolPath }
+        ? Path.GetFileName(eolPath)
+        : throw new Exception("The newline-style legacy pre-image was not kept.");
+    if (!tools.FileWrite("src/eol.cpp", "    return 0;", "    return 3;").Contains("Edited", StringComparison.Ordinal))
+        throw new Exception("The newline-style write did not land.");
     if (File.ReadAllText(eolTarget) != "int main() {\n    return 3;\n}\n")
         throw new Exception("file_write left the edited CRLF file in a newline other than LF.");
     File.WriteAllText(eolTarget, eolAfterCrlf);
@@ -4667,13 +4692,18 @@ if (args.Contains("--check-ai-tools"))
     // sandbox because a survivor keeps its working directory locked, and this group ends by deleting that tree;
     // the sandbox is the tool layer's business, and ProcessRunner has no say in it.
     var stallShell = CommandShells.ForCurrent();
+    // The shell a host uses is not a function of the OS: CommandShells prefers PowerShell 7 wherever it is
+    // installed, and bare `echo last words` prints one line in sh and two in pwsh. The survivor fixture reads that
+    // line back, so the command has to speak whichever shell is actually going to run it.
+    var powershellShell = stallShell.Executable.Contains("pwsh", StringComparison.OrdinalIgnoreCase)
+                          || stallShell.Executable.Contains("powershell", StringComparison.OrdinalIgnoreCase);
     var abandoning = new ProcessRunner(line => log.Write(line)) { StopProcess = _ => false };
     var gaveUpAt = Environment.TickCount64;
     IdleTimeoutException? abandoned = null;
     try
     {
         await abandoning.RunAsync(stallShell.Executable, stallShell.ArgumentsFor(
-                OperatingSystem.IsWindows() ? "Write-Output 'last words'; Start-Sleep -Seconds 12" : "echo last words; sleep 12"),
+                powershellShell ? "Write-Output 'last words'; Start-Sleep -Seconds 12" : "echo 'last words'; sleep 12"),
             Path.GetTempPath(), timeout: TimeSpan.FromSeconds(3));
     }
     catch (IdleTimeoutException stalledAgain)
@@ -4690,7 +4720,7 @@ if (args.Contains("--check-ai-tools"))
         throw new Exception($"A process that survived its kill held the tool for {waited} ms.");
     // CJK is where an encoding mismatch shows up first: PowerShell answers in the machine's OEM codepage while
     // the pipe is decoded as UTF-8, so a Chinese Windows turns 中文 into replacement characters.
-    var cjk = await tools.RunCommand(OperatingSystem.IsWindows() ? "Write-Output '中文测试'" : "printf '中文测试'");
+    var cjk = await tools.RunCommand(powershellShell ? "Write-Output '中文测试'" : "printf '中文测试'");
     if (!cjk.Contains("中文测试", StringComparison.Ordinal) || cjk.Contains('\uFFFD'))
         throw new Exception($"A CJK line did not survive the shell:{Environment.NewLine}{cjk}");
     if (!(await homeless.RunCommand("echo hi")).Contains("no workspace directory", StringComparison.Ordinal))
@@ -4925,21 +4955,19 @@ if (args.Contains("--check-ai-tools"))
         || WorkspaceTools.ReadAll(grantedFile) is not { } grantText || !grantText.Contains("return 2"))
         throw new Exception($"A write in a granted directory did not land:{Environment.NewLine}{grantWrite}");
 
-    var grantArgs = JsonSerializer.Serialize(new { path = grantedFile, old_string = "return 1", new_string = "return 2" });
-    var grantCopy = ChatUndoStore.NameFromResult(grantWrite);
-    if (grantCopy is null
-        || ChatUndoStore.Restore(dataRoot, grantId, grantCopy, grantBox, guards, grantArgs, out _) != UndoVerdict.Reverted
+    var grantChange = ChatChangeStore.IdFromResult(grantWrite);
+    if (grantChange is null
+        || ChatChangeStore.Restore(dataRoot, grantId, grantChange, grantBox, guards, out _, out _) != UndoVerdict.Reverted
         || WorkspaceTools.ReadAll(grantedFile) is not { } grantReverted || grantReverted.Contains("return 2"))
         throw new Exception("A write in a granted directory kept no pre-image, or its revert did not go back.");
 
     var revokedFile = Path.Combine(grantedRoot, "src", "gone.cpp");
     File.WriteAllText(revokedFile, "one\n");
     var revokedWrite = grantTools.FileWrite(revokedFile, "one", "two");
-    var revokedArgs = JsonSerializer.Serialize(new { path = revokedFile, old_string = "one", new_string = "two" });
-    var revokedCopy = ChatUndoStore.NameFromResult(revokedWrite);
-    if (revokedCopy is null
-        || ChatUndoStore.Restore(dataRoot, grantId, revokedCopy, WorkspaceSandbox.For(workspace), guards, revokedArgs,
-            out _) != UndoVerdict.RefusedPath)
+    var revokedChange = ChatChangeStore.IdFromResult(revokedWrite);
+    if (revokedChange is null
+        || ChatChangeStore.Restore(dataRoot, grantId, revokedChange, WorkspaceSandbox.For(workspace), guards,
+            out _, out _) != UndoVerdict.RefusedPath)
         throw new Exception("A revert of a write in a directory no longer granted walked the recorded path anyway.");
 
     // ── a command can be pointed at a granted directory, and the header says where it actually ran ──
