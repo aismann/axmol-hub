@@ -1189,7 +1189,15 @@ public sealed class ChatWorkspace : IDisposable
     public bool SetWorkspaceRoot(string conversationId, string? path)
     {
         var normalized = string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
-        if (!_sessions.TryUpdate(conversationId, opened => opened.WorkspaceRoot = normalized)) return false;
+        var switchDefaultAskToAgent = _active?.Id == conversationId && normalized is not null
+            && _active.Mode == ChatModes.Ask && !_selectedModeExplicit;
+        if (!_sessions.TryUpdate(conversationId, opened =>
+            {
+                opened.WorkspaceRoot = normalized;
+                // A workspace attached to an Ask-default chat should make the newly available Agent mode effective.
+                if (switchDefaultAskToAgent) opened.Mode = ChatModes.Agent;
+            })) return false;
+        if (switchDefaultAskToAgent) _selectedMode = ChatModes.Agent;
         // The session took the directory, so the directory is now a workspace. Clearing one (null) never takes a
         // workspace away: other sessions may still work there, and only ForgetWorkspace decides a place is finished.
         RegisterWorkspace(normalized);
@@ -3063,13 +3071,23 @@ public sealed class ChatWorkspace : IDisposable
     {
         // The draft this group already owns if it has one, otherwise an unclaimed one, otherwise a new session:
         // two workspaces ＋ in a row get two drafts, because the second click may not move the first group.
-        var conversation = FindEmptyDraft(workspaceRoot) is { } draft
-            ? OpenDraft(draft)
-            : StartConversation();
+        var draft = FindEmptyDraft(workspaceRoot);
+        var conversation = draft is not null ? OpenDraft(draft) : StartConversation();
         if (conversation.Messages.Count > 0) return conversation;
         // SetWorkspaceRoot normalizes and persists through the registry, and treats blank as "no directory" — so
         // the group's own spelling is passed straight through rather than second-guessed here.
         SetWorkspaceRoot(conversation.Id, workspaceRoot);
+        // StartConversation cannot see this target yet when invoked from a workspace group's ＋: it creates the
+        // session before this method attaches the group root. Apply the workspace default after attachment, but
+        // leave an existing empty draft's chosen mode alone.
+        if (draft is null && !string.IsNullOrWhiteSpace(workspaceRoot))
+        {
+            conversation.Mode = ChatModes.Agent;
+            _selectedMode = ChatModes.Agent;
+            _selectedModeExplicit = false;
+            _sessions.TryUpdate(conversation.Id, opened => opened.Mode = ChatModes.Agent);
+            Changed?.Invoke();
+        }
         return conversation;
     }
 
