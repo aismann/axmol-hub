@@ -74,42 +74,82 @@ internal sealed class ConversationRun : IDisposable
     private readonly object _gate = new();
     private readonly StringBuilder _text = new();
     private readonly StringBuilder _reasoning = new();
-    // Usage arrives at request boundaries, not per streamed chunk. Estimate generation from text deltas,
-    // accumulating only intervals during which the model actually produced output. Tool and idle gaps do
-    // not become time charged to the model; the reading stays available after the stream goes quiet.
-    private long _generatedUnits;
-    private long _generationTicks;
-    private long _lastOutputAt;
-    private bool _segmentHasOutput;
-    internal bool SegmentHasOutput
-    {
-        get { lock (_gate) return _segmentHasOutput; }
-    }
-    private static readonly long RateIdle = 2 * Stopwatch.Frequency;
+    // Generation speed is measured the way DeepSeek Harness measures it: the output produced after the first
+    // token-bearing frame, over the wall time between that frame and the newest one. Segments are banked when the
+    // run starts the next one, so a stretch spent running a tool or waiting for an approval — which is a segment
+    // boundary, not a chunk — never becomes decoding time.
+    //
+    // Deliberately not a "two samples within 2 seconds" window: a slower model (a long-thinking route, a
+    // reasoning model that emits a chunk every few seconds) would never assemble one, and the composer showed no
+    // speed at all for it while a fast model showed one. Within one segment every gap is the provider's decode
+    // time, however long, because the model is still working.
+    private long _decodeUnits;
+    private long _decodeTicks;
+    private long _segmentStartedAt;
+    private long _segmentLastAt;
+    private long _segmentUnits;
+    private long _segmentHeadUnits;
 
-    internal double? ApproximateTokensPerSecond
+    /// <summary>What this run decoded, and how long the decoding took — the live half of the session's speed.
+    /// Null while no segment has two frames: one frame has no interval, and an interval invented from it would
+    /// read as a number a person could hold the provider to.</summary>
+    internal (long Tokens, TimeSpan Decode)? DecodeCost
     {
         get
         {
             lock (_gate)
-                return _generationTicks > 0 && _generatedUnits > 0
-                    ? _generatedUnits / (double)ContextTrimmer.CharactersPerToken
-                        / Math.Max(_generationTicks / (double)Stopwatch.Frequency, 0.25)
+            {
+                var units = _decodeUnits + _segmentUnits - _segmentHeadUnits;
+                var ticks = _decodeTicks
+                            + (_segmentStartedAt > 0 ? _segmentLastAt - _segmentStartedAt : 0L);
+                // A quarter second floor: a burst delivered inside a single dispatcher frame has no measurable
+                // interval, and dividing four tokens by two milliseconds reports a number no provider ever reached.
+                return ticks > 0 && units > 0
+                    ? ((long)Math.Round(units / (double)ContextTrimmer.CharactersPerToken),
+                        TimeSpan.FromSeconds(Math.Max(ticks / (double)Stopwatch.Frequency, 0.25)))
                     : null;
+            }
         }
     }
+
+    private int _decodeCommitted;
+
+    /// <summary>Takes the one call that may fold this run's decoding into the session, for the reason
+    /// <see cref="TryTakeBurnCommit"/> exists: a run can close through two doors.</summary>
+    internal bool DecodeCommitted => Volatile.Read(ref _decodeCommitted) != 0;
+
+    internal bool TryTakeDecodeCommit() => Interlocked.Exchange(ref _decodeCommitted, 1) == 0;
 
     private void SampleOutput(string chunk)
     {
         if (chunk.Length == 0) return;
-        _segmentHasOutput = true;
         var now = Stopwatch.GetTimestamp();
-        if (_lastOutputAt > 0 && now - _lastOutputAt <= RateIdle)
+        var units = TokenWeighing.Units(chunk);
+        if (_segmentStartedAt == 0)
         {
-            _generatedUnits += TokenWeighing.Units(chunk);
-            _generationTicks += Math.Max(1, now - _lastOutputAt);
+            // The first frame fixes where decode time starts and is not counted as output: there is no interval
+            // behind it, and charging its own text would credit the model for time nobody measured.
+            _segmentStartedAt = now;
+            _segmentHeadUnits = units;
         }
-        _lastOutputAt = now;
+        _segmentLastAt = now;
+        _segmentUnits += units;
+    }
+
+    /// <summary>Banks the segment in flight, closing its decode window. Called where the run hands this segment's
+    /// text to the transcript — the one point every round passes through, and the boundary a tool or an approval
+    /// sits on.</summary>
+    private void BankDecode()
+    {
+        if (_segmentStartedAt > 0)
+        {
+            _decodeTicks += _segmentLastAt - _segmentStartedAt;
+            _decodeUnits += _segmentUnits - _segmentHeadUnits;
+        }
+        _segmentStartedAt = 0;
+        _segmentLastAt = 0;
+        _segmentUnits = 0;
+        _segmentHeadUnits = 0;
     }
     // Where this segment's thinking stopped, on the run's clock, and whether that moment has been taken yet.
     // See <see cref="ReasoningElapsed"/> for why the freeze belongs at the thinking→answer boundary.
@@ -360,8 +400,7 @@ internal sealed class ConversationRun : IDisposable
             _filedReasoning += _reasoning.Length;
             _text.Clear();
             _reasoning.Clear();
-            _lastOutputAt = 0;
-            _segmentHasOutput = false;
+            BankDecode();
             // The next segment thinks again, so its thinking is measured from here and not from the run's start.
             // <see cref="ThoughtFiledBefore"/> is deliberately not re-armed by this line — it answers "has this run
             // already filed thinking", and a run is one answer however many rounds of tool calls it took to get
@@ -658,7 +697,8 @@ internal sealed class ConversationRun : IDisposable
     {
         if (_parked) return;
         Interlocked.Exchange(ref _retryWaiting, attempt);
-        lock (_gate) _lastOutputAt = 0;
+        // The wait is not decoding time: close the window here so the attempt that follows opens a fresh one.
+        lock (_gate) BankDecode();
         Interlocked.Exchange(ref _retryDelayTicks, delay.Ticks);
         Interlocked.Increment(ref _retryWaits);
         Interlocked.Add(ref _retryWaitedTicks, delay.Ticks);
@@ -765,7 +805,8 @@ internal sealed class ConversationRun : IDisposable
     {
         _parked = true;
         Phase = RunPhase.AwaitingApproval;
-        lock (_gate) _lastOutputAt = 0;
+        // The decision is somebody else's time, not decode time: close the window the gate interrupted.
+        lock (_gate) BankDecode();
         // A person reading a card is not the answer working, so the elapsed clock banks what it has and stands
         // down for the length of the decision.
         FreezeClock();

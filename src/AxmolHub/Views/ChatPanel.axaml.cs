@@ -97,10 +97,10 @@ public partial class ChatPanel : UserControl
     /// which is also what lets a session keep streaming while it is hidden.
     /// </summary>
     private LiveBubble? _live;
-    // The last visible speed belongs to its session, not the transient bubble. A run can finish or the reader
-    // can switch sessions between paints; neither event should revert an already measured rate to "waiting".
-    private readonly Dictionary<string, (double Rate, long ShownAt)> _sessionSpeeds = new(StringComparer.Ordinal);
-    private static readonly long SpeedRefreshTicks = 2 * System.Diagnostics.Stopwatch.Frequency;
+    // How often the speed label is allowed to re-render. The rate is a session average held on the conversation,
+    // so it is always on screen once measured; this only stops the digits being rewritten every dispatcher tick.
+    private long _speedDrawnAt;
+    private static readonly long SpeedRefreshTicks = System.Diagnostics.Stopwatch.Frequency;
 
     /// <summary>The build count of the bubble that was last on screen, kept because the bubble itself is
     /// discarded the moment the answer lands — and the number is only interesting once the stream is over.</summary>
@@ -342,11 +342,6 @@ public partial class ChatPanel : UserControl
         };
         _chat.RunCompleted += (conversationId, outcome) =>
         {
-            // The registry may have removed the run already. Capture its last cumulative reading before
-            // RenderMessages detaches the bubble, then leave that reading visible until another run earns one.
-            if (_live is { } finishing && finishing.Run.ConversationId == conversationId
-                && finishing.Run.ApproximateTokensPerSecond is > 0 and var finalRate)
-                _sessionSpeeds[conversationId] = (finalRate, System.Diagnostics.Stopwatch.GetTimestamp());
             var viewed = conversationId == _chat.ViewedConversationId;
             if (viewed) RenderMessages();
             // Filed for whichever session ended, ahead of the guard below: a run that finished while the person
@@ -822,25 +817,35 @@ public partial class ChatPanel : UserControl
         WorkspaceChip.MaxWidth = tight ? 28 : width < 420 ? 95 : 160;
         WorkspaceChipLabel.MaxWidth = width < 420 ? 55 : 120;
         ContextPercentLabel.IsVisible = !tight;
-        ComposerStatusRow.ColumnSpacing = tight ? 4 : 12;
-        if (ComposerStatusRow.ColumnDefinitions[1].Width.IsStar == tight)
-            ComposerStatusRow.ColumnDefinitions[1].Width = tight
-                ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        // Column definitions and spacing are never rewritten here: this runs on a size change, and a grid template
+        // that changes while the page is being measured re-measures the transcript above it — the composer's own
+        // row must stay one fixed shape in every state.
         RenderComposerMetrics();
     }
 
     private void RenderComposerMetrics()
     {
-        var run = ViewedRun;
-        var sessionId = _chat.ActiveConversation?.Id;
+        var rate = _chat.ActiveConversationSpeed();
+        // One refresh a second, and the previous text stands between refreshes: the rate itself is a session
+        // average, and a label that re-lays itself on every dispatcher tick reads as noise even when the number
+        // is right. An empty slot is filled at once, so a new reading is never held back by the throttle.
         var now = System.Diagnostics.Stopwatch.GetTimestamp();
-        if (sessionId is not null && run?.ApproximateTokensPerSecond is > 0 and var rate
-            && (!_sessionSpeeds.TryGetValue(sessionId, out var previous)
-                || now - previous.ShownAt >= SpeedRefreshTicks))
-            _sessionSpeeds[sessionId] = (rate, now);
-        RequestSpeedLabel.Text = sessionId is not null && _sessionSpeeds.TryGetValue(sessionId, out var shown)
-            ? FormatRequestSpeed(shown.Rate) : RequestSpeedText(run);
+        if (rate is > 0)
+        {
+            if (RequestSpeedLabel.Text is not { Length: > 0 } || now - _speedDrawnAt >= SpeedRefreshTicks)
+            {
+                RequestSpeedLabel.Text = FormatRequestSpeed(rate.Value);
+                _speedDrawnAt = now;
+            }
+        }
+        else
+        {
+            RequestSpeedLabel.Text = "";
+            _speedDrawnAt = 0;
+        }
         RequestSpeedLabel.IsVisible = RequestSpeedLabel.Text.Length > 0;
+        ToolTip.SetTip(RequestSpeedLabel, RequestSpeedLabel.Text.Length > 0
+            ? HubStrings.Get("ChatRequestSpeedHint") : null);
 
         var (send, session) = _chat.ActiveConversationBurn();
         // The stored session total excludes a run until it closes. A filed send is already inside that total.
@@ -851,13 +856,6 @@ public partial class ChatPanel : UserControl
         var hasReading = session is not null || live is not null;
         var showSpend = hasReading && (ComposerStatusRow.Bounds.Width == 0 || ComposerStatusRow.Bounds.Width >= 300);
         SessionBurnLabel.IsVisible = showSpend;
-        // At full width the spend takes only its content width, keeping the three readouts together.
-        // Under pressure it becomes the flexible column, so speed and the context button stay readable.
-        var spendWidth = !showSpend ? new GridLength(0)
-            : ComposerStatusRow.Bounds.Width >= 600 ? GridLength.Auto
-            : new GridLength(1, GridUnitType.Star);
-        if (ComposerStatusRow.ColumnDefinitions[3].Width != spendWidth)
-            ComposerStatusRow.ColumnDefinitions[3].Width = spendWidth;
         if (!hasReading)
         {
             SessionBurnLabel.Text = "";
@@ -876,20 +874,10 @@ public partial class ChatPanel : UserControl
             total.ToString("N0", culture)) + cacheText);
     }
 
-    private static string RequestSpeedText(ConversationRun? run)
-    {
-        // A request may spend its first seconds without a measurable delta. Keep the status slot visible
-        // rather than leaving an unexplained blank, but never show a numeric speed while a tool or retry waits.
-        if (run is not { IsStreaming: true, IsToolRunning: false, RetryWaiting: false }) return "";
-        var rate = run.ApproximateTokensPerSecond;
-        return rate is > 0
-            ? FormatRequestSpeed(rate.Value)
-            : HubStrings.Get(run.SegmentHasOutput ? "ChatRequestSpeedSampling" : "ChatRequestSpeedWaiting");
-    }
-
     private static string FormatRequestSpeed(double rate)
         => string.Format(System.Globalization.CultureInfo.CurrentCulture,
-            HubStrings.Get("ChatRequestSpeedApproxFormat"), rate);
+            HubStrings.Get("ChatRequestSpeedFormat"),
+            rate.ToString("0.#", System.Globalization.CultureInfo.CurrentCulture));
 
     private static string CompactTokenCount(long tokens, System.Globalization.CultureInfo culture)
     {
@@ -6886,7 +6874,7 @@ public partial class ChatPanel : UserControl
     internal (double RowWidth, double SpeedWidth, double ContextRight, double SpeedRight) ComposerStatusBoundsForCheck
         => (ComposerStatusRow.Bounds.Width, RequestSpeedLabel.Bounds.Width,
             ContextButton.Bounds.Right, RequestSpeedLabel.Bounds.Right);
-    internal static string RequestSpeedTextForCheck(ConversationRun? run) => RequestSpeedText(run);
+    internal double? ComposerSpeedRateForCheck => _chat.ActiveConversationSpeed();
     internal string ComposerBurnForCheck => SessionBurnLabel.Text ?? "";
     internal (double SpendToContext, double RightInset) ComposerMetricSpacingForCheck
         => (ContextButton.Bounds.Left - SessionBurnLabel.Bounds.Right,
@@ -6899,15 +6887,17 @@ public partial class ChatPanel : UserControl
            && SessionBurnLabel.TextTrimming == TextTrimming.CharacterEllipsis
            && RequestSpeedLabel.Parent is Grid row
            && ReferenceEquals(row, SessionBurnLabel.Parent)
-           && row.ColumnDefinitions[1].Width.IsStar == (row.Bounds.Width >= 300)
+           // The template is fixed: two springs beside the fixed readouts. A template rewritten at runtime would
+           // re-measure the transcript above the composer while it is being dragged.
+           && row.ColumnDefinitions[1].Width.IsStar
            && row.ColumnDefinitions[2].Width.IsAuto
-           && row.ColumnDefinitions[3].Width.IsAuto == (SessionBurnLabel.IsVisible && row.Bounds.Width >= 600)
-           && row.ColumnDefinitions[3].Width.IsStar == (SessionBurnLabel.IsVisible && row.Bounds.Width < 600)
+           && row.ColumnDefinitions[3].Width.IsStar
            && row.ColumnDefinitions[4].Width.IsAuto
            && Grid.GetColumn(RequestSpeedLabel) == 2
            && Grid.GetColumn(SessionBurnLabel) == 3
            && Grid.GetColumn(ContextButton) == 4
-           && row.ColumnSpacing == (row.Bounds.Width < 300 ? 4 : 12);
+           && row.ColumnSpacing == 8
+           && (row.Bounds.Width == 0 || row.Bounds.Width >= 300 || !SessionBurnLabel.IsVisible);
     internal bool PermissionChipFollowsPlusForCheck
         => PermissionChip.Parent is Panel panel
            && panel.Children.IndexOf(PermissionChip) == panel.Children.IndexOf(AddContextButton) + 1;

@@ -589,9 +589,13 @@ public static class HubTexts
         // measured spend: every request of the round summed, because a tool loop pays for the transcript again
         // each time it re-sends it. Wording keeps 占用 and 消耗 apart on purpose; the two numbers disagree and
         // both are right.
-        ["ChatRequestSpeedApproxFormat"] = ("约 {0:0} tok/s", "~{0:0} tok/s"),
-        ["ChatRequestSpeedWaiting"] = ("等待输出…", "Waiting for output…"),
-        ["ChatRequestSpeedSampling"] = ("等待后续输出…", "Waiting for more output…"),
+        // The generation speed of the session, quoted the way DeepSeek Harness's stats line quotes it:
+        // decodeTokens / decodeMs, summed over every answer rather than re-derived from a rolling window. No
+        // placeholder wording exists on purpose — a session that has decoded nothing shows no speed at all, and
+        // "waiting for output" over a stream that is visibly producing text is the one thing this must never say.
+        ["ChatRequestSpeedFormat"] = ("{0} tok/s", "{0} tok/s"),
+        ["ChatRequestSpeedHint"] = ("本会话的生成速度：输出 tokens ÷ 解码耗时（不含等待工具与审批的时间）",
+            "Generation speed for this session: output tokens ÷ decode time, excluding tool and approval waits"),
         ["ChatSessionTokensFormat"] = ("{0} tok", "{0} tok"),
         ["ChatSessionCacheFormat"] = ("缓存命中 {0}%", "cache hit {0}%"),
         ["ChatContextBurnSendLabel"] = ("本轮实测消耗（tokens）：", "This reply measured (tokens): "),

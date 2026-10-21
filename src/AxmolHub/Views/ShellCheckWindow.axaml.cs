@@ -476,35 +476,44 @@ public partial class ShellCheckWindow : Window
             "底部 token 数用 K/M/B 缩写，小于千保留整数，进位边界不显示 1000K");
         using (var rateRun = new ConversationRun("rate-check", TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(2)))
         {
-            Check(rateRun.ApproximateTokensPerSecond is null
-                  && ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedWaiting"),
-                "请求尚无流式输出时显示等待状态，不显示虚构的模型速度");
+            Check(rateRun.DecodeCost is null,
+                "还没有输出时没有解码读数，界面留空而不是写一句占位的话");
             rateRun.AppendReasoning(new string('a', 80));
-            Check(ChatPanel.RequestSpeedTextForCheck(rateRun) == HubStrings.Get("ChatRequestSpeedSampling"),
-                "首个输出块没有采样区间，但不能再说尚未输出");
+            Check(rateRun.DecodeCost is null,
+                "单个输出块没有区间，不算出一个凭空的速度");
             rateRun.AppendText(new string('b', 80));
             rateRun.AppendText(new string('c', 80));
-            Check(rateRun.ApproximateTokensPerSecond is > 0
-                  && ChatPanel.RequestSpeedTextForCheck(rateRun).Contains("tok/s", StringComparison.Ordinal),
-                "密集流式思考和正文无需间隔 350ms，也能当场显示约 tok/s");
-            var firstAverage = rateRun.ApproximateTokensPerSecond;
+            var decoded = rateRun.DecodeCost;
+            Check(decoded is { Tokens: > 0 } && decoded.Value.Decode > TimeSpan.Zero,
+                "密集输出块之间即可得出累计解码量与时耗，不等 350ms 间隔");
+            var firstRead = decoded!.Value;
             await Task.Delay(2200);
-            Check(rateRun.ApproximateTokensPerSecond == firstAverage
-                  && ChatPanel.RequestSpeedTextForCheck(rateRun).Contains("tok/s", StringComparison.Ordinal),
-                "输出暂停后保留本轮生成均速，而不是反复退回等待状态");
+            Check(rateRun.DecodeCost == firstRead,
+                "没有新输出时读数冻结在原地，而不是随时间滑落或退回等待状态");
             rateRun.AppendText(new string('d', 80));
-            Check(rateRun.ApproximateTokensPerSecond == firstAverage,
-                "暂停后的首块仅重新开采样区间，不把空等的两秒计入均速");
-            rateRun.AppendText(new string('e', 80));
-            Check(rateRun.ApproximateTokensPerSecond is > 0,
-                "暂停后继续输出才累计新的生成区间");
+            Check(rateRun.DecodeCost is { } afterPause && afterPause.Tokens > firstRead.Tokens,
+                "恢复输出后继续在同一区间里累计，读数只前进不消失");
+            var beforePark = rateRun.DecodeCost;
             rateRun.ParkForApproval();
-            Check(rateRun.ApproximateTokensPerSecond is > 0,
-                "等待审批时保留已有均速，不把人的等待时间当作生成时间");
+            Check(rateRun.DecodeCost == beforePark,
+                "等待审批的时长不计入解码时耗");
             rateRun.RearmAfterApproval();
             rateRun.BeginSegment();
-            Check(rateRun.ApproximateTokensPerSecond is > 0,
-                "工具回合开始后仍保留本轮累计均速，不用旧回合的时间稀释");
+            Check(rateRun.DecodeCost == beforePark,
+                "工具回合开始后不丢弃本轮已累计的读数，速度不会跌回空白");
+        }
+        // A slow route emits a chunk every few seconds — the gpt-6-sol case. An older sampler dropped every
+        // interval longer than two seconds and so never produced a number for it, while fast DeepSeek streams
+        // always did; this pins the reading that no longer depends on how chatty the provider is.
+        using (var slowRun = new ConversationRun("slow-rate-check", TimeSpan.FromMinutes(2),
+                   TimeSpan.FromMinutes(2)))
+        {
+            slowRun.AppendText("先给出第一段答案");
+            await Task.Delay(2500);
+            slowRun.AppendText("几秒之后才来的第二段");
+            Check(slowRun.DecodeCost is { Tokens: > 0 } slow && slow.Decode.TotalSeconds >= 2,
+                "块间隔超过两秒的慢速模型也能得到速度读数（实际 "
+                + (slowRun.DecodeCost?.Decode.TotalSeconds.ToString("0.#", CultureInfo.CurrentCulture) ?? "无") + "s）");
         }
         Check(panel.ComposerPlusCenteredForCheck,
             "添加上下文的圆形加号按钮在水平和垂直方向居中");
@@ -10676,17 +10685,18 @@ public partial class ShellCheckWindow : Window
                 chat.OpenConversation(rateSession.Id);
                 chat.TryEnqueueSend(rateSession.Id, "检查底部实时速度", null, out _);
                 panel.Reload();
-                Check(panel.ComposerSpeedForCheck == HubStrings.Get("ChatRequestSpeedWaiting"),
-                    "正在请求但还没收到流输出时，底部确实显示等待输出");
+                Check(panel.ComposerSpeedForCheck.Length == 0,
+                    "还没开始输出时底部整段留空——DeepSeek Harness 的统计行也没有「等待输出」这种占位");
                 beforeOutput.TrySetResult(true);
                 await firstReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
-                for (var tick = 0; tick < 40 && panel.ComposerSpeedForCheck != HubStrings.Get("ChatRequestSpeedSampling"); tick++)
+                for (var tick = 0; tick < 40; tick++)
                 {
                     await Task.Delay(20);
                     Dispatcher.UIThread.RunJobs();
                 }
-                Check(panel.ComposerSpeedForCheck == HubStrings.Get("ChatRequestSpeedSampling"),
-                    "流收到首块后底部不再声称尚无输出（实际「" + panel.ComposerSpeedForCheck + "」）");
+                Check(panel.ComposerSpeedForCheck.Length == 0,
+                    "收到首块但还没有区间时底部仍是空白，不换成另一句等待的话（实际「"
+                    + panel.ComposerSpeedForCheck + "」）");
                 afterFirst.TrySetResult(true);
                 await burstReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 for (var tick = 0; tick < 40 && !panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal); tick++)
@@ -10694,14 +10704,13 @@ public partial class ShellCheckWindow : Window
                     await Task.Delay(20);
                     Dispatcher.UIThread.RunJobs();
                 }
-                Check(panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal)
-                      && panel.ComposerSpeedForCheck != HubStrings.Get("ChatRequestSpeedWaiting"),
-                    "密集输出后流仍未结束，真实界面底部立即显示速度（实际「" + panel.ComposerSpeedForCheck + "」）");
+                Check(panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal),
+                    "密集输出后流仍未结束，真实界面底部显示速度（实际「" + panel.ComposerSpeedForCheck + "」）");
                 var steadySpeed = panel.ComposerSpeedForCheck;
                 await Task.Delay(2300);
                 Dispatcher.UIThread.RunJobs();
                 Check(panel.ComposerSpeedForCheck == steadySpeed,
-                    "流暂停两秒且定时器仍在刷新，底部速度保持可见且不跳回等待输出");
+                    "流暂停两秒且定时器仍在刷新，底部速度保持原样，既不消失也不抖回占位文字");
                 var originalWidth = shell.Width;
                 try
                 {
@@ -10709,7 +10718,7 @@ public partial class ShellCheckWindow : Window
                     shell.UpdateLayout();
                     Dispatcher.UIThread.RunJobs();
                     var layout = panel.ComposerStatusBoundsForCheck;
-                    Check(layout.SpeedWidth >= 60 && layout.SpeedRight < layout.ContextRight
+                    Check(layout.SpeedWidth >= 50 && layout.SpeedRight < layout.ContextRight
                           && layout.ContextRight <= layout.RowWidth + 1,
                         "窗口最窄时 TPS 仍有可读宽度，三个状态靠右且上下文按钮留在行内（"
                         + $"speed={layout.SpeedWidth:0.#}, contextRight={layout.ContextRight:0.#}, row={layout.RowWidth:0.#}）");
@@ -10718,6 +10727,7 @@ public partial class ShellCheckWindow : Window
                 {
                     shell.Width = originalWidth;
                     shell.UpdateLayout();
+                    Dispatcher.UIThread.RunJobs();
                 }
                 chat.OpenConversation(measured.Id);
                 panel.Reload();
@@ -10744,7 +10754,9 @@ public partial class ShellCheckWindow : Window
             // meter that read the absence of a report as zero would call an overflowing conversation empty.
             chat.ClientOverride = (_, _) =>
             {
-                var client = new ScriptedChatClient(["没有用量的回答"]);
+                // Two frames, not one: a single frame has no decode interval and therefore no speed either — which
+                // is the same rule the harness follows, and would leave this fixture proving nothing.
+                var client = new ScriptedChatClient(["没有用量的", "回答"]);
                 sent.Add(client);
                 return client;
             };
@@ -10778,12 +10790,18 @@ public partial class ShellCheckWindow : Window
             var quietRows = panel.ContextCategoryRowsForCheck;
             panel.CloseContextPopoverForCheck();
             Check(!panel.ContextBurnVisibleForCheck && quietBurn.Length == 0
-                  && panel.ComposerBurnForCheck.Length == 0 && panel.ComposerSpeedForCheck.Length == 0
+                  && panel.ComposerBurnForCheck.Length == 0
                   && !panel.CacheHitVisibleForCheck && panel.CacheHitValueForCheck.Length == 0
                   && quiet?.BurnedInputTotal == 0 && quiet.BurnedRequestCount == 0
                   && quiet.Messages.All(turn => turn.Burned is null)
                   && quietRows.All(row => !row.Contains("消耗", StringComparison.Ordinal)),
                 "没人报数时「实测消耗」整块和命中率都不出现，账本也是空的——沉默不等于花了 0");
+            // Speed is the one reading that does not come from the endpoint's usage report: the model still
+            // decoded text, so the session carries the operands and the row keeps showing it.
+            Check(panel.ComposerSpeedForCheck.Contains("tok/s", StringComparison.Ordinal)
+                  && quiet!.DecodedTokens > 0 && quiet.DecodeMilliseconds > 0,
+                "网关不报用量时速度照样有：它来自解码量与时耗，不等 usage（实际「"
+                + panel.ComposerSpeedForCheck + "」）");
 
             // Phase 2: the same app path with a report on the end of the stream.
             // The reading is stated against the window rather than as a literal: this fixture has to stay the

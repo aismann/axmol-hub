@@ -1414,8 +1414,8 @@
 
       <!-- The workspace stays at left; the spring keeps the three statuses together at right.
            Speed and context keep their width; the spend label trims first on narrow windows. -->
-      <Grid x:Name="ComposerStatusRow" Grid.Row="5" ColumnDefinitions="Auto,*,Auto,0,Auto" MaxWidth="820" HorizontalAlignment="Stretch"
-            Margin="0,3,0,4" MinHeight="30" ColumnSpacing="12">
+      <Grid x:Name="ComposerStatusRow" Grid.Row="5" ColumnDefinitions="Auto,*,Auto,*,Auto" MaxWidth="820" HorizontalAlignment="Stretch"
+            Margin="0,3,0,4" MinHeight="30" ColumnSpacing="8">
         <Button x:Name="WorkspaceChip" Grid.Column="0" Classes="workspace-chip" MaxWidth="160">
           <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
             <Path Width="12" Height="12" Stretch="Uniform" Data="{StaticResource Hub.Icon.Folder}"

@@ -512,6 +512,22 @@ public sealed class Conversation
     public int BurnedRequestCount { get; set; }
 
     /// <summary>
+    /// Output this session decoded, and the time the model actually spent decoding it — the two operands of the
+    /// generation speed the composer's status row shows. DeepSeek Harness's own stats line quotes the same ratio
+    /// (<c>decodeTokens / decodeMs</c>), and it is a session sum rather than the newest answer's, so a reply that
+    /// stalls once does not swing the number a reader is watching.
+    ///
+    /// <para>Both are summed over a run, not measured from a short rolling window: a per-chunk window makes the
+    /// label flicker at every dispatcher frame, and the pause before a round's first frame is the provider's
+    /// latency rather than the model's speed. Zero on both is "nothing measured yet", so a session file written
+    /// before these fields load with no speed at all instead of a fabricated one.</para>
+    /// </summary>
+    public long DecodedTokens { get; set; }
+
+    /// <summary>Decoding time, in milliseconds, summed on the same terms as <see cref="DecodedTokens"/>.</summary>
+    public long DecodeMilliseconds { get; set; }
+
+    /// <summary>
     /// How this session's last run ended, when the ending was something the person had to be told about. Null
     /// once a run ends without news, so the field describes the newest ending and a retry that answered retires
     /// the line by itself rather than through a second rule somebody has to remember.

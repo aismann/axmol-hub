@@ -5284,14 +5284,19 @@ public sealed class ChatWorkspace : IDisposable
             // A run parked on an approval is superseded rather than resumed: saying something new *is* the
             // answer to the question that was waiting.
             _runs.Remove(conversationId);
-            // This door never reaches CompleteRun, so the reported spend is folded here: the requests the waiting
-            // round already sent went out and were billed, and dropping them would make a superseded answer free.
-            // No turn is stamped — that round never produced an answer to own the number — and the single-shot
-            // gate keeps the other door from filing the same tokens twice.
+            // This door never reaches CompleteRun, so the reported spend and the decoding are folded here: the
+            // requests the waiting round already sent went out and were billed, and its output was really
+            // produced. No turn is stamped — that round never produced an answer to own the number — and the
+            // single-shot gates keep the other door from filing the same reading twice.
             var supersedeBurn = waiting.TryTakeBurnCommit() ? waiting.BurnedSoFar : null;
+            var supersedeDecode = waiting.TryTakeDecodeCommit() ? waiting.DecodeCost : null;
             waiting.Dispose();
-            if (supersedeBurn is { } burned)
-                _sessions.TryUpdate(conversationId, opened => AddSessionBurn(opened, burned));
+            if (supersedeBurn is not null || supersedeDecode is not null)
+                _sessions.TryUpdate(conversationId, opened =>
+                {
+                    if (supersedeDecode is { } decoded) AddSessionDecode(opened, decoded);
+                    if (supersedeBurn is { } burned) AddSessionBurn(opened, burned);
+                });
         }
 
         var run = new ConversationRun(conversationId, IdleTimeout, FirstFrameTimeout);
@@ -6394,7 +6399,7 @@ public sealed class ChatWorkspace : IDisposable
                 // billed for them, and skipping the fold because no answer landed would understate the session by
                 // exactly the runs the reader is most likely to be asking about. The per-answer reading is filed on
                 // <paramref name="stamped"/> alone, so it can never land on an older reply's turn.
-                CommitRunBurn(opened, run, stamped);
+                CommitRunCosts(opened, run, stamped);
 
                 if (opened.GoalState == ChatGoalStates.Active && result != RunResult.Completed)
                 {
@@ -6502,21 +6507,35 @@ public sealed class ChatWorkspace : IDisposable
     }
 
     /// <summary>
-    /// Folds what the endpoint reported spending into the session, and into the answer that earned it.
+    /// Folds what the endpoint reported spending, and what the run decoded, into the session — and the spend into
+    /// the answer that earned it.
     ///
     /// <para>The two halves are priced differently on purpose. The conversation total takes the run whatever
     /// ending it came from — tokens left the machine whether or not an answer arrived — while the per-turn reading
     /// only lands on the turn this run stamped, because the run's own prose is the only place a number labelled
     /// 本轮 is true. Filing spend on an older reply's turn would blame that reply for a round it never made.</para>
+    ///
+    /// <para>Decoding is folded <b>outside</b> the reported-usage branch: a gateway that never says what a request
+    /// cost still produced output, and a session whose speed vanished because nothing reported usage would be
+    /// hiding the one number a person can check for themselves.</para>
     /// </summary>
-    private static void CommitRunBurn(Conversation opened, ConversationRun run, int stamped)
+    private static void CommitRunCosts(Conversation opened, ConversationRun run, int stamped)
     {
-        // One fold per run: the pump and the supersede door both close through here, and spend counted twice is
-        // a bill the client invented.
+        // One fold per run, for decode and for spend alike: the pump and the supersede door both close through
+        // here, and a total counted twice is a number the client invented.
+        if (run.TryTakeDecodeCommit() && run.DecodeCost is { } decoded) AddSessionDecode(opened, decoded);
         if (!run.TryTakeBurnCommit() || run.BurnedSoFar is not { } burned) return;
         AddSessionBurn(opened, burned);
         if (stamped < 0 || stamped >= opened.Messages.Count) return;
         opened.Messages[stamped] = opened.Messages[stamped] with { Burned = burned };
+    }
+
+    private static void AddSessionDecode(Conversation opened, (long Tokens, TimeSpan Decode) decoded)
+    {
+        opened.DecodedTokens += decoded.Tokens;
+        // At least one millisecond: a burst short enough to round to zero would otherwise turn a decoded answer
+        // into "no speed at all" once the run closed.
+        opened.DecodeMilliseconds += Math.Max(1, (long)Math.Round(decoded.Decode.TotalMilliseconds));
     }
 
     private static void AddSessionBurn(Conversation opened, ContextBurn burned)
@@ -6526,6 +6545,30 @@ public sealed class ChatWorkspace : IDisposable
         opened.BurnedReasoningTotal += burned.Reasoning;
         opened.BurnedCachedInputTotal += burned.CachedInput;
         opened.BurnedRequestCount += burned.Requests;
+    }
+
+    /// <summary>
+    /// The generation speed of the session on screen: everything it has decoded, over the time the model spent
+    /// decoding it, with the run in flight added on top.
+    ///
+    /// <para>A session total rather than a rolling window, and the same ratio DeepSeek Harness's stats line
+    /// quotes (<c>decodeTokens / decodeMs</c>). A window re-derived on every arriving chunk makes the label
+    /// flicker at dispatcher rate, and a number that swings 200 → 40 → 190 while the model behaves identically
+    /// is worse than no number at all. Null means nothing has been decoded yet, which is a reason to hide the
+    /// slot rather than to fill it with a sentence.</para>
+    /// </summary>
+    internal double? ActiveConversationSpeed()
+    {
+        if (_active is not { } conversation) return null;
+        var tokens = conversation.DecodedTokens;
+        var decoded = TimeSpan.FromMilliseconds(conversation.DecodeMilliseconds);
+        // The run in flight has not been folded yet; one that has closed already sits inside the session total.
+        if (RunFor(conversation.Id) is { DecodeCommitted: false } run && run.DecodeCost is { } live)
+        {
+            tokens += live.Tokens;
+            decoded += live.Decode;
+        }
+        return decoded > TimeSpan.Zero && tokens > 0 ? tokens / decoded.TotalSeconds : null;
     }
 
     /// <summary>What the meter may say about spend: the active send's reading, and the session's running total.
