@@ -26,8 +26,6 @@ namespace AxmolHub.Core;
 /// </summary>
 public sealed class WorkspaceStore(string root)
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
-
     /// <summary>The file is read-modify-written as a whole, so overlapping saves would drop one of them.</summary>
     private readonly object _gate = new();
 
@@ -176,21 +174,9 @@ public sealed class WorkspaceStore(string root)
         }
     }
 
-    private List<string> Read()
-    {
-        if (!File.Exists(RegistryPath)) return [];
-        try
-        {
-            var file = JsonSerializer.Deserialize<WorkspaceRegistry>(File.ReadAllText(RegistryPath), Json);
-            return Normalize(file?.Roots ?? []);
-        }
-        catch (JsonException)
-        {
-            // A damaged registry is an empty one: the sessions still describe their own directories, so the list
-            // rebuilds itself from what is on screen instead of refusing to start.
-            return [];
-        }
-    }
+    /// <summary>A damaged registry reads as an empty one: the sessions still describe their own directories, so
+    /// the list rebuilds itself from what is on screen instead of refusing to start.</summary>
+    private List<string> Read() => Normalize(StateStore.ReadJson<WorkspaceRegistry>(RegistryPath)?.Roots ?? []);
 
     private void Write(List<string> roots) => StateStore.WriteJson(RegistryPath, new WorkspaceRegistry { Roots = roots });
 

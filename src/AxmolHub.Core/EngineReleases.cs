@@ -27,7 +27,7 @@ namespace AxmolHub.Core;
 /// <param name="manifests">The manifest directory. The built-in engine manifest and module manifests both live here.</param>
 public sealed class EngineReleases(string root, string manifests)
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions Json = StateStore.ReadOptions;
 
     /// <summary>The official LTS channel. Compared against each package's <c>channel</c> field in the manifest.</summary>
     public const string LtsChannel = "official-lts";

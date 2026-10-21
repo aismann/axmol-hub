@@ -52,8 +52,6 @@ public sealed class EngineBuildRecord
 /// </summary>
 public sealed class EnginePrebuiltState(string root)
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
-
     public string Root { get; } = Path.GetFullPath(root);
 
     private string PathFor(EngineEntry engine)
@@ -63,11 +61,7 @@ public sealed class EnginePrebuiltState(string root)
         return Path.Combine(Root, "prebuilt", key + ".json");
     }
 
-    public EngineBuildRecord? Load(EngineEntry engine)
-    {
-        var path = PathFor(engine);
-        return File.Exists(path) ? JsonSerializer.Deserialize<EngineBuildRecord>(File.ReadAllText(path), Json) : null;
-    }
+    public EngineBuildRecord? Load(EngineEntry engine) => StateStore.ReadJson<EngineBuildRecord>(PathFor(engine));
 
     public void Save(EngineEntry engine, EngineBuildRecord record) => StateStore.WriteJson(PathFor(engine), record);
 

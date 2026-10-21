@@ -57,7 +57,7 @@ public sealed class OrcaRouterOAuthFlow
     /// </summary>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(45);
 
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions Json = StateStore.ReadOptions;
 
     private readonly HttpClient _http;
     private readonly Action<string> _openBrowser;

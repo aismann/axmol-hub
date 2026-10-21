@@ -67,7 +67,7 @@ public static class EngineIndex
     /// <summary>The index is capped at 1 MiB. Anything larger means we are not reading this data, so reject instead of continuing.</summary>
     public const int MaxBytes = 1024 * 1024;
 
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions Json = StateStore.ReadOptions;
     private static readonly Regex VersionPattern = new(@"^\d+\.\d+\.\d+$", RegexOptions.CultureInvariant);
     private static readonly Regex DigestPattern = new("^[a-fA-F0-9]{64}$", RegexOptions.CultureInvariant);
 

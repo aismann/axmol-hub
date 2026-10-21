@@ -34,7 +34,7 @@ public sealed class RecipeManifest
 public static class PackagingRecipes
 {
     public const string AndroidPackaging = "android-packaging";
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions Json = StateStore.ReadOptions;
     public static string ManifestPath => Path.Combine(AppContext.BaseDirectory, "manifests/recipe-manifest.json");
     public static void RequireVerified(EngineEntry engine, string recipe)
     {

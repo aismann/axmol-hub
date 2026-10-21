@@ -17,20 +17,12 @@ namespace AxmolHub.Core;
 /// </summary>
 public sealed class CredentialStore(string root, ISecretStore secrets)
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
-
     private string CredentialPath => Path.Combine(root, "ai", "credentials.json");
 
     /// <summary>Loads every credential and rehydrates each <c>Secret</c> from the secret store.</summary>
     public List<ProviderCredential> Load()
     {
-        if (!File.Exists(CredentialPath)) return [];
-        List<ProviderCredential> credentials;
-        try
-        {
-            credentials = JsonSerializer.Deserialize<List<ProviderCredential>>(File.ReadAllText(CredentialPath), Json) ?? [];
-        }
-        catch (JsonException) { return []; }
+        var credentials = StateStore.ReadJson<List<ProviderCredential>>(CredentialPath) ?? [];
 
         foreach (var credential in credentials)
         {

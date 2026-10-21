@@ -20,25 +20,18 @@ namespace AxmolHub.Core;
 /// </summary>
 public sealed class ProviderStore(string root)
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
-
     private string ProviderPath => Path.Combine(root, "ai", "providers.json");
 
     /// <summary>Loads the provider list. A missing file is an empty list, not an error.</summary>
     public List<ModelProvider> Load()
     {
-        if (!File.Exists(ProviderPath)) return [];
-        try
-        {
-            var providers = JsonSerializer.Deserialize<List<ModelProvider>>(File.ReadAllText(ProviderPath), Json) ?? [];
+        var providers = StateStore.ReadJson<List<ModelProvider>>(ProviderPath) ?? [];
 
-            // Every provider is normalized on the way out, never on the way in: the serializer cannot enforce
-            // "exactly one model is in use", and a file edited by hand (or written by an older build) must not
-            // be able to produce a provider that sends an empty model name.
-            foreach (var provider in providers) provider.Normalize();
-            return providers;
-        }
-        catch (JsonException) { return []; }
+        // Every provider is normalized on the way out, never on the way in: the serializer cannot enforce
+        // "exactly one model is in use", and a file edited by hand (or written by an older build) must not
+        // be able to produce a provider that sends an empty model name.
+        foreach (var provider in providers) provider.Normalize();
+        return providers;
     }
 
     /// <summary>Persists the provider list. No credential is written here by construction (see the class note).</summary>

@@ -74,7 +74,16 @@ public partial class ProjectsPage : UserControl
         InitializeComponent();
         _workspace.Changed += Reload;
         _workspace.DevicesChanged += ReloadDevices;
-        SearchBox.TextChanged += (_, _) => ApplyView();
+        SearchBox.TextChanged += (_, _) =>
+        {
+            ClearSearchButton.IsVisible = !string.IsNullOrEmpty(SearchBox.Text);
+            ApplyView();
+        };
+        ClearSearchButton.Click += (_, _) =>
+        {
+            SearchBox.Text = "";
+            SearchBox.Focus();
+        };
         EngineFilter.SelectionChanged += (_, _) => ApplyView();
         PlatformFilter.SelectionChanged += (_, _) => ApplyView();
         SortButton.Click += (_, _) =>

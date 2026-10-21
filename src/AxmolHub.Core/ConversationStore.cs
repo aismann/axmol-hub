@@ -13,7 +13,7 @@ namespace AxmolHub.Core;
 /// </summary>
 public sealed class ConversationStore(string root)
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions Json = StateStore.ReadOptions;
 
     /// <summary>
     /// The index is read-modify-written as a whole file, so two saves that overlap would drop one of the two

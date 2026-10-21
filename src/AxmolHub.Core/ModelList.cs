@@ -261,21 +261,11 @@ public sealed class ModelListCacheDocument
 /// </summary>
 public sealed class ModelListStore(string root)
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
-
     private string CachePath => Path.Combine(root, "ai", "models-cache.json");
 
     /// <summary>Every cached list, in file order.</summary>
     public List<ModelListCacheEntry> Load()
-    {
-        if (!File.Exists(CachePath)) return [];
-        try
-        {
-            return JsonSerializer.Deserialize<ModelListCacheDocument>(File.ReadAllText(CachePath), Json)
-                ?.Providers ?? [];
-        }
-        catch (JsonException) { return []; }
-    }
+        => StateStore.ReadJson<ModelListCacheDocument>(CachePath)?.Providers ?? [];
 
     /// <summary>
     /// Replaces one provider's entry, or drops it when <paramref name="models"/> is <c>null</c>.

@@ -451,7 +451,7 @@ public sealed class AiProviderManifestDocument
 /// </summary>
 public static class AiProviderManifest
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions Json = StateStore.ReadOptions;
 
     public static string ManifestPath => Path.Combine(AppContext.BaseDirectory, "manifests/ai-providers.json");
 

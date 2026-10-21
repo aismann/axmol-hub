@@ -69,7 +69,7 @@ public sealed class DeviceCodeOAuthFlow
     /// </summary>
     internal static readonly TimeSpan MinPollSleep = TimeSpan.FromMilliseconds(100);
 
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions Json = StateStore.ReadOptions;
 
     /// <summary>Does nothing. A device code is reported to the caller regardless, so a caller with no browser
     /// still has everything it needs to finish on another device — the browser is a shortcut here, not a route.</summary>

@@ -93,6 +93,28 @@ public sealed class StateStore(string root)
         // the data root and are never embedded in HTML or a script, so relaxed is the right trade.
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
+
+    /// <summary>The options every reader of a Hub JSON file uses: names may arrive in either casing, because these
+    /// files are hand-editable and older builds spelled them differently. Deliberately kept apart from the writing
+    /// options above — a reader's tolerance must never decide the shape of a file.</summary>
+    public static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>One Hub JSON file, or null when it is missing, unreadable or not JSON. A store that cannot read
+    /// its file starts empty rather than failing the app — the same rule its writer already follows, and the reason
+    /// five stores no longer carry their own copy of this guard.</summary>
+    public static T? ReadJson<T>(string path) where T : class
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<T>(File.ReadAllText(path), ReadOptions);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+    }
+
     public HubState Load()
     {
         if (!File.Exists(StatePath))
