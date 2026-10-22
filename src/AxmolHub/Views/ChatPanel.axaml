@@ -617,13 +617,16 @@
     <Style Selector="Button.plan-task-summary">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="CornerRadius" Value="9" />
-      <Setter Property="Padding" Value="10,7" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="Padding" Value="10,9" />
       <Setter Property="MinHeight" Value="0" />
       <Setter Property="Cursor" Value="Hand" />
       <Setter Property="Template">
         <ControlTemplate>
-          <Border Background="{TemplateBinding Background}" CornerRadius="9" ClipToBounds="True">
+          <Border Background="{TemplateBinding Background}"
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  Padding="{TemplateBinding Padding}" ClipToBounds="True">
             <ContentPresenter Content="{TemplateBinding Content}"
                               HorizontalAlignment="Stretch"
                               VerticalAlignment="Center" />
@@ -634,20 +637,20 @@
     <Style Selector="Button.plan-task-summary:pointerover">
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
     </Style>
-    <Style Selector="Path.plan-task-summary-icon">
-      <Setter Property="Width" Value="16" />
-      <Setter Property="Height" Value="16" />
+    <Style Selector="Viewbox.plan-task-summary-icon">
+      <Setter Property="Width" Value="18" />
+      <Setter Property="Height" Value="18" />
       <Setter Property="Stretch" Value="Uniform" />
-      <Setter Property="Margin" Value="0,0,12,0" />
+      <Setter Property="Margin" Value="0,0,10,0" />
     </Style>
     <Style Selector="TextBlock.plan-task-summary-text">
       <Setter Property="FontSize" Value="13" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
-    <Style Selector="Path.plan-task-summary-chevron">
-      <Setter Property="Width" Value="14" />
-      <Setter Property="Height" Value="14" />
+    <Style Selector="Viewbox.plan-task-summary-chevron">
+      <Setter Property="Width" Value="24" />
+      <Setter Property="Height" Value="24" />
       <Setter Property="Stretch" Value="Uniform" />
       <Setter Property="Margin" Value="12,0,0,0" />
     </Style>
@@ -1397,9 +1400,9 @@
         </StackPanel>
       </Panel>
       <Border x:Name="PlanTasksHost" Grid.Row="1" IsVisible="False" MaxWidth="820"
-              MaxHeight="148" ClipToBounds="True" HorizontalAlignment="Stretch" Margin="0,0,0,6"
+              ClipToBounds="True" HorizontalAlignment="Stretch" Margin="0,0,0,6"
               Background="{DynamicResource Hub.SurfaceAlt}"
-              BorderBrush="{DynamicResource Hub.Border}" BorderThickness="1" CornerRadius="10" />
+              BorderBrush="{DynamicResource Hub.Border}" BorderThickness="1" CornerRadius="8" />
       <Border x:Name="DecisionHost" Classes="decision-host" Grid.Row="2"
               IsVisible="False" />
       <Border x:Name="SteerConfirmHost" Classes="steer-confirm" Grid.Row="3"

@@ -66,7 +66,6 @@ public partial class ChatPanel
         var summaryRow = (Grid)toggle.Content;
         var icon = new Path
         {
-            Classes = { "plan-task-summary-icon" },
             Data = Geometry.Parse("M3 5H7M10 5H21M3 12H7M10 12H21M3 19H7M10 19H21"),
             Fill = Brushes.Transparent,
             StrokeThickness = 1.7,
@@ -75,7 +74,14 @@ public partial class ChatPanel
             VerticalAlignment = VerticalAlignment.Center,
         };
         icon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-        summaryRow.Children.Add(icon);
+        // Center the drawing's 24-unit viewport, not the Path's stretched bounds.
+        var iconViewport = new Viewbox
+        {
+            Classes = { "plan-task-summary-icon" },
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new Canvas { Width = 24, Height = 24, Children = { icon } },
+        };
+        summaryRow.Children.Add(iconViewport);
         var summary = new TextBlock
         {
             Name = "PlanTasksSummary",
@@ -90,7 +96,9 @@ public partial class ChatPanel
         var chevron = new Path
         {
             Name = "PlanTasksChevron",
-            Classes = { "plan-task-summary-chevron" },
+            Width = 24,
+            Height = 24,
+            Stretch = Stretch.None,
             Data = ThemeGeometry("Hub.Icon.Caret"),
             Fill = Brushes.Transparent,
             StrokeThickness = 1.7,
@@ -101,8 +109,14 @@ public partial class ChatPanel
             VerticalAlignment = VerticalAlignment.Center,
         };
         chevron.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-        Grid.SetColumn(chevron, 2);
-        summaryRow.Children.Add(chevron);
+        var chevronViewport = new Viewbox
+        {
+            Classes = { "plan-task-summary-chevron" },
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new Canvas { Width = 24, Height = 24, Children = { chevron } },
+        };
+        Grid.SetColumn(chevronViewport, 2);
+        summaryRow.Children.Add(chevronViewport);
         toggle.Click += (_, _) =>
         {
             _planTasksExpanded = !_planTasksExpanded;
@@ -174,10 +188,21 @@ public partial class ChatPanel
             Name = "PlanTasksList",
             Content = list,
             IsVisible = _planTasksExpanded,
-            MaxHeight = 104,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             ClipToBounds = true,
+        };
+        // Use actual row heights so eight tasks fit even when their titles wrap.
+        // Re-evaluate after layout to follow column resizing and scrollbar width changes.
+        list.LayoutUpdated += (_, _) =>
+        {
+            var visibleRows = list.Children.Take(8).ToArray();
+            if (visibleRows.Length == 0 || visibleRows.Any(row => row.Bounds.Height <= 0))
+                return;
+            var height = visibleRows.Sum(row => row.Bounds.Height)
+                + list.Spacing * (visibleRows.Length - 1) + list.Margin.Top + list.Margin.Bottom;
+            if (Math.Abs(taskList.MaxHeight - height) > 0.5)
+                taskList.MaxHeight = height;
         };
         var content = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto") };
         content.Children.Add(toggle);
