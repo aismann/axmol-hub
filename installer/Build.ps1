@@ -129,8 +129,39 @@ if ($Runtime -like 'linux-*') {
     # the one actually installed into ~/.local/share/applications is written by the app itself, see Services/LinuxDesktopIdentity.
     $taskArguments += @('--categories', 'Development;Utility')
 }
-& $taskVpk @taskArguments
-if ($LASTEXITCODE -ne 0) { throw 'Velopack packaging failed.' }
+$taskMacPlist = $null
+if ($Runtime -like 'osx-*') {
+    # The same custom plist goes into both the installer and Velopack's update payload. Editing only the .pkg after
+    # `vpk pack` leaves the .nupkg used by in-app updates without the URL scheme.
+    $taskMacBundleId = "com.Simdsoft_Limited.$PackId"
+    $taskMacPlist = Join-Path ([IO.Path]::GetTempPath()) ('axmolhub-' + [Guid]::NewGuid().ToString('N') + '.plist')
+    $taskPlistContents = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'HubMacInfo.plist')
+    $taskPlistContents = $taskPlistContents.Replace('__PACK_TITLE__', [System.Security.SecurityElement]::Escape($PackTitle))
+    $taskPlistContents = $taskPlistContents.Replace('__BUNDLE_ID__', [System.Security.SecurityElement]::Escape($taskMacBundleId))
+    $taskPlistContents = $taskPlistContents.Replace('__VERSION__', [System.Security.SecurityElement]::Escape($Version))
+    $taskPlistContents = $taskPlistContents.Replace('__SHORT_VERSION__', [System.Security.SecurityElement]::Escape($Version + '.0'))
+    [IO.File]::WriteAllText($taskMacPlist, $taskPlistContents, [Text.UTF8Encoding]::new($false))
+    $taskArguments += @('--bundleId', $taskMacBundleId, '--plist', $taskMacPlist)
+}
+try {
+    & $taskVpk @taskArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Velopack packaging failed.' }
+}
+finally {
+    if ($taskMacPlist -and (Test-Path -LiteralPath $taskMacPlist)) {
+        Remove-Item -LiteralPath $taskMacPlist -Force
+    }
+}
+if ($Runtime -like 'osx-*') {
+    $taskFullUpdatePackage = Join-Path $taskOutput "$PackId-$Version-$Channel-full.nupkg"
+    if (-not (Test-Path -LiteralPath $taskFullUpdatePackage)) {
+        $taskFullUpdatePackage = Join-Path $taskOutput "$PackId-$Version-full.nupkg"
+    }
+    if (-not (Test-Path -LiteralPath $taskFullUpdatePackage)) {
+        throw "Velopack did not produce the macOS full update package for $PackId $Version ($Channel)."
+    }
+    & "$PSScriptRoot/Test-MacUpdatePackage.ps1" -PackagePath $taskFullUpdatePackage
+}
 
 # The artifact users download directly is renamed; the rule lives in one place, installer/AssetNames.ps1 — Publish.ps1 and
 # Publish-All.ps1 look this file up by the same name, so writing the rule out twice means "rename in one place, release job red in the other".

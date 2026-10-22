@@ -20,17 +20,23 @@ try {
 
     $taskPlist = $taskPlists[0].FullName
     & /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' $taskPlist *> $null
-    if ($LASTEXITCODE -eq 0) { throw 'The Hub app already declares URL types; refusing to overwrite them.' }
-
-    foreach ($taskCommand in @(
-            'Add :CFBundleURLTypes array',
-            'Add :CFBundleURLTypes:0 dict',
-            'Add :CFBundleURLTypes:0:CFBundleURLName string AxmolHub',
-            'Add :CFBundleURLTypes:0:CFBundleURLSchemes array',
-            'Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string axmolhub'
-        )) {
-        & /usr/libexec/PlistBuddy -c $taskCommand $taskPlist
-        if ($LASTEXITCODE -ne 0) { throw "PlistBuddy failed: $taskCommand" }
+    if ($LASTEXITCODE -eq 0) {
+        $taskScheme = & /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' $taskPlist
+        if ($LASTEXITCODE -ne 0 -or $taskScheme -cne 'axmolhub') {
+            throw 'The Hub app has unexpected URL types; refusing to overwrite them.'
+        }
+    }
+    else {
+        foreach ($taskCommand in @(
+                'Add :CFBundleURLTypes array',
+                'Add :CFBundleURLTypes:0 dict',
+                'Add :CFBundleURLTypes:0:CFBundleURLName string AxmolHub',
+                'Add :CFBundleURLTypes:0:CFBundleURLSchemes array',
+                'Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string axmolhub'
+            )) {
+            & /usr/libexec/PlistBuddy -c $taskCommand $taskPlist
+            if ($LASTEXITCODE -ne 0) { throw "PlistBuddy failed: $taskCommand" }
+        }
     }
 
     # Fully expanded payloads must be archived again, not stored as directories in the XAR.
