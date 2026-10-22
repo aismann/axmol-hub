@@ -4011,12 +4011,13 @@ public partial class ChatPanel : UserControl
         var actionKey = _projection!.KeyAt(index);
         int CurrentIndex() => actionSession == _chat.ViewedConversationId && _projection is not null
             && _projection.TryResolve(actionKey, out var current) ? current : -1;
-        void CopyCurrent()
+        async Task<bool> CopyCurrentAsync()
         {
             var current = CurrentIndex();
-            if (current < 0 || _chat.ActiveConversation is not { } conversation) return;
+            if (current < 0 || _chat.ActiveConversation is not { } conversation) return false;
             var turn = conversation.Messages[current];
-            CopyToClipboard(turn.PlanApprovalState is not null ? _chat.PlanBody(turn, out _) ?? "" : turn.Text);
+            return await CopyToClipboardAsync(
+                turn.PlanApprovalState is not null ? _chat.PlanBody(turn, out _) ?? "" : turn.Text);
         }
         void RegenerateCurrent()
         {
@@ -4044,7 +4045,7 @@ public partial class ChatPanel : UserControl
 
         if (role == ChatRoles.User)
         {
-            bar.Children.Add(IconActionButton("CopyMessage", "Hub.Icon.Copy", CopyCurrent));
+            bar.Children.Add(CopyMessageActionButton(CopyCurrentAsync));
             bar.Children.Add(IconActionButton("EditMessage", "Hub.Icon.Edit", () => { if (CurrentIndex() is var current && current >= 0) BeginInlineEdit(current, body, bar); }));
             // A question that never got an answer is otherwise stuck: the notice that explained the failure is
             // not written to the transcript, and resubmitting the same text is refused as an unchanged edit. The
@@ -4056,7 +4057,7 @@ public partial class ChatPanel : UserControl
         }
         else
         {
-            bar.Children.Add(IconActionButton("CopyMessage", "Hub.Icon.Copy", CopyCurrent));
+            bar.Children.Add(CopyMessageActionButton(CopyCurrentAsync));
             if (isLast)
                 bar.Children.Add(IconActionButton("RegenerateMessage", "Hub.Icon.Refresh", RegenerateCurrent));
             bar.Children.Add(IconActionButton("BranchFromHere", "Hub.Icon.Branch", () => { if (CurrentIndex() is var current && current >= 0) BranchFromHere(current); }));
@@ -4099,7 +4100,7 @@ public partial class ChatPanel : UserControl
     /// strokes meeting in the middle: at the weight an outline icon carries it, the crossing fills its plate
     /// and reads as one solid mark.</summary>
     private static Button IconActionButton(
-        string textKey, string geometryKey, Action onClick, double size = 13, double thickness = 1.7)
+        string textKey, string geometryKey, Action? onClick, double size = 13, double thickness = 1.7)
     {
         var icon = new Avalonia.Controls.Shapes.Path
         {
@@ -4118,7 +4119,31 @@ public partial class ChatPanel : UserControl
         button.Classes.Add("message-action");
         button.Classes.Add("message-action-icon");
         ToolTip.SetTip(button, HubStrings.Get(textKey));
-        button.Click += (_, _) => onClick();
+        if (onClick is not null)
+            button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private Button CopyMessageActionButton(Func<Task<bool>> copy)
+    {
+        var button = IconActionButton("CopyMessage", "Hub.Icon.Copy", null);
+        var icon = (Avalonia.Controls.Shapes.Path)button.Content!;
+        var feedbackVersion = 0;
+        button.Click += async (_, _) =>
+        {
+            if (!await copy()) return;
+            var version = ++feedbackVersion;
+            if (Application.Current?.TryGetResource("Hub.Icon.CopySuccess", null, out var success) == true
+                && success is Geometry successGeometry)
+                icon.Data = successGeometry;
+            DispatcherTimer.RunOnce(() =>
+            {
+                if (feedbackVersion == version
+                    && Application.Current?.TryGetResource("Hub.Icon.Copy", null, out var original) == true
+                    && original is Geometry originalGeometry)
+                    icon.Data = originalGeometry;
+            }, TimeSpan.FromSeconds(1.2));
+        };
         return button;
     }
 
@@ -4324,15 +4349,23 @@ public partial class ChatPanel : UserControl
 
     // ───────────────────────── Actions ─────────────────────────
 
-    private void CopyToClipboard(string text)
+    private async Task<bool> CopyToClipboardAsync(string text)
     {
         var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-        if (clipboard is null) return;
+        if (clipboard is null) return false;
         var item = new DataTransferItem();
         item.Set(DataFormat.Text, text);
         var data = new DataTransfer();
         data.Add(item);
-        _ = clipboard.SetDataAsync(data);
+        try
+        {
+            await clipboard.SetDataAsync(data);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     /// <summary>

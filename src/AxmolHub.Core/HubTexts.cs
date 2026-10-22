@@ -1197,6 +1197,7 @@ public static class HubTexts
         ["You"] = ("你", "You"),
         // Message-level actions (the action bar that appears when a bubble is hovered).
         ["CopyMessage"] = ("复制", "Copy"),
+        ["CopyMarkdown"] = ("复制Markdown", "Copy Markdown"),
         // The same verb where a *selection* is the thing being acted on: the menu a right-click puts on a
         // selection inside a message. 引用 hands that selection to the composer as a Markdown quote, which is the
         // one thing a reader wants to do with a paragraph worth answering.

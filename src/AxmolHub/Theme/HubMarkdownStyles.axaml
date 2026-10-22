@@ -116,6 +116,28 @@
     <Setter Property="FontFamily" Value="{DynamicResource Hub.Font.Mono}" />
     <Setter Property="FontSize" Value="12" />
   </Style>
+  <Style Selector="Button.inspector-plan-copy">
+    <Setter Property="Width" Value="32" />
+    <Setter Property="Height" Value="32" />
+    <Setter Property="MinWidth" Value="32" />
+    <Setter Property="MinHeight" Value="32" />
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="CornerRadius" Value="6" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+    <Setter Property="HorizontalContentAlignment" Value="Center" />
+    <Setter Property="VerticalContentAlignment" Value="Center" />
+  </Style>
+  <Style Selector="Button.inspector-plan-copy:pointerover">
+    <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+  </Style>
+  <Style Selector="Button.inspector-plan-copy:pointerover Path">
+    <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
+  </Style>
+
   <Style Selector=".Markdown_Avalonia_MarkdownViewer Button.markdown-code-copy">
     <Setter Property="Width" Value="22" />
     <Setter Property="Height" Value="22" />

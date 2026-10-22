@@ -6,11 +6,13 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Shapes;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.LogicalTree;
 using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
+using Avalonia.Threading;
 using Markdown.Avalonia;
 using AxmolHub.Core;
 using Path = Avalonia.Controls.Shapes.Path;
@@ -51,6 +53,9 @@ internal sealed class InspectorPanel : UserControl
     private readonly Grid _header;
     private readonly ContentControl _planHost;
     private readonly ScrollViewer _planScroll;
+    private readonly Button _planCopyButton;
+    private readonly Path _planCopyIcon;
+    private int _planCopyFeedbackVersion;
     private readonly ScrollViewer _changesScroll;
     private readonly StackPanel _changesList;
     private readonly ScrollViewer _repoScroll;
@@ -108,9 +113,42 @@ internal sealed class InspectorPanel : UserControl
         // The plan is the one tab whose text runs edge to edge, so it scrolls in the pane's own scroller like the
         // two tabs below it: the viewer's own bar is drawn over the document's right edge and eats the tail of
         // every line (Hub's ScrollBar is opaque, always visible, 10px). The host's margin is what clears it.
+        _planCopyIcon = new Path
+        {
+            Width = 15,
+            Height = 15,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.8,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+        };
+        _planCopyIcon.Bind(Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Copy"));
+        _planCopyIcon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        _planCopyButton = new Button
+        {
+            Content = _planCopyIcon,
+            Width = 32,
+            Height = 32,
+            MinWidth = 32,
+            Padding = new Thickness(0),
+            Margin = new Thickness(0, 4, 4, 0),
+            CornerRadius = new CornerRadius(6),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            IsVisible = false,
+        };
+        _planCopyButton.Classes.Add("inspector-plan-copy");
+        _planCopyButton.Bind(ToolTip.TipProperty, new DynamicResourceExtension("CopyMarkdown"));
+        _planCopyButton.Click += async (_, _) => await CopyPlanMarkdownAsync();
+        var planSurface = new Grid();
+        planSurface.Children.Add(_planHost);
+        planSurface.Children.Add(_planCopyButton);
         _planScroll = new ScrollViewer
         {
-            Content = _planHost,
+            Content = planSurface,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
@@ -161,6 +199,41 @@ internal sealed class InspectorPanel : UserControl
         _planHost.HorizontalAlignment = expanded ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
     }
 
+    /// <summary>Copies the displayed plan as Markdown and shows a brief success glyph only after the clipboard
+    /// write completes. Clipboard failures leave the copy icon unchanged.</summary>
+    private async System.Threading.Tasks.Task CopyPlanMarkdownAsync()
+    {
+        if (_planHost.Content is not MarkdownScrollViewer { Tag: string markdown }) return;
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard is null) return;
+
+        try
+        {
+            var item = new DataTransferItem();
+            item.Set(DataFormat.Text, markdown);
+            var data = new DataTransfer();
+            data.Add(item);
+            await clipboard.SetDataAsync(data);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        var version = ++_planCopyFeedbackVersion;
+        if (Application.Current?.TryGetResource("Hub.Icon.CopySuccess", null, out var success) == true
+            && success is Geometry successGeometry)
+            _planCopyIcon.Data = successGeometry;
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (_planCopyFeedbackVersion == version)
+                _planCopyIcon.Data = Application.Current?.TryGetResource("Hub.Icon.Copy", null, out var original) == true
+                    ? original as Geometry
+                    : null;
+        }, TimeSpan.FromSeconds(1.2));
+    }
+
     /// <summary>Shows one tab surface and marks its button. All three stay in the tree, so painting a new plan
     /// does not rebuild a diff somebody had opened, and a check can read a tab it never selected. Anything that
     /// is not one of the two action tabs lands on the plan, which is the pane's rest state. The shell is told
@@ -177,6 +250,7 @@ internal sealed class InspectorPanel : UserControl
         _planScroll.IsVisible = plan;
         _changesScroll.IsVisible = changes;
         _repoScroll.IsVisible = repo;
+        _planCopyButton.IsVisible = plan && _planHost.Content is MarkdownScrollViewer;
         TabSelected?.Invoke(tab);
     }
 

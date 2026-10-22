@@ -8,6 +8,7 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using AxmolHub.Core;
 
 namespace AxmolHub;
@@ -467,8 +468,7 @@ public partial class MainWindow
         PictureNextButton.Click += (_, _) => StepPictureViewer(+1);
         PictureViewerScrim.PointerPressed += (_, e) => { ClosePictureViewer(); e.Handled = true; };
 
-        PictureViewerBar.Children.Add(ViewerActionButton(
-            "PictureViewerCopy", "Hub.Icon.Copy", CopyViewerPicture));
+        PictureViewerBar.Children.Add(ViewerCopyActionButton());
         PictureViewerBar.Children.Add(ViewerActionButton(
             "PictureViewerClose", "Hub.Icon.Close", ClosePictureViewer));
 
@@ -477,7 +477,7 @@ public partial class MainWindow
         AddHandler(KeyDownEvent, OnViewerKeyDown, RoutingStrategies.Tunnel);
     }
 
-    private static Button ViewerActionButton(string textKey, string geometryKey, Action onClick)
+    private static Button ViewerActionButton(string textKey, string geometryKey, Action? onClick)
     {
         var icon = new Avalonia.Controls.Shapes.Path
         {
@@ -495,7 +495,31 @@ public partial class MainWindow
         var button = new Button { Content = icon, Tag = textKey };
         button.Classes.Add("viewer-action");
         ToolTip.SetTip(button, HubStrings.Get(textKey));
-        button.Click += (_, _) => onClick();
+        if (onClick is not null)
+            button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private Button ViewerCopyActionButton()
+    {
+        var button = ViewerActionButton("PictureViewerCopy", "Hub.Icon.Copy", null);
+        var icon = (Avalonia.Controls.Shapes.Path)button.Content!;
+        var feedbackVersion = 0;
+        button.Click += async (_, _) =>
+        {
+            if (!await CopyViewerPictureAsync()) return;
+            var version = ++feedbackVersion;
+            if (Application.Current?.TryGetResource("Hub.Icon.CopySuccess", null, out var success) == true
+                && success is Geometry successGeometry)
+                icon.Data = successGeometry;
+            DispatcherTimer.RunOnce(() =>
+            {
+                if (feedbackVersion == version
+                    && Application.Current?.TryGetResource("Hub.Icon.Copy", null, out var original) == true
+                    && original is Geometry originalGeometry)
+                    icon.Data = originalGeometry;
+            }, TimeSpan.FromSeconds(1.2));
+        };
         return button;
     }
 
@@ -571,13 +595,21 @@ public partial class MainWindow
     }
 
     /// <summary>Hands the on-screen picture to the clipboard as a bitmap, not a filename or a run of text.</summary>
-    private void CopyViewerPicture()
+    private async System.Threading.Tasks.Task<bool> CopyViewerPictureAsync()
     {
         var payload = BuildViewerCopyPayload();
-        if (payload is null) return;
+        if (payload is null) return false;
         var clipboard = this.Clipboard;
-        if (clipboard is null) return;
-        _ = clipboard.SetDataAsync(payload);
+        if (clipboard is null) return false;
+        try
+        {
+            await clipboard.SetDataAsync(payload);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     /// <summary>Runs the entry's loader without letting one bad file take the viewer down: a picture that will
