@@ -19,9 +19,10 @@ public partial class ShellCheckWindow
     /// did not happen is worse than one that marks none; and the row comes back after the flow is torn down and
     /// rebuilt, because it is a turn the conversation stores rather than something this view happened to paint.
     ///
-    /// <para>Cost is part of the design: the suite runs against a 120 second ceiling it was already close to, so
-    /// the panel is laid out only where a measurement needs pixels, and the rebuild is the teardown the renderer
-    /// itself goes through rather than a trip through two more conversations.</para></summary>
+    /// <para>Cost is part of the design: the suite has to stay well inside <c>SuiteCeiling</c> (the one budget
+    /// constant — never restate its number here), so the panel is laid out only where a measurement needs pixels,
+    /// and the rebuild is the teardown the renderer itself goes through rather than a trip through two more
+    /// conversations.</para></summary>
     private void CheckModelSwitchNotice(MainWindow shell, ChatPanel panel)
     {
         const string model = "model-switch-x";

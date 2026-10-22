@@ -61,9 +61,10 @@ public partial class ShellCheckWindow
 
         // ── Static transcript: the thumb stays under the pointer and the mapping does not move ──
         // Two moves rather than four and one layout per move: this group pays for every full arrange of the
-        // window and the suite has a 120 second budget it is already close to. The per-step record is what turns
-        // a red cell into a diagnosis: thumb travel, the offset it produced, and whether the framework still
-        // considers the thumb held tell "did not move" and "moved and was pulled back" apart.
+        // window, and the run has to stay well inside `SuiteCeiling` (quote the constant, never its number).
+        // The per-step record is what turns a red cell into a diagnosis: thumb travel, the offset it produced,
+        // and whether the framework still considers the thumb held tell "did not move" and "moved and was
+        // pulled back" apart.
         var extentBefore = scroller.Extent.Height;
         var viewportBefore = scroller.Viewport.Height;
         var thumbHeightBefore = thumb.Bounds.Height;

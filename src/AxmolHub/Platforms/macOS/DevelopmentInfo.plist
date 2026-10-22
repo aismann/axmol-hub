@@ -16,5 +16,16 @@
   <string>hub-icon.icns</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>AxmolHub</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>axmolhub</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>

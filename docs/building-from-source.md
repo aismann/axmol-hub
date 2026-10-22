@@ -94,7 +94,7 @@ dotnet run --project src/AxmolHub.Cli -- <动词> [参数]
 ```powershell
 # 外壳、本地化与数据根切换的自检
 dotnet run --project src/AxmolHub -- --data-root ./data --verify-shell ./tmp/shell-check.txt
-# 主题层（46 条）/ 基础件（26 条）
+# 主题层 / 基础件
 dotnet run --project src/AxmolHub -- --data-root ./data --verify-theme ./tmp/theme.txt
 dotnet run --project src/AxmolHub -- --data-root ./data --verify-foundation ./tmp/foundation.txt
 # 无头截图：主窗口一张
@@ -113,7 +113,7 @@ dotnet run --project src/AxmolHub -- --check-webfetch https://www.lua.org/manual
 且先按 `--preferences` 指的那份设置读 `AllowOutboundWebFetch`——所以缺设置文件时它顺带证的就是"出厂即开"。
 `result=ok` 之外，输出里必须看到的是**页面正文**：标题在最前，脚本样式与菜单不在。
 
-上面的 `--data-root ./data` **不要省**：省了就用每用户的真实数据根，自检会读到你自己的引擎、项目与凭据（原因见上一节）。括号里的断言数**只是那一刻的实测值**——`--verify-shell` 的总数按场景扇出，改前改后都要自己跑一遍拿数，别拿算术去预测它。
+上面的 `--data-root ./data` **不要省**：省了就用每用户的真实数据根，自检会读到你自己的引擎、项目与凭据（原因见上一节）。括号里的断言数**只是那一刻的实测值**——`--verify-shell` 的总数按场景扇出，改前改后都要自己跑一遍拿数，别拿算术去预测它。2026-10-22 实测：**1649/1649 通过，83.2 秒**（Debug、`dotnet run`；上限是 `SuiteCeiling` 的 180 秒，报告末行自己带着这两个数）。
 
 `--verify-ops` 与另外三个的分工：它们验**界面**（跑在夹具上），它验**操作**（用真实引擎树）。它只跑**不下载、不编译**的那部分 —— 工具链探测、引擎导入/校验/设为默认/移除、状态落盘重载、无效输入拒绝；装引擎、装工具链、构建、运行、Android 打包会拉 GB 级数据或依赖完整工具链，因此**显式记为跳过**并附原因（报告里的 `SKIP`）。不传引擎目录时依赖引擎的那组会自动降级为跳过，所以在一台没有引擎的机器上它也能正常退出而不是失败。
 
@@ -130,7 +130,7 @@ dotnet run --project src/AxmolHub -- --check-webfetch https://www.lua.org/manual
 
 AI 助手的外壳检查还覆盖了计划审批卡、批准后以 Agent 模式继续、修改/拒绝、待审批计数、通知过滤（含窗口失焦与最小化）与会话深链激活。任务栏/Dock 徽标统计所有至少有一项未解决审批的会话（包括当前打开的会话），同一会话的多项审批只计一次；决定完成后计数随之更新，任务完成本身不计入。「用户看得见这条会话」要三件事同时成立：窗口在前台（既未失焦也未最小化）、停在 Assistant 页、且该页正显示这条会话——三项同时成立时，审批卡已经在眼前，因此不重复弹系统通知；最小化或 Alt-Tab 走开后，即使走开的正是当前会话，也会提醒。Windows 任务栏 overlay 和 macOS Dock 支持数字徽标；Linux 桌面环境没有统一的任务栏数字徽标接口，所以只使用该桌面实际提供的通知能力。自检会禁用真实系统通知和原生任务栏/Dock 徽标；Windows Toast、macOS 通知中心及 Linux 通知守护进程的显示与点击行为仍须在对应桌面环境实测。macOS 走 UserNotifications 的 `UNUserNotificationCenter`（`NSUserNotification` 自 macOS 11 起 deprecated）：第一次真要发通知时才请求授权，被拒后后续通知会重试（用户在系统设置里重新打开后无需重启）；无头部分由 `--check-macos-notifications` 钉住 block 布局、delegate 编码与呈现选项，授权框、横幅与点击仍需手测。
 
-**Linux 的三条点击路由**：`notify-send` 那一条命令同时埋了三个入口，参数形状由 `--check-linux-integration` 钉住（`SystemAttentionService.BuildLinuxNotificationArguments` 是纯函数，无显示器也能断言）：正文末尾的 `<a href="axmolhub://conversation/{id}">` 锚点——GNOME 对正文链接调 `Gio.app_info_launch_default_for_uri`，命中已注册的 `x-scheme-handler/axmolhub`，应用没在跑也有效；具名动作 `axmolhub-open`——会派发 `ActionInvoked` 的桌面把键回报给还在等的子进程，KDE 等走这条；`--hint=string:desktop-entry:axmol-hub`——让 Shell 能把通知归属到本应用，因为点横幅主体时 GNOME 只**前置已运行的窗口**，不重跑 `Exec`，也就没有第二个进程、没有深链，此时靠「最近通知的那条会话」补一跳（`MainWindow.OnWindowActivated`，TTL 90 秒、取一次即清）。两个本机实测出来的坑：`--action` 的语法是 `[NAME=]Text`，旧的 `default,Open` 没有等号，动作键退化成序号 `0`，点击因此永远认不出来；而**不能**拿规范里的 `default` 当动作名——GNOME 46 在横幅约 5 秒超时、无人点击时会自己回报 `default`，通知就会凭空把视图挪到那条会话上。对照实验：`--action=default=…` 8 秒内退出并打印 `default`，`--action=axmolhub-open=…` 静默 30 秒不打印。窗口侧同样实测过：启动那次 `Activated` 在通知 arm 之后约 13 毫秒就到，比任何点击都早，所以只有「确实离开过前台」之后的回归才被当作一次点击（`_foregroundHasLeftWindow`，`--verify-shell` 直接钉住这两步）。
+**Linux 的三条点击路由**：`notify-send` 那一条命令同时埋了三个入口，参数形状由 `--check-linux-integration` 钉住（`SystemAttentionService.BuildLinuxNotificationArguments` 是纯函数，无显示器也能断言）：正文末尾的 `<a href="axmolhub://sessions/{id}">` 锚点——GNOME 对正文链接调 `Gio.app_info_launch_default_for_uri`，命中已注册的 `x-scheme-handler/axmolhub`，应用没在跑也有效；具名动作 `axmolhub-open`——会派发 `ActionInvoked` 的桌面把键回报给还在等的子进程，KDE 等走这条；`--hint=string:desktop-entry:axmol-hub`——让 Shell 能把通知归属到本应用，因为点横幅主体时 GNOME 只**前置已运行的窗口**，不重跑 `Exec`，也就没有第二个进程、没有深链，此时靠「最近通知的那条会话」补一跳（`MainWindow.OnWindowActivated`，TTL 90 秒、取一次即清）。两个本机实测出来的坑：`--action` 的语法是 `[NAME=]Text`，旧的 `default,Open` 没有等号，动作键退化成序号 `0`，点击因此永远认不出来；而**不能**拿规范里的 `default` 当动作名——GNOME 46 在横幅约 5 秒超时、无人点击时会自己回报 `default`，通知就会凭空把视图挪到那条会话上。对照实验：`--action=default=…` 8 秒内退出并打印 `default`，`--action=axmolhub-open=…` 静默 30 秒不打印。窗口侧同样实测过：启动那次 `Activated` 在通知 arm 之后约 13 毫秒就到，比任何点击都早，所以只有「确实离开过前台」之后的回归才被当作一次点击（`_foregroundHasLeftWindow`，`--verify-shell` 直接钉住这两步）。
 
 **Windows 通知与任务栏标记手动诊断**：使用单独的数据目录启动应用，可立即请求一个示例 Toast 和 30 秒任务栏标记，不会创建或修改真实会话。开发版：
 
@@ -156,7 +156,7 @@ dotnet run --project src/AxmolHub -- --data-root ./tmp/attention-test-data --pre
 
 - **真切一次语言再切回来**，然后去读**早于切换就已建好**的控件上的文字（外壳导航项、设置页说明、引擎页表头）。它同时证明"已存在的控件跟着换文字"和"切回中文也生效"，并把设置文件落在临时目录里 —— 自检**不会**碰到你 `%LocalAppData%\AxmolHub\` 下的真实设置。去掉 `HubStrings.Apply` 那一行，构建照样 0 error，自检报 6 条 FAIL、退出 1。
 - **切换一次数据根再切回来**：换根、落盘、旧页面被丢弃、引擎列表跟着变空、拒绝盘符根、重复切换是无操作。漏掉"丢弃旧页面"的后果是"界面看着正常，一点按钮就在读一个已经不属于当前会话的工作区"——去掉 `_pages.Clear()` 一行，构建照样 0 error，自检报 3 条 FAIL、退出 1。
-- **逐页真实渲染**并逐个核对帧非空白（PNG 落在 `tmp/shell-render/`）。断言看得懂"有没有内容"，看不懂"有没有压在一起"；逐页截图补上了这一点 —— 本轮就是靠肉眼核对截图发现"显示 A 页、左侧高亮 B 页"，随后补了对应断言。
+- **导航遍历四页**后汇总验证内容宿主与侧栏高亮都落在目标页，同时保留页面实例和缓存行为检查；普通页面的逐帧截图不再作为重复自动断言。
 
 ## CLI
 

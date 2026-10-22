@@ -362,7 +362,9 @@ public partial class App : Application
         // route to the same window would be chrome nobody needs.
         if (OperatingSystem.IsMacOS() && !Options.IsAutomation)
         {
-            var dockClickAnswers = MacDockActivation.Install(window.RestoreFromActivation);
+            var dockClickAnswers = MacDockActivation.Install(
+                window.RestoreFromActivation,
+                uri => Activations?.ActivateUri(uri));
             desktop.Exit += (_, _) => MacDockActivation.Uninstall();
             if (!dockClickAnswers) MacApplicationMenu.Install(this, window.ActivateFromRequest);
         }

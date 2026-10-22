@@ -57,7 +57,8 @@ Rules that follow from this:
   under the title bar and stop above the 28px status strip, so the drag lane and the strip's action slots —
   the task queue's restart / download / retry (the only place a pending app update can be acted on) and the
   cancel for a running change — stay pressable while it is up. Geometry checks cannot see a layer that merely
-  *looks* clear, so pair them with the child-index order assertion and one that proves the scrim has a brush.
+  *looks* clear, so the shared overlay contract checks placement, child-index order, and scrim brush once; each
+  overlay adds only its own event wiring or distinct behavior.
 - **Match the established shell**: slim sidebar with the conversation list under the AI assistant nav
   item, centered 780–820px chat column, right-aligned user pill, borderless assistant text, centered
   greeting + suggestion chips on empty state, 28px status strip. The assistant page may also open a
@@ -66,8 +67,9 @@ Rules that follow from this:
   is open the chat column is allowed to compress, but never below a **560px floor**; the 780–820 band is
   the at-rest width, not a minimum the inspector may violate.
 
-When in doubt, remove chrome first. New UI must come with `--verify-shell` assertions (object graph
-or rendered pixels) — interaction bugs are silent at build time.
+When in doubt, remove chrome first. New UI does not automatically require a new assertion for each
+property. Cover new or changed high-impact interactions in the cheapest suitable check; ordinary visual
+details remain a manual review unless an explicit acceptance requirement says otherwise.
 
 ## Verify with the project's own data directory
 
@@ -80,6 +82,69 @@ dotnet run --project src/AxmolHub -- --data-root ./data
 Without it the app falls back to the per-user root (`%LocalAppData%\AxmolHub\data`), and a verification run
 would operate on the user's real engines, projects, toolchains and credentials. `data/` is gitignored and must
 never be committed.
+
+For `--verify-shell`, run the single build-and-check command through Axmol Hub's `run_command` tool so Avalonia
+uses the active desktop session. On Apple Silicon macOS, use `/opt/homebrew/bin/dotnet`; elsewhere use the
+installed `dotnet` executable. Keep `dotnet run` responsible for both building and checking; do not add
+`--no-build`. Give the tool a 900-second timeout because startup, build and UI checks can be
+quiet for a while. Do not infer a hang from silence or stop the process early. Keep the report and captured output
+under ignored `tmp/`, then inspect them only after the command exits. Keep the command itself shell-neutral so the
+runner's exit status is the `dotnet run` exit status; do not append `$?`/`$LASTEXITCODE` capture syntax from a
+different shell:
+
+```sh
+/opt/homebrew/bin/dotnet run --project src/AxmolHub -- --data-root ./data --verify-shell ./tmp/selfcheck-shell.txt > ./tmp/selfcheck-shell-run.log 2>&1
+```
+
+On other hosts, use the installed `dotnet` executable in the same command. Use the tool's timeout setting
+(`timeout_seconds: 900`); it is not a shell argument. A successful tool exit and the report's final `RESULT:`
+line determine the outcome. Inspect the saved log and report after exit, and preserve and report failures instead
+of deleting checks to make the run green.
+
+## Checks and assertions
+
+An assertion is a claim that can be false, in a suite that must still finish. Prefer a small set of checks
+that catches distinct, consequential failures over exhaustive enumeration of visible properties. Assertion
+counts are measured from each run's `RESULT:` line; they are observations, not targets or quotas.
+
+- **Require a reason to add coverage.** A requested feature or new UI does not imply one assertion per property.
+  Prefer updating or reusing an existing check. Add a new claim only when it covers a distinct, consequential
+  failure that current coverage misses; record the failure, its impact, and why existing checks cannot catch it.
+- **Prioritize by impact.** Automate data integrity, permission and isolation boundaries, core task completion,
+  and high-impact silent failures. Leave low-risk appearance details, exact copy, tooltips, and decorative
+  dimensions to manual review unless the acceptance criteria explicitly require them.
+- **One claim, one result.** Loop equivalent fixture cases and report one result with useful observations. Do not
+  combine unrelated claims into a large boolean expression or hide multiple independent checks in one summary;
+  reducing output lines alone is not assertion reduction.
+- **Name the failure and its impact.** If a build, type, or existing check already catches it, do not add a
+  duplicate report assertion. State what user-visible or data-level harm the retained assertion prevents.
+- **Print observations, assert invariants.** A value that matters only when something else is red goes in
+  `CheckReport.Line` or in that message — a number nobody would act on is the line that goes stale.
+- **Justify tolerances.** Distinguish product requirements from measurement tolerances. Keep fixed product
+  limits tied to the agreed behavior; document why measurement tolerances fit the observed layout or platform.
+  When one changes, explain the cause and retain evidence that it still catches the target failure; there is no
+  arbitrary limit on how many times a sound tolerance may be recalibrated.
+- **Control external dependencies.** Do not depend on network services, real credentials, the user's data root,
+  or a vendor's current live catalog. Use injected transports and fixed protocol samples. Temporary paths,
+  synthetic model identifiers, and real dispatcher timing are allowed when the behavior under test needs them.
+- **A group fails itself first and never stops the run.** An unbuildable fixture is one `夹具：…` assertion and
+  a `return`; what the host cannot supply is `Skip`, never a failure; no `throw` leaves a group.
+- **One runtime ceiling.** Keep `SuiteCeiling` as the whole-run timeout and give expensive groups a focused
+  switch when that materially speeds iteration. Report measured duration and investigate a suite that approaches
+  the ceiling; describe it as a budget overrun unless a specific stalled operation is identified. Quote totals
+  and durations only from a dated `RESULT:` line. Do not set assertion-count quotas.
+- **The cheapest mode that can see it wins.** Headless for facts that need no live visual tree or dispatcher,
+  `--verify-shell` for interaction and layout claims that do, theme/foundation for shared tokens — one claim,
+  one primary home.
+- **One primary home per failure.** Cover shared component contracts once, and leave each caller to check only
+  its own wiring or distinct behavior. Preserve genuinely different protocol, security, compatibility, and
+  negative cases; do not keep duplicate evidence for the same failure.
+- **Delete the claim with the behaviour.** The same change rewrites or removes assertions invalidated by a
+  behavior change. Do not leave checks red, skip them into green, or loosen them without evidence.
+- **Track net change.** When adding or removing checks, summarize the net assertion change and the reason. Do not
+  impose a mechanical one-in/one-out rule or delete necessary safety coverage to meet a count.
+- **Placement and naming.** New groups live in `ShellCheckWindow.<Topic>.cs`, never in the 17k-line main file;
+  the name is greppable and stable in the report's language, and the message carries the observed value.
 
 ## Line endings are LF
 

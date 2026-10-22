@@ -99,6 +99,8 @@ internal sealed class DeepLinkActivationBroker : IDisposable
         _shutdown.Dispose();
     }
 
+    internal void ActivateUri(string uri) => Deliver(uri);
+
     private void Deliver(string uri)
     {
         Action<string>? handler;

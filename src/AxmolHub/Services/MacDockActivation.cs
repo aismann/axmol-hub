@@ -50,23 +50,28 @@ internal static partial class MacDockActivation
     /// <summary><c>B@:@c</c>: BOOL, self, _cmd, one object and one BOOL — <c>applicationShouldHandleReopen:
     /// hasVisibleWindows:</c>. ObjC encodes <c>BOOL</c> as <c>c</c> on the 64-bit runtime.</summary>
     private static readonly byte[] ReopenSignature = Encoding.ASCII.GetBytes("B@:@c\0");
+    private static readonly byte[] OpenUrlsSignature = Encoding.ASCII.GetBytes("v@:@@\0");
 
     private static readonly ActivatedHandler Activated = OnActivated;
     private static readonly ReopenHandler Reopen = OnReopen;
+    private static readonly OpenUrlsHandler OpenUrls = OnOpenUrls;
     private static IntPtr _observer;
     private static IntPtr _reopenTarget;
     private static IntPtr _reopenTargetClass;
     private static ReopenHandler? _originalReopen;
+    private static OpenUrlsHandler? _originalOpenUrls;
     private static bool _installed;
     private static Action? _restore;
+    private static Action<string>? _openUri;
 
     /// <summary>Wires both signals and reports whether the reopen one went on — that is the one a caller may have to
     /// make up for, because it is the only signal a Dock click of an already-frontmost Hub produces. False off
     /// macOS, so a caller can state the platform as a fact rather than branching twice.</summary>
-    internal static bool Install(Action restore)
+    internal static bool Install(Action restore, Action<string>? openUri = null)
     {
         if (!OperatingSystem.IsMacOS()) return false;
         _restore = restore;
+        _openUri = openUri;
         if (_installed) return _reopenTarget != IntPtr.Zero;
 
         // The class is created once per process; a second Install (the self-check installs and uninstalls its own)
@@ -122,13 +127,27 @@ internal static partial class MacDockActivation
             }
         }
 
+        var openUrlsSelector = Selector("application:openURLs:");
+        if (_originalOpenUrls is null)
+        {
+            var existing = class_getInstanceMethod(original, openUrlsSelector);
+            if (existing != IntPtr.Zero)
+            {
+                var implementation = method_getImplementation(existing);
+                if (implementation != IntPtr.Zero)
+                    _originalOpenUrls = Marshal.GetDelegateForFunctionPointer<OpenUrlsHandler>(implementation);
+            }
+        }
+
         var subclass = objc_getClass(ReopenDelegateClassName);
         if (subclass == IntPtr.Zero)
         {
             subclass = objc_allocateClassPair(original, ReopenDelegateClassName, 0);
             if (subclass == IntPtr.Zero) return false;
             if (class_addMethod(subclass, selector, Marshal.GetFunctionPointerForDelegate(Reopen),
-                    ReopenSignature) == 0)
+                    ReopenSignature) == 0
+                || class_addMethod(subclass, openUrlsSelector, Marshal.GetFunctionPointerForDelegate(OpenUrls),
+                    OpenUrlsSignature) == 0)
                 return false;
             objc_registerClassPair(subclass);
         }
@@ -159,8 +178,10 @@ internal static partial class MacDockActivation
         _reopenTarget = IntPtr.Zero;
         _reopenTargetClass = IntPtr.Zero;
         _originalReopen = null;
+        _originalOpenUrls = null;
         _installed = false;
         _restore = null;
+        _openUri = null;
     }
 
     /// <summary>The callback. AppKit posts and sends these on the main run loop, which is Avalonia's UI thread, so the
@@ -187,6 +208,22 @@ internal static partial class MacDockActivation
         return 1;
     }
 
+    /// <summary>Receives Launch Services URL opens for both a cold launch and an already-running app. The URL is
+    /// delivered by AppKit as an NSArray of NSURLs, not as a process argument.</summary>
+    private static void OnOpenUrls(IntPtr self, IntPtr selector, IntPtr application, IntPtr urls)
+    {
+        if (_originalOpenUrls is { } original) original(self, selector, application, urls);
+        var count = SendCount(urls, Selector("count"));
+        for (nuint index = 0; index < count; index++)
+        {
+            var url = SendObjectAtIndex(urls, Selector("objectAtIndex:"), index);
+            var absoluteString = Send0(url, Selector("absoluteString"));
+            var utf8 = Send0(absoluteString, Selector("UTF8String"));
+            var value = Marshal.PtrToStringUTF8(utf8);
+            if (value is not null) _openUri?.Invoke(value);
+        }
+    }
+
     private static IntPtr ToNSString(string value)
     {
         var bytes = Marshal.StringToCoTaskMemUTF8(value);
@@ -209,6 +246,9 @@ internal static partial class MacDockActivation
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate byte ReopenHandler(IntPtr self, IntPtr selector, IntPtr sender, byte hasVisibleWindows);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void OpenUrlsHandler(IntPtr self, IntPtr selector, IntPtr application, IntPtr urls);
 
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_getClass")]
     private static extern IntPtr objc_getClass(string name);
@@ -234,6 +274,10 @@ internal static partial class MacDockActivation
     private static extern void objc_msgSend(IntPtr receiver, IntPtr selector, IntPtr argument);
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
     private static extern IntPtr objc_msgSendString(IntPtr receiver, IntPtr selector, IntPtr argument);
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+    private static extern nuint SendCount(IntPtr receiver, IntPtr selector);
+    [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+    private static extern IntPtr SendObjectAtIndex(IntPtr receiver, IntPtr selector, nuint index);
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
     private static extern void SendAddObserver(
         IntPtr receiver, IntPtr selector, IntPtr observer, IntPtr method, IntPtr name, IntPtr value);

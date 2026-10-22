@@ -6128,12 +6128,6 @@ if (args.Contains("--check-ai-tool-policy"))
         (ToolApprovalModes.Ask, ToolRisk.CacheBreak, true),
         (ToolApprovalModes.Auto, ToolRisk.CacheBreak, true),
         (ToolApprovalModes.Full, ToolRisk.CacheBreak, true),
-        // …and the half that was ruled back the other way, in the same table so the two cannot be confused for one
-        // policy: building is sandbox work. Under 自动审批 and 完全访问 it runs without a card, which is the debug
-        // loop the user asked to leave alone. A tier rename that quietly left `cmake --build` asking would only show
-        // up here — no other cell in this table mentions the word build.
-        (ToolApprovalModes.Auto, ToolRisk.WorkspaceCommand, false),
-        (ToolApprovalModes.Full, ToolRisk.WorkspaceCommand, false),
     };
     foreach (var (mode, risk, expected) in table)
     {

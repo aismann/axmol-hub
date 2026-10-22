@@ -63,18 +63,33 @@ public partial class ShellCheckWindow
         Check(panel.ReusedVirtualRowsForCheck, "切回同一稳定历史复用有限的已实现控件");
         var baseline = panel.RealizedItemCountForCheck;
         var visited = panel.RealizedKeysForCheck.ToHashSet();
+        var allPositionsReached = true;
+        var firstUnreachedPosition = "";
+        var allPassesRecycledRows = true;
+        var peakRealizedRows = 0;
         for (var pass = 0; pass < 3; pass++)
         foreach (var index in new[] { 0, 500, 999 })
         {
             panel.ScrollVirtualItemForCheck(index);
             Relayout(shell, panel, measure: true);
             visited.UnionWith(panel.RealizedKeysForCheck);
-            Check(panel.VirtualIndexRealizedForCheck(index),
-                $"连续滚动可到达历史位置 {index}（往返 {pass}，{panel.TranscriptCoverageDetailForCheck}"
-                + $"；repairs={panel.TranscriptRepairCountForCheck} last={panel.LastTranscriptRepairForCheck}）");
-            Check(panel.RealizedItemCountForCheck is > 0 and < 150,
-                $"往返滚动后离屏控件回收（{panel.RealizedItemCountForCheck}）");
+            if (!panel.VirtualIndexRealizedForCheck(index))
+            {
+                allPositionsReached = false;
+                if (firstUnreachedPosition.Length == 0)
+                    firstUnreachedPosition = $"位置 {index}，往返 {pass}：{panel.TranscriptCoverageDetailForCheck}"
+                        + $"；repairs={panel.TranscriptRepairCountForCheck} last={panel.LastTranscriptRepairForCheck}";
+            }
+
+            var realizedRows = panel.RealizedItemCountForCheck;
+            peakRealizedRows = Math.Max(peakRealizedRows, realizedRows);
+            allPassesRecycledRows &= realizedRows is > 0 and < 150;
         }
+        Check(allPositionsReached,
+            "连续往返滚动可到达顶部、中部和末尾（9 次均到达" +
+            (firstUnreachedPosition.Length == 0 ? "" : "；首个失败：" + firstUnreachedPosition) + "）");
+        Check(allPassesRecycledRows,
+            $"连续往返滚动持续回收离屏控件（9 次峰值 {peakRealizedRows}，要求 1–149）");
         Check(visited.Count > baseline && panel.MarkdownDocumentCountForCheck < 150,
             "历史消息按需补全 Markdown，已访问消息不累计保留为控件");
         panel.ScrollVirtualItemForCheck(500);
