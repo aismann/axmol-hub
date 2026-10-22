@@ -2057,12 +2057,19 @@ internal sealed class ShellDecisionsChecks
             // cannot be reported as a focus that never landed.
             Check(panel.PendingPlanApprovalCardsForCheck == 1,
                 "空着输入框时计划卡到达（实际 " + panel.PendingPlanApprovalCardsForCheck + " 张待批准计划卡）");
+            var initialTaskSummary = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatPlanTaskSummaryFormat"), 2, 0, 0, 2);
+            Check(!panel.PlanTasksExpandedForCheck && panel.PlanTaskSummaryForCheck == initialTaskSummary,
+                "新计划任务卡默认折叠，摘要显示总数及各状态计数（实际「" + panel.PlanTaskSummaryForCheck + "」）");
+            panel.TogglePlanTasksForCheck();
+            Dispatcher.UIThread.RunJobs();
             Check(panel.PlanTaskTitlesForCheck.SequenceEqual(
                       ["Read the existing code", "Make and verify the change"], StringComparer.Ordinal)
                   && panel.PendingPlanTaskGlyphsForCheck == 2
+                  && panel.PlanTasksExpandedForCheck
                   && panel.PlanTasksPaintedForCheck
                   && panel.PlanTasksAboveComposerForCheck,
-                "计划任务出现在 composer 上方，文字与空心方框都有可见画刷（实际 "
+                "展开后计划任务出现在 composer 上方，文字与空心方框都有可见画刷（实际 "
                 + string.Join(" / ", panel.PlanTaskTitlesForCheck) + "，空心图标 "
                 + panel.PendingPlanTaskGlyphsForCheck + " 个）");
             var taskPlanIndex = twoPlanSession.Messages.FindLastIndex(turn => turn.Plan?.Tasks is { Count: > 0 });
@@ -2079,13 +2086,34 @@ internal sealed class ShellDecisionsChecks
             };
             panel.Reload();
             Dispatcher.UIThread.RunJobs();
-            Check(panel.PlanTaskTitlesForCheck.Count == 2 && panel.PlanTasksPaintedForCheck,
-                "进行中的转圈、完成的勾号和任务文字均使用可见的主题画刷");
-            twoPlanSession.Messages[taskPlanIndex] = taskPlanTurn with
+            var updatedTaskSummary = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatPlanTaskSummaryFormat"), 2, 1, 1, 0);
+            Check(panel.PlanTasksExpandedForCheck && panel.PlanTaskSummaryForCheck == updatedTaskSummary
+                  && panel.PlanTaskTitlesForCheck.Count == 2 && panel.PlanTasksPaintedForCheck,
+                "同一计划更新进度后保留展开状态，摘要和状态图标同步更新（实际「"
+                + panel.PlanTaskSummaryForCheck + "」）");
+            panel.TogglePlanTasksForCheck();
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.PlanTasksExpandedForCheck && panel.PlanTasksVisibleForCheck,
+                "再次点击任务摘要行后收起清单且保留摘要卡");
+            var updatedTaskPlanTurn = twoPlanSession.Messages[taskPlanIndex];
+            var newTaskPlanTurn = updatedTaskPlanTurn with
             {
-                Plan = taskPlanTurn.Plan! with
+                Plan = updatedTaskPlanTurn.Plan! with
                 {
-                    Tasks = taskPlanTurn.Plan.Tasks!
+                    Id = Guid.NewGuid().ToString("N"),
+                },
+            };
+            twoPlanSession.Messages[taskPlanIndex] = newTaskPlanTurn;
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.PlanTasksExpandedForCheck && panel.PlanTasksVisibleForCheck,
+                "同一会话中的新计划默认折叠");
+            twoPlanSession.Messages[taskPlanIndex] = newTaskPlanTurn with
+            {
+                Plan = newTaskPlanTurn.Plan! with
+                {
+                    Tasks = newTaskPlanTurn.Plan!.Tasks!
                         .Select(task => task with { State = PlanTaskStates.Completed }).ToArray(),
                 },
             };

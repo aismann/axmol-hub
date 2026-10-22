@@ -1617,10 +1617,19 @@ public partial class ChatPanel : UserControl
     /// <summary>How many bubbles on screen are labelled as another session's. Counted rather than sampled: a
     /// label on a turn nobody sent is the same bug as one that never appears.</summary>
     internal int PeerOriginCountForCheck => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>().Count(block => block.Classes.Contains("peer-origin"));
-    internal IReadOnlyList<string> PlanTaskTitlesForCheck => PlanTasksHost.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? "").Where(text => text.Length > 0).Skip(1).ToArray();
+    private ScrollViewer? PlanTaskListForCheck => PlanTasksHost.GetLogicalDescendants().OfType<ScrollViewer>().FirstOrDefault(viewer => viewer.Name == "PlanTasksList");
+    private Button? PlanTaskToggleForCheck => PlanTasksHost.GetLogicalDescendants().OfType<Button>().FirstOrDefault(button => button.Name == "PlanTasksToggleButton");
+    internal IReadOnlyList<string> PlanTaskTitlesForCheck => PlanTaskListForCheck?.GetLogicalDescendants().OfType<TextBlock>().Where(block => block.Classes.Contains("plan-task-title")).Select(block => block.Text ?? "").ToArray() ?? [];
+    internal string PlanTaskSummaryForCheck => PlanTaskToggleForCheck?.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault(block => block.Name == "PlanTasksSummary")?.Text ?? "";
     internal bool PlanTasksVisibleForCheck => PlanTasksHost.IsVisible;
-    internal bool PlanTasksPaintedForCheck => PlanTasksHost.IsVisible && PlanTasksHost.GetLogicalDescendants().OfType<TextBlock>().All(text => text.Foreground is { Opacity: > 0 }) && PlanTasksHost.GetLogicalDescendants().OfType<Border>().Where(border => border.Width == 13 && border.Height == 13).All(border => border.BorderBrush is { Opacity: > 0 }) && PlanTasksHost.GetLogicalDescendants().OfType<ActivityGlyph>().All(glyph => glyph.TrackBrush is { Opacity: > 0 } && glyph.DotBrush is { Opacity: > 0 }) && PlanTasksHost.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>().All(tick => tick.Data is not null && tick.Fill is { Opacity: > 0 });
-    internal int PendingPlanTaskGlyphsForCheck => PlanTasksHost.GetLogicalDescendants().OfType<Border>().Count(border => border.Width == 13 && border.Height == 13);
+    internal bool PlanTasksExpandedForCheck => PlanTaskListForCheck?.IsVisible == true;
+    internal void TogglePlanTasksForCheck() => PlanTaskToggleForCheck?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    internal bool PlanTasksPaintedForCheck => PlanTaskListForCheck is { IsVisible: true } list
+        && list.GetLogicalDescendants().OfType<TextBlock>().All(text => text.Foreground is { Opacity: > 0 })
+        && list.GetLogicalDescendants().OfType<Border>().Where(border => border.Width == 13 && border.Height == 13).All(border => border.BorderBrush is { Opacity: > 0 })
+        && list.GetLogicalDescendants().OfType<ActivityGlyph>().All(glyph => glyph.TrackBrush is { Opacity: > 0 } && glyph.DotBrush is { Opacity: > 0 })
+        && list.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>().All(tick => tick.Data is not null && tick.Fill is { Opacity: > 0 });
+    internal int PendingPlanTaskGlyphsForCheck => PlanTaskListForCheck?.GetLogicalDescendants().OfType<Border>().Count(border => border.Width == 13 && border.Height == 13) ?? 0;
     internal bool PlanTasksAboveComposerForCheck => PlanTasksHost.IsVisible && PlanTasksHost.TranslatePoint(new Point(0, PlanTasksHost.Bounds.Height), ComposerFrame)is { } bottom && bottom.Y <= 0;
     // ── the strip, as a check reads it ──
     internal bool SteerConfirmVisibleForCheck => SteerConfirmHost.IsVisible;

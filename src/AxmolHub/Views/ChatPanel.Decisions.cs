@@ -25,11 +25,24 @@ namespace AxmolHub;
 /// </summary>
 public partial class ChatPanel
 {
+    private string _planTasksIdentity = "";
+    private bool _planTasksExpanded;
+
     private void RefreshPlanTasksHost()
     {
-        var plan = _chat?.ActiveConversation?.Messages
-            .LastOrDefault(turn => turn.Plan?.Tasks is { Count: > 0 })?.Plan;
+        var conversation = _chat?.ActiveConversation;
+        var planTurn = conversation?.Messages.LastOrDefault(turn => turn.Plan?.Tasks is { Count: > 0 });
+        var plan = planTurn?.Plan;
         var tasks = plan?.Tasks;
+        var identity = plan is null || conversation is null
+            ? ""
+            : conversation.Id + ":" + (plan.Id ?? planTurn!.At.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (identity != _planTasksIdentity)
+        {
+            _planTasksIdentity = identity;
+            _planTasksExpanded = false;
+        }
+
         // Saved task metadata is history; only current work or a pending decision needs composer space.
         if (tasks is not { Count: > 0 } || tasks.All(task => task.State == PlanTaskStates.Completed)
             || (ViewedRun is null && !DecisionHost.IsVisible))
@@ -39,15 +52,64 @@ public partial class ChatPanel
             return;
         }
 
-        var list = new StackPanel { Spacing = 5, Margin = new Thickness(10, 8) };
-        var title = new TextBlock
+        var completed = tasks.Count(task => task.State == PlanTaskStates.Completed);
+        var inProgress = tasks.Count(task => task.State == PlanTaskStates.InProgress);
+        var pendingCount = tasks.Count - completed - inProgress;
+        var toggle = new Button
         {
-            Text = HubStrings.Get("ChatPlanTasksTitle"),
-            FontSize = 12,
-            Margin = new Thickness(0, 0, 0, 2),
+            Name = "PlanTasksToggleButton",
+            Classes = { "plan-task-summary" },
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") },
         };
-        title.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextTertiary"));
-        list.Children.Add(title);
+        var summaryRow = (Grid)toggle.Content;
+        var icon = new Path
+        {
+            Classes = { "plan-task-summary-icon" },
+            Data = Geometry.Parse("M3 5H7M10 5H21M3 12H7M10 12H21M3 19H7M10 19H21"),
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.7,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        icon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        summaryRow.Children.Add(icon);
+        var summary = new TextBlock
+        {
+            Name = "PlanTasksSummary",
+            Classes = { "plan-task-summary-text" },
+            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatPlanTaskSummaryFormat"), tasks.Count, completed, inProgress, pendingCount),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        Grid.SetColumn(summary, 1);
+        summaryRow.Children.Add(summary);
+        var chevron = new Path
+        {
+            Name = "PlanTasksChevron",
+            Classes = { "plan-task-summary-chevron" },
+            Data = ThemeGeometry("Hub.Icon.Caret"),
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.7,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            RenderTransform = new RotateTransform(_planTasksExpanded ? 180 : 0),
+            RenderTransformOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        chevron.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        Grid.SetColumn(chevron, 2);
+        summaryRow.Children.Add(chevron);
+        toggle.Click += (_, _) =>
+        {
+            _planTasksExpanded = !_planTasksExpanded;
+            RefreshPlanTasksHost();
+        };
+
+        var list = new StackPanel { Spacing = 5, Margin = new Thickness(10, 8) };
         foreach (var task in tasks)
         {
             Control glyph = task.State switch
@@ -94,6 +156,7 @@ public partial class ChatPanel
             row.Children.Add(glyph);
             var label = new TextBlock
             {
+                Classes = { "plan-task-title" },
                 Text = task.Title,
                 TextWrapping = TextWrapping.Wrap,
                 FontSize = 13,
@@ -106,13 +169,21 @@ public partial class ChatPanel
             list.Children.Add(row);
         }
 
-        PlanTasksHost.Child = new ScrollViewer
+        var taskList = new ScrollViewer
         {
+            Name = "PlanTasksList",
             Content = list,
+            IsVisible = _planTasksExpanded,
+            MaxHeight = 104,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             ClipToBounds = true,
         };
+        var content = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto") };
+        content.Children.Add(toggle);
+        Grid.SetRow(taskList, 1);
+        content.Children.Add(taskList);
+        PlanTasksHost.Child = content;
         PlanTasksHost.IsVisible = true;
     }
 
