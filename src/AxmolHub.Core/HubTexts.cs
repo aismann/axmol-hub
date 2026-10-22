@@ -1238,13 +1238,16 @@ public static class HubTexts
         ["UnpinConversation"] = ("取消置顶", "Unpin"),
         // Session grouping: workspaces first, conversations with no working directory all go to the trailing "Chats" group, archived ones sink to the very bottom.
         // Time buckets gave way to directory grouping — conversations of one project scattered over "Today" and "Earlier" no longer read as one project.
+        // "Chats" stays "Chats": it is the one group whose rows have no directory to work in, so the word "session" (a run inside a
+        // workspace) would describe the opposite of what the group holds. A sweep renaming conversation to session must skip this key
+        // and the ＋ tip below it, and the same holds for the Chinese pair, which already says 对话.
         ["GroupWorkspaces"] = ("工作区", "Workspace"),
-        ["GroupChats"] = ("对话", "Sessions"),
+        ["GroupChats"] = ("对话", "Chats"),
         ["GroupArchived"] = ("已归档", "Archived"),
         ["ToggleGroup"] = ("展开或折叠这一组", "Expand or collapse this group"),
         // The "+" at the right of a group header: the workspace root node picks a directory first, the other groups create a session or a chat per what that group means.
         ["GroupNewSessionTip"] = ("新建会话", "New session"),
-        ["GroupNewChatTip"] = ("新建对话", "New session"),
+        ["GroupNewChatTip"] = ("新建对话", "New chat"),
         ["GroupNewWorkspaceTip"] = ("新建工作区", "New workspace"),
         ["ArchiveConversation"] = ("归档对话", "Archive session"),
         ["RestoreConversation"] = ("恢复对话", "Restore session"),
