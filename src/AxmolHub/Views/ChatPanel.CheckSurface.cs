@@ -695,27 +695,10 @@ public partial class ChatPanel : UserControl
     /// <summary>Presses the nth card (transcript order) through its own Click, so a check drives the wiring from
     /// the card into the shell's inspector instead of calling the shell and proving nothing.</summary>
     internal void ClickPlanCardForCheck(int index) => PlanCards.ElementAtOrDefault(index)?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-    /// <summary>The plan review's two lettered choices, in the order offered: A approves, B asks for a revision.
-    /// There is deliberately no third "exit plan mode" row — the owner removed it, and the workspace has no such
-    /// decision to record.</summary>
-    internal string[] PlanReviewChoicesForCheck => PlanApprovalCards.FirstOrDefault()is { } card ? card.GetLogicalDescendants().OfType<Button>().Where(button => button.Classes.Contains("plan-review-option")).Select(button => button.Tag as string ?? "").ToArray() : [];
-    internal bool PlanReviewHasContinueForCheck => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<Button>().Any(button => button.Name == "PlanContinueButton") == true;
-    internal bool PlanReviewHasCancelForCheck => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<Button>().Any(button => button.Tag as string == "ChatPlanCancel") == true;
-
-    private Button? PlanOptionRowForCheck(string tag) => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<Button>().FirstOrDefault(candidate => candidate.Tag as string == tag && candidate.Classes.Contains("plan-review-option"));
-    private TextBox? PlanFeedbackBoxForCheck => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<TextBox>().FirstOrDefault(box => box.Name == "PlanFeedbackBox");
-
-    /// <summary>The letter cap inside one option row, as painted. An armed cap once took the very fill the plate
-    /// under it wore and its letter disappeared into the card; a build passes that, so the fills are what gets
-    /// read back rather than the class names that produce them.</summary>
-    internal Border? PlanCapForCheck(string tag) => PlanOptionRowForCheck(tag)?.GetLogicalDescendants().OfType<Border>().FirstOrDefault(cap => cap.Classes.Contains("plan-review-key"));
-    /// <summary>Which option is armed, or empty when none is. Nothing read the <c>selected</c> class before this,
-    /// so a card that kept lighting the same cap whatever happened would pass every check that only clicks and
-    /// counts.</summary>
-    internal string PlanSelectedChoiceForCheck => PlanReviewChoicesForCheck.FirstOrDefault(tag => PlanOptionRowForCheck(tag)?.Classes.Contains("selected") == true) ?? "";
-    /// <summary>The card's painted height. The flat list's whole promise is that choosing a line moves nothing,
-    /// and a hand-checked margin is exactly the kind of 8px thing that comes back, so the height is measured.</summary>
-    internal double PlanReviewCardHeightForCheck => PlanApprovalCards.FirstOrDefault()?.Bounds.Height ?? 0;
+    /// <summary>The review has direct actions and no competing input field or confirmation step.</summary>
+    internal string[] PlanReviewActionsForCheck => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants()
+        .OfType<Button>().Select(button => button.Tag as string ?? "").ToArray() ?? [];
+    internal bool PlanReviewHasInputForCheck => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<TextBox>().Any() == true;
     // ── seams for a question the model asked ──
     /// <summary>The host, but only while the decision it is holding is a question. Same one-slot rule as the plan
     /// cards: the host shows one owed decision at a time, so "which one" is answered by the stored call.</summary>
@@ -791,66 +774,23 @@ public partial class ChatPanel : UserControl
     internal string[] TranscriptWaitingLinesForCheck => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>().Where(border => border.Classes.Contains("approval-pending-line")).SelectMany(border => border.GetLogicalDescendants().OfType<TextBlock>()).Select(text => text.Text ?? "").ToArray();
     /// <summary>The card as a visual, for the frames a check photographs.</summary>
     internal Border? PlanReviewCardForCheck => PlanApprovalCards.FirstOrDefault();
-    internal Button? PlanContinueButtonForCheck => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<Button>().FirstOrDefault(button => button.Name == "PlanContinueButton");
-    internal string PlanFeedbackTextForCheck => PlanFeedbackBoxForCheck?.Text ?? "";
-    /// <summary>The revision line's painted height, and the height its own text asked for. A box arranged shorter
-    /// than it measured is clipping what was typed into it — the one failure mode an inline line can have that a
-    /// screenshot of an empty one never shows.</summary>
-    internal double PlanFeedbackHeightForCheck => PlanFeedbackBoxForCheck?.Bounds.Height ?? 0;
-    internal double PlanFeedbackDesiredHeightForCheck => PlanFeedbackBoxForCheck?.DesiredSize.Height ?? 0;
-    internal bool PlanFeedbackClippedForCheck => PlanFeedbackBoxForCheck is { } box && box.Bounds.Height + 0.5 < box.DesiredSize.Height;
-
-    /// <summary>
-    /// Presses a key while the plan card is up, through the routed event the way
-    /// <see cref = "PressComposerKeyForCheck"/> does, so a check exercises the wiring rather than the private method
-    /// the wiring happens to call. <paramref name = "inRevisionLine"/> sends it from the caret's own control, which
-    /// is how "A and B are letters while somebody is typing" and "Escape leaves the line" reach the handler.
-    /// Returns whether the card took the key, so the negative half is asserted instead of assumed.
-    /// </summary>
-    internal bool PressPlanCardKeyForCheck(Key key, bool inRevisionLine = false, KeyModifiers modifiers = KeyModifiers.None)
+    /// <summary>Drives the decision host's actual routed keyboard handler.</summary>
+    internal bool PressPlanCardKeyForCheck(Key key)
     {
-        var source = inRevisionLine ? (Control? )PlanFeedbackBoxForCheck : DecisionHost;
-        if (source is null)
-            return false;
         var args = new KeyEventArgs
         {
             RoutedEvent = InputElement.KeyDownEvent,
             Key = key,
-            KeyModifiers = modifiers,
-            Source = source,
+            KeyModifiers = KeyModifiers.None,
+            Source = DecisionHost,
         };
-        source.RaiseEvent(args);
+        DecisionHost.RaiseEvent(args);
         return args.Handled;
     }
 
-    /// <summary>Moves the caret into the revision line the way a tab does, so "nothing moves" is measured for
-    /// focus as well as for clicks.</summary>
-    internal void FocusPlanFeedbackForCheck() => PlanFeedbackBoxForCheck?.Focus();
-    /// <summary>The revision line is option B itself now, so it is on screen from the first frame rather than
-    /// opened by choosing something.</summary>
-    internal bool PlanFeedbackVisibleForCheck => PlanFeedbackBoxForCheck is { IsVisible: true, Bounds: { Width: > 0 } };
-    internal bool PlanContinueEnabledForCheck => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<Button>().FirstOrDefault(button => button.Name == "PlanContinueButton")?.IsEnabled == true;
-
-    internal void ClickPlanChoiceForCheck(string tag)
-    {
-        var button = PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<Button>().FirstOrDefault(candidate => candidate.Tag as string == tag && candidate.Classes.Contains("plan-review-option"));
-        button?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-    }
-
-    /// <summary>Types into the revision box through its own Text setter, so the "keep going is disabled until
-    /// there is something to send" wiring is exercised rather than bypassed.</summary>
-    internal void SetPlanFeedbackForCheck(string text)
-    {
-        var box = PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<TextBox>().FirstOrDefault(candidate => candidate.Name == "PlanFeedbackBox");
-        if (box is not null)
-            box.Text = text;
-    }
-
-    internal void ClickPlanContinueForCheck()
-    {
-        var button = PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<Button>().FirstOrDefault(candidate => candidate.Name == "PlanContinueButton");
-        button?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-    }
+    internal void ClickPlanActionForCheck(string tag)
+        => PlanApprovalCards.FirstOrDefault()?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Tag as string == tag)?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
     internal void ClickPlanCancelForCheck()
     {

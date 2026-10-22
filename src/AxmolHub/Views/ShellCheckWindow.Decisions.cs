@@ -1863,94 +1863,59 @@ internal sealed class ShellDecisionsChecks
             Check(chat.PendingBackgroundApprovalCount(approvedSession.Id) == 1
                   && chat.PendingApprovalConversationCount() == 2,
                 "返回一个待审批会话时，其他后台会话仍计入数字且当前会话也不被漏计");
-            Check(panel.PlanReviewChoicesForCheck.SequenceEqual(
-                      ["ChatPlanApprove", "ChatPlanRevise"], StringComparer.Ordinal)
-                  && panel.PlanReviewHasContinueForCheck
-                  && panel.PlanReviewHasCancelForCheck,
-                "计划审阅给出 A 批准 / B 要求修改两个选项，外加继续与取消，没有「退出计划模式」那第三行（实际 "
-                + string.Join(", ", panel.PlanReviewChoicesForCheck) + "）");
+            Check(panel.PlanReviewActionsForCheck.SequenceEqual(
+                      ["ChatPlanReviewOpen", "ChatPlanCancel", "ChatPlanRevise", "ChatPlanApprove"], StringComparer.Ordinal)
+                  && !panel.PlanReviewHasInputForCheck,
+                "计划审阅提供查看、取消、聚焦聊天和直接批准，没有第二个意见框或继续步骤（实际 "
+                + string.Join(", ", panel.PlanReviewActionsForCheck) + "）");
 
-            // The revision line is option B itself, not a panel that opens under it, so choosing it and putting the
-            // caret in it must not move the card by a pixel — that flatness is the whole redesign, and a hand
-            // checked margin is exactly the 8px thing that comes back, so the height is measured rather than
-            // eyeballed. Continue still stays disabled until the line holds something: a tap that looks like
-            // focusing a text box must not be the tap that spends a request.
-            var cardHeight = panel.PlanReviewCardHeightForCheck;
-            panel.ClickPlanChoiceForCheck("ChatPlanRevise");
+            const string revision = "先把测试补上，再改实现，可以开始了";
+            panel.SetInputForCheck(revision);
+            var beforeFocus = approvedSession.Messages.Count;
+            panel.ClickPlanActionForCheck("ChatPlanRevise");
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var heightAfterChoosing = panel.PlanReviewCardHeightForCheck;
-            panel.FocusPlanFeedbackForCheck();
-            shell.UpdateLayout();
-            Dispatcher.UIThread.RunJobs();
-            Check(panel.PlanSelectedChoiceForCheck == "ChatPlanRevise"
-                  && panel.PlanFeedbackVisibleForCheck
-                  && !panel.PlanContinueEnabledForCheck
-                  && cardHeight > 0
-                  && heightAfterChoosing == cardHeight
-                  && panel.PlanReviewCardHeightForCheck == cardHeight,
-                "B 就是那条意见行：选中它、把光标放进去，卡片高度一像素都不动，且在写进内容之前继续是禁用的（高度 "
-                + cardHeight + " / " + heightAfterChoosing + " / " + panel.PlanReviewCardHeightForCheck + "）");
-            // The armed cap lifts off the card and the idle one stays an outline. This is the invariant the old
-            // pair broke by giving both the same fill: the letter survived in the object graph and disappeared on
-            // the screen, which is exactly the class of bug a build cannot see.
-            var armedCap = panel.PlanCapForCheck("ChatPlanRevise");
-            var idleCap = panel.PlanCapForCheck("ChatPlanApprove");
-            Check(ThemeProbe.IsToken(armedCap?.Background, "Hub.SurfaceRaised")
-                  && ThemeProbe.IsToken(armedCap?.BorderBrush, "Hub.AccentBorder")
-                  && ThemeProbe.ColorOf(idleCap?.Background) != ThemeProbe.ColorOf(armedCap?.Background)
-                  && ThemeProbe.Separates(ThemeProbe.TokenColor("Hub.SurfaceRaised"),
-                      ThemeProbe.TokenColor("Hub.SurfaceAlt")),
-                "选中的字母帽抬起并描上主色边，未选的是空心框，两者不会糊在同一张卡上（帽面 "
-                + ThemeProbe.Describe(armedCap?.Background) + "）");
-            // The state the old card looked worst in: the revision line chosen and still empty, so Continue has
-            // nothing to act on. That used to be the accent fill at 40% opacity, which reads as a broken button
-            // rather than as one waiting for its content.
-            Check(!panel.PlanContinueEnabledForCheck
-                  && !ThemeProbe.IsToken(panel.PlanContinueButtonForCheck?.Background, "Hub.Accent")
-                  && ThemeProbe.IsToken(panel.PlanContinueButtonForCheck?.Foreground, "Hub.Accent"),
-                "意见行还空着时继续保持禁用，并以主色文字表示等待输入（字色 "
-                + ThemeProbe.Describe(panel.PlanContinueButtonForCheck?.Foreground) + "）");
-            const string revision = "先把测试补上，再改实现";
-            panel.SetPlanFeedbackForCheck(revision);
-            Check(panel.PlanContinueEnabledForCheck, "写了修改意见之后继续按钮才可用");
-            // What is typed has to be readable. The flatness promise covers choosing a line, not writing one, so
-            // the line is checked for the other failure: a box arranged shorter than the height its own text asked
-            // for is clipping the sentence it exists to hold.
-            Check(panel.PlanFeedbackTextForCheck == revision && !panel.PlanFeedbackClippedForCheck,
-                "写进意见之后这一行仍然放得下整句话（行高 " + panel.PlanFeedbackHeightForCheck
-                + "，需要 " + panel.PlanFeedbackDesiredHeightForCheck + "）");
+            Check(panel.InputTextForCheck == revision && !panel.DecisionHostFocusedForCheck
+                  && approvedSession.Messages.Count == beforeFocus && panel.PendingPlanApprovalCardsForCheck == 1,
+                "在聊天中修改只聚焦原输入区，保留草稿、不消费待审决定、不启动请求");
 
-            // The letters on the caps are a shortcut, not decoration: they choose the option the way the pointer
-            // does. And they stand down where a letter is content — the caret's own line — and under a modifier,
-            // where Ctrl+A means select all.
-            Check(panel.PressPlanCardKeyForCheck(Key.A)
-                  && panel.PlanSelectedChoiceForCheck == "ChatPlanApprove"
-                  && panel.PressPlanCardKeyForCheck(Key.B)
-                  && panel.PlanSelectedChoiceForCheck == "ChatPlanRevise",
-                "A / B 键换选中项，走的是和点击同一条路（实际停在 " + panel.PlanSelectedChoiceForCheck + "）");
-            Check(!panel.PressPlanCardKeyForCheck(Key.A, inRevisionLine: true)
-                  && panel.PlanSelectedChoiceForCheck == "ChatPlanRevise"
-                  && panel.PlanFeedbackTextForCheck == revision
-                  && !panel.PressPlanCardKeyForCheck(Key.A, modifiers: KeyModifiers.Control)
-                  && panel.PlanSelectedChoiceForCheck == "ChatPlanRevise",
-                "光标在意见行里时 A 是字母：不抢选中、不吞已写的字，Ctrl+A 也不归这张卡管");
-            // Escape's first job on this card is to leave the line, not to answer the card: the key somebody hits
-            // to get out of a text box must not delete the paragraph typed into it. The second Escape is the
-            // dismissal that was already there.
-            Check(panel.PressPlanCardKeyForCheck(Key.Escape, inRevisionLine: true)
-                  && panel.PlanFeedbackTextForCheck == revision
-                  && panel.PlanApprovalCardOnScreenForCheck
-                  && panel.PlanSelectedChoiceForCheck == "ChatPlanRevise",
-                "在意见行里按 Esc 只是离开这一行：卡还在、字还在、选中项没被顺手动走");
-            panel.ClickPlanContinueForCheck();
+            // Refusals must not consume a review. Existing image checks cover formats, and UI stale-draft
+            // checks cover the pre-await guard; neither sees the backend gate after an attachment read yields.
+            var refusals = new List<string>();
+            var refusalsKeptReview = true;
+            foreach (var stale in new[] { false, true })
+            {
+                var accepted = chat.TryEnqueueSend(approvedSession.Id, revision, null,
+                    stale ? [PictureFixture()] : [new byte[] { 1, 2, 3 }], false, out var refusal,
+                    stale ? ChatWorkspace.PendingPlanToken(approvedSession) + "-stale" : null);
+                refusals.Add(refusal ?? "none");
+                refusalsKeptReview &= !accepted && refusal is not null && (!stale || refusal == "ChatPlanChanged")
+                    && approvedSession.Messages.Count == beforeFocus
+                    && approvedSession.Messages.Any(turn => turn.PlanApprovalState == PlanApprovalStates.Pending)
+                    && chat.RunFor(approvedSession.Id) is null;
+            }
+            Check(refusalsKeptReview,
+                "发送遇到无效附件或过期计划引用时，原计划仍待审、没有追加半条消息（拒绝 " + string.Join(" / ", refusals) + "）");
+
+            // Even an explicitly chosen Agent mode and words saying to start cannot turn feedback into approval.
+            chat.SelectMode(ChatModes.Agent);
+            panel.AddImageBytesForCheck(PictureFixture(), "plan-reference.png");
+            await panel.SendForCheckAsync(revision);
             await WaitForIdleAsync(chat);
             Dispatcher.UIThread.RunJobs();
+            var revisionTurn = approvedSession.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User);
+            var revisionWire = planClient?.LastMessages?.LastOrDefault(message => message.Role == Microsoft.Extensions.AI.ChatRole.User);
             Check(approvedSession.Messages.Any(turn => turn.Role == ChatRoles.Assistant
                       && turn.PlanApprovalState == PlanApprovalStates.RevisionRequested)
                   && chat.ActiveMode == ChatModes.Plan
-                  && approvedSession.Messages.Any(turn => turn.Role == ChatRoles.User && turn.Text == revision),
-                "要求修改会记录决定、保持计划模式，并把修改意见当成一条用户消息发出去");
+                  && revisionTurn is { Images.Count: 1, Plan.File.Length: > 0 }
+                  && revisionTurn.Text == revision
+                  && revisionTurn.AttachedContext?.Contains(ChatWorkspace.PlanRevisionInstruction, StringComparison.Ordinal) == true
+                  && revisionWire?.Text.Contains("First, inspect the implementation", StringComparison.Ordinal) == true
+                  && revisionWire.Contents.OfType<Microsoft.Extensions.AI.DataContent>().Count() == 1
+                  && panel.PendingPictureCountForCheck == 0 && panel.InputTextForCheck.Length == 0,
+                "聊天修改将文字和图片与原计划一起发出，只记录修改、不批准，成功后才清空草稿（图片 "
+                + revisionTurn?.Images.Count + "，模式 " + chat.ActiveMode + "）");
             Check(approvedSession.Messages.Count(turn =>
                       turn.Role == ChatRoles.Assistant && turn.PlanApprovalState == PlanApprovalStates.Pending) == 1,
                 "修改请求可以再次发送，新的计划重新进入待确认状态");
@@ -1972,9 +1937,28 @@ internal sealed class ShellDecisionsChecks
             // The approved run's scripted answer is deliberately not the plan's own text. The assertion further
             // down reads the session file for "no copy of the plan body anywhere", and an agent reply that happened
             // to repeat the fixture string would fail it for a reason that has nothing to do with plans.
-            chat.ClientOverride = (_, _) => planClient = new ScriptedChatClient(["开始按计划改第一个文件。"]);
-            panel.ClickPlanChoiceForCheck("ChatPlanApprove");
-            panel.ClickPlanContinueForCheck();
+            var approvalGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            chat.ClientOverride = (_, _) => planClient = new ScriptedChatClient(["开始按计划改第一个文件。"], gate: approvalGate.Task);
+            panel.SetInputForCheck("批准前还没发出的意见");
+            panel.AddImageBytesForCheck(PictureFixture(), "before-approval.png");
+            panel.ClickPlanActionForCheck("ChatPlanApprove");
+            try
+            {
+                // Unlike cancellation, approval starts a live run. Old feedback must be refused before the
+                // normal running-composer path can offer to inject it as a steer into implementation.
+                await panel.SendComposerForCheck();
+                Check(panel.InputTextForCheck == "批准前还没发出的意见" && panel.PendingPictureCountForCheck == 1
+                      && panel.LastNoticeTextForCheck == HubStrings.Get("ChatPlanChanged")
+                      && chat.RunFor(approvedSession.Id) is { HasQueuedSteer: false }
+                      && !panel.SteerConfirmVisibleForCheck,
+                    "计划已批准并开始运行时，旧意见不会变成实施中的插话，文字图片保留并要求重新查看");
+            }
+            finally
+            {
+                approvalGate.TrySetResult(true);
+                panel.RemovePictureChipForCheck(0);
+                panel.SetInputForCheck("");
+            }
             await WaitForIdleAsync(chat);
             var approvedCopy = chat.StoredCopyForCheck(approvedSession.Id);
             var approvedInstruction = "Implement the following plan, which I have reviewed and approved. "
@@ -2021,7 +2005,17 @@ internal sealed class ShellDecisionsChecks
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
+            panel.SetInputForCheck("取消前写好的修改意见");
+            panel.AddImageBytesForCheck(PictureFixture(), "unsent-feedback.png");
+            var rejectedCount = rejectedSession.Messages.Count;
             panel.ClickPlanCancelForCheck();
+            await panel.SendForCheckAsync("取消前写好的修改意见");
+            Check(panel.InputTextForCheck == "取消前写好的修改意见" && panel.PendingPictureCountForCheck == 1
+                  && panel.LastNoticeTextForCheck == HubStrings.Get("ChatPlanChanged")
+                  && rejectedSession.Messages.Count == rejectedCount && chat.RunFor(rejectedSession.Id) is null,
+                "取消计划后旧意见不会悄悄变成普通消息，文字和图片保留并提示重新查看");
+            panel.RemovePictureChipForCheck(0);
+            panel.SetInputForCheck("");
             var rejectedCopy = chat.StoredCopyForCheck(rejectedSession.Id);
             Check(rejectedCopy?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant)
                       ?.PlanApprovalState == PlanApprovalStates.Rejected
@@ -2141,10 +2135,10 @@ internal sealed class ShellDecisionsChecks
             Dispatcher.UIThread.RunJobs();
             await WaitUntilAsync(() => panel.DecisionHostFocusedForCheck);
             Check(panel.DecisionHostFocusedForCheck,
-                "空着输入框时计划卡到达就拿到键盘，A / B 不必先点一下卡片才有效");
-            panel.ClickPlanChoiceForCheck("ChatPlanRevise");
-            panel.SetPlanFeedbackForCheck("换个思路再来一版");
-            panel.ClickPlanContinueForCheck();
+                "空着输入框时计划卡到达就拿到键盘，直接操作不需要先选择再继续");
+            // No need to click the revision affordance: a picture alone goes through the ordinary send path.
+            panel.AddImageBytesForCheck(PictureFixture(), "another-direction.png");
+            await panel.BeginSendForCheckAsync("");
             // A draft typed while the revision is being thought about: the second plan lands on top of it, and this
             // is the state the report was about — a card arriving must not clear the box or move the caret.
             const string draftUnderPlan = "计划还等着，我先把这句写完";
@@ -2163,17 +2157,22 @@ internal sealed class ShellDecisionsChecks
             // cover over it.
             Check(panel.InputTextForCheck == draftUnderPlan && !panel.DecisionHostFocusedForCheck,
                 "框里正写着字时新计划到达，不抢键盘也不清空那半句（框里「" + panel.InputTextForCheck + "」）");
-            // Enter is now an ordinary thing to do with a draft while a plan waits, and the honest answer is a
-            // refusal the person can read — not a silent no-op, and above all not an emptied box. This is the path
-            // the old layout could never reach, because the box was disabled under the card.
+            var pictureOnlyRevision = twoPlanSession.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User);
+            Check(pictureOnlyRevision is { Text.Length: 0, Images.Count: 1, Plan.File.Length: > 0 }
+                  && chat.ActiveMode == ChatModes.Plan && panel.PendingPlanApprovalCardsForCheck == 1,
+                "只发图片也关联原计划，新回复仍然等待批准，没有切到实施模式");
+            // Simulate a replacement while the person is writing. Reusing the same turn index must not let
+            // old feedback bind to the new document; this is distinct from cancellation removing the card.
+            var replacedIndex = twoPlanSession.Messages.FindIndex(turn => turn.PlanApprovalState == PlanApprovalStates.Pending);
+            var replaced = twoPlanSession.Messages[replacedIndex];
+            twoPlanSession.Messages[replacedIndex] = replaced with { Plan = replaced.Plan! with { Id = Guid.NewGuid().ToString("N") } };
             panel.PressComposerKeyForCheck(Key.Enter);
             Dispatcher.UIThread.RunJobs();
-            Check(panel.InputTextForCheck == draftUnderPlan
-                  && panel.NoticeVisibleForCheck
-                  && panel.LastNoticeTextForCheck == HubStrings.Get("ChatPlanAwaitingApproval")
-                  && panel.PendingPlanApprovalCardsForCheck == 1,
-                "计划待确认时按 Enter 给出可读拒绝、卡片原地不动，而草稿仍留在输入框里（提示「"
-                + (panel.LastNoticeTextForCheck ?? "") + "」，框里「" + panel.InputTextForCheck + "」）");
+            Check(panel.InputTextForCheck == draftUnderPlan && panel.NoticeVisibleForCheck
+                  && panel.LastNoticeTextForCheck == HubStrings.Get("ChatPlanChanged")
+                  && panel.PendingPlanApprovalCardsForCheck == 1 && chat.RunFor(twoPlanSession.Id) is null,
+                "同一位置换了计划后 Enter 拒绝旧草稿，不误关联新文档、不丢文字（提示「"
+                + panel.LastNoticeTextForCheck + "」）");
             panel.SetInputForCheck("");
             panel.ClickPlanCardForCheck(0);
             Check(shell.InspectorPlanMarkdownForCheck.Contains("The older body", StringComparison.Ordinal),

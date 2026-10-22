@@ -417,6 +417,7 @@ public partial class ChatPanel : UserControl
                 // Typing ends the walk: the next Up starts again from the newest thing sent, rather than
                 // continuing to page through history under a sentence the person has begun writing themselves.
                 if (!_recalling) _recallIndex = 0;
+                CapturePlanDraftTarget();
                 UpdateSendState();
                 UpdateContextRing();
             }
@@ -496,11 +497,10 @@ public partial class ChatPanel : UserControl
         // closes its picture viewer first, then puts an expanded inspector back in its column (both of those
         // handlers live in MainWindow, above this one), then a decision on the card above the composer is answered,
         // then a steer waiting for its second tap goes back to being a draft, and only then does Escape mean "stop
-        // the reply". The plan card's letter keys ride the same handler for the same reason. Tunnel, so this runs
+        // the reply". The question card's letter keys ride the same handler for the same reason. Tunnel, so this runs
         // before the composer's own key handling gets a turn.
         AddHandler(InputElement.KeyDownEvent, (_, e) =>
         {
-            if (TryChoosePlanOptionByKey(e)) return;
             if (TryChooseQuestionOptionByKey(e)) return;
             if (e.Key != Key.Escape) return;
             if (DecisionHost.IsVisible)
@@ -510,9 +510,9 @@ public partial class ChatPanel : UserControl
                     // A caret in a text box outranks the card. The card sits above the draft rather than in front
                     // of it precisely so a decision cannot interrupt what is being written, and a key that answers
                     // the question while the person is mid-sentence is that interruption again. Only the card's own
-                    // revision line turns Escape into "leave this line"; the composer's box falls through to the
+                    // answer line turns Escape into "leave this line"; the composer's box falls through to the
                     // layers under this one, where Escape still stops the reply.
-                    if (box.Name is "PlanFeedbackBox" or "QuestionAnswerBox")
+                    if (box.Name == "QuestionAnswerBox")
                     {
                         DecisionHost.Focus();
                         e.Handled = true;
@@ -552,7 +552,9 @@ public partial class ChatPanel : UserControl
         var reloadStarted = measurement?.ElapsedMs ?? 0;
         _openReusedRows = false;
 
-        InputBox.PlaceholderText = HubStrings.Get("InputPlaceholder");
+        CapturePlanDraftTarget();
+        InputBox.PlaceholderText = HubStrings.Get(ChatWorkspace.PendingPlanToken(_chat.ActiveConversation) is not null
+            ? "ChatPlanFeedbackPlaceholder" : "InputPlaceholder");
         GreetingLabel.Text = HubStrings.Get("AssistantGreeting");
         GreetingSubtitle.Text = HubStrings.Get("AssistantGreetingSubtitle");
         RenderSuggestions();
@@ -1769,6 +1771,7 @@ public partial class ChatPanel : UserControl
 
     private void RenderContextAttachments()
     {
+        CapturePlanDraftTarget();
         ContextAttachmentPanel.Children.Clear();
         foreach (var attachment in _contextAttachments)
         {
@@ -3903,8 +3906,7 @@ public partial class ChatPanel : UserControl
             return;
         }
 
-        // The revision's own text is sent by the review surface (CommitPlanReview) through the ordinary send
-        // path; prefilling the composer here would put a prompt in front of a sentence the person already wrote.
+        // Revision goes through the ordinary composer send, not a decision that consumes the plan first.
         ConversationStateChanged?.Invoke();
     }
 
@@ -4388,6 +4390,16 @@ public partial class ChatPanel : UserControl
 
     private async Task SendAsync()
     {
+        CapturePlanDraftTarget();
+        if (_planDraftTarget is { } target
+            && (target.ConversationId != _chat.ViewedConversationId
+                || target.Token != ChatWorkspace.PendingPlanToken(_chat.ActiveConversation)))
+        {
+            ReportPlanDraftChanged();
+            return;
+        }
+        var sourceConversationId = _chat.ViewedConversationId;
+        var expectedPlanToken = _planDraftTarget?.Token;
         if (ViewedRun is { IsStreaming: true } run)
         {
             if (run.HasQueuedSteer) return;
@@ -4442,10 +4454,14 @@ public partial class ChatPanel : UserControl
             return;
         }
 
-        // Handed over first, cleared after: a refusal has to leave the sentence where it was typed. The decision
-        // card living above the box rather than over it is what makes this reachable — Enter with a draft in the
-        // box is now an ordinary thing to do while a plan waits, and the workspace answers "resolve it first".
-        if (!SendTextAsync(text, context, pictures)) return;
+        // Attachment reads can yield. Never send into a different session or silently attach feedback to
+        // a different plan after the await; keep both text and pictures on every refusal.
+        if (sourceConversationId != _chat.ViewedConversationId)
+        {
+            ReportPlanDraftChanged();
+            return;
+        }
+        if (!SendTextAsync(text, context, pictures, expectedPlanToken)) return;
         _contextAttachments.Clear();
         _pendingPictures.Clear();
         RenderContextAttachments();
@@ -4455,7 +4471,8 @@ public partial class ChatPanel : UserControl
     /// <summary>Hands the message to the workspace and starts a run for it. The user's own turn is painted from
     /// the transcript like any other row, so there is no second copy of it here to keep in step. Reports whether
     /// the message got in, because the caller owns the draft and must not empty the box on a refusal.</summary>
-    private bool SendTextAsync(string text, string? attachedContext = null, IReadOnlyList<byte[]>? pictures = null)
+    private bool SendTextAsync(string text, string? attachedContext = null, IReadOnlyList<byte[]>? pictures = null,
+        string? expectedPlanToken = null)
     {
         if (text.Length == 0 && pictures is not { Count: > 0 }) return false;
         var isGoal = GoalDraftSelectedForActiveConversation;
@@ -4468,9 +4485,10 @@ public partial class ChatPanel : UserControl
         }
         if (_chat.ActiveConversation is not { } conversation) return false;
 
-        if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, isGoal, out var refusalKey))
+        if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, isGoal, out var refusalKey, expectedPlanToken))
         {
-            AppendNotice(NoticeFor(refusalKey, conversation.Id), danger: true);
+            if (refusalKey == "ChatPlanChanged") ReportPlanDraftChanged();
+            else AppendNotice(NoticeFor(refusalKey, conversation.Id), danger: true);
             return false;
         }
 

@@ -8,6 +8,9 @@ namespace AxmolHub;
 public sealed partial class ChatWorkspace : IDisposable
 {
     internal const string PlanApprovalInstruction = "Implement the following plan, which I have reviewed and approved. Follow this plan only; " + "ask before taking actions outside its scope.";
+    internal const string PlanRevisionInstruction = "This message is feedback on the attached plan under review, not approval to implement it. "
+        + "Revise the plan using the user's text and images and return it for explicit approval. Do not implement changes, "
+        + "even if the feedback says to start. If an image alone does not make the requested change clear, ask for clarification.";
     private readonly ChatProviderCoordinator _providers;
     private readonly ChatSessionCoordinator _sessions;
     private readonly ChatExecutionCoordinator _execution;
@@ -611,6 +614,17 @@ public sealed partial class ChatWorkspace : IDisposable
     public bool ClearGoal(string conversationId) => _execution.ClearGoal(conversationId);
     public bool CompleteGoal(string conversationId) => _execution.CompleteGoal(conversationId);
     internal bool HasPendingPlanApproval(string conversationId) => _execution.HasPendingPlanApproval(conversationId);
+
+    /// <summary>The exact pending document a draft refers to, independent of seen flags and task progress.</summary>
+    internal static string? PendingPlanToken(Conversation? conversation)
+    {
+        if (conversation is null) return null;
+        var index = conversation.Messages.FindIndex(turn => turn.PlanApprovalState == PlanApprovalStates.Pending);
+        if (index < 0) return null;
+        var turn = conversation.Messages[index];
+        return $"{index}:{turn.At:O}:{turn.Plan?.Id}:{turn.Plan?.File}";
+    }
+
     public int RunningCount { get => _execution.RunningCount; }
     /// <summary>
     /// The session the panel is painting. It is no longer the session that is allowed to send — telling those
@@ -625,10 +639,10 @@ public sealed partial class ChatWorkspace : IDisposable
     /// leave the first two on disk belonging to a turn nobody appended.
     /// </summary>
     public bool TryEnqueueSend(string conversationId, string text, string? attachedContext, IReadOnlyList<byte[]>? pictures, out string? refusalKey) => _execution.TryEnqueueSend(conversationId, text, attachedContext, pictures, out refusalKey);
-    /// <summary>Starts a run for one message and records whether the person explicitly marked it as a goal. That
-    /// marker belongs to the user turn in the transcript; it does not change the Agent mode or the text sent to the
-    /// model.</summary>
-    public bool TryEnqueueSend(string conversationId, string text, string? attachedContext, IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey) => _execution.TryEnqueueSend(conversationId, text, attachedContext, pictures, isGoal, out refusalKey);
+    /// <summary>Starts a run for one message. A pending plan turns it into feedback in Plan mode, never approval
+    /// or a new goal. <paramref name="expectedPlanToken"/> guards drafts against a review changing during an
+    /// asynchronous attachment read; a refusal leaves the decision and the caller's draft untouched.</summary>
+    public bool TryEnqueueSend(string conversationId, string text, string? attachedContext, IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey, string? expectedPlanToken = null) => _execution.TryEnqueueSend(conversationId, text, attachedContext, pictures, isGoal, out refusalKey, expectedPlanToken);
     /// <summary>Streams a reply against a session whose history is already final — edit-and-resend,
     /// regenerate, or a turn resumed from an approved tool call. It appends <b>nothing</b>: the request is rebuilt
     /// from the transcript, so the question the previous attempt never answered goes back on the wire once, as the

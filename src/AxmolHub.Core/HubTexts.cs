@@ -886,7 +886,6 @@ public static class HubTexts
         ["ChatPlanRejected"] = ("计划已拒绝", "Plan rejected"),
         ["ChatPlanCardUntitled"] = ("无标题计划", "Untitled plan"),
         ["ChatPlanTaskSummaryFormat"] = ("任务 {0} 项 · {1} 已完成 · {2} 进行中 · {3} 待处理", "Tasks {0} · {1} completed · {2} in progress · {3} pending"),
-        ["ChatPlanAwaitingApproval"] = ("请先处理待确认的计划，再继续发送消息。", "Resolve the pending plan before sending another message."),
         ["ChatPlanNotificationTitle"] = ("计划等待确认", "Plan awaiting approval"),
         ["ChatPlanNotificationBody"] = ("会话「{0}」中的计划需要你的决定。", "A plan in 「{0}」 needs your decision."),
         ["ChatRunCompletedNotificationTitle"] = ("助手任务已完成", "Assistant task completed"),
@@ -965,10 +964,11 @@ public static class HubTexts
             + "VBCSCompiler) can sit outside that tree and may still be going afterwards."),
         ["ChatPlanReviewTitle"] = ("审阅计划", "Review plan"),
         ["ChatPlanReviewOpen"] = ("查看计划", "View plan"),
-        ["ChatPlanReviewContinue"] = ("继续", "Continue"),
-        ["ChatPlanOptionApprove"] = ("批准并开始实施", "Approve and start implementing"),
-        ["ChatPlanOptionRevise"] = ("我要修改计划", "Suggest changes to the plan"),
-        ["ChatPlanFeedbackPlaceholder"] = ("说说计划要改哪里…", "Tell me what to change…"),
+        ["ChatPlanOptionApprove"] = ("批准并开始", "Approve and start"),
+        ["ChatPlanReviseInChat"] = ("在聊天中修改", "Revise in chat"),
+        ["ChatPlanCancel"] = ("取消计划", "Cancel plan"),
+        ["ChatPlanFeedbackPlaceholder"] = ("描述要调整的地方，也可以添加图片；发送后只更新计划，不开始实施。", "Describe changes or add images. Sending updates the plan without starting implementation."),
+        ["ChatPlanChanged"] = ("待审计划已变化，本条意见尚未发送。请查看当前计划后重新发送。", "The plan under review has changed. Your feedback was not sent. Review the current plan before sending again."),
         // ── A question the model asked ──
         // The third thing the composer can be parked on. Its own title rather than 「{tool} 想要执行一个操作」
         // because nothing wants to run: the row above the box is a request for information, and reading it as a

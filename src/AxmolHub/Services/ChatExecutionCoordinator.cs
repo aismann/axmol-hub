@@ -943,7 +943,7 @@ internal sealed partial class ChatExecutionCoordinator
         IReadOnlyList<byte[]>? pictures, out string? refusalKey)
         => TryEnqueueSend(conversationId, text, attachedContext, pictures, false, out refusalKey);
     internal bool TryEnqueueSend(string conversationId, string text, string? attachedContext,
-        IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey)
+        IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey, string? expectedPlanToken = null)
     {
         refusalKey = null;
         if (_compressingConversations.Contains(conversationId))
@@ -962,9 +962,10 @@ internal sealed partial class ChatExecutionCoordinator
         }
 
         var existing = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);
-        if (existing?.Messages.Any(turn => turn.PlanApprovalState == PlanApprovalStates.Pending) == true)
+        var pendingToken = PendingPlanToken(existing);
+        if (expectedPlanToken is not null && expectedPlanToken != pendingToken)
         {
-            refusalKey = "ChatPlanAwaitingApproval";
+            refusalKey = "ChatPlanChanged";
             return false;
         }
 
@@ -982,13 +983,26 @@ internal sealed partial class ChatExecutionCoordinator
             return false;
         }
 
+        var appended = false;
         if (!Sessions.Registry.TryUpdate(conversationId, opened =>
             {
+                // Validate again under the session gate. A refused attachment or a stale review must never
+                // consume the decision and leave the person with neither a pending plan nor a sent message.
+                if (PendingPlanToken(opened) != pendingToken) return;
+                var planIndex = opened.Messages.FindIndex(turn => turn.PlanApprovalState == PlanApprovalStates.Pending);
+                var pending = planIndex >= 0 ? opened.Messages[planIndex] : null;
+                var context = pending is null ? attachedContext : PlanRevisionInstruction
+                    + (string.IsNullOrEmpty(attachedContext) ? "" : "\n\n" + attachedContext);
+                var userTurn = ChatTurn.User(text, context, StorePictures(conversationId, pictures),
+                    isGoal: isGoal && pending is null) with { Plan = pending?.Plan };
                 opened.ProviderId = choice.Provider.Id;
                 opened.ModelName = choice.ModelName;
-                var userTurn = ChatTurn.User(text, attachedContext, StorePictures(conversationId, pictures),
-                    isGoal: isGoal);
-                if (isGoal)
+                if (pending is not null)
+                {
+                    opened.Messages[planIndex] = pending with { PlanApprovalState = PlanApprovalStates.RevisionRequested };
+                    opened.Mode = ChatModes.Plan;
+                }
+                if (userTurn.IsGoal)
                 {
                     opened.Goal = text;
                     opened.GoalState = ChatGoalStates.Active;
@@ -996,9 +1010,15 @@ internal sealed partial class ChatExecutionCoordinator
                     opened.GoalTurnAt = userTurn.At;
                 }
                 opened.Append(userTurn);
+                appended = true;
             }))
         {
             refusalKey = "ChatSessionMissing";
+            return false;
+        }
+        if (!appended)
+        {
+            refusalKey = "ChatPlanChanged";
             return false;
         }
 
