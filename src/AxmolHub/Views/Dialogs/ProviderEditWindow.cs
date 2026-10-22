@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using AxmolHub.Core;
 
@@ -85,7 +86,12 @@ public sealed class ProviderEditWindow : Window
 
     private static void AddField(StackPanel panel, string label, TextBox box, string? hint, bool readOnly)
     {
-        panel.Children.Add(new TextBlock { Text = label, Foreground = (IBrush?)Application.Current?.FindResource("Hub.TextSecondary"), Margin = new Thickness(0, 8, 0, 2) });
+        var caption = new TextBlock { Text = label, Margin = new Thickness(0, 8, 0, 2) };
+        // Bound rather than read: Hub.TextSecondary lives inside the token dictionary's ThemeDictionaries, so a
+        // one-shot FindResource returns Avalonia's UnsetValue (the cast threw, and this dialog could not open at
+        // all), and a value read once would not follow a theme switch either.
+        caption.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        panel.Children.Add(caption);
         box.IsReadOnly = readOnly;
         if (readOnly) box.Classes.Add("muted");
         panel.Children.Add(box);
