@@ -2,6 +2,7 @@ using System.Text;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.MarkupExtensions;
@@ -596,16 +597,37 @@ internal sealed partial class InspectorPanel : UserControl
             : history.LastOrDefault()?.Id ?? change.ChangeId ?? "";
         if (history.Count > 1)
         {
+            // Keep content as data: a Control here becomes ComboBox's VisualBrush snapshot, which can capture
+            // its unstyled black foreground before the popup attaches. Template both surfaces independently.
+            var historyText = new FuncDataTemplate<string>((value, _) => Themed(new TextBlock
+            {
+                Text = value,
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Classes = { "inspector-history-text" },
+            }, "Hub.TextPrimary"));
             var selector = new ComboBox
             {
                 Tag = "InspectorHistorySelector",
+                Classes = { "inspector-history" },
+                FontSize = 11,
+                SelectionBoxItemTemplate = historyText,
+                VerticalContentAlignment = VerticalAlignment.Center,
                 ItemsSource = history.Select(revision => new ComboBoxItem
                 {
                     Content = revision.At.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                    ContentTemplate = historyText,
+                    VerticalContentAlignment = VerticalAlignment.Center,
+                    FontSize = 11,
+                    MinHeight = 24,
+                    Padding = new Thickness(8, 4),
                     Tag = revision.Id,
                 }).ToArray(),
                 SelectedIndex = Math.Max(0, history.ToList().FindIndex(revision => revision.Id == selectedId)),
-                MinHeight = 28,
+                MinHeight = 24,
+                Height = 26,
+                Padding = new Thickness(7, 3),
+                Margin = new Thickness(0),
                 HorizontalAlignment = HorizontalAlignment.Left,
             };
             body.Children.Add(selector);
@@ -655,6 +677,8 @@ internal sealed partial class InspectorPanel : UserControl
         var lines = new StackPanel { Spacing = 0 };
         var viewer = new ScrollViewer
         {
+            // Hub's opaque, always-visible bars need their own layout slot, not Fluent's overlay mode.
+            AllowAutoHide = false,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             MaxHeight = 420,
@@ -704,11 +728,13 @@ internal sealed partial class InspectorPanel : UserControl
                     : line;
             var text = Themed(new DiffSelectableTextBlock(viewer)
             {
+                Background = Brushes.Transparent,
                 Text = displayLine.Length == 0 ? " " : displayLine,
                 FontFamily = ThemedFont("Hub.Font.Mono"),
                 FontSize = 11.5,
                 TextWrapping = TextWrapping.NoWrap,
             }, "Hub.TextSecondary");
+            text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.Selection"));
             Grid.SetColumn(text, 2);
             row.Children.Add(text);
             block.Child = row;
@@ -724,6 +750,10 @@ internal sealed partial class InspectorPanel : UserControl
     /// timer updates both the offset and the text hit-test while leaving ordinary pointer selection to the base.</summary>
     private sealed class DiffSelectableTextBlock(ScrollViewer viewer) : SelectableTextBlock
     {
+        // A derived control otherwise looks up a theme under its own type, losing the base selection brush,
+        // I-beam cursor and copy flyout. Keep the standard text-selection surface while adding edge scrolling.
+        protected override Type StyleKeyOverride => typeof(SelectableTextBlock);
+
         private const double EdgeSize = 24;
         private DispatcherTimer? _autoScrollTimer;
         private IPointer? _dragPointer;

@@ -484,6 +484,15 @@
     <Style Selector="TextBlock.inspector-path">
       <Setter Property="FontSize" Value="12" />
     </Style>
+    <Style Selector="ComboBox.inspector-history /template/ ContentControl#SelectionPresenter">
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="7,0" />
+    </Style>
+    <Style Selector="ComboBox.inspector-history /template/ Path#DropDownGlyph">
+      <Setter Property="Width" Value="8" />
+      <Setter Property="Height" Value="8" />
+      <Setter Property="Margin" Value="0,0,8,0" />
+    </Style>
     <Style Selector="TextBlock.inspector-verdict">
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Width" Value="16" />

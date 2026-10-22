@@ -1493,7 +1493,7 @@
         <TextBlock x:Name="RequestSpeedLabel" Classes="composer-metric" Grid.Column="2"
                    MaxWidth="120" IsVisible="False" />
         <TextBlock x:Name="SessionBurnLabel" Classes="composer-metric" Grid.Column="3"
-                   MaxWidth="210" TextAlignment="Right" IsVisible="False" />
+                   MaxWidth="210" HorizontalAlignment="Right" TextAlignment="Right" IsVisible="False" />
         <Button x:Name="ContextButton" Grid.Column="4" Classes="context-ring-button"
                 VerticalAlignment="Center">
           <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">

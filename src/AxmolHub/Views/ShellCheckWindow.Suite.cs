@@ -92,6 +92,13 @@ internal sealed class ShellCheckSuite
         await Platform.CheckCjkFontNoticeAsync();
         Platform.CheckEveryXamlResourceKeyResolves();
         var shell = Shell.CheckShell(scratchRoot);
+        var diffSelection = new ShellDiffSelectionChecks(Check);
+        if (Environment.GetEnvironmentVariable("AXMOL_DIFF_SELECTION_CHECK_ONLY") == "1")
+        {
+            await diffSelection.VerifyAsync(shell);
+            shell.Close();
+            return;
+        }
         await Shell.CheckProjectTrashFlowAsync(shell.Workspace, scratchRoot);
         if (Environment.GetEnvironmentVariable("AXMOL_VIRTUAL_CHECK_ONLY") == "1")
         {
@@ -123,6 +130,7 @@ internal sealed class ShellCheckSuite
         await Shell.CheckDrawnDialogsAsync(shell);
         Shell.CheckHostShellCard(shell);
         await Assistant.CheckAssistantAsync(scratchRoot, shell);
+        await diffSelection.VerifyAsync(shell);
         Sessions.CheckWorkspaceGroups(scratchRoot, shell);
         await Shell.CheckDataRootSwitch(scratchRoot, shell);
     }

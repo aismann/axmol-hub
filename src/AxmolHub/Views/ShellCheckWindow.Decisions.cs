@@ -2226,6 +2226,10 @@ internal sealed class ShellDecisionsChecks
                 if (System.IO.File.Exists(missingPath)) System.IO.File.Delete(missingPath);
             }
             shell.CloseInspector();
+            // Closing the column changes transcript width and realizes its cards on the next layout pass.
+            // Do not click a not-yet-realized card: that presses nothing and leaves the old plan in the pane.
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
             panel.ClickPlanCardForCheck(1);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
@@ -2235,7 +2239,8 @@ internal sealed class ShellDecisionsChecks
                   && !shell.InspectorPlanMarkdownForCheck.Contains("The newer body", StringComparison.Ordinal)
                   && !shell.InspectorPlanMarkdownForCheck.Contains("The older body", StringComparison.Ordinal),
                 "正文文件被淘汰之后，右栏点名是哪一个文件不在了，既不谎称「还没有生成计划」也不去念另一份（面板里 "
-                + shell.InspectorPlanMarkdownForCheck.Replace('\n', '|') + "）");
+                + shell.InspectorPlanMarkdownForCheck.Replace('\n', '|') + "；缺失文件 " + missingName
+                + "，面板打开 " + shell.InspectorVisibleForCheck + "，卡片数 " + panel.PlanCardCountForCheck + "）");
             var turnsBeforeGone = twoPlanSession.Messages.Count;
             var refusedGone = !chat.TryResolvePlanApproval(twoPlanSession.Id, newestPlanIndex,
                 PlanApprovalStates.Approved, out var goneRefusal);
