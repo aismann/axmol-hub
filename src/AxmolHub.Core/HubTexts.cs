@@ -244,6 +244,8 @@ public static class HubTexts
         ["EngineBuildCost"] = ("将把引擎编译成项目可复用的预编译库（Release 为优化构建）。这一步耗时数分钟到数十分钟并占用数 GB 磁盘；缺少工具链时可能触发引擎 setup。", "Compiles the engine into prebuilt libraries projects can reuse (Release is optimized). This takes many minutes and several GB of disk, and may trigger engine setup when tools are missing."),
         ["PrebuiltStatus"] = ("预编译引擎库", "Prebuilt engine libraries"),
         ["PrebuiltLabelReady"] = ("就绪", "Ready"),
+        ["PrebuiltSupported"] = ("支持预编译", "Prebuilt supported"),
+        ["PrebuiltSupportedHint"] = ("此主机支持构建和链接预编译引擎库。", "This host supports building and linking prebuilt engine libraries."),
         ["PrebuiltLabelNotBuilt"] = ("未构建", "Not built"),
         ["PrebuiltLabelUnsupported"] = ("本机不支持", "Host unsupported"),
         ["PrebuiltLabelTargetUnsupported"] = ("目标不支持", "Target unsupported"),

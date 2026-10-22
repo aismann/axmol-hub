@@ -97,7 +97,7 @@
                                 AutomationProperties.HelpText="{Binding MirrorTooltip}">
                           <TextBlock Text="{Binding MirrorLabel}" FontSize="11" TextWrapping="NoWrap" />
                         </Border>
-                        <Border Classes="engine-status" Classes.warning="{Binding PrebuiltWarning}"
+                        <Border IsVisible="{Binding PrebuiltVisible}" Classes="engine-status" Classes.warning="{Binding PrebuiltWarning}"
                                 Background="{DynamicResource Hub.SurfaceSunken}" BorderBrush="{DynamicResource Hub.Border}"
                                 BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 ToolTip.Tip="{Binding PrebuiltTooltip}" Focusable="True"
@@ -135,7 +135,7 @@
                               AutomationProperties.HelpText="{Binding MirrorTooltip}">
                         <TextBlock Text="{Binding MirrorLabel}" FontSize="11" TextWrapping="NoWrap" />
                       </Border>
-                      <Border Classes="engine-status" Classes.warning="{Binding PrebuiltWarning}"
+                      <Border IsVisible="{Binding PrebuiltVisible}" Classes="engine-status" Classes.warning="{Binding PrebuiltWarning}"
                               Background="{DynamicResource Hub.SurfaceSunken}" BorderBrush="{DynamicResource Hub.Border}"
                               BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                               ToolTip.Tip="{Binding PrebuiltTooltip}" Focusable="True"

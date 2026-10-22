@@ -15,6 +15,8 @@ public sealed record EngineListItem(EngineEntry Engine, bool IsDefault,
     string MirrorLabel, string MirrorTooltip, bool MirrorWarning,
     string PrebuiltLabel, string PrebuiltTooltip, bool PrebuiltWarning, bool IsCompact)
 {
+    public bool PrebuiltVisible => PrebuiltLabel.Length > 0;
+
     public bool CanSetDefault => !IsDefault;
 
     public string DisplayPath
@@ -311,26 +313,9 @@ public partial class InstallsPage : UserControl
     private (string Label, string Tooltip, bool Warning) GetPrebuiltStatus(EngineEntry engine)
     {
         if (_workspace.PrebuiltHostTarget is null)
-            return (HubStrings.Get("PrebuiltLabelUnsupported"), HubStrings.Get("PrebuiltUnsupportedHost"), true);
+            return ("", "", false);
 
-        var availability = _workspace.PrebuiltStatusOf(engine);
-        if (availability?.Usable == true)
-            return (HubStrings.Get("PrebuiltLabelReady"),
-                string.Format(CultureInfo.CurrentCulture, HubStrings.Get("PrebuiltReadyFormat"),
-                    availability.Label, availability.RelativeDirectory), false);
-
-        var status = availability?.Status switch
-        {
-            PrebuiltStatus.PlatformUnsupported => ("PrebuiltLabelTargetUnsupported", true),
-            PrebuiltStatus.NotBuilt => ("PrebuiltLabelNotBuilt", false),
-            PrebuiltStatus.EngineChanged => ("PrebuiltLabelRebuild", true),
-            PrebuiltStatus.TargetMismatch => ("PrebuiltLabelTargetMismatch", true),
-            PrebuiltStatus.ConfigurationMissing => ("PrebuiltLabelConfigurationMissing", true),
-            PrebuiltStatus.MissingCache or PrebuiltStatus.MissingContents => ("PrebuiltLabelIncomplete", true),
-            _ => ("PrebuiltLabelNotBuilt", false),
-        };
-        var tooltip = HubStrings.Get(availability?.TextKey ?? "PrebuiltReasonNotBuilt");
-        return (HubStrings.Get(status.Item1), tooltip, status.Item2);
+        return (HubStrings.Get("PrebuiltSupported"), HubStrings.Get("PrebuiltSupportedHint"), false);
     }
 
     private static bool SamePath(string? left, string? right)
