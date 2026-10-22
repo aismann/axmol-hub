@@ -29,6 +29,15 @@ internal static class PublicReleaseSourceSelfCheck
         static HttpResponseMessage Reply(string body, HttpStatusCode status = HttpStatusCode.OK)
             => new(status) { Content = new StringContent(body) };
 
+        var ridFailures = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        void RecordRid(string claim, bool passed, string rid)
+        {
+            if (passed) return;
+            if (!ridFailures.TryGetValue(claim, out var failures))
+                ridFailures.Add(claim, failures = []);
+            failures.Add(rid);
+        }
+
         foreach (var rid in new[] { "osx-arm64", "osx-x64", "win-x64", "linux-x64" })
         {
             var requests = new List<string>();
@@ -45,8 +54,8 @@ internal static class PublicReleaseSourceSelfCheck
             }));
             var source = new PublicReleaseSource(true, client);
             var feed = await source.GetReleaseFeed(log, id, rid);
-            check(feed.Assets.Length == 2 && feed.Assets.All(asset => asset.FileName.Contains(rid)),
-                "Public updates isolate RID and skip missing history: " + rid);
+            RecordRid("RID feeds remain isolated and missing history is skipped",
+                feed.Assets.Length == 2 && feed.Assets.All(asset => asset.FileName.Contains(rid)), rid);
 
             // A fresh source must still download assets from the exact release that supplied them.
             var downloadSource = new PublicReleaseSource(true, client);
@@ -55,12 +64,12 @@ internal static class PublicReleaseSourceSelfCheck
                 var progress = new List<int>();
                 var file = Path.Combine(scratchRoot, asset.FileName);
                 await downloadSource.DownloadReleaseEntry(log, asset, file, progress.Add, CancellationToken.None);
-                check(await File.ReadAllTextAsync(file) == "pkg" && progress.Last() == 100
-                    && requests.Last() == $"{repository}/releases/download/v{asset.Version}/{asset.FileName}",
-                    "Full/delta downloads retain their release origin: " + asset.FileName);
+                RecordRid("full and delta packages download from their originating release",
+                    await File.ReadAllTextAsync(file) == "pkg" && progress.Last() == 100
+                    && requests.Last() == $"{repository}/releases/download/v{asset.Version}/{asset.FileName}", rid);
             }
-            check(requests.All(url => url.StartsWith(repository + "/", StringComparison.Ordinal)),
-                "Discovery and downloads never request GitHub API: " + rid);
+            RecordRid("discovery and downloads use only public release URLs",
+                requests.All(url => url.StartsWith(repository + "/", StringComparison.Ordinal)), rid);
 
             var locator = new TestVelopackLocator(id, "0.12.2", scratchRoot, scratchRoot, scratchRoot,
                 Path.Combine(scratchRoot, "unused-updater"), rid, localPackage: new VelopackAsset
@@ -68,12 +77,12 @@ internal static class PublicReleaseSourceSelfCheck
                     FileName = "local-full.nupkg", Size = 3 });
             var manager = new UpdateManager(source, new UpdateOptions(), locator);
             var update = await manager.CheckForUpdatesAsync();
-            check(update?.TargetFullRelease.Version.ToString() == "0.12.3",
-                "Velopack discovers 0.12.2 -> 0.12.3 without applying: " + rid);
+            RecordRid("Velopack discovers the next release without applying it",
+                update?.TargetFullRelease.Version.ToString() == "0.12.3", rid);
             var currentLocator = new TestVelopackLocator(id, "0.12.3", scratchRoot, scratchRoot, scratchRoot,
                 Path.Combine(scratchRoot, "unused-updater"), rid, localPackage: feed.Assets[0]);
-            check(await new UpdateManager(source, new UpdateOptions(), currentLocator).CheckForUpdatesAsync() is null,
-                "Velopack reports an equal installed version as up to date: " + rid);
+            RecordRid("an equal installed version is reported up to date",
+                await new UpdateManager(source, new UpdateOptions(), currentLocator).CheckForUpdatesAsync() is null, rid);
 
             using var cancellation = new CancellationTokenSource();
             cancellation.Cancel();
@@ -84,7 +93,23 @@ internal static class PublicReleaseSourceSelfCheck
                     Path.Combine(scratchRoot, "cancelled.nupkg"), _ => { }, cancellation.Token);
             }
             catch (OperationCanceledException) { wasCancelled = true; }
-            check(wasCancelled, "Update package cancellation stays cancellable: " + rid);
+            RecordRid("package download cancellation is respected", wasCancelled, rid);
+        }
+
+        foreach (var claim in new[]
+                 {
+                     "RID feeds remain isolated and missing history is skipped",
+                     "full and delta packages download from their originating release",
+                     "discovery and downloads use only public release URLs",
+                     "Velopack discovers the next release without applying it",
+                     "an equal installed version is reported up to date",
+                     "package download cancellation is respected"
+                 })
+        {
+            var failures = ridFailures.GetValueOrDefault(claim) ?? [];
+            check(failures.Count == 0,
+                claim + " across osx-arm64, osx-x64, win-x64, linux-x64"
+                + (failures.Count == 0 ? string.Empty : " (failed: " + string.Join(", ", failures) + ")"));
         }
 
         var stableRequests = new List<string>();
@@ -109,7 +134,10 @@ internal static class PublicReleaseSourceSelfCheck
                 "Stable resolves GitHub Latest once and pins manifest and package to that tag");
         }
 
-        foreach (var scenario in new[] { "missing", "broken", "empty", "network", "forbidden", "discovery", "foreign" })
+        var negativeScenarios = new[] { "missing", "broken", "empty", "network", "forbidden", "discovery", "foreign" };
+        var unexpectedlyAccepted = new List<string>();
+        var missingDiagnosticAddress = new List<string>();
+        foreach (var scenario in negativeScenarios)
         {
             using var client = new HttpClient(new Handler(request =>
             {
@@ -129,13 +157,20 @@ internal static class PublicReleaseSourceSelfCheck
             try
             {
                 await new PublicReleaseSource(true, client).GetReleaseFeed(log, id, "osx-arm64");
-                check(false, "Unavailable or corrupt release data must fail: " + scenario);
+                unexpectedlyAccepted.Add(scenario);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException)
             {
-                check(ex.ToString().Contains(repository), "Failed update includes diagnostic address: " + scenario);
+                if (!ex.ToString().Contains(repository)) missingDiagnosticAddress.Add(scenario);
             }
         }
+        check(unexpectedlyAccepted.Count == 0,
+            "Unavailable or corrupt release data fails closed across " + string.Join(", ", negativeScenarios)
+            + (unexpectedlyAccepted.Count == 0 ? string.Empty : " (accepted: " + string.Join(", ", unexpectedlyAccepted) + ")"));
+        check(missingDiagnosticAddress.Count == 0,
+            "Failed updates include the diagnostic address across " + string.Join(", ", negativeScenarios)
+            + (missingDiagnosticAddress.Count == 0
+                ? string.Empty : " (missing: " + string.Join(", ", missingDiagnosticAddress) + ")"));
 
         using var unusedClient = new HttpClient(new Handler(_ => throw new InvalidOperationException("No request expected")));
         var refused = false;
