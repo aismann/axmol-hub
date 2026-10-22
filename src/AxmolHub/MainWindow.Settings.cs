@@ -1,6 +1,3 @@
-using System;
-using Avalonia;
-using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 
@@ -144,82 +141,4 @@ public partial class MainWindow
         CloseSettings();
         e.Handled = true;
     }
-
-    // ───────────────────────── Seams for the shell self-check ─────────────────────────
-
-    internal bool SettingsOverlayVisibleForCheck => SettingsOverlayHost.IsVisible;
-
-    /// <summary>The page behind the card, or null before anything opened it.</summary>
-    internal SettingsPage? SettingsPageForCheck => _settings;
-
-    internal Rect SettingsOverlayBoundsForCheck => InClient(SettingsOverlayHost);
-    internal Rect SettingsCardBoundsForCheck => InClient(SettingsCard);
-    internal Rect SettingsScrimBoundsForCheck => InClient(SettingsScrim);
-    internal Rect StatusStripBoundsForCheck => InClient(StatusStrip);
-
-    /// <summary>The card as a visual, so a render check can photograph **it** rather than the window: a frame
-    /// of the window reads as non-blank off the shell behind the scrim, which would let a card that painted
-    /// nothing pass.</summary>
-    internal Control SettingsCardForCheck => SettingsCard;
-
-
-    /// <summary>Where the layer sits in the stacking order. Nothing sets ZIndex, so document order is the
-    /// whole contract, and a layer in the wrong slot still covers the shell just as well — which is exactly
-    /// why a bounds check cannot catch it and this can (same argument as
-    /// <see cref="InspectorOverlayOrderForCheck"/>).</summary>
-    internal bool SettingsOverlayOrderForCheck
-    {
-        get
-        {
-            var shell = ClientRoot.Children.IndexOf(ShellRoot);
-            var inspector = ClientRoot.Children.IndexOf(InspectorExpandHost);
-            var viewer = ClientRoot.Children.IndexOf(PictureViewerHost);
-            var settings = ClientRoot.Children.IndexOf(SettingsOverlayHost);
-            return shell >= 0 && shell < inspector && inspector < viewer && viewer < settings;
-        }
-    }
-
-    /// <summary>Whether the scrim actually blocks: a Border with no brush hit-tests nothing, so a scrim that
-    /// lost its background would leave the shell behind it clickable while every geometry check still passed.
-    /// The check that reads this is paired with the one that measures the scrim's rect — together they say
-    /// "the shell is covered", which neither half can say alone.</summary>
-    internal bool SettingsScrimBlocksForCheck => SettingsScrim.Background is not null;
-
-    /// <summary>The category the card is on, for the cross-page and deep-link assertions.</summary>
-    internal string SettingsCategoryForCheck => _settingsCategory;
-
-    /// <summary>The scrim itself, so a check can raise a real press on it the way it does on the title bar's
-    /// drag layer — exercising the wiring rather than calling <see cref="CloseSettings"/>.</summary>
-    internal Border SettingsScrimForCheck => SettingsScrim;
-
-    /// <summary>Closes the card through the header's own button rather than the method behind it.</summary>
-    internal void ClickSettingsCloseForCheck() => SettingsCloseButton.RaiseEvent(
-        new RoutedEventArgs(Button.ClickEvent));
-
-    /// <summary>Sends a key down the same tunnel route <see cref="OnSettingsKeyDown"/> listens on.</summary>
-    internal void PressSettingsKeyForCheck(Key key)
-        => OnSettingsKeyDown(this, new KeyEventArgs
-        {
-            RoutedEvent = InputElement.KeyDownEvent,
-            Key = key,
-            KeyModifiers = KeyModifiers.None,
-            Source = this,
-        });
-
-    /// <summary>Opens the card on a named category and hands back the page, so a check does not have to reach
-    /// for the field separately and can fail on a null page rather than on a null reference inside one.</summary>
-    internal SettingsPage? OpenSettingsForCheck(string? category)
-    {
-        OpenSettings(category);
-        return _settings;
-    }
-
-    /// <summary>Runs the shell's answer to "a session needs a decision" — the same handler the
-    /// <c>AttentionRequired</c> event calls — so a check can prove the card steps aside for a question without
-    /// parking a real approval behind a model call.</summary>
-    internal void RaiseAttentionForCheck(ChatAttentionKind kind)
-        => OnChatAttentionRequired(_chat.ViewedConversationId ?? "", kind);
-
-    /// <summary>The category the page is showing, read off the page rather than the shell's copy.</summary>
-    internal string SettingsSelectedCategoryForCheck => _settings?.SelectedCategory ?? "";
 }

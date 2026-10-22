@@ -1,15 +1,24 @@
-using System;
-using System.Linq;
 using Avalonia.Threading;
-using Avalonia.Controls;
-using Avalonia.LogicalTree;
 using AxmolHub.Core;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-public partial class ShellCheckWindow
+internal sealed class ShellTranscriptCostChecks
 {
-    private void CheckRetainedContext(MainWindow shell)
+    private readonly Action<bool, string> Check;
+    internal ShellTranscriptCostChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal ShellVirtualScrollChecks VirtualScroll { private get; set; } = null!;
+    internal ShellProjectionIdentityChecks ProjectionIdentity { private get; set; } = null!;
+    internal ShellProjectionShadowChecks ProjectionShadow { private get; set; } = null!;
+    internal ShellOpenMeasurementsChecks OpenMeasurements { private get; set; } = null!;
+    internal ShellRequestStabilityChecks RequestStability { private get; set; } = null!;
+    internal ShellTranscriptBenchmarkChecks TranscriptBenchmark { private get; set; } = null!;
+
+    internal void CheckRetainedContext(MainWindow shell)
     {
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
@@ -39,7 +48,7 @@ public partial class ShellCheckWindow
         }
     }
 
-    private void CheckTranscriptCost(MainWindow shell, ChatPanel panel)
+    internal void CheckTranscriptCost(MainWindow shell, ChatPanel panel)
     {
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
@@ -175,15 +184,15 @@ public partial class ShellCheckWindow
         Check(panel.VirtualItemCountForCheck == 2 && panel.ActivityRowToggleCountForCheck == 0,
             "收起大型组后子行和详情控件退出列表");
         chat.DeleteConversation(machine.Id);
-        CheckVariableTranscriptScroll(shell, panel);
-        CheckLongToolDenseTranscript(shell, panel);
-        CheckRealSessionIfRequested(shell, panel);
+        VirtualScroll.CheckVariableTranscriptScroll(shell, panel);
+        VirtualScroll.CheckLongToolDenseTranscript(shell, panel);
+        VirtualScroll.CheckRealSessionIfRequested(shell, panel);
         CheckRetainedContext(shell);
-        CheckProjectionIdentity(shell, panel);
-        CheckTranscriptProjection(shell, panel);
-        CheckSessionOpenMeasurements(shell, panel, longSession.Id, other.Id);
-        CheckRequestStability(shell, panel);
-        RunTranscriptBenchmark(shell, panel);
+        ProjectionIdentity.CheckProjectionIdentity(shell, panel);
+        ProjectionShadow.CheckTranscriptProjection(shell, panel);
+        OpenMeasurements.CheckSessionOpenMeasurements(shell, panel, longSession.Id, other.Id);
+        RequestStability.CheckRequestStability(shell, panel);
+        TranscriptBenchmark.RunTranscriptBenchmark(shell, panel);
         chat.DeleteConversation(other.Id);
         chat.DeleteConversation(longSession.Id);
         if (before is not null && chat.Conversations.Any(summary => summary.Id == before)) chat.OpenConversation(before);

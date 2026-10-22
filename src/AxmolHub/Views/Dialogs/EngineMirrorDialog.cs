@@ -1,8 +1,5 @@
-using System.Collections.Generic;
-using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Layout;
 using Avalonia.Media;
 using AxmolHub.Core;
 
@@ -36,9 +33,9 @@ public sealed class EngineMirrorDialog : Window
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
 
         var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = HubStrings.Get("SwitchEngineMirror"), FontSize = 18 });
         panel.Children.Add(new TextBlock
         {
             Text = HubStrings.Get("MirrorHint"),
@@ -56,16 +53,10 @@ public sealed class EngineMirrorDialog : Window
         panel.Children.Add(_storage);
         panel.Children.Add(_note);
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var cancel = new Button { Content = HubStrings.Get("Cancel"), IsCancel = true };
-        cancel.Click += (_, _) => Close(HubDialogResult.Cancel);
-        _apply = new Button { Content = HubStrings.Get("Apply"), IsDefault = true, Classes = { "primary" } };
-        _apply.Click += (_, _) => Close(HubDialogResult.Ok);
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(_apply);
-        panel.Children.Add(buttons);
-
-        Content = new Border { Child = panel, Padding = new Thickness(24) };
+        var (footer, confirm, _) = HubDialogChrome.Footer(HubStrings.Get("Apply"), HubStrings.Get("Cancel"),
+            () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
+        _apply = confirm;
+        Content = chrome.Wrap(panel, footer);
 
         _note.Text = HubStrings.Get("MirrorFallbackNote");
 

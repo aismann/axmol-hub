@@ -15,9 +15,7 @@ public sealed class PrebuiltSettings
 
     public static string PathFor(ProjectEntry project) => Path.Combine(project.Path, ".axmol-hub.prebuilt.json");
 
-    public static PrebuiltSettings? Load(ProjectEntry project) => File.Exists(PathFor(project))
-        ? System.Text.Json.JsonSerializer.Deserialize<PrebuiltSettings>(File.ReadAllText(PathFor(project)))
-        : null;
+    public static PrebuiltSettings? Load(ProjectEntry project) => StateStore.ReadJson<PrebuiltSettings>(PathFor(project), ignoreErrors: false);
 
     public static PrebuiltSettings Require(ProjectEntry project) => Load(project)
         ?? throw new InvalidOperationException("Configure prebuilt engine libraries for this project first.");

@@ -1,31 +1,21 @@
-using System;
-using System.Linq;
-using System.Threading.Tasks;
-using Avalonia;
-using Avalonia.Controls.Primitives;
-using Avalonia.Input;
-using Avalonia.Layout;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AxmolHub.Core;
+using Avalonia.Controls.Primitives;
+using Avalonia.Layout;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-/// <summary>The transcript's scrollbar thumb: a thumb that slips its hand is a scrollbar nobody trusts.
-///
-/// <para>Kept in its own file the way <c>ShellCheckWindow.ModelSwitch.cs</c> is — the file it would otherwise
-/// grow is already the largest in the repository. The drag is synthesized the way the title bar's press is: the
-/// framework's own <see cref="Pointer"/> and real pointer events raised on the real <see cref="Thumb"/>, so what
-/// is exercised is the Track's own drag plumbing rather than a re-enactment of it.</para>
-///
-/// <para>Three invariants, one per way a thumb has been seen to leave its hand. The thumb stays under the
-/// pointer for the whole hold. The transcript's Extent and Viewport do not move while the thumb is held, because
-/// a mapping that recomputes mid-drag is exactly how a thumb shrinks back from one hand and drifts off the
-/// other. And a reply streaming in under the hand moves neither the reading position nor the thumb: no
-/// automatic scroll beats a hand that is holding the scrollbar.</para></summary>
-public partial class ShellCheckWindow
+internal sealed class ShellScrollDragChecks
 {
-    private async Task CheckThumbDragAsync(MainWindow shell, ChatPanel panel)
+    private readonly Action<bool, string> Check;
+    internal ShellScrollDragChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal async Task CheckThumbDragAsync(MainWindow shell, ChatPanel panel)
     {
         var groupClock = System.Diagnostics.Stopwatch.StartNew();
         var chat = shell.Chat;
@@ -241,33 +231,4 @@ public partial class ShellCheckWindow
         chat.ClientOverride = savedOverride;
         chat.DeleteConversation(session.Id);
     }
-
-    /// <summary>Where a hand grabs the thumb: its centre, in the window's coordinates — the same shape
-    /// <c>BarPressPoint</c> measures the title bar's press at.</summary>
-    private static Point ThumbGrabPoint(Thumb thumb, MainWindow shell)
-        => thumb.TranslatePoint(new Point(thumb.Bounds.Width / 2, thumb.Bounds.Height / 2), shell) ?? default;
-
-    /// <summary>The thumb's top edge inside its track: the number that has to follow the pointer for the
-    /// scrollbar to feel attached to the hand, whatever the Track's arithmetic does to Offset on the way.</summary>
-    private static double ThumbTopInTrack(Thumb thumb, Track track)
-        => (thumb.TranslatePoint(new Point(0, 0), track) ?? default).Y;
-
-    private static void Press(Thumb thumb, Point origin, MainWindow shell)
-        => thumb.RaiseEvent(new PointerPressedEventArgs(
-            thumb, CheckPointer, shell, origin, 0,
-            new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed),
-            KeyModifiers.None, 1));
-
-    private static void Move(Thumb thumb, Point origin, double at, MainWindow shell)
-        => thumb.RaiseEvent(new PointerEventArgs(
-            InputElement.PointerMovedEvent,
-            thumb, CheckPointer, shell, origin + new Vector(0, at), 0,
-            new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other),
-            KeyModifiers.None));
-
-    private static void Release(Thumb thumb, Point origin, double at, MainWindow shell)
-        => thumb.RaiseEvent(new PointerReleasedEventArgs(
-            thumb, CheckPointer, shell, origin + new Vector(0, at), 0,
-            new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased),
-            KeyModifiers.None, MouseButton.Left));
 }

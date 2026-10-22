@@ -1,7 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
-using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -116,29 +115,6 @@ public partial class ChatPanel
         };
         PlanTasksHost.IsVisible = true;
     }
-
-    internal IReadOnlyList<string> PlanTaskTitlesForCheck => PlanTasksHost.GetLogicalDescendants()
-        .OfType<TextBlock>().Select(block => block.Text ?? "").Where(text => text.Length > 0).Skip(1).ToArray();
-
-    internal bool PlanTasksVisibleForCheck => PlanTasksHost.IsVisible;
-
-    internal bool PlanTasksPaintedForCheck => PlanTasksHost.IsVisible
-        && PlanTasksHost.GetLogicalDescendants().OfType<TextBlock>().All(text => text.Foreground is { Opacity: > 0 })
-        && PlanTasksHost.GetLogicalDescendants().OfType<Border>()
-            .Where(border => border.Width == 13 && border.Height == 13)
-            .All(border => border.BorderBrush is { Opacity: > 0 })
-        && PlanTasksHost.GetLogicalDescendants().OfType<ActivityGlyph>()
-            .All(glyph => glyph.TrackBrush is { Opacity: > 0 } && glyph.DotBrush is { Opacity: > 0 })
-        && PlanTasksHost.GetLogicalDescendants().OfType<Path>()
-            .All(tick => tick.Data is not null && tick.Fill is { Opacity: > 0 });
-
-    internal int PendingPlanTaskGlyphsForCheck => PlanTasksHost.GetLogicalDescendants().OfType<Border>()
-        .Count(border => border.Width == 13 && border.Height == 13);
-
-    internal bool PlanTasksAboveComposerForCheck
-        => PlanTasksHost.IsVisible
-           && PlanTasksHost.TranslatePoint(new Point(0, PlanTasksHost.Bounds.Height), ComposerFrame) is { } bottom
-           && bottom.Y <= 0;
 
     /// <summary>The call the host is currently asking about, or null. Kept beside the host rather than read
     /// back out of it so a refresh can tell "same decision, repaint" from "a different decision arrived".</summary>
@@ -277,7 +253,7 @@ public partial class ChatPanel
     /// snapshot is already stored for the next time they ask.</summary>
     private void OnRepositoryChanged()
     {
-        if (_inspector is not { } pane || !pane.RepoTabVisibleForCheck) return;
+        if (_inspector is not { } pane || !pane.IsRepositoryTabVisible) return;
         // Repaint rather than re-open, because a repaint never starts another read — which is what keeps this
         // from turning into a loop when the snapshot cannot satisfy the question the pane is asking.
         RefreshInspector?.Invoke();
@@ -1616,86 +1592,6 @@ public partial class ChatPanel
         UpdateSendState();
     }
 
-    // ── the strip, as a check reads it ──
-
-    internal bool SteerConfirmVisibleForCheck => SteerConfirmHost.IsVisible;
-
-    /// <summary>The draft the strip is holding up for its second tap. Read off the strip rather than the box:
-    /// showing the draft is the whole point of the confirmation, and the box has already been cleared.</summary>
-    internal string SteerConfirmTextForCheck
-        => SteerConfirmHost.GetLogicalDescendants().OfType<TextBlock>()
-            .FirstOrDefault(block => block.Classes.Contains("steer-confirm-text"))?.Text ?? "";
-
-    /// <summary>The commit button's own label: 「引导回复」 while a reply is running, 「发送」 once the reply has
-    /// finished and the same tap is an ordinary send.</summary>
-    internal string SteerConfirmCommitLabelForCheck
-        => SteerConfirmHost.GetLogicalDescendants().OfType<Button>()
-            .FirstOrDefault(button => button.Name == "SteerCommitButton")
-            ?.GetLogicalDescendants().OfType<TextBlock>()
-            .LastOrDefault()?.Text ?? "";
-
-    /// <summary>The whole sentence the strip carries in its tip. The line trims, so the tip is the only place a
-    /// steer longer than the strip can be read before the second tap says it — and the only thing that makes
-    /// trimming an acceptable answer instead of lost words.</summary>
-    internal string SteerConfirmTextTipForCheck
-        => SteerConfirmHost.GetLogicalDescendants().OfType<TextBlock>()
-            .FirstOrDefault(block => block.Classes.Contains("steer-confirm-text")) is { } text
-            ? ToolTip.GetTip(text) as string ?? ""
-            : "";
-
-    /// <summary>Where the draft's ink ends, where the actions begin, and what the same sentence would measure with
-    /// nothing in its way — all four in the strip's own coordinates. A long draft is the case that separates the
-    /// layouts: the strip is one line by design, so what has to hold is that the ink stops at the commit button
-    /// rather than running under its transparent label, and that the sentence genuinely wanted more room than it
-    /// got. A short draft satisfies the first half by fitting, which is why the second is read with it.</summary>
-    internal (double TextWidth, double NaturalWidth, double TextRight, double ActionsLeft)? SteerConfirmClipForCheck
-    {
-        get
-        {
-            if (_steerDraft is null) return null;
-            var text = SteerConfirmHost.GetLogicalDescendants().OfType<TextBlock>()
-                .FirstOrDefault(block => block.Classes.Contains("steer-confirm-text"));
-            var commit = SteerConfirmHost.GetLogicalDescendants().OfType<Button>()
-                .FirstOrDefault(button => button.Name == "SteerCommitButton");
-            if (text is null || commit is null) return null;
-            // The ink, not the box: stretched across its star column the block's Bounds end where the button begins
-            // whatever it drew, so a box reading would call a pained layout tidy. Unarranged (no layout pass yet)
-            // both translations come back null and the check is told so rather than handed a NaN.
-            var textRight = text.TranslatePoint(new Point(text.DesiredSize.Width, 0), SteerConfirmHost)?.X;
-            var actionsLeft = commit.TranslatePoint(new Point(0, 0), SteerConfirmHost)?.X;
-            if (textRight is not { } right || actionsLeft is not { } left) return null;
-            return (text.DesiredSize.Width, UnconstrainedWidth(text), right, left);
-        }
-    }
-
-    /// <summary>What the sentence measures with nothing in its way, taken on a throwaway block at the live one's own
-    /// face so the reading costs the strip nothing. Handed infinity the live block is what the bug looked like, so
-    /// this has to be a second block: the comparison is the only evidence that the line had to give up anything.</summary>
-    private static double UnconstrainedWidth(TextBlock text)
-    {
-        var probe = new TextBlock
-        {
-            Text = text.Text,
-            FontFamily = text.FontFamily,
-            FontSize = text.FontSize,
-            FontWeight = text.FontWeight,
-        };
-        probe.Measure(Size.Infinity);
-        return probe.DesiredSize.Width;
-    }
-
-    internal void ClickSteerCommitForCheck() => ClickSteerButtonForCheck("SteerCommitButton", null);
-    internal void ClickSteerEditForCheck() => ClickSteerButtonForCheck(null, "ChatSteerEdit");
-    internal void ClickSteerDiscardForCheck() => ClickSteerButtonForCheck(null, "ChatSteerDiscard");
-
-    private void ClickSteerButtonForCheck(string? name, string? tag)
-    {
-        var button = SteerConfirmHost.GetLogicalDescendants().OfType<Button>()
-            .FirstOrDefault(candidate => (name is not null && candidate.Name == name)
-                                       || (tag is not null && candidate.Tag as string == tag));
-        button?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-    }
-
     // ── A command that went quiet while it is still running ──
 
     /// <summary>How much of the quiet command this card's title draws. The line is the model's own, and it can be a
@@ -1831,35 +1727,6 @@ public partial class ChatPanel
     /// <summary>Which conversation's stall question is on the host, so a repaint does not rebuild a card that is
     /// already showing the same live process.</summary>
     private string? _stallShownFor;
-
-    internal bool StallCardVisibleForCheck => _stallShownFor is not null && DecisionHost.IsVisible;
-
-    internal string StallCardTextForCheck => DecisionHost.Child is null
-        ? ""
-        : string.Join(" ", DecisionHost.Child.GetLogicalDescendants().OfType<TextBlock>()
-            .Select(text => text.Text ?? "").Where(text => text.Length > 0));
-
-    /// <summary>The three answers, by tag, in the order they read. Named apart from the approval card's own action
-    /// list on purpose: <see cref="ApprovalCardActionsForCheck"/> keys off a pending call id, and a stall question
-    /// has none — reading the same host through that hook would report an empty card.</summary>
-    internal string[] StallActionsForCheck => DecisionHost.Child is null
-        ? []
-        : DecisionHost.Child.GetLogicalDescendants().OfType<Button>()
-            .Where(button => button.Classes.Contains("approval-action"))
-            .Select(button => button.Tag as string ?? "")
-            .ToArray();
-
-    /// <summary>Presses one of the three answers by its tag, so the suite drives the real control: a card whose
-    /// button wired to nothing would otherwise pass every word of an assertion about the answer.</summary>
-    internal bool PressStallActionForCheck(string tag)
-    {
-        if (DecisionHost.Child is not { } host) return false;
-        var button = host.GetLogicalDescendants().OfType<Button>()
-            .FirstOrDefault(candidate => (candidate.Tag as string) == tag);
-        if (button is null) return false;
-        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        return true;
-    }
 
     /// <summary>Option tags for the plan review, in the order the rows read. Kept as constants so the
     /// transcript's decision strings and the composer's row tags cannot drift apart.</summary>

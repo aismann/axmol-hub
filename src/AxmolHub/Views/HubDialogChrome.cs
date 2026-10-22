@@ -1,4 +1,3 @@
-using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data;
@@ -151,6 +150,27 @@ internal sealed class HubDialogChrome
     /// by its named parts (<c>DialogChrome</c> / <c>DialogDragArea</c> / <c>DialogTitle</c> /
     /// <c>DialogCloseButton</c>), which is also how a person's click reaches it.</summary>
     internal Control Header { get; }
+
+    /// <summary>Place the shared caption above a bounded body and optional action row.</summary>
+    internal Control Wrap(Control body, Control? footer = null)
+    {
+        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
+        var content = new Border
+        {
+            Padding = new Thickness(24, 24, 24, footer is null ? 24 : 0),
+            Child = body,
+        };
+        Grid.SetRow(content, 1);
+        layout.Children.Add(Header);
+        layout.Children.Add(content);
+        if (footer is not null)
+        {
+            var actions = new Border { Padding = new Thickness(24, 0, 24, 24), Child = footer };
+            Grid.SetRow(actions, 2);
+            layout.Children.Add(actions);
+        }
+        return layout;
+    }
 
     /// <summary>Pushes the plate out over the window's own frame (see the constructor).
     ///

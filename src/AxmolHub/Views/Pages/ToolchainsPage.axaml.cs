@@ -1,10 +1,4 @@
-using System;
-using System.Linq;
-using System.Threading.Tasks;
-using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Layout;
-using Avalonia.Media;
 using AxmolHub.Core;
 
 namespace AxmolHub;
@@ -241,13 +235,6 @@ public partial class ToolchainsPage : UserControl
         }
 
         await _workspace.InstallHostShellAsync();
-    }
-
-    /// <summary>Verification hook: paints the card from a status nobody has to install anything to produce.</summary>
-    internal void SetHostShellForCheck(HostShellStatus status, bool awaitingTerminal = false)
-    {
-        _workspace.HostShellForCheck(status, awaitingTerminal);
-        ReloadHostShell();
     }
 
     private void ReloadTools()

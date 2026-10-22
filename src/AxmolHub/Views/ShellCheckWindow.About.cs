@@ -1,40 +1,24 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using AxmolHub.Core;
 using static AxmolHub.ThemeProbe;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-/// <summary>The application menu's About entry: the one About surface that used to belong to Avalonia.
-///
-/// <para>Kept in its own file the way <c>ShellCheckWindow.ModelSwitch.cs</c> is, because the file it would
-/// otherwise grow is already the largest in the repository.</para>
-///
-/// <para>Why this is asserted at all: with no application-level menu of Hub's own, the framework exports its
-/// own, whose About entry opens Avalonia's About dialog — a window that says nothing about Hub and whose text
-/// Hub cannot touch. None of that fails at build time, and neither Windows nor Linux shows it, so a Mac is the
-/// only place the regression would ever be seen.</para></summary>
-public partial class ShellCheckWindow
+internal sealed class ShellAboutChecks
 {
-    /// <summary>The menu label, the one sentence and the address, written out rather than read off
-    /// <see cref="App"/> or <see cref="HubDialog"/>: an assertion that asks the code under test what to expect
-    /// proves nothing about it.</summary>
-    private const string AboutMenuLabel = "About Axmol Hub…";
+    private readonly Action<bool, string> Check;
+    internal ShellAboutChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
 
-    private const string AboutTagline =
-        "Axmol Hub is the desktop workspace for Axmol game development: engines, projects, toolchains and an AI "
-        + "assistant in one place.";
-
-    private const string AboutRepository = "https://github.com/axmolengine/axmol-hub";
-
-    private async Task CheckAboutMenuAsync()
+    internal async Task CheckAboutMenuAsync()
     {
         // ① The name the menu bar and the About surface both belong to. The bundle's own names live in
         //    Platforms/macOS/DevelopmentInfo.plist and are not in the object graph; this is the one that is.

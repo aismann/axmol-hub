@@ -1,11 +1,16 @@
-using System.Linq;
 using Avalonia.Threading;
+using AxmolHub.Core;
 
 namespace AxmolHub;
-
-public partial class ShellCheckWindow
+internal sealed class ShellOpenMeasurementsChecks
 {
-    private void CheckSessionOpenMeasurements(MainWindow shell, ChatPanel panel, string first, string second)
+    private readonly Action<bool, string> Check;
+    internal ShellOpenMeasurementsChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal void CheckSessionOpenMeasurements(MainWindow shell, ChatPanel panel, string first, string second)
     {
         var chat = shell.Chat;
         Dispatcher.UIThread.RunJobs();

@@ -1,7 +1,5 @@
-using System;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Layout;
 using Avalonia.Media;
 using AxmolHub.Core;
 
@@ -38,9 +36,9 @@ public sealed class PrebuiltWindow : Window
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
 
         var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = HubStrings.Get("PrebuiltSettings"), FontSize = 18 });
         panel.Children.Add(new TextBlock
         {
             Text = project.Name + "\n" + engine + " · " + target.Name + " · " + project.Configuration,
@@ -78,11 +76,6 @@ public sealed class PrebuiltWindow : Window
             Margin = new Thickness(0, 16, 0, 0),
         });
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 20, 0, 0) };
-        var ok = new Button { Content = HubStrings.Get("Ok"), IsDefault = true, Classes = { "primary" } };
-        ok.Click += (_, _) => Close(HubDialogResult.Ok);
-        var cancel = new Button { Content = HubStrings.Get("Cancel"), IsCancel = true, Margin = new Thickness(0, 0, 8, 0) };
-
         // When unusable, give the "what to do" along with the entry point so the user doesn't have to hunt for it.
         if (!availability.Usable)
         {
@@ -102,11 +95,8 @@ public sealed class PrebuiltWindow : Window
             panel.Children.Add(open);
         }
 
-        cancel.Click += (_, _) => Close(HubDialogResult.Cancel);
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(ok);
-        panel.Children.Add(buttons);
-
-        Content = new Border { Child = panel, Padding = new Thickness(24) };
+        var (footer, _, _) = HubDialogChrome.Footer(HubStrings.Get("Ok"), HubStrings.Get("Cancel"),
+            () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
+        Content = chrome.Wrap(panel, footer);
     }
 }

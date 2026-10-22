@@ -1,8 +1,4 @@
-using System.Threading.Tasks;
-using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Layout;
-using AxmolHub.Core;
 
 namespace AxmolHub;
 
@@ -37,17 +33,9 @@ public sealed class PromptWindow : Window
         var body = new StackPanel { Spacing = 8 };
         body.Children.Add(_input);
 
-        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
-        Grid.SetRow(chrome.Header, 0);
-        Grid.SetRow(body, 1);
         var (footer, _, _) = HubDialogChrome.Footer(HubStrings.Get("Save"), HubStrings.Get("Cancel"),
             () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
-        Grid.SetRow(footer, 2);
-        layout.Children.Add(chrome.Header);
-        layout.Children.Add(body);
-        layout.Children.Add(footer);
-
-        Content = new Border { Child = layout, Padding = new Thickness(24) };
+        Content = chrome.Wrap(body, footer);
 
         Opened += (_, _) => { _input.Focus(); _input.SelectAll(); };
     }

@@ -221,16 +221,6 @@ internal static partial class SelectionMenu
         Attached.AddOrUpdate(box, menu);
     }
 
-    /// <summary>The menu a surface was given, wherever it was given: the table this file keeps first, because a
-    /// menu this file attached is the one a check is asking about, then <see cref="Control.ContextFlyout"/> — which
-    /// is where the composer's lives, and where a control may also carry a menu of somebody else's (the rendered
-    /// Markdown ships controls with context properties of their own, and asking the control first made this answer
-    /// about those instead).</summary>
-    private static MenuFlyout? MenuOf(Control target)
-        => Attached.TryGetValue(target, out var attached)
-            ? attached
-            : target.ContextFlyout as MenuFlyout;
-
     /// <summary>Where a copy lands when a check wants it, instead of the real clipboard — the same hook
     /// <c>ChatSidebar.TestClipboardWriter</c> gives the conversation-id copy, and for the same reason: the suite
     /// drives the row's own click handler, and reading the text back must not throw away what the person last

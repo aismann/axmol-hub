@@ -1,11 +1,6 @@
-using System;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
-using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using AxmolHub.Core;
@@ -47,12 +42,12 @@ public sealed class AndroidReleaseWindow : Window
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
 
         var current = AndroidReleaseSettings.Load(project)
                       ?? new AndroidReleaseSettings { ApplicationId = AndroidPackageService.PackageName(project), KeyAlias = "upload" };
 
-        var panel = new StackPanel { Margin = new Thickness(24) };
-        panel.Children.Add(new TextBlock { Text = Title, FontSize = 20, Margin = new Thickness(0, 0, 0, 12) });
+        var panel = new StackPanel();
 
         TextBox Field(string title, string value)
         {
@@ -184,6 +179,6 @@ public sealed class AndroidReleaseWindow : Window
         buttons.Children.Add(cancel);
         panel.Children.Add(buttons);
 
-        Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        Content = chrome.Wrap(new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
     }
 }

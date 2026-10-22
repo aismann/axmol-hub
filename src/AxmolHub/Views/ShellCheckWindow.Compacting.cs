@@ -1,27 +1,17 @@
-using System.Threading;
-using System.Threading.Tasks;
 using Avalonia.Threading;
 using AxmolHub.Core;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-/// <summary>What the chat says while Hub is compressing its own context.
-///
-/// <para>Kept in its own file for the reason <c>ShellCheckWindow.ModelSwitch.cs</c> is: the file these checks
-/// would otherwise grow is already the largest in the repository.</para></summary>
-public partial class ShellCheckWindow
+internal sealed class ShellCompactingChecks
 {
-    /// <summary>Three facts and a fourth, one per surface and one per ending. A compaction is the only stretch of a
-    /// run where nothing at all arrives — no token, no tool call — so the run's own status line is what a person is
-    /// staring at when it happens, and it has to say what is happening rather than go on claiming tokens are
-    /// coming. The button path has no bubble, so the strip below the transcript carries the same sentence there;
-    /// and both surfaces give the line back when the summary lands, because a line nobody takes down reads as a
-    /// session that is stuck.
-    ///
-    /// <para>Both brackets are held open by the fixture rather than raced for: the summary answer waits on a gate
-    /// the check holds, so "compacting" is a state it chose and can read, not a millisecond it happened to
-    /// catch.</para></summary>
-    private async Task CheckCompactingStatusAsync(MainWindow shell, ChatPanel panel, string providerId)
+    private readonly Action<bool, string> Check;
+    internal ShellCompactingChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal async Task CheckCompactingStatusAsync(MainWindow shell, ChatPanel panel, string providerId)
     {
         var chat = shell.Chat;
         var savedOverride = chat.ClientOverride;

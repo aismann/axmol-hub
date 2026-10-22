@@ -281,6 +281,7 @@ internal static partial class MacDockActivation
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
     private static extern void SendAddObserver(
         IntPtr receiver, IntPtr selector, IntPtr observer, IntPtr method, IntPtr name, IntPtr value);
+
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
     private static extern void SendPost(IntPtr receiver, IntPtr selector, IntPtr name, IntPtr value);
     [DllImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]

@@ -45,7 +45,7 @@ public static class ChatChangeStore
         if (!Guid.TryParseExact(id, "N", out _) || DirectoryFor(dataRoot) is not { } root) return null;
         try
         {
-            var record = JsonSerializer.Deserialize<ChatFileRevision>(File.ReadAllText(RecordPath(root, id)));
+            var record = JsonSerializer.Deserialize<ChatFileRevision>(File.ReadAllText(RecordPath(root, id)), StateStore.ReadOptions);
             if (record is null || !string.Equals(record.Id, id, StringComparison.Ordinal)) return null;
             return record.State == Pending && RecoverState(dataRoot, record) == Complete
                 ? record with { State = Complete }
@@ -277,7 +277,7 @@ public static class ChatChangeStore
             var liveHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var file in Directory.EnumerateFiles(recordsDirectory, "*.json"))
             {
-                var record = JsonSerializer.Deserialize<ChatFileRevision>(File.ReadAllText(file));
+                var record = JsonSerializer.Deserialize<ChatFileRevision>(File.ReadAllText(file), StateStore.ReadOptions);
                 if (record?.BeforeHash is { } before) liveHashes.Add(before);
                 if (record?.AfterHash is { } after) liveHashes.Add(after);
             }

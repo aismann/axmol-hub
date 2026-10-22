@@ -1,8 +1,6 @@
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
-using Avalonia.LogicalTree;
 using Avalonia.Media;
 using AxmolHub.Core;
 
@@ -23,7 +21,7 @@ namespace AxmolHub;
 /// <para><b>Step two is either the browser flow or a key box.</b> Key entry optionally validates first — see
 /// <see cref="KeyCheckOutcome"/> for why an unreachable probe is not treated as a rejection.</para>
 /// </summary>
-public sealed class AuthDialog : Window
+public sealed partial class AuthDialog : Window
 {
     private readonly ModelProvider _provider;
     private readonly Func<string, Task<KeyCheckOutcome>>? _checkKey;
@@ -43,30 +41,6 @@ public sealed class AuthDialog : Window
     private Button? _next;
     private Button? _confirm;
 
-    /// <summary>
-    /// Builds a detached instance for a screenshot, optionally already advanced to a step.
-    ///
-    /// <para>The step is a parameter because a picture of step one alone would misrepresent the dialog: the
-    /// method list and the key box are the two halves of one flow, and only the second half has an input in
-    /// it. <c>"key"</c> is what the key step is called in <see cref="Choose"/>.</para>
-    /// </summary>
-    internal static AuthDialog ForCheck(ModelProvider provider, string? step = null)
-    {
-        var dialog = new AuthDialog(provider, null, null);
-        if (step is not null) dialog.RenderKeyStep();
-        return dialog;
-    }
-
-    /// <summary>Picks a method row without taking it, mirroring a click on the row itself.</summary>
-    internal void SelectForCheck(string method)
-    {
-        var rows = LogicalControls
-            .OfType<Button>()
-            .Where(button => button.Tag as string == method)
-            .ToList();
-        foreach (var row in rows) Select(method, rows);
-    }
-
     private AuthDialog(ModelProvider provider, string? initialMethod, Func<string, Task<KeyCheckOutcome>>? checkKey)
     {
         _provider = provider;
@@ -81,11 +55,12 @@ public sealed class AuthDialog : Window
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
 
         var root = new StackPanel { Spacing = 12 };
         root.Children.Add(_steps);
         root.Children.Add(_navButtons);
-        Content = new Border { Child = root, Padding = new Thickness(24) };
+        Content = chrome.Wrap(root);
 
         Render();
     }
@@ -109,82 +84,6 @@ public sealed class AuthDialog : Window
 
     /// <summary>What the dialog produced, or <c>null</c> when the user closed it without choosing.</summary>
     public AuthDialogResult? Result { get; private set; }
-
-    // ── Self-check surface ──
-    //
-    // A modal cannot be driven by --verify-shell, so these read the built state instead. Two rules make the
-    // reads trustworthy, and both were learned by breaking them:
-    //
-    // 1. Read the LOGICAL tree, not the visual one. A window that was never shown has no visual tree —
-    //    GetVisualDescendants() on it returns nothing, so "no blank text" passed on an empty collection and
-    //    the option list read as "[]". An assertion that cannot fail is worse than no assertion, because it
-    //    looks like evidence. StepCountForCheck exists to close that door: it fails loudly when the tree
-    //    the other reads walk turns out to be empty.
-    // 2. Read the TEXT, never the control's existence. Body(string) once took a parameter and never
-    //    assigned it to Text — the block laid out, measured a line's height, painted nothing, and every
-    //    check that counted controls or read Tag still passed. Counting is not reading.
-
-    /// <summary>How many text-bearing controls the current step actually built. The non-empty witness.</summary>
-    internal int StepControlCountForCheck => LogicalControls.Count();
-
-    /// <summary>Every non-empty string currently painted in the dialog's content, in tree order.</summary>
-    internal string[] VisibleTextForCheck
-        => LogicalControls
-            .Select(control => Read(control))
-            .Where(text => !string.IsNullOrWhiteSpace(text))
-            .Cast<string>()
-            .ToArray();
-
-    /// <summary>
-    /// How many <see cref="TextBlock"/>s in the tree are blank <i>and showing</i>.
-    ///
-    /// <para>Visibility is part of the predicate on purpose. A status line that is built empty and filled
-    /// in only when there is something to report is legitimate; what is not legitimate is a block the user
-    /// can see with nothing in it. Counting the hidden ones would make the check cry wolf over the design
-    /// rather than the defect.</para>
-    /// </summary>
-    internal int BlankTextCountForCheck
-        => LogicalControls
-            .OfType<TextBlock>()
-            .Count(block => string.IsNullOrWhiteSpace(block.Text) && block.IsVisible);
-
-    /// <summary>Names of the blank, visible text blocks. Empty when there are none; diagnostic detail.</summary>
-    internal string[] BlankTextClassesForCheck
-        => LogicalControls
-            .OfType<TextBlock>()
-            .Where(block => string.IsNullOrWhiteSpace(block.Text) && block.IsVisible)
-            .Select(block => string.Join("+", block.Classes))
-            .ToArray();
-
-    /// <summary>The label on the step-one confirm button, or <c>null</c> when this step has none.</summary>
-    internal string? NextTextForCheck => (_next?.Content as string) ?? _next?.Content?.ToString();
-
-    /// <summary>Whether the step-one confirm button would take the selection.</summary>
-    internal bool NextEnabledForCheck => _next?.IsEnabled ?? false;
-
-    /// <summary>The method rows on step one, in order. Empty on the key step.</summary>
-    internal string[] MethodOptionsForCheck
-        => LogicalControls
-            .OfType<Button>()
-            .Select(button => button.Tag as string)
-            .Where(tag => tag is not null)
-            .Cast<string>()
-            .ToArray();
-
-    /// <summary>The password boxes on the current step. Used to prove the key box exists at all.</summary>
-    internal bool HasPasswordBoxForCheck
-        => LogicalControls.OfType<TextBox>().Any(box => box.Classes.Contains("password"));
-
-    private IEnumerable<Control> LogicalControls
-        => this.GetLogicalDescendants().OfType<Control>();
-
-    private static string? Read(Control control) => control switch
-    {
-        TextBlock block => block.Text,
-        Button { Content: string text } => text,
-        TextBox box => box.Text ?? box.PlaceholderText,
-        _ => null,
-    };
 
     private void Render()
     {

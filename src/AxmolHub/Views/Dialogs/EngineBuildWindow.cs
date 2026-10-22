@@ -1,5 +1,3 @@
-using System;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
@@ -42,9 +40,9 @@ public sealed class EngineBuildWindow : Window
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
 
         var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = HubStrings.Get("BuildEngineConfirm"), FontSize = 18 });
 
         var engineLabel = new TextBlock
         {
@@ -73,16 +71,9 @@ public sealed class EngineBuildWindow : Window
         configurationRow.Children.Add(_configuration);
         panel.Children.Add(configurationRow);
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 20, 0, 0) };
-        var cancel = new Button { Content = HubStrings.Get("Cancel"), IsCancel = true };
-        cancel.Click += (_, _) => Close(HubDialogResult.Cancel);
-        var start = new Button { Content = HubStrings.Get("Build"), IsDefault = true, Classes = { "primary" } };
-        start.Click += (_, _) => Close(HubDialogResult.Ok);
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(start);
-        panel.Children.Add(buttons);
-
-        Content = new Border { Child = panel, Padding = new Thickness(24) };
+        var (footer, _, _) = HubDialogChrome.Footer(HubStrings.Get("Build"), HubStrings.Get("Cancel"),
+            () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
+        Content = chrome.Wrap(panel, footer);
     }
 
     /// <summary>Returns the chosen configuration; <c>null</c> when the user cancels.</summary>

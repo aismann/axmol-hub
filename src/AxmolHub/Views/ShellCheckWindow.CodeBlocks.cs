@@ -1,17 +1,24 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Controls.Primitives;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using AxmolHub.Core;
+using Avalonia.Controls.Primitives;
 using AvaloniaEdit;
-using Markdown.Avalonia;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-public sealed partial class ShellCheckWindow
+internal sealed class ShellCodeBlocksChecks
 {
-    private Task VerifyCodeBlockGeometryAsync()
+    private readonly Action<bool, string> Check;
+    internal ShellCodeBlocksChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal Task VerifyCodeBlockGeometryAsync()
     {
         const string single = "```text\nCompleted without a final answer for a very long model response, with finish_reason=tool_calls and tool_calls=1 after recording all the request metadata\n```";
         const string multiple = "```sh\ngrep -h \"Completed without a final answer\" ~/Library/Application\\ Support/AxmolHub/data/logs/*.log | tail -20\ngrep -h \"Model usage\" ~/Library/Application\\ Support/AxmolHub/data/logs/*.log | tail -20\n```";
@@ -58,7 +65,7 @@ public sealed partial class ShellCheckWindow
         return Task.CompletedTask;
     }
 
-    private async Task VerifyStreamingCodeBlockAsync(MainWindow shell, ChatPanel panel)
+    internal async Task VerifyStreamingCodeBlockAsync(MainWindow shell, ChatPanel panel)
     {
         const string command = "grep -h \"Completed without a final answer\" ~/Library/Application\\ Support/AxmolHub/data/logs/*.log | tail -20";
         var before = shell.Chat.ActiveConversation?.Id;
@@ -105,7 +112,7 @@ public sealed partial class ShellCheckWindow
         }
     }
 
-    private void CheckCodeBlockGeometry(TextEditor editor, string name)
+    internal void CheckCodeBlockGeometry(TextEditor editor, string name)
     {
         var border = editor.GetVisualAncestors().OfType<Border>()
             .First(candidate => candidate.Classes.Contains("CodeBlock"));

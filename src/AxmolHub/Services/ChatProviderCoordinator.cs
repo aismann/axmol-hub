@@ -1,0 +1,1162 @@
+using static AxmolHub.ChatSessionCoordinator;
+using static AxmolHub.ChatExecutionCoordinator;
+using AxmolHub.Agent;
+using AxmolHub.Core;
+using static AxmolHub.ChatWorkspace;
+
+namespace AxmolHub;
+/// <summary>Owns credentials, provider configuration and the model catalog, including learned capabilities.</summary>
+internal sealed partial class ChatProviderCoordinator
+{
+    internal ChatSessionCoordinator Sessions { private get; set; } = null!;
+    internal ChatExecutionCoordinator Execution { private get; set; } = null!;
+
+    internal ChatProviderCoordinator(string dataRoot)
+    {
+        try
+        {
+            _secrets = SecretStoreFactory.Create(dataRoot);
+        }
+        catch (PlatformNotSupportedException)
+        {
+            _secrets = null;
+        }
+
+        _providers = new ProviderStore(dataRoot);
+        _credentials = new CredentialStore(dataRoot, _secrets ?? new NoSecretStore());
+        _modelLists = new ModelListStore(dataRoot);
+    }
+
+    private readonly ProviderStore _providers;
+    private readonly CredentialStore _credentials;
+    internal HttpClient? ModelListTransportOverride => _modelListHttp;
+    private readonly ModelListStore _modelLists;
+    private readonly ISecretStore? _secrets;
+    private readonly List<ModelProvider> _providerList = [];
+    private readonly List<ProviderCredential> _credentialList = [];
+    private string? _selectedProviderId;
+    private string? _selectedModelName;
+    internal bool CanStoreSecrets => _secrets is not null;
+    internal SecretStoreDescriptor SecretBackend => _secrets?.Descriptor ?? SecretStoreDescriptor.None;
+    internal IReadOnlyList<ModelProvider> Providers => _providerList;
+    internal IReadOnlyList<ChatModelOption> AvailableChatModels
+        => _providerList
+            .Where(provider => provider.Enabled && provider.IsCallReady)
+            .SelectMany(provider => provider.Models
+                .Where(model => model.Enabled)
+                .OrderByDescending(model => model.InUse)
+                .Select(model => new ChatModelOption(provider, model.Name)))
+            .ToList();
+    internal ChatModelOption? SelectedChatModel
+        => Sessions.Active is { } viewed ? ModelFor(viewed.Id) : FindChatModel(_selectedProviderId, _selectedModelName) ?? AvailableChatModels.FirstOrDefault();
+
+    internal ChatModelOption? ModelFor(string conversationId)
+    {
+        var conversation = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);
+        if (conversation is null) return null;
+
+        if (string.IsNullOrWhiteSpace(conversation.ModelName))
+        {
+            var active = _providerList.FirstOrDefault(provider => provider.Id == conversation.ProviderId)
+                ?.ActiveModel?.Name;
+            return FindChatModel(conversation.ProviderId, active)
+                   ?? AvailableChatModels.FirstOrDefault(choice => choice.Provider.Id == conversation.ProviderId);
+        }
+
+        var named = FindChatModel(conversation.ProviderId, conversation.ModelName);
+        return named ?? (ChatRouting.Normalize(conversation.Routing) == ChatRouting.Auto
+            ? AvailableChatModels.FirstOrDefault(choice => choice.Provider.Id == conversation.ProviderId)
+            : null);
+    }
+
+    internal string? UnresolvableSessionModel(string conversationId)
+        => ModelFor(conversationId) is null
+           && (Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId)) is { } conversation
+           && ChatRouting.Normalize(conversation.Routing) != ChatRouting.Auto
+           && !string.IsNullOrWhiteSpace(conversation.ModelName)
+            ? conversation.ModelName
+            : null;
+    internal ChatModelOption? ResolvedModel(string conversationId, out string? refusalKey)
+    {
+        var choice = ModelFor(conversationId);
+        if (choice is not null)
+        {
+            refusalKey = null;
+            return choice;
+        }
+
+        refusalKey = "NoAvailableChatModels";
+        if (UnresolvableSessionModel(conversationId) is { } gone)
+            Execution.Audit(conversationId,
+                $"Model unavailable: this session names {gone}, which the provider does not offer any more — "
+                + "refusing rather than answering on another model");
+        return null;
+    }
+
+    internal ModelProvider? ActiveProvider => SelectedChatModel?.Provider;
+
+    internal bool SelectChatModel(string providerId, string modelName)
+    {
+        var choice = FindChatModel(providerId, modelName);
+        if (choice is null) return false;
+
+        _selectedProviderId = choice.Provider.Id;
+        _selectedModelName = choice.ModelName;
+        if (Sessions.Active is not null)
+        {
+            Sessions.Registry.TryUpdate(Sessions.Active.Id, conversation =>
+            {
+                // A notice row goes down only for a real change: re-picking the model this session is already on is
+                // not a fact about the transcript, and a session restored to its own model when it opens is not a
+                // switch either. Where it lands is where this history stopped being one model's, which is the
+                // place a reader would otherwise have to guess at — and the answer to why the turns above it
+                // sound like a different assistant.
+                var switched = !string.Equals(conversation.ProviderId, choice.Provider.Id, StringComparison.Ordinal)
+                               || !string.Equals(conversation.ModelName, choice.ModelName,
+                                   StringComparison.OrdinalIgnoreCase);
+                conversation.ProviderId = choice.Provider.Id;
+                conversation.ModelName = choice.ModelName;
+                // A hand pick is the end of routing for this session, not an input to it: a router that quietly
+                // overrode the model someone just chose would make the picker a decoration.
+                conversation.Routing = ChatRouting.Manual;
+                if (switched)
+                    conversation.Append(ChatTurn.Notice(string.Format(
+                        System.Globalization.CultureInfo.CurrentCulture,
+                        HubStrings.Get("ModelChangedFormat"), choice.ToString())));
+            });
+        }
+
+        Execution.Changed?.Invoke();
+        return true;
+    }
+
+    private ChatModelOption? FindChatModel(string? providerId, string? modelName)
+        => string.IsNullOrWhiteSpace(providerId) || string.IsNullOrWhiteSpace(modelName)
+            ? null
+            : AvailableChatModels.FirstOrDefault(choice =>
+                choice.Provider.Id == providerId
+                && string.Equals(choice.ModelName, modelName, StringComparison.OrdinalIgnoreCase));
+    internal void LoadProviders()
+    {
+        _providerList.Clear();
+        _providerList.AddRange(_providers.Load());
+
+        // A saved provider records only its id; the built-in defaults (base URL, model, affiliate flag,
+        // description, auth methods) come from the manifest. Re-deriving them here means editing
+        // ai-providers.json updates existing installs instead of only new ones.
+        var cachedModelLists = _modelLists.Load()
+            .GroupBy(entry => entry.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+        foreach (var provider in _providerList)
+        {
+            var builtIn = provider.IsCustom ? null : AiProviderManifest.CreateBuiltIn(provider.Id);
+            if (builtIn is not null)
+            {
+                provider.Name = provider.Name.Length == 0 ? builtIn.Name : provider.Name;
+                provider.BaseUrl = provider.BaseUrl.Length == 0 ? builtIn.BaseUrl : provider.BaseUrl;
+                provider.Model = provider.Model.Length == 0 ? builtIn.Model : provider.Model;
+                provider.Affiliate = builtIn.Affiliate;
+                provider.ReferralUrl ??= builtIn.ReferralUrl;
+                // The blurb and auth methods are never persisted, so they can simply be refreshed from the
+                // manifest each load. Auth methods in particular must follow the manifest: a provider that
+                // gains OAuth support in a later release should offer it without a reinstall.
+                provider.Description = builtIn.Description;
+                provider.DescriptionZh = builtIn.DescriptionZh;
+                provider.DefaultEnabledModels = [.. builtIn.DefaultEnabledModels];
+                provider.AuthMethods = [.. builtIn.AuthMethods];
+                provider.OAuth = builtIn.OAuth;
+                // Same reasoning as the two lines above: the probe is a manifest fact, refreshed every load.
+                provider.KeyValidation = builtIn.KeyValidation;
+                provider.CapabilitySource = builtIn.CapabilitySource;
+                provider.ExtraHeaders = builtIn.ExtraHeaders;
+                provider.RequestSemantics = builtIn.RequestSemantics;
+                provider.WebToolsBackend = provider.WebToolsBackend.Length == 0
+                    ? builtIn.WebToolsBackend : provider.WebToolsBackend;
+                // ??= on purpose, unlike the three lines above: a hosted tool is a claim about the deployment this
+                // person is standing on, and they are the only one who can test it. The manifest is the seed.
+                // The `?? []` is for the compiler, not for a real case — `CreateBuiltIn` always hands over a list —
+                // but the copy is what keeps a provider from sharing the manifest's own list.
+                provider.ServerTools ??= [.. builtIn.ServerTools ?? []];
+                // ??= for the same reason as ServerTools: the wire is a claim about the deployment this person is
+                // standing on, so a saved declaration survives the manifest and a manifest-only change still
+                // reaches an install that never said anything. An unknown value never gets here — the manifest
+                // filters it through ModelProtocols.IsKnown when it projects the entry.
+                provider.Protocol ??= builtIn.Protocol;
+                // ??= and not = : a persisted number is now a deliberate human setting — except where nothing was
+                // ever stored, which is what made an install run every model against 8192 while its own gateway
+                // published 128000 for the preset and the saved row said null.
+                provider.MaxContextTokens ??= builtIn.MaxContextTokens;
+            }
+
+            cachedModelLists.TryGetValue(provider.Id, out var modelCache);
+            provider.ReasoningModels = MergeReasoningModels(
+                builtIn?.ReasoningModels,
+                modelCache?.ReasoningModels);
+            provider.ModelCapabilities = MergeCapabilities(
+                builtIn?.ModelCapabilities,
+                modelCache?.Capabilities);
+        }
+
+        // First run (nothing saved yet): adopt the single default preset so the conversation page has a
+        // configured provider to name. A user who has deliberately removed it is not re-seeded — the file
+        // exists, so this branch is skipped.
+        if (_providerList.Count == 0 && AiProviderManifest.DefaultProviderId() is { } defaultId)
+        {
+            if (AiProviderManifest.CreateBuiltIn(defaultId) is { } provider) _providerList.Add(provider);
+        }
+
+        LoadCredentials();
+        Execution.Changed?.Invoke();
+    }
+
+    private void LoadCredentials()
+    {
+        _credentialList.Clear();
+        var loaded = _credentials.Load();
+        var loadedCount = loaded.Count;
+        _credentialList.AddRange(loaded);
+
+        // Migration: no credential file, but the provider list has a legacy key stored under the provider id.
+        // Writing the migrated list immediately is deliberate — it makes the upgrade a one-time event rather
+        // than a condition re-evaluated on every launch.
+        if (_credentialList.Count == 0)
+        {
+            var legacy = CredentialStore.MigrateFromProviders(_providerList);
+            if (legacy.Count > 0)
+            {
+                _credentialList.AddRange(legacy);
+                _credentials.Save(_credentialList);
+            }
+        }
+
+        foreach (var provider in _providerList)
+        {
+            // Adopt the one credential this provider has. A list written by an install that predates the
+            // one-to-one rule can still hold several for one provider, so extras are dropped rather than
+            // silently left as orphans nobody can reach: the oldest survives, because that is the one a
+            // re-auth has been rotating in place.
+            var owned = _credentialList
+                .Where(credential => credential.ProviderId == provider.Id)
+                .OrderBy(credential => credential.CreatedAt)
+                .ToList();
+
+            foreach (var extra in owned.Skip(1))
+            {
+                _credentialList.Remove(extra);
+                _credentials.DeleteSecret(extra.Id);
+            }
+
+            provider.Credential = owned.FirstOrDefault();
+            BindOpenAiTokens(provider);
+        }
+
+        // Written back only when extras were actually dropped, so an ordinary launch touches nothing.
+        if (_credentialList.Count != loadedCount) _credentials.Save(_credentialList);
+    }
+
+    internal ProviderCredential? CredentialFor(string providerId)
+        => _credentialList.FirstOrDefault(credential => credential.ProviderId == providerId);
+    internal IReadOnlyList<ProviderCredential> Credentials => _credentialList;
+
+    internal ProviderCredential? AddCredential(string providerId, string label, string? secret, string source)
+    {
+        if (_providerList.FirstOrDefault(candidate => candidate.Id == providerId) is not { } provider) return null;
+        if (!string.IsNullOrEmpty(secret) && !CanStoreSecrets) return null;
+        if (provider.RequiresCredential && string.IsNullOrEmpty(secret)) return null;
+
+        var existing = CredentialFor(providerId);
+        if (existing is not null)
+        {
+            lock (existing)
+            {
+                if (!string.IsNullOrEmpty(secret)) _secrets!.Write(existing.Id, secret);
+                if (!string.IsNullOrEmpty(secret)) existing.Secret = secret;
+                existing.AuthKind = "apiKey";
+                existing.AccountId = null;
+                existing.Scope = null;
+                existing.Source = source;
+                if (label.Trim().Length > 0) existing.Label = label.Trim();
+                BindOpenAiTokens(provider);
+                SaveCredentials(writeSecrets: false);
+            }
+            Execution.Changed?.Invoke();
+            return existing;
+        }
+
+        var credential = new ProviderCredential
+        {
+            Id = "cred-" + Guid.NewGuid().ToString("N")[..12],
+            ProviderId = providerId,
+            Label = label.Trim(),
+            Source = source,
+            Secret = string.IsNullOrEmpty(secret) ? null : secret,
+        };
+
+        if (credential.Label.Length == 0) credential.Label = DefaultCredentialLabel(providerId);
+
+        if (credential.Secret is { Length: > 0 }) _secrets!.Write(credential.Id, credential.Secret);
+        _credentialList.Add(credential);
+        SaveCredentials(writeSecrets: false);
+        provider.Credential = credential;
+        BindOpenAiTokens(provider);
+        Execution.Changed?.Invoke();
+        return credential;
+    }
+
+    internal ProviderCredential? AddOAuthCredential(string providerId, string? accountId, string? scope, string secret, string authKind = "apiKey")
+    {
+        if (!CanStoreSecrets) return null;
+        // A sign-in that came back without a key did not authenticate anything. Storing the record anyway would
+        // overwrite a working secret on re-auth and mark the provider as ready while the client factory still
+        // refuses it — the state this guard exists to keep out.
+        if (string.IsNullOrEmpty(secret)) return null;
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return null;
+
+        var existing = CredentialFor(providerId);
+        if (existing is not null)
+        {
+            lock (existing)
+            {
+                _secrets!.Write(existing.Id, secret);
+                existing.Secret = secret;
+                existing.AuthKind = authKind;
+                existing.Scope = scope;
+                existing.Source = CredentialSources.OAuth;
+                existing.AccountId = accountId;
+                if (accountId is { Length: > 0 }) existing.Label = AccountLabel(providerId, accountId);
+                BindOpenAiTokens(provider);
+                SaveCredentials(writeSecrets: false);
+            }
+            Execution.Changed?.Invoke();
+            return existing;
+        }
+        var credential = new ProviderCredential
+        {
+            Id = "cred-" + Guid.NewGuid().ToString("N")[..12], ProviderId = providerId,
+            Label = accountId is { Length: > 0 } ? AccountLabel(providerId, accountId) : DefaultCredentialLabel(providerId),
+            Source = CredentialSources.OAuth, AuthKind = authKind, AccountId = accountId, Scope = scope, Secret = secret,
+        };
+        _secrets!.Write(credential.Id, secret);
+        _credentialList.Add(credential);
+        SaveCredentials(writeSecrets: false);
+        provider.Credential = credential;
+        BindOpenAiTokens(provider);
+        Execution.Changed?.Invoke();
+        return credential;
+    }
+
+    private void BindOpenAiTokens(ModelProvider provider)
+    {
+        if (provider.Id == "openai")
+        {
+            var mode = provider.IsOpenAiOAuth ? "openaiOAuth" : "apiKey";
+            var cached = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(provider.Id));
+            if (provider.ModelAuthKind != mode)
+            {
+                provider.Models.Clear();
+                provider.Model = "";
+                provider.ModelAuthKind = mode;
+                provider.Models.AddRange((cached?.Models ?? []).Select(name => new ProviderModel { Name = name, Enabled = true }));
+                provider.Normalize();
+                _providers.Save(_providerList);
+            }
+            var preset = AiProviderManifest.CreateBuiltIn(provider.Id);
+            provider.ReasoningModels = MergeReasoningModels(preset?.ReasoningModels, cached?.ReasoningModels);
+            provider.ModelCapabilities = MergeCapabilities(preset?.ModelCapabilities, cached?.Capabilities);
+        }
+        provider.OpenAiTokenProvider = provider.IsOpenAiOAuth && provider.Credential is { } credential && _secrets is not null
+            ? new OpenAiTokenSession(provider, credential, _secrets, _oauthHttp ?? OpenAiRefreshHttp).GetAsync : null;
+    }
+
+    private string ModelCacheId(string providerId)
+        => _providerList.FirstOrDefault(provider => provider.Id == providerId)?.IsOpenAiOAuth == true
+            ? providerId + ":openaiOAuth" : providerId;
+    private string AccountLabel(string providerId, string accountId)
+    {
+        var name = _providerList.FirstOrDefault(provider => provider.Id == providerId)?.Name ?? providerId;
+        // The id can be long; the tail is the distinctive part of a numeric account id, so keep that.
+        var shown = accountId.Length <= 12 ? accountId : "…" + accountId[^12..];
+        return name + " · " + shown;
+    }
+
+    private string DefaultCredentialLabel(string providerId)
+        => _providerList.FirstOrDefault(provider => provider.Id == providerId)?.Name ?? providerId;
+    internal bool RemoveCredential(string credentialId)
+    {
+        var credential = _credentialList.FirstOrDefault(candidate => candidate.Id == credentialId);
+        if (credential is null) return false;
+
+        lock (credential)
+        {
+            _credentials.DeleteSecret(credential.Id);
+            _credentialList.Remove(credential);
+            credential.Secret = null;
+            if (_providerList.FirstOrDefault(provider => provider.Id == credential.ProviderId) is { } provider)
+            {
+                provider.Credential = null;
+                provider.OpenAiTokenProvider = null;
+            }
+        }
+
+        _credentials.Save(_credentialList);
+        Execution.Changed?.Invoke();
+        return true;
+    }
+
+    internal ProviderModel? AddModel(string providerId, string name)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return null;
+
+        var trimmed = name.Trim();
+        if (trimmed.Length == 0) return null;
+        if (provider.Models.Any(model => string.Equals(model.Name, trimmed, StringComparison.OrdinalIgnoreCase))) return null;
+
+        var model = new ProviderModel { Name = trimmed, InUse = provider.Models.Count == 0 };
+        provider.Models.Add(model);
+        provider.Normalize();
+        SaveProviders();
+        return model;
+    }
+
+    internal bool RemoveModel(string providerId, string name)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        var model = provider.Models.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (model is null) return false;
+
+        provider.Models.Remove(model);
+        provider.Normalize();
+        SaveProviders();
+        return true;
+    }
+
+    internal int RemoveAllModels(string providerId)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null || provider.Models.Count == 0) return 0;
+
+        var removed = provider.Models.Count;
+        provider.Models.Clear();
+        provider.Normalize();
+        SaveProviders();
+        return removed;
+    }
+
+    internal bool SetActiveModel(string providerId, string name)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        var target = provider.Models.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (target is null || !target.Enabled) return false;
+
+        foreach (var model in provider.Models) model.InUse = ReferenceEquals(model, target);
+        SaveProviders();
+        return true;
+    }
+
+    internal bool SetModelEnabled(string providerId, string name, bool enabled)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        var model = provider.Models.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (model is null) return false;
+
+        if (model.Enabled == enabled) return true;
+
+        model.Enabled = enabled;
+        if (enabled && !provider.Models.Any(candidate => candidate.InUse && candidate.Enabled))
+        {
+            model.InUse = true;
+        }
+        else if (!enabled && model.InUse)
+        {
+            model.InUse = false;
+            if (provider.Models.FirstOrDefault(candidate => candidate.Enabled) is { } next)
+                next.InUse = true;
+        }
+
+        provider.Normalize();
+        SaveProviders();
+        return true;
+    }
+
+    internal bool SetProviderEnabled(string providerId, bool enabled)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        if (provider.Enabled == enabled) return true;
+
+        provider.Enabled = enabled;
+        SaveProviders();
+        return true;
+    }
+
+    internal bool SetPreferredAuthMethod(string providerId, string? method)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        if (provider.PreferredAuthMethod == method) return true;
+
+        provider.PreferredAuthMethod = method;
+        SaveProviders();
+        return true;
+    }
+
+    internal bool SetModelContextTokens(string providerId, string name, int? tokens)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        var model = provider.Models.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (model is null) return false;
+
+        var corrected = tokens is > 0 ? tokens : null;
+        if (model.MaxContextTokens == corrected) return true;
+
+        model.MaxContextTokens = corrected;
+        SaveProviders();
+        Execution.Changed?.Invoke();
+        return true;
+    }
+
+    internal (int Tokens, int OutputReserve, CapabilitySource Source) ContextWindowFor(string providerId, string name)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        var window = ContextBudget.For(provider, name);
+        return (window.Tokens, window.OutputReserve, window.Source);
+    }
+
+    internal bool EnableCatalogModel(string providerId, string name)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        var trimmed = name.Trim();
+        if (provider is null || trimmed.Length == 0) return false;
+
+        if (!CachedModels(providerId).Any(candidate =>
+                string.Equals(candidate, trimmed, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var configured = provider.Models.FirstOrDefault(model =>
+            string.Equals(model.Name, trimmed, StringComparison.OrdinalIgnoreCase));
+        if (configured is not null)
+        {
+            return SetModelEnabled(providerId, configured.Name, true);
+        }
+
+        provider.Models.Add(new ProviderModel
+        {
+            Name = trimmed,
+            Enabled = true,
+            InUse = !provider.Models.Any(model => model.Enabled),
+        });
+        provider.Normalize();
+        SaveProviders();
+        return true;
+    }
+
+    internal IReadOnlyList<ModelProvider> AvailablePresets()
+        => AiProviderManifest.Load()
+            .Where(entry => _providerList.All(provider => provider.Id != entry.Id))
+            .Select(entry => AiProviderManifest.CreateBuiltIn(entry.Id))
+            .OfType<ModelProvider>()
+            .ToList();
+    internal ModelProvider? AddPreset(string presetId)
+    {
+        if (_providerList.Any(provider => provider.Id == presetId)) return null;
+        if (AiProviderManifest.CreateBuiltIn(presetId) is not { } provider) return null;
+
+        _providerList.Add(provider);
+        SaveProviders();
+        return provider;
+    }
+
+    internal void SaveProviders()
+    {
+        _providers.Save(_providerList);
+        Execution.Changed?.Invoke();
+    }
+
+    internal void RetrySecretReads()
+    {
+        if (_secrets is null) return;
+        foreach (var credential in _credentialList)
+        {
+            lock (credential)
+            {
+                if (credential.Secret is null) credential.Secret = _secrets.Read(credential.Id);
+            }
+        }
+        foreach (var provider in _providerList) BindOpenAiTokens(provider);
+        Execution.Changed?.Invoke();
+    }
+
+    internal void SaveCredentials(bool writeSecrets = true)
+    {
+        _credentials.Save(_credentialList, writeSecrets);
+        Execution.Changed?.Invoke();
+    }
+
+    internal ProviderCredential? SetApiKey(string providerId, string key)
+        => string.IsNullOrWhiteSpace(key) ? null : AddCredential(providerId, "", key, CredentialSources.ApiKey);
+    internal async Task<OAuthSignInOutcome?> SignInWithOAuthAsync(
+        string providerId,
+        Action<string>? onManualUrl = null,
+        CancellationToken cancellationToken = default,
+        IProgress<DeviceCodeChallenge>? deviceProgress = null,
+        Action<OpenAiLoginAttempt>? openAiProgress = null)
+    {
+        if (!CanStoreSecrets) return null;
+
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider?.OAuth is not { IsUsableFlow: true } oauth) return null;
+
+        using var ownedHttp = _oauthHttp is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(45) } : null;
+        var http = _oauthHttp ?? ownedHttp!;
+        void OpenOrReport(string url)
+        {
+            // Try the browser first; when that fails the URL is handed to the caller instead of being
+            // swallowed, because a sign-in with no browser and no link is a dead end.
+            if (!BrowserOpener(url)) onManualUrl?.Invoke(url);
+        }
+
+        try
+        {
+            // No ConfigureAwait(false): the continuation calls AddOAuthCredential → SaveCredentials → Changed,
+            // which ChatPanel.Reload consumes by mutating Avalonia controls. Keep it on the captured UI context
+            // (same rule as RefreshModelsAsync), or the sign-in would touch the visual tree from a worker thread.
+            //
+            // The two flows are chosen by the manifest's declared shape rather than by provider id: which
+            // endpoints a preset talks to is a fact about the service, and a device-code provider has no
+            // discovery document to find on its own.
+            if (oauth.EffectiveFlow == ProviderOAuthFlows.OpenAi)
+            {
+                var tokens = await new OpenAiOAuthFlow(http).SignInAsync(
+                    openAiProgress ?? (_ => { }), OpenOrReport, cancellationToken);
+                var saved = AddOAuthCredential(providerId, tokens.AccountId, "openid profile email offline_access", tokens.Encode(), "openaiOAuth");
+                return saved is null ? new OAuthSignInOutcome(Error: "The credential could not be stored.")
+                    : new OAuthSignInOutcome(Credential: saved);
+            }
+            var result = oauth.EffectiveFlow == ProviderOAuthFlows.DeviceCode
+                ? await new DeviceCodeOAuthFlow(http, OpenOrReport, DeviceCodeWait)
+                    .SignInAsync(oauth, deviceProgress, cancellationToken)
+                : await new OrcaRouterOAuthFlow(http, OpenOrReport, OAuthTimeout).SignInAsync(oauth, cancellationToken);
+            var credential = AddOAuthCredential(providerId, result.AccountId, result.Scope, result.Key);
+            return credential is null
+                ? new OAuthSignInOutcome(Error: "The credential could not be stored.")
+                : new OAuthSignInOutcome(Credential: credential);
+        }
+        catch (OperationCanceledException)
+        {
+            return new OAuthSignInOutcome(Cancelled: true);
+        }
+        catch (TimeoutException)
+        {
+            return new OAuthSignInOutcome(Cancelled: true);
+        }
+        catch (InvalidOperationException exception) when (exception.Message.Contains("scope", StringComparison.OrdinalIgnoreCase))
+        {
+            // The scope check is the one failure the user can actually act on (re-run the flow and grant less),
+            // so it is distinguished from a generic transport error.
+            return new OAuthSignInOutcome(ScopeRejected: GrantedScopeOf(exception.Message));
+        }
+        catch (Exception exception)
+        {
+            return new OAuthSignInOutcome(Error: exception.Message);
+        }
+    }
+
+    internal Func<string, bool> BrowserOpener { get; set; } = UrlLauncher.TryOpen;
+    internal HttpClient? OAuthHttp
+    {
+        get => _oauthHttp;
+        set => _oauthHttp = value;
+    }
+
+    internal async Task<KeyCheckOutcome> CheckApiKeyAsync(
+        string providerId,
+        string apiKey,
+        CancellationToken cancellationToken = default)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider?.KeyValidation is not { IsKnown: true } validation) return KeyCheckOutcome.Unsupported;
+        if (!AiProviderEntry.IsUsableBaseUrl(provider.BaseUrl)) return KeyCheckOutcome.Unreachable;
+        if (!CanStoreSecrets) return KeyCheckOutcome.Unsupported;
+
+        // The probe goes to the provider's own base URL, so a preset pointed at a different deployment
+        // checks that deployment. The trailing slash matters: "https://host/v1" + "/models" is
+        // "https://host/v1/models", but a base written as "https://host/v1/" would otherwise produce "//".
+        var baseUrl = provider.BaseUrl.TrimEnd('/');
+        var url = baseUrl + validation.Path;
+
+        try
+        {
+            // Not disposed when injected: the caller owns it and may reuse it for several probes. Disposing
+            // here would make the second key check fail with ObjectDisposedException, which this method
+            // reports as Unreachable — "could not ask" — for a reason that has nothing to do with the network.
+            using var owned = _oauthHttp is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(20) } : null;
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+
+            using var response = await (_oauthHttp ?? owned!).SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            // 401/403 is the answer, and it is an answer about the key: the endpoint understood the request
+            // and refused the credential. A 404 or a 5xx means the probe itself is wrong, not the key, and
+            // reporting those as "invalid key" would be the fail-closed behaviour this design avoids.
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+            {
+                return KeyCheckOutcome.Rejected;
+            }
+
+            return KeyCheckOutcome.Accepted;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return KeyCheckOutcome.Unreachable;
+        }
+        catch (Exception)
+        {
+            return KeyCheckOutcome.Unreachable;
+        }
+    }
+
+    internal async Task<ModelFetchResult> RefreshModelsAsync(
+        string providerId,
+        CancellationToken cancellationToken = default)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return ModelFetchResult.Unreachable("No such provider.");
+
+        var catalogCredential = provider.Credential;
+        var catalogMode = ModelCacheId(providerId);
+        var catalogAccount = catalogCredential?.AccountId;
+
+        // The injected client is *not* disposed. It is owned by whoever set ModelListHttp — the self-check reuses
+        // one handler across a dozen fetches, and disposing it here would make every fetch after the first
+        // fail with ObjectDisposedException, which surfaces as "the endpoint is unavailable" and reads like a
+        // product bug. A client built here is ours, so only that one is disposed.
+        using var owned = _modelListHttp is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(20) } : null;
+        var client = _modelListHttp ?? owned!;
+        // No ConfigureAwait(false) here: the continuation below ends in SaveProviders() → Changed, which is
+        // consumed by ChatPanel.Reload — code that mutates Avalonia controls. It must resume on the captured
+        // UI context; resuming on the thread pool would touch the visual tree from a worker thread and hang
+        // the whole UI (a CPU-bound cross-thread re-entrancy, not a network wait).
+        var result = provider.IsOpenAiOAuth
+            ? await OpenAiCodexModels.FetchAsync(client, provider, cancellationToken)
+            : await ModelList.FetchAsync(client, provider, cancellationToken);
+        if (!_providerList.Contains(provider) || !ReferenceEquals(provider.Credential, catalogCredential)
+            || ModelCacheId(providerId) != catalogMode || provider.Credential?.AccountId != catalogAccount)
+            return ModelFetchResult.Unreachable("The provider credential changed during the catalog request. Retry the request.");
+        if (!result.Reachable) return result;
+
+        // Split against the *previous* fetch, not against nothing. "Not in this response" alone cannot tell a
+        // retired model from a hand-written one — both are simply absent — and guessing wrong in either
+        // direction is bad: dropping a name the user typed deletes work they did on purpose, and keeping one
+        // the provider retired offers a name that will 404 on first use and blames their key.
+        var cachedEntry = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(providerId));
+        var reported = cachedEntry?.Models ?? [];
+        var kept = ManualModelsOf(provider, result.Models, reported).ToList();
+
+        // An empty list is a real answer (rule 3 in ModelList): adopt it, so a provider that retired
+        // everything shows nothing rather than showing what it used to serve.
+        var previousModels = provider.Models.ToDictionary(model => model.Name, StringComparer.OrdinalIgnoreCase);
+        provider.Models = result.Models
+            .Where(name => previousModels.ContainsKey(name)
+                           || provider.DefaultEnabledModels.Any(defaultName =>
+                               string.Equals(defaultName, name, StringComparison.OrdinalIgnoreCase)))
+            .Select(name =>
+            {
+                var previous = previousModels.GetValueOrDefault(name);
+                return new ProviderModel
+                {
+                    Name = name,
+                    InUse = previous?.InUse == true,
+                    Enabled = previous?.Enabled ?? true,
+                };
+            })
+            .ToList();
+
+        // Anything the user typed by hand that the endpoint has never reported is kept — the endpoint's
+        // silence about a name is not evidence that the name is wrong, and a self-hosted gateway can
+        // legitimately serve a model it declines to list.
+        provider.Models.AddRange(kept);
+
+        provider.Normalize();
+        var declared = AiProviderManifest.CreateBuiltIn(providerId);
+        provider.ReasoningModels = MergeReasoningModels(declared?.ReasoningModels, result.ReasoningModels);
+        provider.ModelCapabilities = MergeCapabilities(declared?.ModelCapabilities, result.Capabilities);
+        _modelLists.Save(ModelCacheId(providerId), result.Models, result.ReasoningModels, result.Capabilities);
+        SaveProviders();
+        return result;
+    }
+
+    internal IReadOnlyList<string> CachedModels(string providerId)
+        => _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(providerId))?.Models ?? [];
+    internal HttpClient? ModelListHttp
+    {
+        get => _modelListHttp;
+        set => _modelListHttp = value;
+    }
+
+    private HttpClient? _modelListHttp;
+    internal HttpClient? WebFetchHttp
+    {
+        get => _webFetchHttp;
+        set => _webFetchHttp = value;
+    }
+
+    private HttpClient? _webFetchHttp;
+    internal HttpClient? DeepSeekWebApiHttp { get; set; }
+    internal TimeSpan OAuthTimeout { get; set; } = OrcaRouterOAuthFlow.DefaultTimeout;
+    internal TimeSpan DeviceCodeWait { get; set; } = DeviceCodeOAuthFlow.DefaultWait;
+
+    private HttpClient? _oauthHttp;
+    internal ModelProvider? AddProvider(string name, string baseUrl, string model, string? apiKey)
+    {
+        var provider = new ModelProvider
+        {
+            Id = "custom-" + Guid.NewGuid().ToString("N")[..12],
+            Name = name.Trim(),
+            IsCustom = true,
+            BaseUrl = baseUrl.Trim(),
+            Models = [new ProviderModel { Name = model.Trim(), InUse = true }],
+            // Whether the user's own endpoint demands a key is unknowable, so a custom provider is never
+            // gated on one — declaring the key method says only that a key can be pasted here, which is what
+            // keeps the 「鉴权」 entrance while leaving the provider usable keyless (a local server). Browser
+            // sign-in is deliberately absent: there is no server to sign in to, so the picker would otherwise
+            // invent a button that cannot work.
+            AuthMethods = [ProviderAuthMethods.ApiKey],
+        };
+
+        if (Validate(provider) is not null) return null;
+
+        _providerList.Add(provider);
+        SaveProviders();
+
+        // The key becomes a credential, exactly as it would for a built-in provider. A custom endpoint that
+        // wants no key simply gets none — that is the keyless case, not an error.
+        if (!string.IsNullOrEmpty(apiKey))
+        {
+            var credential = AddCredential(provider.Id, "Default", apiKey, CredentialSources.ApiKey);
+            // A platform without a secret store cannot persist a key; roll the provider back rather than
+            // leaving a half-added entry behind.
+            if (credential is null)
+            {
+                _providerList.Remove(provider);
+                SaveProviders();
+                return null;
+            }
+        }
+
+        return provider;
+    }
+
+    internal bool UpdateProvider(string providerId, string name, string baseUrl, string model, string? apiKey)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        var edited = new ModelProvider
+        {
+            Id = provider.Id,
+            Name = provider.IsCustom ? name.Trim() : provider.Name,
+            IsCustom = provider.IsCustom,
+            BaseUrl = provider.IsCustom ? baseUrl.Trim() : provider.BaseUrl,
+            // Built through the list rather than the Model setter: the validation below reads Model either way,
+            // and this keeps the temporary object from relying on a setter with an insertion side effect.
+            Models = [new ProviderModel { Name = model.Trim(), InUse = true }],
+        };
+        if (Validate(edited) is not null) return false;
+
+        provider.Name = edited.Name;
+        provider.BaseUrl = edited.BaseUrl;
+
+        // Rename the model in use rather than assigning to Model. The setter inserts, which is right when a
+        // provider is being built and wrong here — editing a provider would otherwise grow the model list by
+        // one on every save.
+        var renamed = edited.Model.Trim();
+        if (provider.ActiveModel is { } current)
+        {
+            // A rename onto a name that already exists would create a duplicate row; the existing entry wins
+            // and the renamed one is dropped.
+            if (provider.Models.Any(model => !ReferenceEquals(model, current)
+                    && string.Equals(model.Name, renamed, StringComparison.OrdinalIgnoreCase)))
+            {
+                provider.Models.Remove(current);
+            }
+            else
+            {
+                current.Name = renamed;
+            }
+        }
+        else if (renamed.Length > 0)
+        {
+            provider.Models.Add(new ProviderModel { Name = renamed, InUse = true });
+        }
+
+        provider.Normalize();
+
+        if (!string.IsNullOrEmpty(apiKey))
+        {
+            // An edit that replaces the key must not leave the old secret in the store. Under the one-to-one
+            // rule this is the same "rotate" that AddCredential performs, so it is expressed as one call rather
+            // than a second code path that could drift from it.
+            if (!CanStoreSecrets) return false;
+            if (AddCredential(providerId, "", apiKey, CredentialSources.ApiKey) is null)
+            {
+                return false;
+            }
+        }
+
+        SaveProviders();
+        return true;
+    }
+
+    internal bool RemoveProvider(string providerId)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null || provider.Id == AiProviderManifest.DefaultProviderId()) return false;
+
+        // Disconnect first, and through the same method the disconnect button uses. Removing a provider that
+        // still had a key would leave an orphan secret in the OS store — invisible in the UI, and never
+        // cleaned up, because the account list it belonged to no longer renders anywhere. Doing it here rather
+        // than in the dialog means the guarantee holds for every caller (the CLI included), not just the one
+        // that remembered to ask.
+        DisconnectProvider(providerId);
+
+        _providerList.Remove(provider);
+        _providers.Save(_providerList);
+
+        // The cached model list goes with the provider. It names models for an endpoint that no longer
+        // exists in the list, and a custom provider id is never reused — so a leftover entry could only ever
+        // be read by something that no longer exists. Clearing it here rather than lazily is also what stops
+        // the file growing a row per provider ever added.
+        _modelLists.Save(providerId, null);
+        _modelLists.Save(providerId + ":openaiOAuth", null);
+
+        Execution.Changed?.Invoke();
+        return true;
+    }
+
+    internal bool DisconnectProvider(string providerId)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        var removed = false;
+        foreach (var credential in _credentialList.Where(credential => credential.ProviderId == providerId).ToList())
+        {
+            removed |= RemoveCredential(credential.Id);
+        }
+
+        if (removed)
+        {
+            provider.Credential = null;
+            _credentials.Save(_credentialList);
+            Execution.Changed?.Invoke();
+        }
+
+        return removed;
+    }
+
+
+    internal IReadOnlyList<string> SensitiveValues()
+        => [.. _credentialList.Select(credential => credential.Secret).Where(secret => secret is { Length: > 0 })!];
+
+    internal async Task<bool> ForgoStreamUsageAsync(ConversationRun run)
+    {
+        var backedOff = false;
+        await Execution.ApplyOnUiAsync(() =>
+        {
+            if (ModelFor(run.ConversationId) is not { } choice) return;
+            var provider = choice.Provider;
+            if (!provider.WantsStreamUsage) return;
+            provider.ExtraOptions[ModelProvider.StreamUsageOption] = "false";
+            _providers.Save(_providerList);
+            Execution.Audit(run.ConversationId, $"{provider.Name} declined the stream usage report; stopped asking");
+            backedOff = true;
+        }).ConfigureAwait(false);
+        return backedOff;
+    }
+
+    internal async Task NoteReasoningEvidenceAsync(string conversationId, string? effort, bool rejected)
+    {
+        if (effort is not { Length: > 0 } level || level == ChatReasoningEfforts.Default) return;
+        await Execution.ApplyOnUiAsync(() =>
+        {
+            if (ModelFor(conversationId) is not { } choice) return;
+            var provider = choice.Provider;
+            var cache = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(provider.Id));
+            var reasoning = new Dictionary<string, AiModelReasoning>(StringComparer.OrdinalIgnoreCase);
+            if (cache?.ReasoningModels is { } cached)
+                foreach (var (name, profile) in cached)
+                    reasoning[name] = profile.Clone();
+
+            var observed = reasoning.GetValueOrDefault(choice.ModelName) ?? new AiModelReasoning();
+            var bucket = rejected ? observed.RejectedEfforts : observed.ObservedEfforts;
+            if (bucket.Contains(level, StringComparer.OrdinalIgnoreCase)) return;
+            bucket.Add(level);
+            reasoning[choice.ModelName] = observed;
+
+            // Capabilities ride along: the same entry holds the windows the gateway reported, and Save replaces
+            // the whole provider record — leaving them out would erase a model's window every time a reply
+            // proved that model could think.
+            _modelLists.Save(ModelCacheId(provider.Id), cache?.Models ?? [], reasoning, cache?.Capabilities);
+            provider.ReasoningModels = MergeReasoningModels(
+                AiProviderManifest.CreateBuiltIn(provider.Id)?.ReasoningModels, reasoning);
+            Execution.Audit(conversationId, $"Reasoning {(rejected ? "refused" : "confirmed")}: {level} on {choice.ModelName}");
+            Execution.Changed?.Invoke();
+        }).ConfigureAwait(false);
+    }
+
+    internal Task NoteLearnedWindowAsync(string conversationId, int tokens)
+        => NoteWindowAsync(conversationId, tokens, CapabilitySource.LearnedFromRefusal);
+    internal Task NoteObservedWindowAsync(string conversationId, int tokens)
+        => NoteWindowAsync(conversationId, tokens, CapabilitySource.EndpointReported);
+    private async Task NoteWindowAsync(string conversationId, int tokens, CapabilitySource source)
+    {
+        await Execution.ApplyOnUiAsync(() =>
+        {
+            if (ModelFor(conversationId) is not { } choice) return;
+            var provider = choice.Provider;
+            var cache = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(provider.Id));
+            var capabilities = new Dictionary<string, ModelCapabilities>(StringComparer.OrdinalIgnoreCase);
+            if (cache?.Capabilities is { } cached)
+                foreach (var (name, caps) in cached)
+                    capabilities[name] = caps;
+
+            var known = capabilities.GetValueOrDefault(choice.ModelName) ?? new ModelCapabilities();
+            if (known.ContextTokens == tokens && known.Source == source) return;
+            capabilities[choice.ModelName] = known.WithContext(tokens, source);
+
+            _modelLists.Save(ModelCacheId(provider.Id), cache?.Models ?? [], cache?.ReasoningModels, capabilities);
+            provider.ModelCapabilities = MergeCapabilities(
+                AiProviderManifest.CreateBuiltIn(provider.Id)?.ModelCapabilities, capabilities);
+        }).ConfigureAwait(false);
+    }
+
+
+    private static readonly HttpClient OpenAiRefreshHttp = new(new HttpClientHandler { AllowAutoRedirect = false })
+    {
+        Timeout = TimeSpan.FromSeconds(45)
+    };
+    private static string GrantedScopeOf(string message)
+    {
+        var start = message.IndexOf('\'') + 1;
+        var end = message.IndexOf('\'', start);
+        return start > 0 && end > start ? message[start..end] : "";
+    }
+    private static IEnumerable<ProviderModel> ManualModelsOf(
+        ModelProvider provider,
+        IReadOnlyList<string> fetched,
+        IReadOnlyList<string> previouslyReported)
+    {
+        foreach (var model in provider.Models)
+        {
+            if (Contains(fetched, model.Name)) continue;
+            if (previouslyReported.Count > 0 && Contains(previouslyReported, model.Name)) continue;
+            yield return model;
+        }
+
+        static bool Contains(IReadOnlyList<string> names, string name)
+            => names.Any(candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase));
+    }
+    private static Dictionary<string, ModelCapabilities> MergeCapabilities(
+        IReadOnlyDictionary<string, ModelCapabilities>? declared,
+        IReadOnlyDictionary<string, ModelCapabilities>? fetched)
+    {
+        var result = new Dictionary<string, ModelCapabilities>(StringComparer.OrdinalIgnoreCase);
+        if (declared is not null)
+            foreach (var (name, caps) in declared)
+                if (!caps.IsEmpty) result[name] = caps;
+
+        if (fetched is not null)
+            foreach (var (name, caps) in fetched)
+                if (!caps.IsEmpty) result[name] = caps;
+
+        return result;
+    }
+
+    private static Dictionary<string, AiModelReasoning> MergeReasoningModels(
+        IReadOnlyDictionary<string, AiModelReasoning>? declared,
+        IReadOnlyDictionary<string, AiModelReasoning>? fetched)
+    {
+        var result = new Dictionary<string, AiModelReasoning>(StringComparer.OrdinalIgnoreCase);
+        if (declared is not null)
+            foreach (var (name, profile) in declared)
+                result[name] = profile;
+
+        if (fetched is not null)
+        {
+            foreach (var (name, profile) in fetched)
+            {
+                result.TryGetValue(name, out var declaredProfile);
+                result[name] = new AiModelReasoning
+                {
+                    Efforts = profile.Efforts.Count > 0
+                        ? [.. profile.Efforts]
+                        : declaredProfile is null ? [] : [.. declaredProfile.Efforts],
+                    DefaultEffort = profile.DefaultEffort ?? declaredProfile?.DefaultEffort,
+                    RequestOptions = declaredProfile?.RequestOptions ?? [],
+                };
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Validates a provider's editable fields. Shared by the dialog (live "can I save yet" feedback) and by
+    /// <see cref = "AddProvider"/>/<see cref = "UpdateProvider"/> (the real gate) so the two cannot drift — the UI
+    /// must not be the only thing standing between a half-filled provider and a saved file.
+    /// </summary>
+    /// <returns><c>null</c> when valid; otherwise the text key of the problem to show.</returns>
+    internal static string? Validate(ModelProvider provider)
+    {
+        if (provider.Name.Trim().Length == 0) return "ProviderNameRequired";
+        if (!IsHttpUrl(provider.BaseUrl)) return "ProviderBaseUrlInvalid";
+        if (provider.Model.Trim().Length == 0) return "ProviderModelRequired";
+        return null;
+    }
+
+    /// <summary>
+    /// Accepts only an absolute http/https URL. A bare host ("localhost:11434/v1") looks right to a person
+    /// but <c>new Uri(...)</c> will not produce a usable endpoint from it, and the failure would only surface
+    /// on the first message — so it is rejected here, with the field to fix.
+    ///
+    /// The rule itself lives on <see cref = "AiProviderEntry.IsUsableBaseUrl"/> so the preset catalog is held to
+    /// exactly the same standard as a hand-typed endpoint; this is the name the UI and dialogs already call.
+    /// </summary>
+    internal static bool IsHttpUrl(string url) => AiProviderEntry.IsUsableBaseUrl(url);
+    /// <summary>
+    /// Whether this provider may be removed from the list. The one exception is the manifest's default
+    /// provider: it is re-seeded on every load, so removing it would silently undo itself, and the app has
+    /// nothing to fall back on if it is gone. Everything else — built-in presets included — is removable,
+    /// because a removed preset returns to the "add provider" catalog and can be added back.
+    /// </summary>
+    internal static bool CanRemoveProvider(ModelProvider provider)
+        => provider.Id != AiProviderManifest.DefaultProviderId();
+    private sealed class NoSecretStore : ISecretStore
+    {
+        public string? Read(string providerId) => null;
+        public void Write(string providerId, string key) => throw new PlatformNotSupportedException();
+        public void Delete(string providerId)
+        {
+        }
+    }
+
+}

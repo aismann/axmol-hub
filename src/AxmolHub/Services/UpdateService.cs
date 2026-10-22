@@ -1,9 +1,5 @@
-using System;
 using System.Diagnostics;
 using System.Globalization;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using AxmolHub.Core;
 using Avalonia.Threading;
 using Velopack;
@@ -49,14 +45,13 @@ namespace AxmolHub;
 /// a thread-pool thread is exactly what throws "The calling thread cannot access this object because
 /// a different thread owns it" (an earlier bug here did that and crashed the app).
 /// </summary>
-internal sealed class UpdateService
+internal sealed partial class UpdateService
 {
     private static readonly Lazy<UpdateService> Shared = new(() => new UpdateService());
 
     public static UpdateService Instance => Shared.Value;
 
     internal Action<string> WriteLog { get; set; } = _ => { };
-    internal Func<UpdateManager>? ManagerOverrideForCheck { get; set; }
 
     /// <summary>The outcome of a check, carried back to the UI so it can choose its copy.</summary>
     public enum CheckResult
@@ -295,38 +290,6 @@ internal sealed class UpdateService
     }
 
     /// <summary>
-    /// Verification hook (<c>--verify-shell</c>): installs a pending update **without** a network check, at
-    /// the download phase asked for, so the surfaces that read this service can be rendered and read back.
-    /// Those phases are otherwise unreachable in a self-check — a real check needs GitHub, and a real
-    /// download replaces the process the moment it finishes. A percentage is not part of it: that belongs to
-    /// the queue's row, which the suite drives through <see cref="TaskQueue"/> instead.
-    /// </summary>
-    internal void SetPendingForCheck(UpdateInfo update, DownloadState download = DownloadState.None)
-    {
-        Last = new CheckOutcome(CheckResult.UpdateAvailable, update);
-        Download = download;
-        // The arm belongs to the Ready phase alone, and this hook is the one writer that can install any
-        // phase directly: a check that scripted a download phase after an armed restart would read back an
-        // arm that no longer exists on screen.
-        if (download != DownloadState.Ready)
-        {
-            DropRestartArm();
-        }
-
-        Changed?.Invoke();
-    }
-
-    /// <summary>Undoes <see cref="SetPendingForCheck"/> so a scripted update can't leak into the
-    /// render checks that follow (both the card's line and the strip's slot read <see cref="Last"/>).</summary>
-    internal void ClearForCheck()
-    {
-        Last = null;
-        Download = DownloadState.None;
-        DropRestartArm();
-        Changed?.Invoke();
-    }
-
-    /// <summary>
     /// Starts a background download if an update is known and nothing is in flight yet. Called after a
     /// check when <see cref="AutoDownload"/> is on, when the user switches the setting on with an update
     /// already pending, and from the strip's download action — which is the same request made on purpose.
@@ -372,16 +335,6 @@ internal sealed class UpdateService
 
         CreateManager().ApplyUpdatesAndRestart(update.TargetFullRelease);
     }
-
-    /// <summary>Set by <c>--verify-shell</c> to observe a restart decision without making one.</summary>
-    internal Action<UpdateInfo>? ApplyOverrideForCheck { get; set; }
-
-    /// <summary>
-    /// Set by <c>--verify-shell</c> to observe a download request without making one. The same shape as
-    /// <see cref="ApplyOverrideForCheck"/> for the other half of the flow: a self-check that really asked
-    /// Velopack would reach GitHub, and a delta would end with the updater taking the process.
-    /// </summary>
-    internal Action<UpdateInfo>? DownloadOverrideForCheck { get; set; }
 
     /// <summary>
     /// Whether the restart is armed — the first press of a restart that arrived while other work was still

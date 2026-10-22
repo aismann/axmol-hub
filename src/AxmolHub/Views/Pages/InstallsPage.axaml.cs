@@ -1,11 +1,5 @@
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
 using Avalonia.Controls;
-using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using AxmolHub.Core;
 
@@ -45,14 +39,6 @@ public partial class InstallsPage : UserControl
     private bool _ready;
     private bool _compact;
     private int _sortMode;
-
-    internal DataGrid GridForCheck => EnginesGrid;
-    internal EngineListItem[] RowsForCheck => EnginesGrid.ItemsSource as EngineListItem[] ?? [];
-    internal TextBox SearchForCheck => SearchBox;
-    internal ComboBox ChannelFilterForCheck => ChannelFilter;
-    internal Button SortForCheck => SortButton;
-    internal Button ImportForCheck => ImportButton;
-    internal Button InstallForCheck => InstallButton;
 
     public InstallsPage() { _workspace = null!; InitializeComponent(); }
 

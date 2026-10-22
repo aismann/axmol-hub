@@ -1,9 +1,5 @@
-using System;
-using System.Linq;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Layout;
 using Avalonia.Media;
 using AxmolHub.Core;
 
@@ -49,17 +45,9 @@ public sealed class BuildTargetDialog : Window
             Margin = new Thickness(0, 0, 0, 16),
         });
 
-        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
-        Grid.SetRow(chrome.Header, 0);
-        Grid.SetRow(body, 1);
         var (footer, _, _) = HubDialogChrome.Footer(HubStrings.Get("Continue"), HubStrings.Get("Cancel"),
             () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
-        Grid.SetRow(footer, 2);
-        layout.Children.Add(chrome.Header);
-        layout.Children.Add(body);
-        layout.Children.Add(footer);
-
-        Content = new Border { Child = layout, Padding = new Thickness(24) };
+        Content = chrome.Wrap(body, footer);
 
         var available = BuildTargets.ForHost(project.Version);
         _picker.ItemsSource = available;

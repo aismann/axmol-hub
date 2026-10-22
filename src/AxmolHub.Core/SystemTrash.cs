@@ -15,9 +15,8 @@ public enum TrashResultKind
 public sealed record TrashResult(TrashResultKind Kind, string? Error = null);
 
 /// <summary>Moves one filesystem item to the host's trash without a permanent-delete fallback.</summary>
-public static class SystemTrash
+public static partial class SystemTrash
 {
-    internal static Func<string, CancellationToken, Task<TrashResult>>? MoveHandlerForCheck { get; set; }
 
     public static async Task<TrashResult> MoveAsync(string path, CancellationToken cancellation = default)
     {

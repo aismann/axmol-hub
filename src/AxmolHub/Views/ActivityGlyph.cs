@@ -49,7 +49,7 @@ public enum ActivityPhase
 /// <c>BuildSendIcon</c> documents).</item>
 /// </list>
 /// </summary>
-public sealed class ActivityGlyph : Control
+public sealed partial class ActivityGlyph : Control
 {
     public static readonly StyledProperty<ActivityPhase> PhaseProperty =
         AvaloniaProperty.Register<ActivityGlyph, ActivityPhase>(nameof(Phase));
@@ -77,10 +77,6 @@ public sealed class ActivityGlyph : Control
         get => GetValue(DotBrushProperty);
         set => SetValue(DotBrushProperty, value);
     }
-
-    /// <summary>Whether the internal clock is running. Readable so a check can assert the stop: an animation
-    /// that keeps ticking on a hidden row is invisible in every screenshot and expensive in every profile.</summary>
-    public bool IsTickingForCheck => _timer.IsEnabled;
 
     private readonly DispatcherTimer _timer;
     private double _clock;
@@ -217,4 +213,5 @@ public sealed class ActivityGlyph : Control
         var radians = degrees * Math.PI / 180;
         return new Point(center.X + radius * Math.Cos(radians), center.Y + radius * Math.Sin(radians));
     }
+internal bool IsTicking=> _timer.IsEnabled;
 }

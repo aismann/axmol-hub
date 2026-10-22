@@ -1,8 +1,5 @@
-using System;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Layout;
 using Avalonia.Media;
 using AxmolHub.Core;
 
@@ -45,9 +42,9 @@ public sealed class ProviderEditWindow : Window
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        var chrome = new HubDialogChrome(this, "CloseWindow", () => Close(HubDialogResult.Cancel));
 
         var panel = new StackPanel { Spacing = 4 };
-        panel.Children.Add(new TextBlock { Text = Title, FontSize = 18, Margin = new Thickness(0, 0, 0, 8) });
 
         if (isBuiltIn)
         {
@@ -68,16 +65,10 @@ public sealed class ProviderEditWindow : Window
         AddField(panel, HubStrings.Get("ApiKey"), _apiKey, HubStrings.Get("ApiKeyHint"), false);
         panel.Children.Add(_problem);
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
-        var cancel = new Button { Content = HubStrings.Get("Cancel"), IsCancel = true };
-        cancel.Click += (_, _) => Close(HubDialogResult.Cancel);
-        _save = new Button { Content = HubStrings.Get("Save"), IsDefault = true, Classes = { "primary" } };
-        _save.Click += (_, _) => Close(HubDialogResult.Ok);
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(_save);
-        panel.Children.Add(buttons);
-
-        Content = new Border { Child = panel, Padding = new Thickness(24) };
+        var (footer, confirm, _) = HubDialogChrome.Footer(HubStrings.Get("Save"), HubStrings.Get("Cancel"),
+            () => Close(HubDialogResult.Ok), () => Close(HubDialogResult.Cancel));
+        _save = confirm;
+        Content = chrome.Wrap(panel, footer);
 
         if (existing is not null)
         {

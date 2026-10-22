@@ -1,29 +1,20 @@
 using System.Globalization;
 using Avalonia.Controls;
-using Avalonia.Layout;
-using Avalonia.Threading;
+using Avalonia.Styling;
 using AxmolHub.Core;
+using Avalonia.Layout;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-/// <summary>The model-switch notice: one centered line in the conversation where the history changed hands.
-///
-/// <para>Kept in its own file the way <c>ChatPanel.Decisions.cs</c> is, because the file this check would
-/// otherwise grow is already the largest in the repository.</para></summary>
-public partial class ShellCheckWindow
+internal sealed class ShellModelSwitchChecks
 {
-    /// <summary>
-    /// Three facts, each catching a different failure: a real switch puts exactly one row in the flow and that
-    /// row is centered in the column — asserted twice over, once on the control's own alignment and once on where
-    /// it actually lands; a pick that changes nothing puts no row, because a transcript that marks a switch that
-    /// did not happen is worse than one that marks none; and the row comes back after the flow is torn down and
-    /// rebuilt, because it is a turn the conversation stores rather than something this view happened to paint.
-    ///
-    /// <para>Cost is part of the design: the suite has to stay well inside <c>SuiteCeiling</c> (the one budget
-    /// constant — never restate its number here), so the panel is laid out only where a measurement needs pixels,
-    /// and the rebuild is the teardown the renderer itself goes through rather than a trip through two more
-    /// conversations.</para></summary>
-    private void CheckModelSwitchNotice(MainWindow shell, ChatPanel panel)
+    private readonly Action<bool, string> Check;
+    internal ShellModelSwitchChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal void CheckModelSwitchNotice(MainWindow shell, ChatPanel panel)
     {
         const string model = "model-switch-x";
         var first = shell.Chat.AddProvider("Model switch A local", "http://localhost:11437/v1", model, null);
@@ -75,15 +66,5 @@ public partial class ShellCheckWindow
         shell.Chat.RemoveProvider(first.Id);
         shell.Chat.RemoveProvider(second.Id);
         Relayout(shell, panel);
-    }
-
-    /// <summary>Re-reads the panel and drains the dispatcher, so what a check reads is the drawn row rather than
-    /// the state handed to the renderer. <paramref name="measure"/> lays the whole window out as well — only a
-    /// check that reads pixels needs that, and the suite's time ceiling pays for every one of them.</summary>
-    private static void Relayout(MainWindow shell, ChatPanel panel, bool measure = false)
-    {
-        panel.Reload();
-        if (measure) shell.UpdateLayout();
-        Dispatcher.UIThread.RunJobs();
     }
 }

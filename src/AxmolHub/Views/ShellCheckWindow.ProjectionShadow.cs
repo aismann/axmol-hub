@@ -1,18 +1,16 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using AxmolHub.Core;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-/// <summary>Compares the complete independent projection with actual rows collected by scrolling each item
-/// into view. Folded activity children are flattened only while expanded; offscreen controls need not exist.
-/// Occurrence identity, disk reloads and approval rewrites are covered separately.</summary>
-public partial class ShellCheckWindow
+internal sealed class ShellProjectionShadowChecks
 {
-    private sealed record ProjectionCase(string Label, Action<Conversation> Build);
+    private readonly Action<bool, string> Check;
+    internal ShellProjectionShadowChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
 
-    private void CheckTranscriptProjection(MainWindow shell, ChatPanel panel)
+    internal void CheckTranscriptProjection(MainWindow shell, ChatPanel panel)
     {
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
@@ -167,5 +165,4 @@ public partial class ShellCheckWindow
             chat.OpenConversation(before);
         panel.Reload();
     }
-
 }

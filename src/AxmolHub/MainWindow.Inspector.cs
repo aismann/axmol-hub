@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -9,7 +6,6 @@ using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
-using AxmolHub.Core;
 
 namespace AxmolHub;
 
@@ -345,113 +341,6 @@ public partial class MainWindow
         _preferencesStore.Save(_preferences);
     }
 
-    internal bool InspectorVisibleForCheck => InspectorColumn.IsVisible;
-    internal double InspectorWidthForCheck => Inspector.Width;
-
-    /// <summary>The title bar's drawer button, as a check drives and reads it. Its tooltip is asserted rather than
-    /// assumed because the button carries no text of its own: if that one string is not wired, the control has no
-    /// name anywhere on the screen.</summary>
-    internal bool InspectorToggleVisibleForCheck => InspectorToggle.IsVisible;
-    internal bool InspectorGripVisibleForCheck => InspectorResizeGrip.IsVisible;
-    internal string InspectorToggleTipForCheck => ToolTip.GetTip(InspectorToggle) as string ?? "";
-    internal (double Width, double Height) InspectorTogglePlateForCheck
-        => (InspectorToggle.Bounds.Width, InspectorToggle.Bounds.Height);
-    internal Rect InspectorToggleBoundsForCheck => InClient(InspectorToggle);
-
-    /// <summary>The arrow beside the drawer: shown only while there is a column to lift. Read by name and by rect,
-    /// because "it is there" and "it is to the left of the drawer" are two different claims and the second one is
-    /// what the layout is for.</summary>
-    internal bool InspectorExpandToggleVisibleForCheck => InspectorExpandToggle.IsVisible;
-    internal Rect InspectorExpandToggleBoundsForCheck => InClient(InspectorExpandToggle);
-
-    /// <summary>The gap between the arrow and the drawer, and whether the arrow really is the left one of the pair.
-    /// Mirrors <see cref="InspectorToggleMeetsWindowControlsForCheck"/>: the two plates are the same size and sit
-    /// one small margin apart, so the pair reads as one group of two rather than as two unrelated buttons.</summary>
-    internal (double Gap, bool Before) InspectorExpandMeetsDrawerForCheck
-    {
-        get
-        {
-            var expand = InClient(InspectorExpandToggle);
-            var drawer = InClient(InspectorToggle);
-            return (drawer.X - expand.Right, expand.Right <= drawer.X + 0.5);
-        }
-    }
-
-    /// <summary>Whether the drawer is painted with the given glyph. The rect says where the button is; this says
-    /// which of its two faces is on it, which is the half of "the drawer became the way back" that a tooltip
-    /// assertion cannot see. Compared by reference against the resource, so a glyph that merely looks similar —
-    /// the two share a diagonal and differ by which end the arrowhead is on — does not pass.</summary>
-    internal bool InspectorDrawerGlyphIsForCheck(string geometryKey)
-        => Application.Current?.TryGetResource(geometryKey, null, out var value) == true
-           && value is Geometry geometry
-           && ReferenceEquals(InspectorToggleGlyph.Data, geometry);
-
-    /// <summary>Presses the title bar's own button, so a cell drives the wiring instead of calling
-    /// <see cref="ToggleInspectorColumn"/> and proving nothing.</summary>
-    internal void ClickInspectorToggleForCheck()
-        => InspectorToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-
-    /// <summary>The same for the arrow: the lift has to be reachable from the bar the reader actually presses,
-    /// which is the whole point of moving it out of the pane.</summary>
-    internal void ClickInspectorExpandToggleForCheck()
-        => InspectorExpandToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-
-    /// <summary>Writes the width the grip writes, so a check can start from a width that is not the default and
-    /// tell "the column kept what you dragged it to" from "both numbers happen to be 360".</summary>
-    internal void SetInspectorWidthForCheck(double width) => Inspector.Width = InspectorClamp(width);
-
-    /// <summary>The pane itself, so a check can press the header's own arrow rather than the method behind it.</summary>
-    internal InspectorPanel? InspectorPaneForCheck => InspectorPane as InspectorPanel;
-
-    /// <summary>Which tab the <em>shell</em> last asked for. The pane's own visibility cannot tell the two routes
-    /// apart — a jump that switched tabs inside the panel would leave exactly the same three booleans — so a cell
-    /// that means "the ask went out to the shell and the shell landed it" has to read the shell's answer.</summary>
-    internal string InspectorTabForCheck => _inspectorTab;
-
-    internal bool InspectorExpandedForCheck => _inspectorExpanded;
-    internal bool InspectorOverlayVisibleForCheck => InspectorExpandHost.IsVisible;
-
-    /// <summary>A control's own <c>Bounds</c> is relative to <i>its parent</i>, and the surfaces a coverage check
-    /// compares sit at four different depths of the tree — raw Bounds would be four unrelated coordinate systems,
-    /// and a pane that covered nothing could still "contain" the sidebar in them. Every rect a check reads off
-    /// this file is therefore brought into the client root's space first.</summary>
-    private Rect InClient(Visual target)
-        => target.TranslatePoint(new Point(0, 0), ClientRoot) is { } origin
-            ? new Rect(origin, target.Bounds.Size)
-            : default;
-
-    internal Rect InspectorOverlayBoundsForCheck => InClient(InspectorExpandSurface);
-    internal Rect SidebarBoundsForCheck => InClient(Sidebar);
-    internal Rect TitleBarBoundsForCheck => InClient(TitleBar);
-    internal Rect PageBoundsForCheck => InClient(PageHost);
-    internal Rect ClientBoundsForCheck => InClient(ClientRoot);
-    internal string InspectorPlanMarkdownForCheck
-        => (InspectorPane as InspectorPanel)?.PlanMarkdownForCheck ?? "";
-
-    /// <summary>Whether the overlay is the layer the design says it is. Nothing here sets <c>ZIndex</c>, so
-    /// document order is the whole stacking contract — and an overlay in the wrong slot still covers the shell
-    /// just as well, which is exactly why a bounds check cannot catch it and this can.</summary>
-    internal bool InspectorOverlayOrderForCheck
-    {
-        get
-        {
-            var shell = ClientRoot.Children.IndexOf(ShellRoot);
-            var overlay = ClientRoot.Children.IndexOf(InspectorExpandHost);
-            var viewer = ClientRoot.Children.IndexOf(PictureViewerHost);
-            return shell >= 0 && overlay > shell && overlay < viewer;
-        }
-    }
-
-    /// <summary>Sends a key down the same tunnel route <see cref="OnInspectorExpandKeyDown"/> listens on.</summary>
-    internal void PressInspectorKeyForCheck(Key key)
-        => OnInspectorExpandKeyDown(this, new KeyEventArgs
-        {
-            RoutedEvent = InputElement.KeyDownEvent,
-            Key = key,
-            KeyModifiers = KeyModifiers.None,
-            Source = this,
-        });
-
     // ───────────────────────── Picture viewer ─────────────────────────
 
     /// <summary>The set the viewer pages through and where it stands in it. Empty when shut; the loader on each
@@ -640,40 +529,4 @@ public partial class MainWindow
         data.Add(item);
         return data;
     }
-
-    // ── Check accessors ──
-
-    internal bool PictureViewerOpenForCheck => PictureViewerHost.IsVisible;
-    internal string PictureViewerCaptionForCheck => PictureViewerCaption.Text ?? "";
-    internal int PictureViewerButtonCountForCheck => PictureViewerBar.Children.OfType<Button>().Count();
-    internal int PictureViewerIndexForCheck => _viewerIndex;
-    internal int PictureViewerCountForCheck => _viewerSet.Count;
-    internal DataTransfer? PictureViewerCopyPayloadForCheck => BuildViewerCopyPayload();
-
-    /// <summary>The on-screen picture's own size, or -1 when the frame shows nothing: a viewer that "opened" on
-    /// a blank image would pass a visibility check and still be useless.</summary>
-    internal (int Width, int Height) PictureViewerSizeForCheck
-        => PictureViewerImage.Source is Bitmap bitmap
-            ? (bitmap.PixelSize.Width, bitmap.PixelSize.Height)
-            : (-1, -1);
-
-    /// <summary>Clicks a caption-row button (0 = copy, 1 = close) through its own Click, so the wiring is what
-    /// a check exercises.</summary>
-    internal void ClickPictureViewerButtonForCheck(int index)
-    {
-        var buttons = PictureViewerBar.Children.OfType<Button>().ToList();
-        if (index >= 0 && index < buttons.Count)
-            buttons[index].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-    }
-
-    /// <summary>Sends a key down the window's own tunnel, the same route <see cref="OnViewerKeyDown"/> listens
-    /// on, so a check drives the real handler rather than the method it happens to call.</summary>
-    internal void PressViewerKeyForCheck(Key key)
-        => OnViewerKeyDown(this, new KeyEventArgs
-        {
-            RoutedEvent = InputElement.KeyDownEvent,
-            Key = key,
-            KeyModifiers = KeyModifiers.None,
-            Source = this,
-        });
 }

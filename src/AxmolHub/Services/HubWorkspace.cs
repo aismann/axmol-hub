@@ -1,11 +1,4 @@
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using AxmolHub.Core;
@@ -28,7 +21,7 @@ namespace AxmolHub;
 /// building a binding infrastructure, and it stays closer to the WPF <c>Refresh()</c> semantics
 /// (full repaint when an operation ends).
 /// </summary>
-public sealed class HubWorkspace : IDisposable
+public sealed partial class HubWorkspace : IDisposable
 {
     private readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan };
     private readonly ProcessRunner _runner;
@@ -1393,16 +1386,6 @@ public sealed class HubWorkspace : IDisposable
     public bool WebPreviewRunning => _webPreview is not null;
     public bool IsProjectPreviewRunning(ProjectEntry project) => PathEquals(_webPreviewProjectPath, project.Path);
 
-    /// <summary>Verification hook (<c>--verify-shell</c>): records a pid as the game Hub launched for this
-    /// workspace. The suite has no built artifact to start, and what the ruling is about is not the launch —
-    /// it is that a running game leaves the gate empty, takes no row, and shows up again only as the reason a
-    /// rebuild would fail.</summary>
-    internal void RememberGameForCheck(string projectPath, int pid) => _launchedGames[projectPath] = pid;
-
-    /// <summary>Verification hook: drops the remembered games, so a scripted "it is still running" cannot
-    /// leave the next round's build press refused for a process that only ever existed in this suite.</summary>
-    internal void ForgetGamesForCheck() => _launchedGames.Clear();
-
     public string WebPreviewUrl => _webPreview?.Url ?? "";
 
     private async Task StartWebPreviewAsync(ProjectEntry project, EngineEntry engine)
@@ -1859,19 +1842,6 @@ public sealed class HubWorkspace : IDisposable
             HostShellChanged?.Invoke();
             Log.Write(HostShell.Describe());
         });
-    }
-
-    /// <summary>
-    /// Verification seam: puts a verdict on the card without touching the machine. On a host that already has
-    /// pwsh — which is most development machines — the "missing" and "waiting on a terminal" layouts would
-    /// otherwise never be reachable, and an unasserted layout is an unasserted UI (AGENTS.md). Installing for
-    /// real is deliberately not offered here: it changes the whole machine, so its verdicts are covered by
-    /// <c>Checks --check-host-shell</c> instead, which is host-independent and offline.
-    /// </summary>
-    internal void HostShellForCheck(HostShellStatus status, bool awaitingTerminal = false)
-    {
-        HostShell = status;
-        HostShellAwaitingTerminal = awaitingTerminal;
     }
 
     /// <summary>

@@ -101,15 +101,18 @@ public sealed class StateStore(string root)
 
     /// <summary>One Hub JSON file, or null when it is missing, unreadable or not JSON. A store that cannot read
     /// its file starts empty rather than failing the app — the same rule its writer already follows, and the reason
-    /// five stores no longer carry their own copy of this guard.</summary>
-    public static T? ReadJson<T>(string path) where T : class
+    /// stores no longer carry their own copy of this guard. Strict callers retain their original exceptions.</summary>
+    public static T? ReadJson<T>(string path) where T : class => ReadJson<T>(path, ignoreErrors: true);
+
+    /// <summary>Strict project settings surface read errors; optional Hub stores retain their empty fallback.</summary>
+    internal static T? ReadJson<T>(string path, bool ignoreErrors) where T : class
     {
         if (!File.Exists(path)) return null;
         try
         {
             return JsonSerializer.Deserialize<T>(File.ReadAllText(path), ReadOptions);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception ex) when (ignoreErrors && ex is (IOException or UnauthorizedAccessException or JsonException))
         {
             return null;
         }

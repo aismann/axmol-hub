@@ -1,7 +1,5 @@
-using System;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -11,12 +9,10 @@ using AxmolHub.Core;
 namespace AxmolHub;
 
 /// <summary>A settings-layer card; closing it cancels the pending attempt.</summary>
-public sealed class OpenAiLoginCard : UserControl
+public sealed partial class OpenAiLoginCard : UserControl
 {
     private readonly TextBox _callback;
     private readonly TextBlock _error;
-    internal TextBox CallbackForCheck => _callback;
-    internal bool HasActionsForCheck => Content is ScrollViewer { Content: StackPanel panel } && panel.Children.Count == 6;
     public OpenAiLoginCard(OpenAiLoginAttempt attempt, Action cancel)
     {
         ClipToBounds = true;

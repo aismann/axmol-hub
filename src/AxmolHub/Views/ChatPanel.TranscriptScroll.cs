@@ -1,5 +1,3 @@
-using System;
-using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -577,39 +575,5 @@ public partial class ChatPanel
         _pendingTailFollow = _stickToBottom;
         RequestTranscriptRepair("track-page");
         change.Handled = true;
-    }
-
-    // ───────────────────────── Check hooks ─────────────────────────
-
-    internal (bool Covered, double Gap, double TopGap, double BottomGap, int Visible, int EmptyHosts) TranscriptCoverageForCheck
-    {
-        get
-        {
-            var coverage = MeasureTranscriptCoverage();
-            return (coverage.Covered, coverage.Gap, coverage.TopGap, coverage.BottomGap, coverage.Visible, coverage.EmptyHosts);
-        }
-    }
-
-    internal string TranscriptCoverageDetailForCheck => MeasureTranscriptCoverage().Detail;
-    internal Control TranscriptColumnForCheck => MessageColumn;
-    internal int TranscriptRepairCountForCheck => _repairCount;
-    internal string LastTranscriptRepairForCheck => _lastRepairTrigger;
-    internal bool TranscriptPendingTailForCheck => _pendingTailFollow;
-    internal bool TranscriptStickForCheck => _stickToBottom;
-    internal int TranscriptFollowRunsForCheck => _followRuns;
-    internal string LastAlignDetailForCheck => _lastAlignDetail;
-
-    /// <summary>Replaces the items host without moving the reading position, leaving the virtualizer with a
-    /// fresh realization range in front of an unchanged offset — the stale-host state the repair exists for.</summary>
-    internal void SimulateStaleTranscriptHostForCheck()
-    {
-        _programmaticScroll = true;
-        try
-        {
-            MessageFlow.ItemsPanel = new FuncTemplate<Panel?>(() => new TranscriptRowsPanel());
-            MessageFlow.UpdateLayout();
-        }
-        finally { _programmaticScroll = false; }
-        RequestTranscriptRepair("simulated-stale-host");
     }
 }

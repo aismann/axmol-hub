@@ -1,24 +1,23 @@
-using System;
-using System.IO;
-using System.Linq;
-using System.Text.Json;
-using Avalonia;
-using Avalonia.Controls;
-using Avalonia.Controls.Primitives;
 using Avalonia.Input;
-using Avalonia.Layout;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AxmolHub.Core;
+using System.Text.Json;
+using Avalonia.Controls.Primitives;
+using Avalonia.Layout;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-public partial class ShellCheckWindow
+internal sealed class ShellVirtualScrollChecks
 {
-    /// <summary>A long, tool-dense transcript opened the way the assistant page opens one: the shape of the real
-    /// 900-turn sessions, where the first follow has to realize a tail that sits behind a mixed-height history.
-    /// The fixture is derived from that rhythm, never from the user's text.</summary>
-    private void CheckLongToolDenseTranscript(MainWindow shell, ChatPanel panel)
+    private readonly Action<bool, string> Check;
+    internal ShellVirtualScrollChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal void CheckLongToolDenseTranscript(MainWindow shell, ChatPanel panel)
     {
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
@@ -149,25 +148,7 @@ public partial class ShellCheckWindow
         }
     }
 
-    private static void SettleTranscript(MainWindow shell, ChatPanel panel, int rounds)
-    {
-        for (var i = 0; i < rounds; i++)
-        {
-            shell.UpdateLayout();
-            Dispatcher.UIThread.RunJobs();
-        }
-    }
-
-    /// <summary>Raises the framework's own wheel event on a control inside the scroller, so the
-    /// ScrollContentPresenter's handler runs exactly as it does for a hand on a trackpad.</summary>
-    private static void Wheel(Control target, MainWindow shell, double delta)
-        => target.RaiseEvent(new PointerWheelEventArgs(
-            target, CheckPointer, shell,
-            target.TranslatePoint(new Point(target.Bounds.Width / 2, Math.Min(24, target.Bounds.Height / 2)), shell) ?? default,
-            0, new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.Other),
-            KeyModifiers.None, new Vector(0, delta)));
-
-    private void CheckVariableTranscriptScroll(MainWindow shell, ChatPanel panel)
+    internal void CheckVariableTranscriptScroll(MainWindow shell, ChatPanel panel)
     {
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
@@ -307,10 +288,7 @@ public partial class ShellCheckWindow
         }
     }
 
-    /// <summary>Local diagnosis only: opens a real session file named by <c>AXMOL_REAL_SESSION</c> and asserts
-    /// the same coverage a person sees. The suite never points this at a user's data root; it exists so a
-    /// reported blank frame can be reproduced against the exact turn/height shape instead of a synthetic one.</summary>
-    private void CheckRealSessionIfRequested(MainWindow shell, ChatPanel panel)
+    internal void CheckRealSessionIfRequested(MainWindow shell, ChatPanel panel)
     {
         if (Environment.GetEnvironmentVariable("AXMOL_REAL_SESSION") is not { Length: > 0 } path
             || !File.Exists(path)) return;

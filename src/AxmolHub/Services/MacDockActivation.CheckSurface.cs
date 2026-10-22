@@ -1,7 +1,10 @@
-namespace AxmolHub;
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
 
+namespace AxmolHub;
 /// <summary>
-/// The half of <see cref="MacDockActivation"/> that exists only for <c>--verify-shell</c>: raising the two AppKit
+/// The half of <see cref = "MacDockActivation"/> that exists only for <c>--verify-shell</c>: raising the two AppKit
 /// signals a Dock click would send, because a check cannot click the icon. Kept apart from the Objective-C
 /// interop it drives, so that file reads as the interop and nothing else.
 /// </summary>
@@ -22,7 +25,8 @@ internal static partial class MacDockActivation
     /// original implementation is still consulted, and that the answer says "handled".</summary>
     internal static byte PressReopenForCheck()
     {
-        if (_reopenTarget == IntPtr.Zero) return 0;
+        if (_reopenTarget == IntPtr.Zero)
+            return 0;
         var app = Send0(objc_getClass("NSApplication"), Selector("sharedApplication"));
         return SendReopen(_reopenTarget, Selector("applicationShouldHandleReopen:hasVisibleWindows:"), app, 0);
     }

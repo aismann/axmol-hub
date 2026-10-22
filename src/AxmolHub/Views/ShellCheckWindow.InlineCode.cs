@@ -2,19 +2,25 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
-using Avalonia.Input.Raw;
 using Avalonia.LogicalTree;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AxmolHub.Core;
-using ColorTextBlock.Avalonia;
 using Markdown.Avalonia;
+using Pointer = Avalonia.Input.Pointer;
+using ColorTextBlock.Avalonia;
 
 namespace AxmolHub;
-
-public sealed partial class ShellCheckWindow
+internal sealed class ShellInlineCodeChecks
 {
-    private Task VerifyInlineCodeSurfacesAsync()
+    private readonly Action<bool, string> Check;
+    internal ShellInlineCodeChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal Task VerifyInlineCodeSurfacesAsync()
     {
         const string markdown = "Before `Configured` after.\n\n[Link](https://axmol.dev/)";
         var chatViewer = MarkdownMessageRenderer.Render(markdown);

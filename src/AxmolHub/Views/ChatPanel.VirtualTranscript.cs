@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -85,15 +82,6 @@ public partial class ChatPanel
     private int _virtualRealizations;
     private long _transcriptGeneration;
     private TranscriptSnapshot? _virtualSnapshot;
-
-    private List<Control> RealizedTranscriptRows
-    {
-        get
-        {
-            if (!_reconcilingTranscript) MessageFlow.UpdateLayout();
-            return _realizedTranscript.Values.OrderBy(row => row.Item.Ordinal).SelectMany(row => row.Host.Children).ToList();
-        }
-    }
 
     private void InitializeVirtualTranscript()
     {
@@ -369,8 +357,6 @@ public partial class ChatPanel
         while (_virtualParked.Count > ParkedTranscriptDepth) _virtualParked.RemoveLast();
     }
 
-    internal (double ProjectionMs, double ItemsMs, double ReconcileMs) VirtualWorkForCheck { get; private set; }
-
     private void RenderVirtualTranscript()
     {
         if (_chat is null) return;
@@ -644,109 +630,5 @@ public partial class ChatPanel
         }
         Dispatcher.UIThread.Post(AlignBottom, DispatcherPriority.Loaded);
     }
-
-    internal void ClickScrollToBottomForCheck() => ScrollToBottomButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
-    internal SelectableTextBlock? SelectFirstUserTextForCheck()
-    {
-        var block = RealizedTranscriptRows.SelectMany(row => row.GetLogicalDescendants()).OfType<SelectableTextBlock>()
-            .FirstOrDefault(text => text.Classes.Contains("turn-text") && text.Text == "editable question");
-        if (block is null) return null;
-        block.Focus();
-        block.SelectionStart = 0;
-        block.SelectionEnd = 8;
-        var item = _realizedTranscript.Values.First(row => row.Host.GetLogicalDescendants().Contains(block));
-        _selectionPinnedKey = item.Item.Key;
-        CapturePinnedSelection(item.Host);
-        return block;
-    }
-    internal void ReleaseVirtualSelectionForCheck()
-    {
-        _selectionPinnedKey = null;
-        _pinnedTextSelection.Clear();
-        _interactionRows.Clear();
-        InputBox.Focus();
-    }
-    internal int QueueMarkdownPromotionForCheck(int sourceIndex)
-    {
-        var item = _transcriptItems.First(entry => entry.Source == sourceIndex && entry.Kind == "message");
-        MessageFlow.UpdateLayout();
-        ScrollVirtualItemForCheck(item.Ordinal);
-        MessageFlow.UpdateLayout();
-        if (!_realizedTranscript.TryGetValue(item.Key, out var row) || _chat.ActiveConversation is not { } conversation) return 0;
-        row.Host.Children.Clear();
-        _pendingMarkdownRows.RemoveAll(pending => ReferenceEquals(pending.Parent, row.Host));
-        AppendRenderedTurn(item.Session, sourceIndex, conversation.Messages[sourceIndex], item.ToolName,
-            item.Last, false, row.Host, item.InGroup);
-        ScheduleMarkdownPromotion();
-        return _pendingMarkdownRows.Count;
-    }
-    internal ScrollBar TranscriptBarForCheck => TranscriptScrollBar;
-
-    internal (double Gap, int Visible, string Detail) VirtualCoverageForCheck
-    {
-        get
-        {
-            var height = MessageScroller.Viewport.Height;
-            var spans = _realizedTranscript.Values.Where(row => row.Host.IsAttachedToVisualTree())
-                .SelectMany(row => row.Host.Children)
-                .Where(row => row.IsEffectivelyVisible && row.Bounds.Height > 0)
-                .Select(row => (Y: row.TranslatePoint(default, MessageScroller)?.Y ?? double.NaN, H: row.Bounds.Height))
-                .Where(span => !double.IsNaN(span.Y) && span.Y < height && span.Y + span.H > 0)
-                .OrderBy(span => span.Y).ToArray();
-            var edge = 0d;
-            var gap = 0d;
-            foreach (var span in spans)
-            {
-                gap = Math.Max(gap, span.Y - edge);
-                edge = Math.Max(edge, span.Y + span.H);
-            }
-            gap = Math.Max(gap, height - edge);
-            return (gap, spans.Length, $"offset={MessageScroller.Offset.Y:0.0}, extent={MessageScroller.Extent.Height:0.0}, visible={spans.Length}, gap={gap:0.0}, spans={string.Join(';', spans.Select(span => $"{span.Y:0.0}/{span.H:0.0}"))}");
-        }
-    }
-
-    internal bool ReusedVirtualRowsForCheck => _openReusedRows;
-    internal int VirtualRealizationsForCheck => _virtualRealizations;
-    internal int RealizedEditorCountForCheck => RealizedTranscriptRows.Sum(row => row.GetVisualDescendants().OfType<AvaloniaEdit.TextEditor>().Count());
-    internal string[] VirtualExchangeIdsForCheck => _transcriptItems.Where(item => item.Kind == "exchange").Select(item => item.Turn!.ToolCallId ?? "").ToArray();
-    internal int VirtualItemCountForCheck => _transcriptItems.Count;
-    internal int RealizedItemCountForCheck => _realizedTranscript.Count;
-    internal int ParkedVirtualRowsForCheck => _virtualParked.Sum(entry => entry.Rows.Count);
-    internal string[] RealizedKeysForCheck => _transcriptItems.Where(item => _realizedTranscript.ContainsKey(item.Key)).Select(item => item.Key.ToString()).ToArray();
-    internal void ScrollVirtualItemForCheck(int index)
-    {
-        _transcriptGeneration++;
-        _stickToBottom = false;
-        _pendingTailFollow = false;
-        MessageFlow.ScrollIntoView(Math.Clamp(index, 0, Math.Max(0, _transcriptItems.Count - 1)));
-        // The scroll has only been requested at this point; a render before the layout pass would capture an
-        // anchor from the previous realized geometry (still at the old screen position) and restore that stale
-        // position over the move. Lay out first so the reading position the check asks for is the real one.
-        MessageFlow.UpdateLayout();
-    }
-    internal bool VirtualIndexRealizedForCheck(int index) => index >= 0 && index < _transcriptItems.Count
-        && _realizedTranscript.ContainsKey(_transcriptItems[index].Key);
-    internal (string? Key, double Top) VirtualAnchorForCheck
-    {
-        get { var anchor = CaptureTranscriptAnchor(); return (anchor?.Key.ToString(), anchor?.Top ?? 0); }
-    }
-    internal int VirtualAnchorSourceForCheck => CaptureTranscriptAnchor() is { } anchor
-        ? _transcriptItems.First(item => item.Key == anchor.Key).Source : -1;
-    internal void ExpandVirtualGroupsForCheck()
-    {
-        foreach (var item in _transcriptItems.Where(item => item.Kind == "group").ToArray())
-            RememberFold(_expandedGroups, item.Session, item.GroupKey!, true);
-        RenderMessages();
-    }
-    internal IReadOnlyDictionary<string, string> RealizedStructureForCheck => _realizedTranscript.Values
-        .Where(row => row.Item.Special is null && row.Host.Children.Count > 0)
-        .ToDictionary(row => row.Item.Key.ToString(), row => row.Item.Kind switch
-        {
-            "group" => row.Host.Children[0].Classes.Contains("activity-group") ? "G" : "invalid",
-            "thought" => PaintedChildToken(row.Host.Children[0]),
-            "exchange" => PaintedChildToken(row.Host.Children[0]),
-            "message" when row.Item.InGroup => PaintedChildToken(row.Host.Children[0]),
-            _ => PaintedToken(row.Host.Children[0]),
-        });
 
 }

@@ -13,8 +13,7 @@ public sealed class AndroidReleaseSettings
     public string KeystorePath { get; set; } = "";
     public string KeyAlias { get; set; } = "";
     public static string PathFor(ProjectEntry project) => Path.Combine(project.Path, ".axmol-hub.android-release.json");
-    public static AndroidReleaseSettings? Load(ProjectEntry project) => File.Exists(PathFor(project))
-        ? System.Text.Json.JsonSerializer.Deserialize<AndroidReleaseSettings>(File.ReadAllText(PathFor(project))) : null;
+    public static AndroidReleaseSettings? Load(ProjectEntry project) => StateStore.ReadJson<AndroidReleaseSettings>(PathFor(project), ignoreErrors: false);
     public static AndroidReleaseSettings Require(ProjectEntry project)
     {
         var settings = Load(project) ?? throw new InvalidOperationException("Configure Android release signing for this project first.");

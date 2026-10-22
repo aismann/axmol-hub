@@ -1,9 +1,5 @@
-using System;
 using System.Globalization;
-using System.Linq;
-using System.Threading.Tasks;
 using Avalonia.Controls;
-using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using AxmolHub.Core;
@@ -49,22 +45,6 @@ public partial class ProjectsPage : UserControl
     private int _sortMode;
     private ProjectEntry? _pendingTrash;
     private string _overlayMode = "";
-
-    internal DataGrid GridForCheck => ProjectsGrid;
-    internal ProjectListItem[] RowsForCheck => ProjectsGrid.ItemsSource as ProjectListItem[] ?? [];
-    internal TextBox SearchForCheck => SearchBox;
-    internal ComboBox EngineFilterForCheck => EngineFilter;
-    internal ComboBox PlatformFilterForCheck => PlatformFilter;
-    internal Button SortForCheck => SortButton;
-    internal Button NewProjectForCheck => NewProjectButton;
-    internal Button CloseOverlayForCheck => OverlayCloseButton;
-    internal Button CancelOverlayForCheck => OverlayCancelButton;
-    internal TextBox ProjectNameForCheck => ProjectNameBox;
-    internal TextBlock TrashNameForCheck => TrashProjectName;
-    internal TextBlock TrashPathForCheck => TrashProjectPath;
-    internal void ShowTrashConfirmationForCheck(ProjectEntry project) => ShowTrashConfirmation(project);
-    internal bool OverlayVisibleForCheck => ProjectOverlay.IsVisible;
-    internal void SyncColumnsForCheck() => SyncColumns();
 
     public ProjectsPage() { _workspace = null!; InitializeComponent(); }
 

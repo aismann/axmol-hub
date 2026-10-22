@@ -1,17 +1,16 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using AxmolHub.Core;
-using Microsoft.Extensions.AI;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-public partial class ShellCheckWindow
+internal sealed class ShellContextBoundaryChecks
 {
-    private async Task CheckContextBoundaryAsync(MainWindow shell, ChatPanel panel)
+    private readonly Action<bool, string> Check;
+    internal ShellContextBoundaryChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal async Task CheckContextBoundaryAsync(MainWindow shell, ChatPanel panel)
     {
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
@@ -56,31 +55,5 @@ public partial class ShellCheckWindow
             panel.Reload();
             Directory.Delete(workspace, recursive: true);
         }
-    }
-
-    private sealed class ContextBurstClient : IChatClient
-    {
-        public int Executed { get; private set; }
-        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (Executed < 8)
-            {
-                var part = Executed++;
-                yield return new ChatResponseUpdate(ChatRole.Assistant,
-                    [new FunctionCallContent("boundary-" + part, "read_file",
-                        new Dictionary<string, object?> { ["path"] = $"part-{part}.txt" })])
-                    { ResponseId = "boundary-response-" + part, FinishReason = ChatFinishReason.ToolCalls };
-            }
-            else yield return new ChatResponseUpdate(ChatRole.Assistant, "boundary done")
-                { ResponseId = "boundary-response-final", FinishReason = ChatFinishReason.Stop };
-            await Task.Yield();
-        }
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-        public void Dispose() { }
     }
 }

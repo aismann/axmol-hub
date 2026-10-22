@@ -1,25 +1,21 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Reflection;
+using AxmolHub.Core;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 using AxmolHub.Agent;
-using AxmolHub.Core;
 using Microsoft.Extensions.AI;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-public partial class ShellCheckWindow
+internal sealed class ShellRequestStabilityChecks
 {
-    // Opt-in, offline reproduction against a copied session. Only hashes and sizes leave this check.
-    private void CheckRequestStability(MainWindow shell, ChatPanel panel)
+    private readonly Action<bool, string> Check;
+    internal ShellRequestStabilityChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal void CheckRequestStability(MainWindow shell, ChatPanel panel)
     {
         var snapshot = Environment.GetEnvironmentVariable("AXMOL_REQUEST_SNAPSHOT");
         if (string.IsNullOrEmpty(snapshot)) return;
@@ -50,13 +46,11 @@ public partial class ShellCheckWindow
                 session.Messages = source.Messages.Take(count).ToList();
                 session.LastInputTokens = 360_000;
                 session.LastUsageAt = source.LastUsageAt;
-                var prepare = typeof(ChatWorkspace).GetMethod("PrepareRequest", BindingFlags.Instance | BindingFlags.NonPublic)!;
-                var request = prepare.Invoke(chat, new object[] { session.Id, 0 })
+                var request = chat.PreparedRequestForCheck(session.Id)
                     ?? throw new InvalidOperationException("Request probe fixture has no prepared request");
-                T Field<T>(string name) => (T)request.GetType().GetProperty(name)!.GetValue(request)!;
-                var history = Field<IReadOnlyList<ChatTurn>>("History");
-                var system = Field<string>("SystemPrompt");
-                var tools = Field<IReadOnlyList<AITool>>("Tools");
+                var history = request.History;
+                var system = request.SystemPrompt;
+                var tools = request.Tools;
                 var original = JsonSerializer.Serialize(session.Messages);
                 panel.Reload();
                 Relayout(shell, panel, measure: true);
@@ -170,81 +164,6 @@ public partial class ShellCheckWindow
             if (fixtureProvider is not null) chat.RemoveProvider(fixtureProvider);
             if (before is not null) chat.OpenConversation(before);
             panel.Reload();
-        }
-    }
-
-    // The SDK still serializes every real tool-loop request. HTTP always stops at RequestProbe, while
-    // scripted function results exercise FunctionInvokingChatClient without running any workspace tool.
-    private sealed class LoopProbeFunction(AIFunction inner, Func<string> result) : DelegatingAIFunction(inner)
-    {
-        protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken token)
-            => ValueTask.FromResult<object?>(result());
-    }
-
-    private sealed class LoopProbeClient(IChatClient inner, RequestProbe wire, ChatTurn[] calls,
-        List<ChatTurn> transcript) : IChatClient
-    {
-        private int _step;
-        private string? _previous;
-        public string CurrentResult { get; private set; } = "";
-        public List<object> Rounds { get; } = [];
-        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                await foreach (var _ in inner.GetStreamingResponseAsync(messages, options, cancellationToken)
-                    .ConfigureAwait(false)) { }
-            }
-            catch (Exception) when (wire.Body is not null) { }
-            var body = wire.Body!;
-            var common = -1;
-            var first = -1;
-            if (_previous is not null)
-            {
-                var oldBytes = Encoding.UTF8.GetBytes(_previous);
-                var newBytes = Encoding.UTF8.GetBytes(body);
-                common = 0;
-                while (common < Math.Min(oldBytes.Length, newBytes.Length) && oldBytes[common] == newBytes[common]) common++;
-                using var oldJson = JsonDocument.Parse(_previous);
-                using var newJson = JsonDocument.Parse(body);
-                var name = newJson.RootElement.TryGetProperty("messages", out _) ? "messages" : "input";
-                var oldItems = oldJson.RootElement.GetProperty(name);
-                var newItems = newJson.RootElement.GetProperty(name);
-                for (var i = 0; i < Math.Min(oldItems.GetArrayLength(), newItems.GetArrayLength()); i++)
-                    if (oldItems[i].GetRawText() != newItems[i].GetRawText()) { first = i; break; }
-            }
-            Rounds.Add(new { round = _step, bytes = Encoding.UTF8.GetByteCount(body), commonPrefixBytes = common,
-                firstChangedMessage = first });
-            _previous = body;
-            if (_step < calls.Length)
-            {
-                var call = calls[_step++];
-                CurrentResult = transcript.First(turn => turn.Role == ChatRoles.Tool
-                    && turn.ToolCallId == call.ToolCallId).Text;
-                yield return new ChatResponseUpdate(ChatRole.Assistant, ChatPipeline.ToChatMessage(call).Contents)
-                    { FinishReason = ChatFinishReason.ToolCalls, ResponseId = "probe-" + _step };
-            }
-            else yield return new ChatResponseUpdate(ChatRole.Assistant, "offline done")
-                { FinishReason = ChatFinishReason.Stop, ResponseId = "probe-done" };
-        }
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-        public void Dispose() { }
-    }
-
-    private sealed class RequestProbe : HttpMessageHandler
-    {
-        public int Requests { get; private set; }
-        public string? Body { get; private set; }
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
-        {
-            Requests++;
-            Body = await request.Content!.ReadAsStringAsync(token).ConfigureAwait(false);
-            return new HttpResponseMessage(HttpStatusCode.BadRequest)
-            { Content = new StringContent("{\"error\":{\"message\":\"offline capture\",\"type\":\"invalid_request_error\"}}") };
         }
     }
 }

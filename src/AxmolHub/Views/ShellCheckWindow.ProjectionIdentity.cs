@@ -1,18 +1,17 @@
-using System.Collections.Generic;
-using System.Linq;
+using Avalonia.Input;
 using AxmolHub.Core;
+using static AxmolHub.ShellCheckSupport;
 
 namespace AxmolHub;
-
-/// <summary>
-/// What the occurrence keys have to survive. These are the shell's own mutations, replayed against
-/// <see cref="TranscriptProjectionState"/> without any UI: a decision, a result filed beside its call, a deletion, a
-/// wholesale rewrite. They are assertions about identity only — which row gets which cached height or scroll anchor
-/// comes later, and depends on these holding.
-/// </summary>
-public partial class ShellCheckWindow
+internal sealed class ShellProjectionIdentityChecks
 {
-    private void CheckProjectionIdentity(MainWindow shell, ChatPanel panel)
+    private readonly Action<bool, string> Check;
+    internal ShellProjectionIdentityChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+    }
+
+    internal void CheckProjectionIdentity(MainWindow shell, ChatPanel panel)
     {
         var chat = shell.Chat;
         var before = chat.ActiveConversation?.Id;
@@ -133,23 +132,5 @@ public partial class ShellCheckWindow
                 chat.OpenConversation(before);
             panel.Reload();
         }
-    }
-
-    /// <summary>One key per visible turn, in transcript order: the entries' own keys, and a piece's contributing
-    /// turn keys in the order it stands for them.</summary>
-    private static long[] KeysOf(TranscriptSnapshot snapshot)
-    {
-        var keys = new List<long>();
-        foreach (var entry in snapshot.Entries)
-        {
-            switch (entry)
-            {
-                case TranscriptMessage message: keys.Add(message.TurnKey); break;
-                case TranscriptNotice notice: keys.Add(notice.TurnKey); break;
-                case TranscriptActivity activity: keys.AddRange(activity.Piece.TurnKeys ?? []); break;
-            }
-        }
-
-        return [.. keys];
     }
 }

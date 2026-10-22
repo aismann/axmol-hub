@@ -1,22 +1,22 @@
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
-using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 using Avalonia.Threading;
 using AxmolHub.Core;
+using System.Text;
+using System.Diagnostics;
 
 namespace AxmolHub;
-
-public partial class ShellCheckWindow
+internal sealed class ShellTranscriptBenchmarkChecks
 {
-    /// <summary>Opt-in UI baseline, deliberately outside timed pass/fail assertions. Sessions are built in one
-    /// batch in memory: this measures the current UI path, not per-turn saves or cold disk loads. The shell suite
-    /// has already initialized the process, so every sample is explicitly process-warm.</summary>
-    private void RunTranscriptBenchmark(MainWindow shell, ChatPanel panel)
+    private readonly Action<bool, string> Check;
+    private readonly ShellCheckFixture Fixture;
+    internal ShellTranscriptBenchmarkChecks(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
+    {
+        Check = check;
+        Fixture = fixture;
+    }
+
+    internal void RunTranscriptBenchmark(MainWindow shell, ChatPanel panel)
     {
         if (Environment.GetEnvironmentVariable("AXMOL_TRANSCRIPT_BENCHMARK") != "1") return;
         var report = new StringBuilder();
