@@ -2491,6 +2491,7 @@ public partial class ChatPanel : UserControl
         _reconcilingTranscript = true;
         try { RenderVirtualTranscript(); }
         finally { _reconcilingTranscript = false; }
+        RefreshGoalCapsule();
     }
 
     /// <summary>Reconciles display items after an edit or regeneration changed the stored history.</summary>

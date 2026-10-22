@@ -583,6 +583,37 @@
       <Setter Property="ClipToBounds" Value="True" />
       <Setter Property="HorizontalAlignment" Value="Stretch" />
     </Style>
+    <Style Selector="Border.goal-capsule">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="{DynamicResource Hub.Radius.Pill}" />
+      <Setter Property="Padding" Value="12,6" />
+      <Setter Property="MinHeight" Value="36" />
+      <Setter Property="Margin" Value="0,0,0,6" />
+      <Setter Property="ClipToBounds" Value="True" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="Border.goal-capsule TextBlock.goal-capsule-status">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="8,0,6,0" />
+    </Style>
+    <Style Selector="Border.goal-capsule TextBlock.goal-capsule-elapsed">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="8,0" />
+    </Style>
+    <Style Selector="Border.goal-capsule TextBlock.goal-capsule-text">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+      <Setter Property="TextWrapping" Value="NoWrap" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
     <Style Selector="Border.steer-confirm TextBlock.steer-confirm-text">
       <Setter Property="FontSize" Value="13" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
@@ -1305,15 +1336,16 @@
          keeps the row nearest the input, so nothing a person has to reply to is ever pushed behind a readout.
          Row 1 is the decision host — a pending call or a pending plan; row 2 the steer-confirm strip, where a
          second tap stands between Enter and a steer, because a steer is the routing table's strongest signal and
-         worth reading once before it is said. Nothing is cancelled either way: the sentence waits for the step in
-         flight. Row 5 aligns the workspace picker, per-request metrics and context button below the frame.
+         worth reading once before it is said. Row 4 is the active goal capsule, nearest the box after a steer draft.
+         Nothing is cancelled either way: the sentence waits for the step in flight. Row 6 aligns the workspace
+         picker, per-request metrics and context button below the frame.
          Both strips are siblings of the frame, never children of it: the input box stays live and its draft stays
          visible while a question is waiting, which is the whole reason they moved. -->
     <!-- The composer, and every question that may stand above it, sit in the reading column with the same gutter
          as the transcript: the column's right edge is where the transcript's is meant to be, so the inset goes on
          the whole stack rather than on one card in it (see the transcript scroller's note for why the gutter
          exists at all). -->
-    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" Margin="10,0,10,0">
+    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="10,0,10,0">
       <!-- The band holds two controls that are shown together more often than not — a run that is writing while
            the person is reading back is the ordinary state of a long task — so they share one centered row rather
            than each taking one. The row's height is reserved by whether the transcript <i>can</i> scroll, not by
@@ -1335,11 +1367,13 @@
               IsVisible="False" />
       <Border x:Name="SteerConfirmHost" Classes="steer-confirm" Grid.Row="3"
               IsVisible="False" MaxWidth="820" />
+      <Border x:Name="GoalCapsuleHost" Classes="goal-capsule" Grid.Row="4"
+              IsVisible="False" MaxWidth="820" />
       <!-- The frame wears Hub.Surface — the same raised card the settings card wears — not Hub.SurfaceAlt.
            SurfaceAlt is the sidebar's chrome plane; the input box must float *above* the reading page and
            read as a card, not sit on the same gray strip as the spine. In dark that lifts it off #1E1E1E;
            in light it becomes a white card on the #F4F5F7 page. The shell check pins the separation. -->
-      <Border x:Name="ComposerFrame" Classes="composer" Grid.Row="4"
+      <Border x:Name="ComposerFrame" Classes="composer" Grid.Row="5"
               Background="{DynamicResource Hub.Surface}" CornerRadius="14"
               HorizontalAlignment="Stretch" MaxWidth="820" ClipToBounds="True"
               Margin="0,6,0,0" Padding="14,12,12,10">
@@ -1416,7 +1450,7 @@
 
       <!-- The workspace stays at left; the spring keeps the three statuses together at right.
            Speed and context keep their width; the spend label trims first on narrow windows. -->
-      <Grid x:Name="ComposerStatusRow" Grid.Row="5" ColumnDefinitions="Auto,*,Auto,*,Auto" MaxWidth="820" HorizontalAlignment="Stretch"
+      <Grid x:Name="ComposerStatusRow" Grid.Row="6" ColumnDefinitions="Auto,*,Auto,*,Auto" MaxWidth="820" HorizontalAlignment="Stretch"
             Margin="0,3,0,4" MinHeight="30" ColumnSpacing="8">
         <Button x:Name="WorkspaceChip" Grid.Column="0" Classes="workspace-chip" MaxWidth="160">
           <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">

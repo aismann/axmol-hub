@@ -344,6 +344,7 @@ internal sealed class ShellAssistantChecks
         shell.Chat.SeedGoalForCheck(markerPeer.Id, "完成目标并依据证据核验");
         Dispatcher.UIThread.RunJobs();
         Check(panel.GoalMessageCardCountForCheck == 1
+              && panel.GoalCapsuleForCheck
               && panel.GoalMessageCardPrecedesUserPillForCheck
               && panel.GoalMessageCardTitleForCheck == "完成目标并依据证据核验"
               && panel.GoalMessageCardStatusForCheck.StartsWith(HubStrings.Get("ChatGoalActive"), StringComparison.Ordinal)

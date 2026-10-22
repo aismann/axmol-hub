@@ -1434,6 +1434,90 @@ public partial class ChatPanel
         return title.Length > 0 ? title : HubStrings.Get("ChatPlanCardUntitled");
     }
 
+    // ── the active goal capsule above the composer ──
+
+    /// <summary>Shows the active thread goal where the next instruction is written, keeping its controls
+    /// available without making the reader scroll back to the original message.</summary>
+    private void RefreshGoalCapsule()
+    {
+        var chat = _chat;
+        var conversation = chat?.ActiveConversation;
+        if (chat is null || conversation is null)
+        {
+            GoalCapsuleHost.IsVisible = false;
+            GoalCapsuleHost.Child = null;
+            return;
+        }
+        var goal = conversation.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User
+            && turn.IsGoal && chat.IsCurrentGoalTurn(conversation.Id, turn.At));
+        var state = chat.GoalStateFor(conversation.Id);
+        if (goal is null || state is not (ChatGoalStates.Active or ChatGoalStates.Paused or ChatGoalStates.BudgetLimited))
+        {
+            GoalCapsuleHost.IsVisible = false;
+            GoalCapsuleHost.Child = null;
+            return;
+        }
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        if (state == ChatGoalStates.Active)
+            actions.Children.Add(GoalActionButton("Ⅱ", "ChatGoalPause", () =>
+            {
+                chat.PauseGoal(conversation.Id);
+                RefreshGoalCapsule();
+            }));
+        else
+            actions.Children.Add(GoalActionButton("▶", "ChatGoalResume", () =>
+            {
+                chat.ResumeGoal(conversation.Id);
+                RefreshGoalCapsule();
+            }));
+        actions.Children.Add(GoalActionButton("×", "ChatGoalClear", () =>
+        {
+            chat.ClearGoal(conversation.Id);
+            RefreshGoalCapsule();
+        }));
+
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto") };
+        var icon = new Avalonia.Controls.Shapes.Path
+        {
+            Width = 16, Height = 16, Stretch = Stretch.Uniform,
+            Data = ThemeGeometry(ComposerModeIconKey(ChatModes.Agent)),
+            Fill = Brushes.Transparent, StrokeThickness = 1.7,
+            StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        row.Children.Add(icon);
+        var statusKey = state switch
+        {
+            ChatGoalStates.Paused => "ChatGoalPaused",
+            ChatGoalStates.BudgetLimited => "ChatGoalBudgetLimited",
+            _ => "ChatGoalActive",
+        };
+        var status = new TextBlock { Classes = { "goal-capsule-status" }, Text = HubStrings.Get(statusKey) };
+        Grid.SetColumn(status, 1);
+        row.Children.Add(status);
+        var text = new TextBlock { Classes = { "goal-capsule-text" }, Text = goal.Text };
+        ToolTip.SetTip(text, goal.Text);
+        Grid.SetColumn(text, 2);
+        row.Children.Add(text);
+        var run = chat.RunFor(conversation.Id);
+        if (run is { IsStreaming: true })
+        {
+            var elapsed = new TextBlock
+            {
+                Classes = { "goal-capsule-elapsed" },
+                Text = "· " + FormatDuration(run.Elapsed),
+            };
+            Grid.SetColumn(elapsed, 3);
+            row.Children.Add(elapsed);
+        }
+        Grid.SetColumn(actions, 4);
+        row.Children.Add(actions);
+        GoalCapsuleHost.Child = row;
+        GoalCapsuleHost.IsVisible = true;
+    }
+
     // ── the steer-confirm strip ──
 
     /// <summary>
