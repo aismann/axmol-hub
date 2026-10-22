@@ -55,11 +55,24 @@ public partial class ChatPanel : UserControl
     /// document it rendered, so a row can be named by what it says). The incremental renderer's whole claim is
     /// that each turn is painted once, in order — and that is only checkable from outside as a list of rows.</summary>
     internal IReadOnlyList<string> PaintedRowsForCheck => MessageRows.Select(RowText).ToArray();
+    /// <summary>The same rows with the live bubble's own row left out: the transcript the run has already filed.
+    ///
+    /// <para>The bubble paints the sentence the filed turn will carry while the model is still saying it, so a read
+    /// that counted it could not tell 「the transcript took the narration over」 from 「the bubble is still painting
+    /// it」 — both are one row, and only the second one still has the block in the bubble. The bubble is one of the
+    /// virtual tails, which is exactly what this leaves out.</para></summary>
+    internal IReadOnlyList<string> FiledRowTextsForCheck => MessageRowsOf(_realizedTranscript
+            .Where(row => row.Value.Item.Special is null)
+            .OrderBy(row => row.Value.Item.Ordinal)
+            .SelectMany(row => row.Value.Host.Children))
+        .Select(RowText).ToArray();
     /// <summary>The texts of every message row that is on screen <b>without the person opening anything</b>: prose
-    /// in the flow, and the rows of a flat piece. Rows inside a fold are absent by design, which is what makes this
+    /// in the flow, and the rows of an opened fold. Rows inside a fold are absent by design, which is what makes this
     /// the read that separates "the model said it" from "the model said it, then hid it behind a chevron" — the
     /// second of those used to be indistinguishable from returning nothing at all.</summary>
-    internal IReadOnlyList<string> UnfoldedRowTextsForCheck => RealizedTranscriptRows.Where(child => !child.Classes.Contains("activity-group")).SelectMany(child => child.Classes.Contains("activity-plain") ? child.GetLogicalDescendants().OfType<Control>().Where(row => row.Classes.Contains("message-row")) : Enumerable.Repeat(child, 1).Where(row => row.Classes.Contains("message-row"))).Select(RowText).ToArray();
+    internal IReadOnlyList<string> UnfoldedRowTextsForCheck => RealizedTranscriptRows
+        .Where(child => !child.Classes.Contains("activity-group") && child.Classes.Contains("message-row"))
+        .Select(RowText).ToArray();
     // ── the folded activity runs and the live thinking glyph ──
     /// <summary>How many activity runs the transcript folded into a collapsible group. One run of tool calls and
     /// thinking is one head, so this counts heads, not turns.</summary>

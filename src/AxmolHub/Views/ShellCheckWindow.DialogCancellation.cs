@@ -22,6 +22,9 @@ internal sealed class ShellDialogCancellationChecks(Action<bool, string> check)
 
         var root = ScratchDirectory.Resolve("dialog-cancellation", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        // A registered project always carries .axproj (HubState refuses one without it), and the Android release
+        // dialog reads the application id from there — a bare directory is not a project this fixture may build.
+        File.WriteAllText(Path.Combine(root, ".axproj"), "package_name=dev.axmol.fixture\n");
         var project = new ProjectEntry { Name = "fixture", Path = root, Version = "2.11.5", Platform = "windows-x64" };
         var engine = new EngineEntry("2.11.5", Path.Combine(root, "engine"));
         var target = BuildTargets.Get(project.Platform);
@@ -56,14 +59,20 @@ internal sealed class ShellDialogCancellationChecks(Action<bool, string> check)
                 window?.UpdateLayout();
                 Dispatcher.UIThread.RunJobs();
                 var plate = window is null ? null : NamedDescendant<Button>(window, "DialogCloseButton");
-                var wired = plate is not null && NamedDescendant<Border>(window!, "DialogChrome") is not null
-                    && NamedDescendant<Border>(window!, "DialogDragArea") is not null
-                    && NamedDescendant<TextBlock>(window!, "DialogTitle")?.Text == window!.Title;
+                var chrome = window is null ? null : NamedDescendant<Border>(window, "DialogChrome");
+                var drag = window is null ? null : NamedDescendant<Border>(window, "DialogDragArea");
+                var caption = window is null ? null : NamedDescendant<TextBlock>(window, "DialogTitle")?.Text;
+                var wired = plate is not null && chrome is not null && drag is not null && caption == window!.Title;
                 plate?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 var completed = await Task.WhenAny(result, Task.Delay(500)) == result;
-                var cancelled = wired && completed && await result && !window!.IsVisible;
+                var confirmed = completed && await result;
+                var cancelled = wired && completed && confirmed && !window!.IsVisible;
                 allCancelled &= cancelled;
-                observations.Add(sample.Name + ":" + cancelled);
+                observations.Add(cancelled ? sample.Name + ":True"
+                    : sample.Name + ":False（plate=" + (plate is not null) + ", chrome=" + (chrome is not null)
+                      + ", drag=" + (drag is not null) + ", caption=" + (caption is null ? "<null>" : "「" + caption + "」")
+                      + ", windowTitle=" + (window?.Title is { } shown ? "「" + shown + "」" : "<null>")
+                      + ", settled=" + completed + ", confirmed=" + confirmed + ", visible=" + (window?.IsVisible) + "）");
             }
             catch (Exception ex)
             {

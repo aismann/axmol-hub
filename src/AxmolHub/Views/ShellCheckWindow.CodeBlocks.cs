@@ -82,20 +82,21 @@ internal sealed class ShellCodeBlocksChecks
             panel.SetInputForCheck("打印日志命令");
             _ = panel.SendComposerForCheck();
             await WaitForSignalAsync(arrived.Task);
+            // The chunk has left the client; the block that draws it is built on the dispatcher pass after that,
+            // and the scripted client is still gated — so waiting for the paint cannot outlive 「before it was
+            // filed」, while reading before the paint is what made this line depend on the machine's load.
+            await WaitUntilAsync(() => CodeEditor(panel, command) is not null, maxTicks: 120);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            shell.UpdateLayout();
-            var live = panel.GetVisualDescendants().OfType<TextEditor>()
-                .FirstOrDefault(editor => editor.Text.Contains(command, StringComparison.Ordinal));
-            Check(live is not null, "流式回复在尚未落盘时已经把长命令渲染为代码块");
+            var live = CodeEditor(panel, command);
+            Check(live is not null, "流式回复在尚未落盘时已经把长命令渲染为代码块" + Observed(panel, shell, session));
             if (live is not null) CheckCodeBlockGeometry(live, "流式回复长命令");
             gate.TrySetResult(true);
             await panel.WaitForRunToFinishForCheck();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var stored = panel.GetVisualDescendants().OfType<TextEditor>()
-                .FirstOrDefault(editor => editor.Text.Contains(command, StringComparison.Ordinal));
-            Check(stored is not null, "完成后长命令回到历史消息的代码块");
+            var stored = CodeEditor(panel, command);
+            Check(stored is not null, "完成后长命令回到历史消息的代码块" + Observed(panel, shell, session));
             if (stored is not null) CheckCodeBlockGeometry(stored, "流式落盘后长命令");
         }
         finally
@@ -111,6 +112,19 @@ internal sealed class ShellCodeBlocksChecks
             Dispatcher.UIThread.RunJobs();
         }
     }
+
+    /// <summary>The code block the panel drew for this command, or null when it has not been built yet.</summary>
+    private static TextEditor? CodeEditor(ChatPanel panel, string command)
+        => panel.GetVisualDescendants().OfType<TextEditor>()
+            .FirstOrDefault(editor => editor.Text.Contains(command, StringComparison.Ordinal));
+
+    /// <summary>What the panel actually held, so a failure names the frame it read instead of only the text that
+    /// was missing from it: the code blocks on screen, the painted rows, the stored turns and whether the run is
+    /// still going tell 「nothing was rendered」 from 「the wrong session is on screen」.</summary>
+    private static string Observed(ChatPanel panel, MainWindow shell, Conversation session)
+        => "（代码块 " + panel.GetVisualDescendants().OfType<TextEditor>().Count()
+           + " 个，屏上 " + panel.PaintedRowsForCheck.Count + " 行，会话 " + session.Messages.Count
+           + " 条，运行中 " + shell.Chat.IsRunning(session.Id) + "）";
 
     internal void CheckCodeBlockGeometry(TextEditor editor, string name)
     {

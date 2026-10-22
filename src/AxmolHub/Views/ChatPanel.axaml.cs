@@ -5078,14 +5078,15 @@ public partial class ChatPanel : UserControl
     // ───────────────────────── Self-check hooks ─────────────────────────
 
     /// <summary>Message rows are Borders carrying the message-row class (both row kinds, since the container
-    /// was unified); the class is what the hover-reveal rules and every row-counting check key on. Both machine
-    /// containers are entered — a fold, and the flat column a narrated call is painted into — because a row the
-    /// person can read without clicking anything is a row of the transcript whatever element happens to hold it.</summary>
-    private static bool IsMachinePanel(Control child)
-        => child.Classes.Contains("activity-group") || child.Classes.Contains("activity-plain");
+    /// was unified); the class is what the hover-reveal rules and every row-counting check key on. An opened
+    /// fold is entered — a row the person can read without clicking anything is a row of the transcript — while
+    /// a folded one realizes no rows at all, so nothing has to be skipped by hand.</summary>
+    private static bool IsMachinePanel(Control child) => child.Classes.Contains("activity-group");
 
-    private IEnumerable<Control> MessageRows
-        => RealizedTranscriptRows.SelectMany(child => IsMachinePanel(child)
+    private IEnumerable<Control> MessageRows => MessageRowsOf(RealizedTranscriptRows);
+
+    private static IEnumerable<Control> MessageRowsOf(IEnumerable<Control> rows)
+        => rows.SelectMany(child => IsMachinePanel(child)
             ? child.GetLogicalDescendants().OfType<Control>().Where(row => row.Classes.Contains("message-row"))
             : Enumerable.Repeat(child, 1).Where(row => row.Classes.Contains("message-row")));
 

@@ -935,17 +935,19 @@ internal sealed class ShellTranscriptChecks
             panel.SetInputForCheck("跑一下自检");
             await panel.SendComposerForCheck();
 
-            // Waiting on the transcript row rather than on a delay: the row appears in the same hop that gave the
-            // bubble its chance to let go, so by the time this settles the repaint under test has already run.
-            await WaitUntilAsync(() => panel.PaintedRowsForCheck.Any(
+            // Waiting on the *filed* row, not on every painted row: the bubble is painting the same sentence while
+            // the model says it, so a read that counted both would settle on the bubble itself and then report the
+            // duplicate it was looking for. The filed row appears in the same hop that gave the bubble its chance
+            // to let go, so by the time this settles the repaint under test has already run.
+            await WaitUntilAsync(() => panel.FiledRowTextsForCheck.Any(
                 row => row.Contains(narration, StringComparison.Ordinal)), maxTicks: 120);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var painted = panel.PaintedRowsForCheck.Count(
+            var painted = panel.FiledRowTextsForCheck.Count(
                 row => row.Contains(narration, StringComparison.Ordinal));
             Check(painted == 1 && panel.LiveBlockCountForCheck == 0,
                 "带旁白的调用落盘后，这句旁白在屏上只有一份——实时气泡把它交棒给转录里那一行，而不是并排各留一份"
-                + "（屏上 " + painted + " 行，气泡里还留着 " + panel.LiveBlockCountForCheck + " 块）");
+                + "（转录里 " + painted + " 行，气泡里还留着 " + panel.LiveBlockCountForCheck + " 块）");
 
             secondRound.SetResult(true);
             await panel.WaitForRunToFinishForCheck();
