@@ -1151,7 +1151,7 @@
     <Style Selector="Button.mode-indicator">
       <Setter Property="MinHeight" Value="30" />
       <Setter Property="Padding" Value="8,3" />
-      <Setter Property="Margin" Value="6,0,6,0" />
+      <Setter Property="Margin" Value="2,0,6,0" />
       <Setter Property="CornerRadius" Value="15" />
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
