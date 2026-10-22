@@ -637,46 +637,10 @@ internal sealed class InspectorPanel : UserControl
         Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
     {
-        var mode = new ComboBox
-        {
-            Tag = "InspectorDiffViewSelector",
-            ItemsSource = new[]
-            {
-                HubStrings.Get("InspectorDiffViewUnified"),
-                HubStrings.Get("InspectorDiffViewBefore"),
-                HubStrings.Get("InspectorDiffViewAfter"),
-            },
-            SelectedIndex = 0,
-            MinHeight = 28,
-            HorizontalAlignment = HorizontalAlignment.Left,
-        };
-        var content = new ContentControl();
-        void Render()
-        {
-            var index = mode.SelectedIndex;
-            if (index == 0)
-            {
-                var (diff, state) = resolveDiff(change);
-                content.Content = diff is null ? EmptyLine(DiffUnavailableKey(change, state)) : BuildDiffBlock(diff);
-            }
-            else if (resolveSnapshot is null)
-            {
-                content.Content = EmptyLine("InspectorDiffMissingSnapshot");
-            }
-            else
-            {
-                var (snapshot, state) = resolveSnapshot(change);
-                content.Content = snapshot is null
-                    ? EmptyLine(DiffUnavailableKey(change, state))
-                    : BuildSnapshotBlock(index == 1 ? snapshot.Before : snapshot.After);
-            }
-        }
-        mode.SelectionChanged += (_, _) => Render();
-        Render();
-        var stack = new StackPanel { Spacing = 6 };
-        stack.Children.Add(mode);
-        stack.Children.Add(content);
-        return stack;
+        var (diff, state) = resolveDiff(change);
+        return diff is null
+            ? EmptyLine(DiffUnavailableKey(change, state))
+            : BuildDiffBlock(diff);
     }
 
     private static string DiffUnavailableKey(ChangedFile change, UndoCopyState state) => state switch
@@ -885,7 +849,7 @@ internal sealed class InspectorPanel : UserControl
         {
             var controls = _changesList.GetLogicalDescendants().OfType<ComboBox>().ToArray();
             return controls.Any(control => Equals(control.Tag, "InspectorHistorySelector"))
-                   && controls.Any(control => Equals(control.Tag, "InspectorDiffViewSelector"))
+                   && controls.All(control => !Equals(control.Tag, "InspectorDiffViewSelector"))
                    && _changesList.GetLogicalDescendants().OfType<ScrollViewer>()
                        .Any(viewer => viewer.VerticalScrollBarVisibility == ScrollBarVisibility.Auto);
         }
