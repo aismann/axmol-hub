@@ -526,6 +526,15 @@
     <Style Selector="Border.inspector-diff-line.diff-del">
       <Setter Property="Background" Value="{DynamicResource Hub.DiffDeleteSurface}" />
     </Style>
+    <Style Selector="TextBlock.inspector-diff-gutter">
+      <Setter Property="Margin" Value="0,0,10,0" />
+      <Setter Property="Opacity" Value="0.82" />
+    </Style>
+    <Style Selector="TextBlock.inspector-diff-marker">
+      <Setter Property="Width" Value="12" />
+      <Setter Property="TextAlignment" Value="Center" />
+      <Setter Property="Margin" Value="0,0,6,0" />
+    </Style>
     <Style Selector="Border.inspector-diff-line.diff-hunk TextBlock">
       <Setter Property="Foreground" Value="{DynamicResource Hub.Accent}" />
     </Style>

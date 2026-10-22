@@ -1215,7 +1215,13 @@ internal sealed class ShellDecisionsChecks
             + inspector.ChangeRowCountForCheck + " 行，首行「" + inspector.FirstChangePathForCheck + "」）");
         inspector.ClickChangeRowForCheck(0);
         Check(inspector.DurableDiffControlsForCheck,
-            "改动详情提供可切换的历史修订、差异/前后内容视图和可滚动的文本区域");
+            "改动详情提供可切换的历史修订和可滚动的差异文本区域");
+        Check(inspector.ChangeRowDiffGutterCountForCheck(0) >= 3
+              && inspector.ChangeRowDiffMarkersForCheck(0).Contains("+", StringComparison.Ordinal)
+              && inspector.ChangeRowDiffMarkersForCheck(0).Contains("−", StringComparison.Ordinal),
+            "unified diff 为上下文与改动行提供行号槽和明确的增删标记（实际 "
+            + inspector.ChangeRowDiffGutterCountForCheck(0) + " 行号、标记「"
+            + inspector.ChangeRowDiffMarkersForCheck(0) + "」）");
         inspector.SelectHistoryRevisionForCheck(0);
         Check(inspector.SelectedRevisionForCheck("note.txt") == "revision-1",
             "切换历史修订会将详情切到选中的那次写入");
@@ -1267,7 +1273,7 @@ internal sealed class ShellDecisionsChecks
         // all of them.
         inspector.ClickRepoRowForCheck(0);
         Check(inspector.RepoRowExpandedForCheck(0)
-              && inspector.RepoRowTextForCheck(0).Contains("+new", StringComparison.Ordinal),
+              && inspector.RepoRowTextForCheck(0).Contains(" ~ + ~ new", StringComparison.Ordinal),
             "点开仓库行才取它的 diff，取到的是这个文件自己的那段（实际「" + inspector.RepoRowTextForCheck(0) + "」）");
         inspector.ClickRepoRowForCheck(2);
         Check(inspector.RepoRowTextForCheck(2).Contains(HubStrings.Get("InspectorRepoNoDiff"), StringComparison.Ordinal),

@@ -87,6 +87,8 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>Every string in one change row, joined: the verdict mark, the path, the counts, and once opened,
     /// the diff lines themselves — which is how a check tells the frozen preview from a resolved one.</summary>
     internal string ChangeRowTextForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row ? string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? "")) : "";
+    internal int ChangeRowDiffGutterCountForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row ? row.GetLogicalDescendants().OfType<TextBlock>().Count(block => block.Classes.Contains("inspector-diff-gutter") && !string.IsNullOrWhiteSpace(block.Text)) : 0;
+    internal string ChangeRowDiffMarkersForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row ? string.Concat(row.GetLogicalDescendants().OfType<TextBlock>().Where(block => block.Classes.Contains("inspector-diff-marker")).Select(block => block.Text)) : "";
     internal bool ChangeRowExpandedForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row && row.GetLogicalDescendants().OfType<ContentControl>().FirstOrDefault()?.IsVisible == true;
     /// <summary>Presses a change row's header, so the lazy per-file diff is reached the way a reader reaches it
     /// and the resolver can be proven wired to the click rather than run for the whole list up front.</summary>

@@ -648,37 +648,185 @@ internal sealed partial class InspectorPanel : UserControl
         _ => "InspectorDiffUnreadable",
     };
 
-    /// <summary>Renders a unified diff line by line, adds and deletes on their own tinted plates. A horizontal
-    /// scroller rather than wrapping: code that wraps loses the column alignment a diff is read by.</summary>
+    /// <summary>Renders a unified diff with separate old/new line-number gutters and an explicit change marker.
+    /// A horizontal scroller rather than wrapping: code that wraps loses the column alignment a diff is read by.</summary>
     private static Control BuildDiffBlock(string diff)
     {
         var lines = new StackPanel { Spacing = 0 };
-        foreach (var raw in diff.Split('\n'))
+        var viewer = new ScrollViewer
         {
-            var line = raw.TrimEnd('\r');
-            var block = new Border();
-            block.Classes.Add("inspector-diff-line");
-            var lineClass = DiffLineClass(line);
-            if (lineClass.Length > 0) block.Classes.Add(lineClass);
-            var text = Themed(new SelectableTextBlock
-            {
-                Text = line.Length == 0 ? " " : line,
-                FontFamily = ThemedFont("Hub.Font.Mono"),
-                FontSize = 11.5,
-                TextWrapping = TextWrapping.NoWrap,
-            }, "Hub.TextSecondary");
-            block.Child = text;
-            lines.Children.Add(block);
-        }
-
-        return new ScrollViewer
-        {
-            Content = new Border { Classes = { "inspector-diff" }, Child = lines },
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             MaxHeight = 420,
             ClipToBounds = true,
         };
+        var oldLine = 0;
+        var newLine = 0;
+        foreach (var raw in diff.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            var lineClass = DiffLineClass(line);
+            var numbers = DiffLineNumbers(line, lineClass, ref oldLine, ref newLine);
+            var block = new Border();
+            block.Classes.Add("inspector-diff-line");
+            if (lineClass.Length > 0) block.Classes.Add(lineClass);
+
+            if (lineClass == "diff-hunk")
+                (oldLine, newLine) = ParseHunkLineNumbers(line);
+
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*") };
+            var gutter = Themed(new TextBlock
+            {
+                Text = numbers,
+                FontFamily = ThemedFont("Hub.Font.Mono"),
+                FontSize = 10,
+                TextAlignment = TextAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                Classes = { "inspector-diff-gutter" },
+            }, "Hub.TextTertiary");
+            row.Children.Add(gutter);
+
+            var marker = Themed(new TextBlock
+            {
+                Text = lineClass == "diff-add" ? "+" : lineClass == "diff-del" ? "−" : " ",
+                FontFamily = ThemedFont("Hub.Font.Mono"),
+                FontSize = 11.5,
+                VerticalAlignment = VerticalAlignment.Center,
+                Classes = { "inspector-diff-marker" },
+            }, lineClass == "diff-add" ? "Hub.Success" : lineClass == "diff-del" ? "Hub.Danger" : "Hub.TextTertiary");
+            Grid.SetColumn(marker, 1);
+            row.Children.Add(marker);
+
+            var displayLine = lineClass is "diff-add" or "diff-del"
+                ? line[1..]
+                : line.StartsWith(' ') && numbers.Length > 0
+                    ? line[1..]
+                    : line;
+            var text = Themed(new DiffSelectableTextBlock(viewer)
+            {
+                Text = displayLine.Length == 0 ? " " : displayLine,
+                FontFamily = ThemedFont("Hub.Font.Mono"),
+                FontSize = 11.5,
+                TextWrapping = TextWrapping.NoWrap,
+            }, "Hub.TextSecondary");
+            Grid.SetColumn(text, 2);
+            row.Children.Add(text);
+            block.Child = row;
+            lines.Children.Add(block);
+        }
+
+        viewer.Content = new Border { Classes = { "inspector-diff" }, Child = lines };
+        return viewer;
+    }
+
+    /// <summary>Extends a line selection while its pointer is held at the horizontal edge of the diff viewport.
+    /// ScrollViewer does not move a selection endpoint when its content scrolls under a stationary pointer, so the
+    /// timer updates both the offset and the text hit-test while leaving ordinary pointer selection to the base.</summary>
+    private sealed class DiffSelectableTextBlock(ScrollViewer viewer) : SelectableTextBlock
+    {
+        private const double EdgeSize = 24;
+        private DispatcherTimer? _autoScrollTimer;
+        private IPointer? _dragPointer;
+        private Point _pointerInViewer;
+        private int _selectionAnchor;
+        private int _direction;
+
+        protected override void OnPointerPressed(PointerPressedEventArgs e)
+        {
+            base.OnPointerPressed(e);
+            if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+            _dragPointer = e.Pointer;
+            _selectionAnchor = SelectionStart;
+        }
+
+        protected override void OnPointerMoved(PointerEventArgs e)
+        {
+            base.OnPointerMoved(e);
+            if (_dragPointer != e.Pointer || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+
+            _pointerInViewer = e.GetPosition(viewer);
+            var width = viewer.Bounds.Width;
+            _direction = _pointerInViewer.X < EdgeSize ? -1
+                : _pointerInViewer.X > width - EdgeSize ? 1
+                : 0;
+            if (_direction == 0 || viewer.Extent.Width <= viewer.Viewport.Width)
+            {
+                _autoScrollTimer?.Stop();
+                return;
+            }
+
+            _autoScrollTimer ??= CreateAutoScrollTimer();
+            if (!_autoScrollTimer.IsEnabled) _autoScrollTimer.Start();
+        }
+
+        protected override void OnPointerReleased(PointerReleasedEventArgs e)
+        {
+            StopAutoScroll();
+            _dragPointer = null;
+            base.OnPointerReleased(e);
+        }
+
+        private DispatcherTimer CreateAutoScrollTimer()
+        {
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            timer.Tick += (_, _) => ScrollSelectionAtEdge();
+            return timer;
+        }
+
+        private void ScrollSelectionAtEdge()
+        {
+            if (_dragPointer is null || _direction == 0 || !IsPointerCaptured())
+            {
+                StopAutoScroll();
+                return;
+            }
+
+            var maximum = Math.Max(0, viewer.Extent.Width - viewer.Viewport.Width);
+            var next = Math.Clamp(viewer.Offset.X + _direction * 12, 0, maximum);
+            if (Math.Abs(next - viewer.Offset.X) < 0.1)
+            {
+                StopAutoScroll();
+                return;
+            }
+
+            viewer.Offset = new Vector(next, viewer.Offset.Y);
+            var edgeX = _direction < 0 ? EdgeSize : viewer.Bounds.Width - EdgeSize;
+            if (viewer.TranslatePoint(new Point(edgeX, _pointerInViewer.Y), this) is { } point)
+            {
+                var hit = TextLayout.HitTestPoint(point - new Point(Padding.Left, Padding.Top));
+                SelectionStart = _selectionAnchor;
+                SelectionEnd = Math.Clamp(hit.TextPosition, 0, Text?.Length ?? 0);
+            }
+        }
+
+        private bool IsPointerCaptured() => _dragPointer?.Captured == this;
+
+        private void StopAutoScroll()
+        {
+            _direction = 0;
+            _autoScrollTimer?.Stop();
+        }
+    }
+
+    private static string DiffLineNumbers(string line, string lineClass, ref int oldLine, ref int newLine)
+    {
+        if (lineClass == "diff-hunk") return "";
+        if (lineClass == "diff-header") return "";
+        if (lineClass == "diff-add") return $"     {newLine++,4}";
+        if (lineClass == "diff-del") return $"{oldLine++,4}     ";
+        if (line.StartsWith(' ') && oldLine > 0 && newLine > 0)
+            return $"{oldLine++,4} {newLine++,4}";
+        return "";
+    }
+
+    private static (int Old, int New) ParseHunkLineNumbers(string line)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(line, "^@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@");
+        return match.Success
+            && int.TryParse(match.Groups[1].Value, out var oldLine)
+            && int.TryParse(match.Groups[2].Value, out var newLine)
+            ? (oldLine, newLine)
+            : (0, 0);
     }
 
     private static Control BuildSnapshotBlock(string text)
