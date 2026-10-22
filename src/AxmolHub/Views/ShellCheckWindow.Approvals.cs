@@ -2025,12 +2025,10 @@ internal sealed class ShellApprovalsChecks
             Check(titles.SequenceEqual(new[]
                       { HubStrings.Get("ToolApprovalAsk"), HubStrings.Get("ToolApprovalAuto"), HubStrings.Get("ToolApprovalFull") },
                       StringComparer.Ordinal)
-                  && panel.PermissionMenuHintsForCheck.All(hint => hint.Length > 0),
-                "权限菜单平铺三档，每档都带一句说明边界的描述（实际 " + string.Join(" / ", titles) + "）");
-            Check(panel.PermissionMenuCheckedCountForCheck == 1 && panel.PermissionMenuMarkedIndexForCheck == 0
-                  && !panel.PermissionMenuOffersFollowDefaultForCheck,
-                "菜单里勾号只标当前档，且没有覆盖时不显示「跟随默认」那行（实际勾在第 "
-                + panel.PermissionMenuMarkedIndexForCheck + " 项）");
+                  && panel.PermissionMenuIsCompactForCheck,
+                "权限菜单只保留标题和三档选择，说明移到各项悬浮提示（实际 " + string.Join(" / ", titles) + "）");
+            Check(panel.PermissionMenuCheckedCountForCheck == 1 && panel.PermissionMenuMarkedIndexForCheck == 0,
+                "菜单里勾号只标当前档（实际勾在第 " + panel.PermissionMenuMarkedIndexForCheck + " 项）");
 
             Check(panel.SelectPermissionMenuEntryForCheck(1)
                   && chat.ApprovalModeFor(parkSession.Id) == ToolApprovalModes.Auto
@@ -2039,13 +2037,11 @@ internal sealed class ShellApprovalsChecks
                 "点「自动审批」写进本会话、落盘，胶囊立刻改口（实际 "
                 + panel.PermissionChipLabelForCheck + "）");
             Check(panel.PermissionMenuCheckedCountForCheck == 1 && panel.PermissionMenuMarkedIndexForCheck == 1
-                  && panel.PermissionMenuOffersFollowDefaultForCheck,
-                "重开菜单时勾指向刚选的那一档，并多出可以撤销的「跟随默认」行（实际勾在第 "
+                  && panel.PermissionMenuIsCompactForCheck,
+                "重开菜单时勾指向刚选的那一档，菜单仍只有标题和选择（实际勾在第 "
                 + panel.PermissionMenuMarkedIndexForCheck + " 项）");
-            Check(panel.SelectPermissionMenuEntryForCheck(3)
-                  && chat.StoredCopyForCheck(parkSession.Id)?.ApprovalMode is null
-                  && !panel.PermissionMenuOffersFollowDefaultForCheck,
-                "「跟随默认」清掉本会话覆盖，那一行也就跟着消失");
+            chat.SetApprovalMode(parkSession.Id, null);
+            panel.Reload();
 
             chat.SetApprovalMode(parkSession.Id, ToolApprovalModes.Full);
             panel.Reload();
@@ -2136,35 +2132,19 @@ internal sealed class ShellApprovalsChecks
                   && HubStrings.Get("TrustedCommandsHint").Contains("多个动词", StringComparison.Ordinal),
                 "命令动词那一节把授权够不到的两处写出来：包在 shell 里的调用、一次写多个动词的行");
 
-            // A pick that agrees with the default needs no second row; one that does not is a standing preference
-            // the user should be able to say so about without finding the settings page.
-            Check(!panel.ApprovalSetDefaultRowShownForCheck,
-                "会话档位与应用默认一致时，菜单不显示「设为默认」那行");
-            chat.SetApprovalMode(parkSession.Id, ToolApprovalModes.Auto);
-            panel.Reload();
-            Dispatcher.UIThread.RunJobs();
-            Check(panel.ApprovalSetDefaultRowShownForCheck
-                  && panel.PermissionChipLabelForCheck == HubStrings.Get("ToolApprovalAuto"),
-                "本会话选了「自动审批」而默认还是询问时，菜单给出把这一档设成默认的行");
-            Check(panel.SelectPermissionMenuEntryForCheck(4)
-                  && chat.DefaultApprovalMode == ToolApprovalModes.Auto
+            // The compact menu is a per-session picker only. The standing default remains a settings-page
+            // concern, so changing a session never silently rewrites it.
+            Check(chat.DefaultApprovalMode == ToolApprovalModes.Ask
                   && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().ToolApprovalMode
-                      == ToolApprovalModes.Auto,
-                "点那行写的是应用默认本身，并且落盘（实际默认 " + chat.DefaultApprovalMode + "）");
-            Check(!panel.ApprovalSetDefaultRowShownForCheck,
-                "默认已经等于当前档，那一行随之消失——两行说同一件事是多余的界面");
-            // Restored through the workspace rather than the page's picker: the picker still reads 询问审批 (the
-            // cell above left it there), and setting the same index raises no SelectionChanged, so a "restore"
-            // through it would be a no-op that the next cell would blame on the row it just clicked.
-            chat.SetDefaultApprovalMode(ToolApprovalModes.Ask);
-            // Both settings that decide a card write a line, because the transcript alone cannot tell "the mode
+                      == ToolApprovalModes.Ask,
+                "会话里选档不改应用默认，默认仍由设置页管理（实际默认 " + chat.DefaultApprovalMode + "）");
+            // Session-mode changes write an audit line, because the transcript alone cannot tell "the mode
             // allows this" apart from "somebody moved a switch a minute ago" — which is precisely the question a
-            // missing card raises. One session override and one app default were changed above; both are here.
+            // missing card raises. The compact menu has no app-default action, so only its set and clear belong here.
             var modeLines = System.IO.File.ReadAllLines(shell.Workspace.Log.FilePath);
             Check(modeLines.Any(line => line.Contains("Approval mode: auto", StringComparison.Ordinal))
-                  && modeLines.Any(line => line.Contains("Approval mode: follow default", StringComparison.Ordinal))
-                  && modeLines.Any(line => line.Contains("Approval default: auto", StringComparison.Ordinal)),
-                "会话档位与应用默认各自改动都留下一行审计，包括清回「跟随默认」那次");
+                  && modeLines.Any(line => line.Contains("Approval mode: follow default", StringComparison.Ordinal)),
+                "会话档位的设置与清回「跟随默认」都留下一行审计");
             Dispatcher.UIThread.RunJobs();
 
             // The chip is pickable before any session exists: deciding how much to allow is something a person

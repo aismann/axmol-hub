@@ -986,17 +986,17 @@
       <Setter Property="FontSize" Value="12" />
     </Style>
     <Style Selector="Button.permission-chip.danger Path">
-      <Setter Property="Stroke" Value="{DynamicResource Hub.DangerText}" />
+      <Setter Property="Stroke" Value="{DynamicResource Hub.WarningText}" />
     </Style>
     <Style Selector="Button.permission-chip.danger TextBlock">
-      <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.WarningText}" />
     </Style>
     <!-- The caret every composer chip carries, so they read as one affordance: "this opens a menu".
          Declared after the permission chip's own Path rules on purpose — the caret keeps its muted colour
-         even when the tier it sits beside is the warning-red one. -->
+         even when the tier it sits beside uses warning orange. -->
     <Style Selector="Path.chip-caret">
       <Setter Property="Width" Value="10" />
-      <Setter Property="Height" Value="10" />
+      <Setter Property="Height" Value="5" />
       <Setter Property="Stretch" Value="Uniform" />
       <Setter Property="Fill" Value="Transparent" />
       <Setter Property="Stroke" Value="{DynamicResource Hub.TextTertiary}" />
@@ -1151,7 +1151,7 @@
     <Style Selector="Button.mode-indicator">
       <Setter Property="MinHeight" Value="30" />
       <Setter Property="Padding" Value="8,3" />
-      <Setter Property="Margin" Value="0,0,6,0" />
+      <Setter Property="Margin" Value="6,0,6,0" />
       <Setter Property="CornerRadius" Value="15" />
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />

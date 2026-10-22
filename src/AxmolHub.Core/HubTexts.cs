@@ -1143,11 +1143,11 @@ public static class HubTexts
         ["ChatUndoRefusedPath"] = ("那次写入记录的路径已经不在本会话的工作区里，或落在受保护目录，拒绝恢复。",
             "That write's recorded path is no longer inside this session's workspace, or sits in a protected directory."),
         ["ChatUndoWriteFailed"] = ("副本是完好的，但写回失败了。", "The copy is intact, but writing it back failed."),
-        // The permission tiers, spelled out where the choice is made: each hint says what that tier lets through
+        // The compact composer menu has one question above the choices. Its risk detail remains available as a
+        // tooltip on each choice rather than turning a three-mode picker into a wall of text.
+        ["ChatToolPermissionMenuTitle"] = ("如何审批助手的操作？", "How should assistant actions be approved?"),
+        // The permission tiers, spelled out in tooltips and settings: each hint says what that tier lets through
         // unasked, which is the only thing the three names cannot carry themselves.
-        ["ChatToolPermissionFollowFormat"] = ("跟随默认（{0}）", "Follow the default ({0})"),
-        // The tiers are per session; the default is the answer for somebody who is not deciding one project.
-        ["ChatToolPermissionSetDefaultFormat"] = ("把「{0}」设为默认", "Make {0} the default"),
         ["ToolApprovalAsk"] = ("询问审批", "Ask for approval"),
         ["ToolApprovalAskHint"] = ("除只读查询外，每个操作都先问一次，包括跑命令",
             "Everything except a read asks first, commands included"),

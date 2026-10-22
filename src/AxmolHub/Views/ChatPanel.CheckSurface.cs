@@ -20,9 +20,6 @@ using Avalonia.Platform.Storage;
 namespace AxmolHub;
 public partial class ChatPanel : UserControl
 {
-    /// <summary>Whether the menu would offer to make the current pick the app default. Built from the same menu
-    /// the click builds, so the assertion is about the row a person can actually reach.</summary>
-    internal bool ApprovalSetDefaultRowShownForCheck => BuildPermissionMenu().Items.OfType<MenuItem>().Any(item => "ApprovalSetDefault".Equals(item.Tag));
     /// <summary>The notice row on screen, whichever check needs it. It lives below the flow rather than at the end
     /// of it, so it is never mistaken for a turn and never shifts an index.</summary>
     private Grid? CurrentNoticeRow => NoticeHost.Children.LastOrDefault()is Grid row && row.Classes.Contains("notice") ? row : null;
@@ -1225,11 +1222,12 @@ public partial class ChatPanel : UserControl
     // is composed from the session as it stands, not from state this view keeps.
     private static string MenuItemTitle(MenuItem item) => item.Header switch
     {
-        Grid header => header.Children.OfType<StackPanel>().FirstOrDefault()?.Children.OfType<TextBlock>().FirstOrDefault()?.Text ?? "",
+        Grid header => header.Children.OfType<TextBlock>().FirstOrDefault()?.Text ?? "",
         string text => text,
         _ => "",
     };
-    private static string MenuItemHint(MenuItem item) => item.Header is Grid header ? header.Children.OfType<StackPanel>().FirstOrDefault()?.Children.OfType<TextBlock>().ElementAtOrDefault(1)?.Text ?? "" : "";
+    private IEnumerable<MenuItem> PermissionMenuTierItems()
+        => BuildPermissionMenu().Items.OfType<MenuItem>().Where(item => item.Header is Grid);
     internal string PermissionChipLabelForCheck => PermissionChipLabel.Text ?? "";
     internal bool PermissionChipMarksDangerForCheck => PermissionChip.Classes.Contains("danger");
     internal bool PermissionChipIconIsDrawnForCheck => PermissionChipIcon.Data is not null;
@@ -1253,7 +1251,19 @@ public partial class ChatPanel : UserControl
         return _openMenu?.Items.OfType<MenuItem>().FirstOrDefault();
     }
 
-    internal string[] PermissionMenuTitlesForCheck => BuildPermissionMenu().Items.OfType<MenuItem>().Select(MenuItemTitle).ToArray();
+    internal string[] PermissionMenuTitlesForCheck => PermissionMenuTierItems().Select(MenuItemTitle).ToArray();
+    internal bool PermissionMenuIsCompactForCheck
+    {
+        get
+        {
+            var items = BuildPermissionMenu().Items.OfType<MenuItem>().ToList();
+            return items.Count == 4
+                   && items[0].Header is string title && title == HubStrings.Get("ChatToolPermissionMenuTitle")
+                   && !items[0].IsEnabled
+                   && items.Skip(1).All(item => item.Header is Grid)
+                   && items.Skip(1).All(item => ToolTip.GetTip(item) is string hint && hint.Length > 0);
+        }
+    }
     // ── Verification hooks for the workspace chip (used by --verify-shell) ──
     // The folder dialog is a modal and cannot be driven from a self-check, so these read the built state and
     // drive the workspace through ChatWorkspace instead — the same split AuthDialog's hooks use.
@@ -1292,8 +1302,7 @@ public partial class ChatPanel : UserControl
         return true;
     }
 
-    internal string[] PermissionMenuHintsForCheck => BuildPermissionMenu().Items.OfType<MenuItem>().Select(MenuItemHint).ToArray();
-    internal int PermissionMenuCheckedCountForCheck => BuildPermissionMenu().Items.OfType<MenuItem>().Count(item => item.IsChecked);
+    internal int PermissionMenuCheckedCountForCheck => PermissionMenuTierItems().Count(item => item.IsChecked);
 
     /// <summary>Which tier the menu marks as current, read off the tick's own visibility rather than a flag:
     /// the mark is what a person sees, so that is the thing that has to be right. -1 when nothing is marked.</summary>
@@ -1301,7 +1310,7 @@ public partial class ChatPanel : UserControl
     {
         get
         {
-            var items = BuildPermissionMenu().Items.OfType<MenuItem>().ToList();
+            var items = PermissionMenuTierItems().ToList();
             for (var i = 0; i < items.Count; i++)
             {
                 // The row's two Paths are the tier's icon and then the tick; the text column is a panel.
@@ -1313,14 +1322,10 @@ public partial class ChatPanel : UserControl
         }
     }
 
-    /// <summary>Whether the quiet "follow the default" row is offered — it exists only while this session has
-    /// an override that could be dropped.</summary>
-    internal bool PermissionMenuOffersFollowDefaultForCheck => BuildPermissionMenu().Items.OfType<MenuItem>().Any(item => item.Header is string);
-
-    /// <summary>Clicks one entry of the permission menu, in the order the menu shows them.</summary>
+    /// <summary>Clicks one approval tier in the order the menu shows it, excluding the non-action title.</summary>
     internal bool SelectPermissionMenuEntryForCheck(int index)
     {
-        if (BuildPermissionMenu().Items.OfType<MenuItem>().ElementAtOrDefault(index)is not { } item)
+        if (PermissionMenuTierItems().ElementAtOrDefault(index)is not { } item)
             return false;
         item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         return true;

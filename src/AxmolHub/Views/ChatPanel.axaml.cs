@@ -1315,14 +1315,26 @@ public partial class ChatPanel : UserControl
     }
 
     /// <summary>
-    /// The permission menu, hung off its own chip: three tiers, each stating what it lets through unasked, with
-    /// the effective one ticked. A fourth row appears only when something overrides the app-wide default —
-    /// otherwise it would be a second line on screen saying what the first already says. It works with no
-    /// session on screen, where the pick lands on the one about to be started.
+    /// The permission menu, hung off its own chip: a concise title and the three tiers, with the effective one
+    /// ticked. The fuller risk explanation is a tooltip on each choice; keeping it out of the rows follows the
+    /// Codex-style menu and leaves this as a quick choice rather than a wall of text. It works with no session on
+    /// screen, where the pick lands on the one about to be started.
     /// </summary>
     private MenuFlyout BuildPermissionMenu()
     {
-        var menu = new MenuFlyout();
+        var menu = new MenuFlyout
+        {
+            Placement = PlacementMode.TopEdgeAlignedLeft,
+            // Keep the requested side and alignment instead of flipping below the composer.
+            PlacementConstraintAdjustment = Avalonia.Controls.Primitives.PopupPositioning.PopupPositionerConstraintAdjustment.None,
+        };
+        menu.Items.Add(new MenuItem
+        {
+            Header = HubStrings.Get("ChatToolPermissionMenuTitle"),
+            FontSize = 12,
+            IsEnabled = false,
+        });
+
         var effective = _chat.ActiveApprovalMode;
         foreach (var mode in new[] { ToolApprovalModes.Ask, ToolApprovalModes.Auto, ToolApprovalModes.Full })
         {
@@ -1335,50 +1347,13 @@ public partial class ChatPanel : UserControl
                 Header = BuildPermissionHeader(mode, checkedItem),
                 IsChecked = checkedItem,
             };
+            ToolTip.SetTip(item, HubStrings.Get(ToolApprovalModeHintKey(mode)));
             item.Click += (_, _) =>
             {
                 _chat.SelectApprovalMode(mode);
                 menu.Hide();
             };
             menu.Items.Add(item);
-        }
-
-        if ((_chat.ActiveConversation?.ApprovalMode ?? _chat.SelectedApprovalMode) is { Length: > 0 })
-        {
-            var follow = new MenuItem
-            {
-                Header = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("ChatToolPermissionFollowFormat"),
-                    HubStrings.Get(ToolApprovalModeKey(_chat.DefaultApprovalMode))),
-                FontSize = 12,
-            };
-            follow.Click += (_, _) =>
-            {
-                _chat.SelectApprovalMode(null);
-                menu.Hide();
-            };
-            menu.Items.Add(follow);
-        }
-
-        // A pick that differs from the app default is a per-session answer to what may be a standing preference,
-        // and the setting that would make it stand lives on another page. One row here writes it: the same store,
-        // the same repaint, the same rule the settings page's picker uses.
-        if (effective != _chat.DefaultApprovalMode)
-        {
-            var makeDefault = new MenuItem
-            {
-                Header = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("ChatToolPermissionSetDefaultFormat"),
-                    HubStrings.Get(ToolApprovalModeKey(effective))),
-                FontSize = 12,
-                Tag = "ApprovalSetDefault",
-            };
-            makeDefault.Click += (_, _) =>
-            {
-                _chat.SetDefaultApprovalMode(effective);
-                menu.Hide();
-            };
-            menu.Items.Add(makeDefault);
         }
 
         return menu;
@@ -1402,33 +1377,19 @@ public partial class ChatPanel : UserControl
         };
         // Bound rather than read once: a brush taken by value here does not follow a theme switch.
         icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty,
-            new DynamicResourceExtension(danger ? "Hub.DangerText" : "Hub.TextSecondary"));
+            new DynamicResourceExtension(danger ? "Hub.WarningText" : "Hub.TextSecondary"));
 
         var title = new TextBlock
         {
             Text = HubStrings.Get(ToolApprovalModeKey(mode)),
             FontSize = 13,
             FontWeight = FontWeight.SemiBold,
-        };
-        var hint = new TextBlock
-        {
-            Text = HubStrings.Get(ToolApprovalModeHintKey(mode)),
-            FontSize = 12,
-            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         if (danger)
         {
-            title.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.DangerText"));
-            hint.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.DangerText"));
+            title.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.WarningText"));
         }
-        else
-        {
-            hint.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextTertiary"));
-        }
-
-        var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        text.Children.Add(title);
-        text.Children.Add(hint);
 
         var tick = new Avalonia.Controls.Shapes.Path
         {
@@ -1446,14 +1407,13 @@ public partial class ChatPanel : UserControl
         };
         tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
 
-        // One width for every row, so the ticks land in a column rather than wherever each description happens
-        // to end.
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), MinWidth = 300 };
+        // One width for every row, so the ticks land in a column rather than wherever each title happens to end.
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), MinWidth = 220 };
         Grid.SetColumn(icon, 0);
-        Grid.SetColumn(text, 1);
+        Grid.SetColumn(title, 1);
         Grid.SetColumn(tick, 2);
         header.Children.Add(icon);
-        header.Children.Add(text);
+        header.Children.Add(title);
         header.Children.Add(tick);
         return header;
     }
