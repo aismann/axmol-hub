@@ -1381,8 +1381,11 @@ internal sealed class ShellAssistantChecks
               && panel.MessageTimestampTooltipForCheck(0)
                  == opsConversation.Messages[0].At.ToLocalTime().ToString(
                      "yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture)
-              && panel.MessageTimestampTextForCheck(1) is null,
-            "用户消息操作条显示相对时间，悬停提示为完整本地时间，助手消息不重复显示");
+              && !string.IsNullOrWhiteSpace(panel.MessageTimestampTextForCheck(1))
+              && panel.MessageTimestampTooltipForCheck(1)
+                 == opsConversation.Messages[1].At.ToLocalTime().ToString(
+                     "yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture),
+            "用户与助手消息操作条均显示相对时间，悬停提示为完整本地时间");
         Check(panel.MessageActionCount > 0, "消息操作条渲染进消息流（实际 " + panel.MessageActionCount + " 个按钮）");
 
         // A tool exchange folds into one descriptive action row, which by construction carries no message-action

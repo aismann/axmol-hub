@@ -72,6 +72,9 @@ $taskPrereleaseValue = $taskIsPrereleaseBuild.ToString().ToLowerInvariant()
 dotnet publish "$taskRoot/src/AxmolHub/AxmolHub.csproj" -c Release -r $Runtime --self-contained true -o $taskPublish "-p:HubIsPrereleaseBuild=$taskPrereleaseValue"
 if ($LASTEXITCODE -ne 0) { throw 'Hub publish failed.' }
 
+# Inject the partner ID into the published manifest only, before vpk packs it into the installer and update payload.
+& "$PSScriptRoot/Set-OrcaRouterAppId.ps1" -PublishDir $taskPublish
+
 # When a publish has to rewrite packages.lock.json — a package version changed, or the file is not there — a
 # restore carrying a RID writes only the base node plus that RID. Measured: 2 nodes out against the 5 this
 # tracked file carries. Repair the full shape here, before vpk pack and the guards below can fail, so a run

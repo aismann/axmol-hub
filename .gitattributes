@@ -9,6 +9,6 @@
 *.props text eol=lf
 NuGet.config text eol=lf
 .editorconfig text eol=lf
-*.ps1 text eol=crlf
+*.ps1 text eol=lf
 *.png binary
 *.ico binary

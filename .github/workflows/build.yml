@@ -348,12 +348,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRERELEASE_BUILD: ${{ needs.meta.outputs.is_prerelease }}
+          ORCAROUTER_APP_ID: ${{ secrets.ORCAROUTER_APP_ID }}
         run: |
           $prereleaseBuild = $env:PRERELEASE_BUILD -eq 'true'
           ./installer/Publish.ps1 -Stage Build -Runtime win-x64 -PrereleaseBuild:$prereleaseBuild
 
       - name: Isolated install acceptance
         shell: pwsh
+        env:
+          ORCAROUTER_APP_ID: ${{ secrets.ORCAROUTER_APP_ID }}
         run: ./installer/Test.ps1 -Isolated
 
       - name: Upload release artifacts
@@ -389,6 +392,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRERELEASE_BUILD: ${{ needs.meta.outputs.is_prerelease }}
+          ORCAROUTER_APP_ID: ${{ secrets.ORCAROUTER_APP_ID }}
         run: |
           $prereleaseBuild = $env:PRERELEASE_BUILD -eq 'true'
           ./installer/Publish.ps1 -Stage Build -Runtime osx-arm64 -PrereleaseBuild:$prereleaseBuild
@@ -426,6 +430,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRERELEASE_BUILD: ${{ needs.meta.outputs.is_prerelease }}
+          ORCAROUTER_APP_ID: ${{ secrets.ORCAROUTER_APP_ID }}
         run: |
           $prereleaseBuild = $env:PRERELEASE_BUILD -eq 'true'
           ./installer/Publish.ps1 -Stage Build -Runtime osx-x64 -PrereleaseBuild:$prereleaseBuild
@@ -463,6 +468,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRERELEASE_BUILD: ${{ needs.meta.outputs.is_prerelease }}
+          ORCAROUTER_APP_ID: ${{ secrets.ORCAROUTER_APP_ID }}
         run: |
           $prereleaseBuild = $env:PRERELEASE_BUILD -eq 'true'
           ./installer/Publish.ps1 -Stage Build -Runtime linux-x64 -PrereleaseBuild:$prereleaseBuild
@@ -497,6 +503,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRERELEASE_BUILD: ${{ needs.meta.outputs.is_prerelease }}
+          ORCAROUTER_APP_ID: ${{ secrets.ORCAROUTER_APP_ID }}
         run: |
           $prereleaseBuild = $env:PRERELEASE_BUILD -eq 'true'
           ./installer/Publish.ps1 -Stage Build -Runtime win-arm64 -PrereleaseBuild:$prereleaseBuild
@@ -530,6 +537,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRERELEASE_BUILD: ${{ needs.meta.outputs.is_prerelease }}
+          ORCAROUTER_APP_ID: ${{ secrets.ORCAROUTER_APP_ID }}
         run: |
           $prereleaseBuild = $env:PRERELEASE_BUILD -eq 'true'
           ./installer/Publish.ps1 -Stage Build -Runtime linux-arm64 -PrereleaseBuild:$prereleaseBuild

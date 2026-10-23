@@ -3986,14 +3986,7 @@ public partial class ChatPanel : UserControl
         bar.Classes.Add("message-actions");
 
         if (role == ChatRoles.User && at is { } timestamp)
-        {
-            var localTimestamp = timestamp.ToLocalTime();
-            var relative = new TextBlock { Text = FormatRelativeTime(DateTimeOffset.Now - localTimestamp) };
-            relative.Classes.Add("message-timestamp");
-            ToolTip.SetTip(relative, localTimestamp.ToString(
-                "yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.CurrentCulture));
-            bar.Children.Add(relative);
-        }
+            bar.Children.Add(BuildMessageTimestamp(timestamp));
 
         if (role == ChatRoles.User)
         {
@@ -4081,6 +4074,9 @@ public partial class ChatPanel : UserControl
             }
         }
 
+        if (role == ChatRoles.Assistant && at is { } assistantTimestamp)
+            bar.Children.Add(BuildMessageTimestamp(assistantTimestamp));
+
         if (role == ChatRoles.User && actionSession is not null && _inlineDrafts.ContainsKey((actionSession, actionKey)))
         {
             bar.AttachedToVisualTree += (_, _) => Dispatcher.UIThread.Post(() =>
@@ -4091,6 +4087,16 @@ public partial class ChatPanel : UserControl
             }, DispatcherPriority.Loaded);
         }
         return bar;
+    }
+
+    private static TextBlock BuildMessageTimestamp(DateTimeOffset timestamp)
+    {
+        var localTimestamp = timestamp.ToLocalTime();
+        var relative = new TextBlock { Text = FormatRelativeTime(DateTimeOffset.Now - localTimestamp) };
+        relative.Classes.Add("message-timestamp");
+        ToolTip.SetTip(relative, localTimestamp.ToString(
+            "yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.CurrentCulture));
+        return relative;
     }
 
     private static string FormatRelativeTime(TimeSpan elapsed)

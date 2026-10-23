@@ -5,8 +5,3 @@ root = true
 [*]
 charset = utf-8
 end_of_line = lf
-
-# The one exception, and it is the repository's own: installer scripts are CRLF in .gitattributes, because
-# Windows PowerShell 5.1 is their audience. This is about checked-in files, not about what Hub writes.
-[*.ps1]
-end_of_line = crlf
