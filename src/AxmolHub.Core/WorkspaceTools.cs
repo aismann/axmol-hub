@@ -1104,18 +1104,23 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     private static string NoPeers()
         => "Refused: this session cannot reach the other sessions of this Hub. Answer in your own reply instead.";
 
-    [Description("Start a fresh Hub session to do one bounded piece of work in a context of its own, and have Hub "
-                 + "report back to this session later. Worth it when the job means reading a lot (a big file, a "
-                 + "whole directory, a long build log) but only a short conclusion is wanted here, or when it can "
-                 + "run independently of what this conversation already knows. Not worth it for something you can "
-                 + "answer directly. The child answers in its own session: never wait for it in this turn, and "
-                 + "never spawn the same one twice.")]
+    [Description("Use a fresh Hub session as a context overflow valve, not a parallel implementation mechanism. "
+                 + "Proactively spawn only when substantial reading (a huge file, directory or build log) would "
+                 + "crowd this context and only a short conclusion is needed back. Do not delegate ordinary "
+                 + "approved plan tasks: editing, UI changes, fixes, builds and tests stay in this session. "
+                 + "An independent task, a multi-step plan or possible parallelism is not a reason to spawn. "
+                 + "Use the default read-only plan mode for reading; choose agent only when the user explicitly "
+                 + "asks to delegate implementation, work in parallel, or execute in a spawned session. Enabling "
+                 + "spawning is permission, not a request to split the plan. Hub returns the child's conclusion "
+                 + "automatically: never wait for it in this turn, and never spawn the same one twice.")]
     public async Task<string> SpawnSession(
         [Description("What the child is to do, written self-contained — it cannot see this conversation. Name the "
                      + "files or the question, and say what conclusion to bring back. Hub returns the child's final "
                      + "answer to this session automatically.")] string task,
-        [Description("The mode the child runs in: \"agent\" to read and edit, \"plan\" to look and propose without "
-                     + "touching anything.")] string mode = "agent",
+        [Description("The child defaults to \"plan\": read-only investigation and a concise conclusion, without "
+                     + "editing files or running commands. Choose \"agent\" to read and edit only when the user "
+                     + "explicitly asks to delegate implementation, work in parallel, or execute in a spawned "
+                     + "session; an approved plan or the spawning setting alone is not that request.")] string mode = "plan",
         [Description("Give the child this session's workspace so it can read the same repository. Leave it false "
                      + "only for a child that needs no files at all.")] bool inherit_workspace = true)
     {

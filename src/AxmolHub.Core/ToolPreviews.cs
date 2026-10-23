@@ -233,7 +233,7 @@ public static class ToolPreviews
             : scope.WorkspaceRoot is { Length: > 0 } root
                 ? $"inherits workspace {root}"
                 : "this session has no workspace to hand over";
-        return $"spawn_session · {(mode.Length > 0 ? mode : "agent")} · {workspace}\n"
+        return $"spawn_session · {(mode.Length > 0 ? mode : "plan")} · {workspace}\n"
                + (head.Length > 0 ? head : "(no task given)");
     }
 

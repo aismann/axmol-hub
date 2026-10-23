@@ -444,12 +444,17 @@ public static class HubTexts
             "全局设置，适用于所有会话。开启后，助手遇到无法自行判断、需要你决定的选择时可以暂停并询问；关闭后则不提供询问功能。",
             "A global setting for every session. When on, the assistant may pause and ask you to settle a choice it cannot determine; when off, the question tool is unavailable."),
         ["AllowSpawnSessionsHint"] = (
-            "子会话在自己的上下文里干活，只把结论送回本会话——读一个大文件只要带回几行，就不必把它塞满当前窗口。"
+            "允许派生不代表自动拆分或并行执行计划任务；普通编辑、构建和测试仍由当前会话完成。"
+            + "只有大量阅读会挤占当前上下文、且只需带回简短结论时，助手才应主动派生，默认只读；"
+            + "只有你明确要求委派实现、并行处理或派生执行时，才使用可编辑的子会话。"
             + "每一条都是要花钱的模型调用，并发槽也只有三个，所以默认关闭；一次回答最多派生一个，子会话自己不许再派生。",
-            "A spawned session works in a context of its own and sends only its conclusion back, so reading a "
-            + "large file costs a few lines here instead of the whole file. Each one is a model call, and there "
-            + "are three answer slots in total, so this ships off. One answer spawns at most one helper, and a "
-            + "helper cannot spawn further."),
+            "Allowing spawning does not request automatic splitting or parallel execution of plan tasks; "
+            + "ordinary edits, builds and tests stay in the current session. Proactive spawning is only for "
+            + "substantial reading that would crowd the current context when only a short conclusion is needed "
+            + "back, and defaults to read-only. An editing helper is only for your explicit request to delegate "
+            + "implementation, work in parallel, or execute in a spawned session. Each child is a paid model "
+            + "call, and there are three answer slots in total, so this ships off. One answer spawns at most "
+            + "one helper, and a helper cannot spawn further."),
         // The outbound switch differs from the one above in its default: fetching a page the user named is a basic action of this kind
         // of assistant, so shipping it closed makes the feature nonexistent for anyone who never finds the setting. The copy therefore
         // has to say that "on" is the default, and which class of action a switch-off refuses.

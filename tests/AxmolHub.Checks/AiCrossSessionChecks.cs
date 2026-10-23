@@ -373,6 +373,29 @@ internal static class AiCrossSessionChecks
         await spawnTools.SpawnSession("先看不动手", "plan", false);
         if (spawnRequests[^1].Mode != ChatModes.Plan || spawnRequests[^1].InheritWorkspace)
             throw new Exception($"spawn_session ignored its mode or its workspace flag: {spawnRequests[^1]}");
+        // Check the model-facing declaration, not a second copy of the intended delegation policy.
+        var spawnFunction = AIFunctionFactory.Create((Delegate)spawnTools.SpawnSession,
+            new AIFunctionFactoryOptions { Name = "spawn_session" });
+        var spawnDescription = spawnFunction.Description;
+        var modeSchema = spawnFunction.JsonSchema.GetProperty("properties").GetProperty("mode");
+        if (!spawnDescription.Contains("Do not delegate ordinary approved plan tasks", StringComparison.Ordinal)
+            || !spawnDescription.Contains("context overflow valve", StringComparison.Ordinal)
+            || !modeSchema.GetProperty("description").GetString()!.Contains("user explicitly asks", StringComparison.Ordinal))
+            throw new Exception($"The spawn declaration invites ordinary plan delegation: {spawnDescription}; mode: {modeSchema}");
+        Console.WriteLine("PASS: the spawn declaration reserves helpers for context isolation or explicit delegation, not ordinary plan tasks.");
+
+        // Both entry points must be read-only when mode is omitted; a safe schema alone cannot protect the body.
+        await spawnTools.SpawnSession("只回简短结论");
+        var directDefault = spawnRequests[^1].Mode;
+        await spawnFunction.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["task"] = "经工具接线读取并回传结论",
+        }));
+        var wireDefault = spawnRequests[^1].Mode;
+        if (directDefault != ChatModes.Plan || wireDefault != ChatModes.Plan
+            || modeSchema.GetProperty("default").GetString() != ChatModes.Plan)
+            throw new Exception($"An omitted spawn mode is not read-only: direct={directDefault}, wire={wireDefault}, schema={modeSchema}");
+        Console.WriteLine("PASS: omitted spawn mode is plan in the declaration, direct call and wire invocation.");
         await spawnTools.SpawnSession("随便", "不存在的模式", true);
         if (spawnRequests[^1].Mode != ChatModes.Agent)
             throw new Exception("An unknown mode did not fall back to agent, which is the only mode that can act.");
@@ -404,7 +427,7 @@ internal static class AiCrossSessionChecks
         var refusedHost = await new WorkspaceTools(peerScope with { CrossSession = new CrossSessionBridge((_, _) => Task.FromResult(spawnLive), peerBridge.Deliver, _ => Task.FromResult<string?>(null)) }).SpawnSession("派生一个");
         if (!refusedHost.Contains("could not be created", StringComparison.Ordinal))
             throw new Exception($"The host returning nothing read as a success: {refusedHost}");
-        var card = ToolPreviews.PreviewFor("spawn_session", """{"task":"读完那两个文件，回 5 行","mode":"plan","inherit_workspace":true}""", peerScope);
+        var card = ToolPreviews.PreviewFor("spawn_session", """{"task":"读完那两个文件，回 5 行","inherit_workspace":true}""", peerScope);
         if (!card.Contains("spawn_session · plan", StringComparison.Ordinal) || !card.Contains("no workspace", StringComparison.Ordinal) || !card.Contains("读完那两个文件", StringComparison.Ordinal))
             throw new Exception($"The approval card for a spawn hides what it is starting: {card}");
         var wiredCard = ToolPreviews.PreviewFor("spawn_session", """{"task":"读","mode":"agent","inherit_workspace":true}""", peerScope with { WorkspaceRoot = Path.Combine(bodiesRoot, "ws") });
