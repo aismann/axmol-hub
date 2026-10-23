@@ -50,6 +50,9 @@ public partial class SettingsPage : UserControl
     /// <summary>Suppresses <c>SelectionChanged</c> during initialization: the WPF version likewise had a <c>preferencesReady</c> gate.</summary>
     private bool _ready;
 
+    /// <summary>Keeps workspace notifications from rebuilding the editor picker during its own selection event.</summary>
+    private bool _savingEditorSelection;
+
     /// <summary>True while a manual check is running: it owns the status line, so
     /// <see cref="RenderUpdateState"/> must not clobber it. The download needs no such flag — its phase
     /// lives in <see cref="UpdateService"/> and <see cref="RenderUpdateState"/> reads it from there.</summary>
@@ -305,7 +308,10 @@ public partial class SettingsPage : UserControl
             var state = _workspace.State;
             var engine = state.Engines.FirstOrDefault(candidate => candidate.Path == state.DefaultEnginePath);
             DefaultEngine.Text = engine?.ToString() ?? HubStrings.Get("NoDefault");
-            RenderEditors();
+            if (!_savingEditorSelection)
+            {
+                RenderEditors();
+            }
             // The current-version line is read from the assembly; it is not localizable copy, so it
             // is safe to assign imperatively here and won't need a language-switch refresh.
             CurrentVersionLine.Text = HubStrings.Get("CurrentVersion") + "  v" +
@@ -959,40 +965,68 @@ public partial class SettingsPage : UserControl
             rows.Insert(0, saved);
         }
 
-        // The tick marks what the press would launch right now, which is not the same question as what was saved:
-        // with nothing saved, the first detected editor is what opens the project.
-        var effective = _workspace.EffectiveEditor(_workspace.SelectedProject);
+        // This picker edits the global default, so its selection must not follow a project-specific override.
+        // With no usable global choice, the first detected editor is the fallback used for new projects too.
+        var selected = saved ?? rows.FirstOrDefault();
         foreach (var binding in rows)
         {
             var item = new ComboBoxItem { Content = binding.Preset.DisplayName, Tag = new CodeEditor(binding.Preset.Id, binding.Path) };
             EditorPicker.Items.Add(item);
-            if (effective is not null && string.Equals(binding.Path, effective.Path, StringComparison.Ordinal))
+            if (selected is not null && string.Equals(binding.Path, selected.Path, StringComparison.Ordinal))
             {
                 EditorPicker.SelectedItem = item;
             }
         }
 
-        EditorLocation.Text = effective?.Path ?? HubStrings.Get("NoEditorFound");
+        EditorLocation.Text = selected?.Path ?? HubStrings.Get("NoEditorFound");
     }
 
-    private void OnEditorChanged()
+    private async void OnEditorChanged()
     {
         if (!_ready || EditorPicker.SelectedItem is not ComboBoxItem { Tag: CodeEditor editor })
         {
             return;
         }
 
-        _ = ChooseEditorAsync(editor);
+        await ChooseEditorAsync(editor);
     }
 
     /// <summary>Makes an editor the default, and says so when the path could not be launched.</summary>
     private async Task ChooseEditorAsync(CodeEditor editor)
     {
-        if (!await _workspace.SelectEditorAsync(editor.Id, editor.Path, global: true))
+        _savingEditorSelection = true;
+        bool selected;
+        try
         {
-            await HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window, HubStrings.Get("OperationFailed"),
-                HubStrings.Get("NoEditorFound") + "\n" + editor.Path);
+            // SelectEditorAsync notifies the workspace synchronously. Reload still updates the page, but leaves this
+            // picker intact until its SelectionChanged handler has finished.
+            selected = await _workspace.SelectEditorAsync(editor.Id, editor.Path, global: true);
         }
+        finally
+        {
+            _savingEditorSelection = false;
+        }
+
+        if (selected)
+        {
+            EditorLocation.Text = CodeEditors.Bind(editor)?.Path ?? editor.Path;
+            return;
+        }
+
+        // A rejected choice needs the old value restored. Suppress the selection event caused by rebuilding rows.
+        var wasReady = _ready;
+        _ready = false;
+        try
+        {
+            RenderEditors();
+        }
+        finally
+        {
+            _ready = wasReady;
+        }
+
+        await HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window, HubStrings.Get("OperationFailed"),
+            HubStrings.Get("NoEditorFound") + "\n" + editor.Path);
     }
 
     /// <summary>
