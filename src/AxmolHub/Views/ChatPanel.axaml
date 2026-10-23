@@ -402,9 +402,18 @@
     <Style Selector="Button.approval-allow:disabled /template/ Border#Frame">
       <Setter Property="Opacity" Value="1" />
     </Style>
-    <Style Selector="Button.approval-deny">
+    <!-- The neutral answer on a decision card, whichever card it is: the transcript's permission card, the stall
+         question, the question card and the plan review all sit on Hub.SurfaceRaised, so one plate serves them
+         and no card invents a second recipe. The fill is Hub.Surface, one step below that surface, and the edge
+         is what carries the button, so the edge is what had to be measured: Hub.Border is ≈1.06:1 against
+         SurfaceRaised and draws nothing, while Hub.TextTertiary — what the plan review wore before this recipe
+         was shared — is ≈3.5:1, i.e. text ink used as a hairline, the brightest line in the card. Hub.BorderStrong
+         is the edge the base Button theme already gives every ordinary button: ≈1.4:1 in dark, ≈1.66:1 in light.
+         The metrics are the accent button's own row (28 tall, 12px, normal weight), so the accent button stays the
+         only loud thing beside a quiet exit instead of being out-shouted by it. -->
+    <Style Selector="Button.approval-plate">
       <Setter Property="Background" Value="{DynamicResource Hub.Surface}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderStrong}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="8" />
       <Setter Property="MinHeight" Value="28" />
@@ -412,7 +421,7 @@
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
-    <Style Selector="Button.approval-deny:pointerover">
+    <Style Selector="Button.approval-plate:pointerover">
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderHover}" />
     </Style>
@@ -537,26 +546,14 @@
       <Setter Property="AcceptsReturn" Value="True" />
       <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
-    <!-- The review card itself is SurfaceRaised. Transparent buttons with Hub.Border disappear into it
-         in dark mode, so secondary actions have their own plate and a visible neutral outline at rest. -->
-    <Style Selector="Button.plan-review-cancel">
-      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceSunken}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.TextTertiary}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="8" />
-      <Setter Property="MinHeight" Value="32" />
-      <Setter Property="Padding" Value="12,5" />
-      <Setter Property="FontSize" Value="13" />
-      <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
-    </Style>
-    <Style Selector="Button.plan-review-cancel:pointerover">
-      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceSelected}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderHover}" />
-    </Style>
-    <Style Selector="Button.plan-review-cancel:pressed">
-      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceSunken}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderFocus}" />
+    <!-- A keyboard shortcut written as a muted cap inside a decision's secondary button, so "Esc" reads as a key
+         rather than as more of the label. 11px and Tertiary is the same rung the approval card's own field label
+         takes; the button's 12px primary ink stays the only thing saying what the button does. -->
+    <Style Selector="TextBlock.decision-kbd">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+      <Setter Property="Margin" Value="6,0,0,0" />
+      <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
 
     <!-- ── The steer-confirm strip: what would be interjected, shown before it is ── -->

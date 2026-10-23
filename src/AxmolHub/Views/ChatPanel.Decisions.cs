@@ -916,7 +916,7 @@ public partial class ChatPanel
         };
         var deny = new Button
         {
-            Classes = { "approval-action", "approval-deny" },
+            Classes = { "approval-action", "approval-plate" },
             Content = HubStrings.Get("ApprovalDeny"),
             Tag = "ApprovalDeny",
         };
@@ -1015,7 +1015,7 @@ public partial class ChatPanel
         var deny = new Button
         {
             Name = "ComputerUseDenyButton",
-            Classes = { "approval-action", "approval-deny" },
+            Classes = { "approval-action", "approval-plate" },
             Content = HubStrings.Get("ApprovalDeny"),
             Tag = "ComputerUseDeny",
         };
@@ -1125,15 +1125,18 @@ public partial class ChatPanel
 
         var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0) };
         var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        // The same neutral plate as the plan review's exits, with Margin 0 for the same reason: the row's Spacing
+        // is the gap, not Spacing plus the theme's trailing margin.
         var skip = new Button
         {
             Name = "QuestionSkipButton",
-            Classes = { "plan-review-cancel" },
+            Classes = { "approval-plate" },
             Tag = "ChatQuestionSkip",
+            Margin = new Thickness(0),
         };
         var skipRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         skipRow.Children.Add(new TextBlock { Text = HubStrings.Get("ChatQuestionSkip"), VerticalAlignment = VerticalAlignment.Center });
-        skipRow.Children.Add(new TextBlock { Classes = { "plan-review-kbd" }, Text = "Esc" });
+        skipRow.Children.Add(new TextBlock { Classes = { "decision-kbd" }, Text = "Esc" });
         skip.Content = skipRow;
         skip.Click += (_, _) => ResolveQuestion(conversationId, callId, null, null, skipped: true);
         var continueButton = new Button
@@ -1143,6 +1146,7 @@ public partial class ChatPanel
             Content = HubStrings.Get("Continue"),
             Tag = "ChatQuestionContinue",
             IsEnabled = false,
+            Margin = new Thickness(0),
         };
         continueButton.Click += (_, _) => CommitQuestion(conversationId, callId);
         right.Children.Add(skip);
@@ -1379,12 +1383,16 @@ public partial class ChatPanel
         host.Children.Add(header);
 
         var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 2, 0, 0) };
+        // Both exits wear the neutral plate the permission card's refuse button wears: they are answers on the same
+        // raised card, and the one accent-filled button on the row is the approval. Margin 0 because the theme's
+        // trailing 8 would be a second gap on top of the row's own Spacing.
         var cancel = new Button
         {
             Name = "PlanCancelButton",
-            Classes = { "plan-review-cancel" },
+            Classes = { "approval-plate" },
             Tag = "ChatPlanCancel",
             Content = HubStrings.Get("ChatPlanCancel"),
+            Margin = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Left,
         };
         cancel.Click += (_, _) => ResolvePlanApproval(conversationId, turnIndex, PlanApprovalStates.Rejected);
@@ -1392,9 +1400,10 @@ public partial class ChatPanel
         var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var revise = new Button
         {
-            Classes = { "plan-review-cancel" },
+            Classes = { "approval-plate" },
             Tag = "ChatPlanRevise",
             Content = HubStrings.Get("ChatPlanReviseInChat"),
+            Margin = new Thickness(0),
         };
         revise.Click += (_, _) => InputBox.Focus();
         var approve = new Button
@@ -1403,6 +1412,7 @@ public partial class ChatPanel
             Classes = { "approval-action", "approval-allow" },
             Content = HubStrings.Get("ChatPlanOptionApprove"),
             Tag = "ChatPlanApprove",
+            Margin = new Thickness(0),
         };
         approve.Click += (_, _) => ResolvePlanApproval(conversationId, turnIndex, PlanApprovalStates.Approved);
         right.Children.Add(revise);
@@ -1820,7 +1830,7 @@ public partial class ChatPanel
         // refusing the wait than to allowing something. Its tooltip is where the honest limit belongs, because the
         // kill reaches the tree Hub started and not the build services that detach from it.
         primary.Children.Add(StallButton(conversationId, StalledProcessFate.KillAndRetry,
-            "StallKillRetry", "StallKillRetryTip", "approval-deny"));
+            "StallKillRetry", "StallKillRetryTip", "approval-plate"));
         primary.Children.Add(StallButton(conversationId, StalledProcessFate.KeepWaiting,
             "StallKeepWaiting", "StallKeepWaitingTip", "approval-allow"));
         Grid.SetColumn(primary, 1);
@@ -1853,12 +1863,4 @@ public partial class ChatPanel
     /// <summary>Which conversation's stall question is on the host, so a repaint does not rebuild a card that is
     /// already showing the same live process.</summary>
     private string? _stallShownFor;
-
-    /// <summary>Option tags for the plan review, in the order the rows read. Kept as constants so the
-    /// transcript's decision strings and the composer's row tags cannot drift apart.</summary>
-    private static class ChatPlanStates
-    {
-        public const string Approve = "approve";
-        public const string Revise = "revise";
-    }
 }
