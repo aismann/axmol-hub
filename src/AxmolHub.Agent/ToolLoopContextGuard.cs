@@ -14,8 +14,19 @@ namespace AxmolHub.Agent;
 /// would trade a slow request for a failed one. A result that says "elided, call the tool again if you need it"
 /// is truthful and cheap.
 /// </summary>
-public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetTokens) : DelegatingChatClient(innerClient)
+public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetTokens, int yieldBudgetTokens = 0)
+    : DelegatingChatClient(innerClient)
 {
+    /// <summary>The budget the handoff decision measures against.
+    ///
+    /// <para><b>Why it is not the trimming budget.</b> The whole tool loop runs inside one stream segment, so this
+    /// guard is the only thing that ever asks the run owner for a chance to compact: measuring that question
+    /// against the model's window means a 500 000-token model loops happily at 100 000–400 000 tokens a round and
+    /// never hands back, which is how one measured run sent 4 520 397 input tokens in eighteen minutes. The host
+    /// therefore passes its cost ceiling here while trimming keeps the real budget — what fits is a fact about the
+    /// model, how much a round is worth re-sending is a policy.</para></summary>
+    private int YieldBudget => yieldBudgetTokens > 0 ? yieldBudgetTokens : budgetTokens;
+
     /// <summary>Lets a run owner compact and resume at a complete tool boundary instead of repeatedly rewriting
     /// the cached prefix. Standalone callers retain the existing elision fallback unless they opt in.</summary>
     public bool YieldForCompaction { get; init; }
@@ -74,7 +85,7 @@ public sealed class ToolLoopContextGuard(IChatClient innerClient, int budgetToke
         // Never yield the first request: an owner whose compaction cannot shrink the prompt must still have
         // a finite fallback. Later boundaries contain every result in the preceding batch, so no tool repeats.
         if (YieldForCompaction && _requests > 0 && atToolBoundary
-            && ContextCompaction.ShouldCompact(EstimateTokens(list), budgetTokens)
+            && ContextCompaction.ShouldCompact(EstimateTokens(list), YieldBudget)
             && (CanYieldForCompaction is null || await CanYieldForCompaction().ConfigureAwait(false)))
             throw new ToolLoopContextBoundaryException();
         _requests++;

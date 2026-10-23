@@ -30,7 +30,13 @@ internal sealed partial class ChatExecutionCoordinator
 
     internal string CompressionPromptForCheck() => CompressionSystemPrompt("上一条摘要");
     internal ContextUsage TranscriptUsageForCheck(string conversationId) => EstimateTranscript(conversationId);
-    internal (int Used, int Room) CompactionReadingForCheck(string conversationId) => CompactionReading(conversationId);
+    internal (int Used, int Room) CompactionReadingForCheck(string conversationId)
+    {
+        // The shell check asks what the trigger saw, which is the capped room. The window room is the other half
+        // of the same reading and belongs to the hard-stop rule, not to this question.
+        var (used, room, _) = CompactionReading(conversationId);
+        return (used, room);
+    }
     internal bool SeedTurnForCheck(string conversationId, string text) => Sessions.Registry.TryUpdate(conversationId, opened => opened.Append(ChatTurn.User(text)));
     internal bool SeedGoalForCheck(string conversationId, string text)
     {

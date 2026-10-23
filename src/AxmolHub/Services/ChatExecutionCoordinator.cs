@@ -702,7 +702,7 @@ internal sealed partial class ChatExecutionCoordinator
         var conversationId = run.ConversationId;
         try
         {
-            var (used, room) = await ReadOnUiAsync(() => CompactionReading(conversationId)).ConfigureAwait(false);
+            var (used, room, windowRoom) = await ReadOnUiAsync(() => CompactionReading(conversationId)).ConfigureAwait(false);
             if (!forced && !ContextCompaction.ShouldCompact(used, room)) return false;
             if (forced) await ResetCompactionCountersAsync(conversationId).ConfigureAwait(false);
             else if (await ReadOnUiAsync(() => Sessions.Registry.Peek(conversationId)?.ContextCompactionBlocked == true)
@@ -715,8 +715,13 @@ internal sealed partial class ChatExecutionCoordinator
                 return false;
             }
 
-            var reclaimed = await ClearOlderToolResultsAsync(conversationId).ConfigureAwait(false);
-            (used, room) = await ReadOnUiAsync(() => CompactionReading(conversationId)).ConfigureAwait(false);
+            // Only what the target needs. A clear that takes the whole span rewrites more of the transcript than
+            // the saving requires, and every rewritten result is the middle of the prefix a provider caches — the
+            // one measured session cleared 251 280 tokens to reach 35% of a room whose target is 60%. A forced
+            // compaction is a person asking for as much as they can get, so that one takes everything.
+            var needed = forced ? int.MaxValue : Math.Max(0, used - ContextCompaction.TargetTokens(room));
+            var reclaimed = await ClearOlderToolResultsAsync(conversationId, needed).ConfigureAwait(false);
+            (used, room, windowRoom) = await ReadOnUiAsync(() => CompactionReading(conversationId)).ConfigureAwait(false);
             if (reclaimed > 0)
                 Audit(conversationId, $"{because} tier one: cleared {reclaimed} tokens of older tool results, "
                                       + $"now {used}/{room}");
@@ -725,13 +730,13 @@ internal sealed partial class ChatExecutionCoordinator
             if (!ContextCompaction.ReachedTarget(used, room))
             {
                 summarized = await CompressContextAsync(conversationId, run.Token).ConfigureAwait(false);
-                (used, room) = await ReadOnUiAsync(() => CompactionReading(conversationId)).ConfigureAwait(false);
+                (used, room, windowRoom) = await ReadOnUiAsync(() => CompactionReading(conversationId)).ConfigureAwait(false);
                 if (summarized)
                     Audit(conversationId, $"{because} tier two: summarized the older prefix, now {used}/{room}");
             }
 
             var changed = reclaimed > 0 || summarized;
-            await FinishCompactionAsync(conversationId, used, room,
+            await FinishCompactionAsync(conversationId, used, room, windowRoom,
                 reachedTarget: ContextCompaction.ReachedTarget(used, room), changed: changed)
                 .ConfigureAwait(false);
             if (!changed) return false;
@@ -751,7 +756,7 @@ internal sealed partial class ChatExecutionCoordinator
         }
     }
 
-    private (int Used, int Room) CompactionReading(string conversationId)
+    private (int Used, int Room, int WindowRoom) CompactionReading(string conversationId)
     {
         // Share the meter's resolved room, but measure the retained context before the trimmer drops anything.
         var usage = EstimateTranscript(conversationId);
@@ -759,10 +764,14 @@ internal sealed partial class ChatExecutionCoordinator
         // Using it here can keep compaction permanently below its trigger while Trim moves the prefix on
         // every send, invalidating the provider's prefix cache. The retained estimate also falls immediately
         // after clearing/summarizing; the last wire measurement cannot observe either local change.
-        return (usage.RetainedEstimate, usage.Room);
+        //
+        // Two rooms, deliberately. The decision room is capped by what one round is worth re-sending; the window
+        // room is the model's own capacity, and it is the only honest measure of "the transcript's floor no longer
+        // fits" — reading that against the cap would block a session that has plenty of room and nothing to clear.
+        return (usage.RetainedEstimate, ContextCompaction.DecisionRoom(usage.Room), usage.Room);
     }
 
-    private async Task<int> ClearOlderToolResultsAsync(string conversationId)
+    private async Task<int> ClearOlderToolResultsAsync(string conversationId, int neededTokens)
     {
         var reclaimed = 0;
         await ApplyOnUiAsync(() =>
@@ -772,25 +781,32 @@ internal sealed partial class ChatExecutionCoordinator
             // record of that decision, and rewriting the turns around it while somebody is still reading the card
             // changes what they are being asked about.
             if (conversation.Messages.Any(turn => turn.ApprovalState == ChatApprovalStates.Pending)) return;
+            // The summary stands in for everything before it, so those turns are no longer on the wire: clearing
+            // them spends the budget on tokens nobody sends. Measured once, a whole clear went to 430 results the
+            // summary had already replaced, the transcript stayed exactly as large, and the paid tier then ran.
+            var from = SummaryMessageCount(conversation);
             var through = Math.Max(ContextElider.Boundary(conversation.Messages),
                 conversation.ContextElidedThroughMessageCount);
             if (through <= conversation.ContextElidedThroughMessageCount) return;
-            var saved = ContextElider.ReclaimableTokens(conversation.Messages, through);
-            if (saved <= 0) return;
-            var cleared = ContextElider.Clear(conversation.Messages, through);
+            var saved = ContextElider.ReclaimableTokens(conversation.Messages, through, from);
+            if (saved <= 0 || neededTokens <= 0) return;
+            var cleared = ContextElider.Clear(conversation.Messages, through, neededTokens, from);
+            if (cleared.Tokens <= 0) return;
             if (!Sessions.Registry.TryUpdate(conversationId, opened =>
                 {
-                    opened.Messages = cleared;
-                    opened.ContextElidedThroughMessageCount = through;
+                    opened.Messages = cleared.Messages;
+                    // Where the pass stopped, not where it was aimed: the results it left behind have to be
+                    // reachable by the next one, and the watermark is what decides that.
+                    opened.ContextElidedThroughMessageCount = cleared.Through;
                 })) return;
-            reclaimed = saved;
+            reclaimed = cleared.Tokens;
             Changed?.Invoke();
         }).ConfigureAwait(false);
         return reclaimed;
     }
 
-    private async Task FinishCompactionAsync(string conversationId, int used, int room, bool reachedTarget,
-        bool changed)
+    private async Task FinishCompactionAsync(string conversationId, int used, int room, int windowRoom,
+        bool reachedTarget, bool changed)
     {
         await ApplyOnUiAsync(() =>
         {
@@ -818,10 +834,12 @@ internal sealed partial class ChatExecutionCoordinator
                 }
                 // A successful early summary may still leave a large newest batch. Progress is not proof
                 // of an unshrinkable floor: subsequent results can make that batch old enough to reclaim.
-                else if (!changed && ContextCompaction.IsHardStopped(used, room))
+                // Measured against the window, never against the cost ceiling: what has no room left is the
+                // model's capacity, and a ceiling that blocks compaction permanently is worse than a costly round.
+                else if (!changed && ContextCompaction.IsHardStopped(used, windowRoom))
                 {
-                    reason = $"the conversation is past the {ContextCompaction.HardStopRatio:P0} point where no "
-                             + "tier can help";
+                    reason = $"the conversation is past the {ContextCompaction.HardStopRatio:P0} point of the "
+                             + $"{windowRoom}-token window, where no tier can help";
                     opened.ContextCompactionBlocked = true;
                 }
 
@@ -830,7 +848,8 @@ internal sealed partial class ChatExecutionCoordinator
             if (blocked)
                 // Said once, in the log the person can open, rather than in another popup: what is being reported
                 // is that Hub has stopped doing something on its own, and the reason is a number they can check.
-                Audit(conversationId, $"Auto compaction stopped: {reason} ({used}/{room} tokens)");
+                Audit(conversationId,
+                    $"Auto compaction stopped: {reason} ({used}/{room} of a {windowRoom}-token window)");
             Changed?.Invoke();
         }).ConfigureAwait(false);
     }
@@ -2618,6 +2637,16 @@ internal sealed partial class ChatExecutionCoordinator
                 $"Connection failed to {request.Value.Provider.Name} ({request.Value.ModelName}): {ex.Message}");
             return (RunResult.Failed, "ChatConnectionFailed", true, ex.Message);
         }
+        catch (Exception ex) when (ChatPipeline.UsageExhausted(ex.Message))
+        {
+            // The plan's own window, not a rate limit. The pipeline has already spent its retries on it, and no
+            // number of seconds fixes an allowance that comes back hours out — so the ending is named apart from
+            // "rate-limited, try again shortly", which would send a person at the same wall again.
+            Audit(run.ConversationId,
+                "Usage limit exhausted: the plan's allowance is spent and waiting cannot fix it, so the ending is "
+                + "named apart from a rate limit");
+            return (RunResult.Failed, "ChatUsageExhausted", true, ex.Message);
+        }
         catch (Exception ex) when (ChatPipeline.RateLimited(ex.Message))
         {
             // Not a recovery case: the pipeline already spent its retries on this request, and a rate limit that
@@ -3687,8 +3716,9 @@ internal sealed partial class ChatExecutionCoordinator
         if (run.TryTakeDecodeCommit() && run.DecodeCost is { } decoded) AddSessionDecode(opened, decoded);
         if (!run.TryTakeBurnCommit() || run.BurnedSoFar is not { } burned) return;
         AddSessionBurn(opened, burned);
-        if (stamped < 0 || stamped >= opened.Messages.Count) return;
-        opened.Messages[stamped] = opened.Messages[stamped] with { Burned = burned };
+        // Named on the turn that owns it — and on the run's newest turn when no answer landed, which is the only
+        // place an ending that was billed but never answered can still be read. See Conversation.StampBurn.
+        opened.StampBurn(burned, stamped);
     }
 
     private static void AddSessionDecode(Conversation opened, (long Tokens, TimeSpan Decode) decoded)

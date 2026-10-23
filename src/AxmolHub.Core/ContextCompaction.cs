@@ -48,6 +48,28 @@ public static class ContextCompaction
     /// <summary>Whether a tier finished the job.</summary>
     public static bool ReachedTarget(int used, int room) => Ratio(used, room) <= TargetRatio;
 
+    /// <summary>How full the transcript may be left, in tokens, for a room of this size.</summary>
+    public static int TargetTokens(int room) => (int)Math.Ceiling(Math.Max(0, room) * TargetRatio);
+
+    /// <summary>
+    /// The largest room a compaction decision may use, whatever window the model declares.
+    ///
+    /// <para>A tool loop re-sends the whole transcript on <b>every</b> round, so a prompt's size is not paid once;
+    /// it is paid per round, and the window is only the point at which the request stops fitting. Reading "it fits"
+    /// as "it is affordable" is what let one measured session run at 300 000–416 000 tokens a round until the
+    /// account's five-hour allowance was gone — one hour of that day logged 27 313 333 input tokens. A hundred
+    /// thousand tokens is already a large conversation, and a hundred rounds of it is ten million, so past this
+    /// the transcript is compacted even though the model would have accepted more.</para>
+    ///
+    /// <para>Tier one is arithmetic on text Hub already owns — no request, no cost — so the ceiling only decides
+    /// when the free tier is asked to work. It never changes the window a request is trimmed to.</para>
+    /// </summary>
+    public const int CostCeilingTokens = 100_000;
+
+    /// <summary>The room a compaction decision uses: the window's own room, capped by what one round is worth
+    /// re-sending. A room of zero stays zero — that is "nothing fits", not "plenty of room".</summary>
+    public static int DecisionRoom(int room) => room <= 0 ? room : Math.Min(room, CostCeilingTokens);
+
     /// <summary>Whether the conversation is past the point where any tier can help.</summary>
     public static bool IsHardStopped(int used, int room) => Ratio(used, room) >= HardStopRatio;
 }
@@ -97,37 +119,73 @@ public static class ContextElider
     private const int SmallestWorthClearing = 200;
 
     /// <summary>
-    /// The transcript with every clearable turn before <paramref name="through"/> replaced by a note that says
-    /// what was there and how to get it back. The turn's timestamp is deliberately kept: the meter adds the
-    /// estimate of everything written <i>after</i> the last measurement, so a cleared turn that looked newly
-    /// written would be counted on top of the measurement that already included it.
+    /// The transcript with as many clearable turns before <paramref name="through"/> as
+    /// <paramref name="budgetTokens"/> needs, oldest first. The turn's timestamp is deliberately kept: the meter
+    /// adds the estimate of everything written <i>after</i> the last measurement, so a cleared turn that looked
+    /// newly written would be counted on top of the measurement that already included it.
+    ///
+    /// <para><b>Why a budget rather than the whole span.</b> Clearing every result up to the boundary takes far
+    /// more than the target requires — measured on one session, 251 280 tokens came back to reach 35% of a room
+    /// whose target is 60% — and every cleared result rewrites the transcript's middle, which is what invalidates
+    /// a provider's prefix cache for the rest of the run. Taking only what is needed keeps the saving and spends
+    /// less of the cache.</para>
     /// </summary>
-    public static List<ChatTurn> Clear(IReadOnlyList<ChatTurn> messages, int through)
+    /// <param name="budgetTokens">How much the caller needs back. <see cref="int.MaxValue"/> is "everything",
+    /// which is what a hand-pressed compaction asks for.</param>
+    /// <param name="from">Where the sent part of the transcript starts — the summary boundary. Turns before it are
+    /// no longer on the wire (a summary stands in for them), so clearing them buys nothing and, if the budget were
+    /// spent there, would leave the conversation exactly as large as it was while reporting a saving. A measured
+    /// session spent its whole budget on 430 results the summary had already replaced.</param>
+    public static ClearedToolResults Clear(IReadOnlyList<ChatTurn> messages, int through, int budgetTokens,
+        int from = 0)
     {
         var kept = new List<ChatTurn>(messages.Count);
+        var saved = 0;
+        var reached = Math.Min(through, messages.Count);
         for (var index = 0; index < messages.Count; index++)
         {
             var turn = messages[index];
-            kept.Add(index < through && IsClearable(turn) ? Cleared(turn) : turn);
+            if (index >= from && index < through && IsClearable(turn))
+            {
+                if (saved < budgetTokens)
+                {
+                    kept.Add(Cleared(turn));
+                    saved += Saving(turn);
+                    continue;
+                }
+
+                // The first result this pass could not afford is where the next pass resumes.
+                if (reached > index) reached = index;
+            }
+
+            kept.Add(turn);
         }
 
-        return kept;
+        return new ClearedToolResults(kept, reached, saved);
     }
+
+    /// <summary>What one clear bought: the rewritten transcript, how far it got, and what it actually took back.
+    /// </summary>
+    public readonly record struct ClearedToolResults(List<ChatTurn> Messages, int Through, int Tokens);
 
     /// <summary>How many tokens the oldest clearable turns would give back if cleared up to
     /// <paramref name="through"/>, so a caller can decide whether tier one is worth its write before doing it.</summary>
-    public static int ReclaimableTokens(IReadOnlyList<ChatTurn> messages, int through)
+    public static int ReclaimableTokens(IReadOnlyList<ChatTurn> messages, int through, int from = 0)
     {
         var saved = 0;
-        for (var index = 0; index < Math.Min(through, messages.Count); index++)
+        for (var index = Math.Max(0, from); index < Math.Min(through, messages.Count); index++)
         {
             if (!IsClearable(messages[index])) continue;
-            saved += Math.Max(0, ContextTrimmer.EstimateTokens(messages[index])
-                                 - ContextTrimmer.EstimateTokens(PlaceholderFor(messages[index])));
+            saved += Saving(messages[index]);
         }
 
         return saved;
     }
+
+    /// <summary>What clearing this one turn would give back, never less than zero — the placeholder costs a few
+    /// characters of its own, and a turn is only clearable when that is the smaller of the two.</summary>
+    private static int Saving(ChatTurn turn)
+        => Math.Max(0, ContextTrimmer.EstimateTokens(turn) - ContextTrimmer.EstimateTokens(PlaceholderFor(turn)));
 
     private static ChatTurn Cleared(ChatTurn turn)
         => turn with { Text = PlaceholderFor(turn), Images = [] };

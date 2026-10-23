@@ -819,6 +819,9 @@ public static class HubTexts
         ["ChatFailed"] = ("助手请求失败：", "Assistant request failed: "),
         ["ChatConnectionFailed"] = ("连接模型服务失败：", "Could not connect to the model provider: "),
         ["ChatRateLimited"] = ("模型服务在限流，稍后再试：", "The model provider is rate-limiting requests, try again shortly: "),
+        // A spent allowance is not a rate limit: waiting seconds fixes one and not the other, and the difference
+        // is hours, so the sentence has to say what is actually owed instead of "try again shortly".
+        ["ChatUsageExhausted"] = ("套餐额度已用尽，等额度窗口恢复后再试（这不是限流）：", "This plan's usage allowance is spent; wait for it to reset — this is not rate limiting: "),
         // Three endings that used to share one sentence, because they are three different things to do about: a
         // stream that went quiet mid-reply, a round the provider never opened, and a round that never opened
         // because the provider kept saying "not yet". Saying "check your network" for all three sent people to

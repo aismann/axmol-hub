@@ -334,6 +334,16 @@ internal static class AiContextChecks
             throw new Exception("The point past which no tier can help is not the 97% the ring will name.");
         if (ContextCompaction.Ratio(1_000, 0) != 1d || ContextCompaction.Ratio(0, 0) != 1d)
             throw new Exception("A conversation with no room at all read as empty instead of full.");
+        // The window is what fits, not what a round is worth re-sending. A model that declares half a million
+        // tokens is still billed per round, so the decision room is capped — measured once, a 468 750-token room
+        // let one session reach 416 000 tokens a round and spend an hour's allowance in an hour.
+        if (ContextCompaction.DecisionRoom(500_000) != ContextCompaction.CostCeilingTokens
+            || ContextCompaction.DecisionRoom(40_000) != 40_000
+            || ContextCompaction.DecisionRoom(0) != 0)
+            throw new Exception("The room a compaction decision uses is no longer capped by what a round may cost, or a small window was capped too.");
+        if (!ContextCompaction.ShouldCompact(90_000, ContextCompaction.DecisionRoom(500_000))
+            || ContextCompaction.ShouldCompact(80_000, ContextCompaction.DecisionRoom(500_000)))
+            throw new Exception("A 90 000-token transcript still counts as affordable because the model's window is huge.");
         if (ContextBudget.SummaryCeilingTokens(1_000_000) != 4_096 || ContextBudget.SummaryCeilingTokens(2_048) != 512 || ContextBudget.SummaryCeilingTokens(16_000) != 2_000)
             throw new Exception("The summary ceiling is not an eighth-of-the-window with both a floor and a cap.");
         if (ContextBudget.SummaryOutputTokens(64_000) != 4_000 || ContextBudget.SummaryOutputTokens(512) != 1_024 || ContextBudget.SummaryOutputTokens(10_000_000) != 8_192)
@@ -358,20 +368,71 @@ internal static class AiContextChecks
         var through = ContextElider.Boundary(clearable, keepRecent: 2);
         if (through != 2)
             throw new Exception($"The clear boundary ran past the pair it was given ({through}).");
-        var clearedList = ContextElider.Clear(clearable, through);
+        var clearedList = ContextElider.Clear(clearable, through, int.MaxValue).Messages;
         if (clearedList.Count != clearable.Count || clearedList[0].Role != ChatRoles.Assistant || clearedList[0].ToolCallId != "c1" || clearedList[1].Role != ChatRoles.Tool || clearedList[1].ToolCallId != "c1" || clearedList[1].Text.Length > 400)
             throw new Exception("Clearing a tool result removed it, unpaired it, or left its body where it was.");
         if (clearedList[1].At != answer.At || clearedList[1].ToolName != answer.ToolName)
             throw new Exception("A cleared turn lost the timestamp or the name it was written with.");
         if (!clearedList[1].Text.Contains("4000", StringComparison.Ordinal) || !clearedList[1].Text.Contains("call the tool again", StringComparison.OrdinalIgnoreCase))
             throw new Exception($"The placeholder does not say what went or how to get it back ({clearedList[1].Text}).");
-        if (ContextElider.Clear(clearedList, through).SequenceEqual(clearedList) == false || ContextElider.ReclaimableTokens(clearedList, through) != 0)
+        if (ContextElider.Clear(clearedList, through, int.MaxValue).Messages.SequenceEqual(clearedList) == false || ContextElider.ReclaimableTokens(clearedList, through) != 0)
             throw new Exception("A second pass over an already cleared transcript changed it again, or still billed it.");
+        // Tier one takes only what the target needs. Clearing the whole span buys the same saving and rewrites
+        // more of the transcript than it has to — and the middle it rewrites is the prefix every later round
+        // re-sends, so on a caching provider the surplus is paid for again. Measured once: 251 280 tokens were
+        // cleared to reach 35% of a room whose target is 60%.
+        var wide = new List<ChatTurn>();
+        for (var pair = 0; pair < 6; pair++)
+        {
+            wide.Add(ChatTurn.FunctionCall($"w{pair}", "read_file", "{}"));
+            wide.Add(ChatTurn.FunctionResult($"w{pair}", new string('x', 4_000)));
+        }
+
+        wide.AddRange(tail);
+        var wideThrough = ContextElider.Boundary(wide, keepRecent: 2);
+        var reclaimable = ContextElider.ReclaimableTokens(wide, wideThrough);
+        var partial = ContextElider.Clear(wide, wideThrough, 1_500);
+        if (partial.Tokens <= 0 || partial.Tokens >= reclaimable)
+            throw new Exception($"A clear given a 1 500-token budget took {partial.Tokens} of {reclaimable} reclaimable tokens instead of stopping short of it.");
+        if (partial.Through >= wideThrough)
+            throw new Exception("A clear that stopped at its budget claimed the whole span, so what it left behind could never be reclaimed.");
+        if (partial.Messages.Skip(partial.Through).Any(turn => ContextElider.IsCleared(turn)))
+            throw new Exception("A clear past its budget cleared a turn beyond the point it reported reaching.");
+        if (ContextElider.Clear(wide, wideThrough, int.MaxValue).Tokens != reclaimable)
+            throw new Exception("An unbudgeted clear no longer takes everything, so a forced compaction stopped shrinking.");
+        // A summarized prefix is not on the wire any more, so the clear budget must not be spent behind it: the
+        // transcript would not shrink, the saving would never reach a request, and the paid tier would run anyway.
+        // Measured once, an entire clear went to 430 results the summary had already replaced.
+        var behindSummary = ContextElider.Clear(wide, wideThrough, 1_500, from: 4);
+        if (ContextElider.IsCleared(behindSummary.Messages[1]) || ContextElider.IsCleared(behindSummary.Messages[3]))
+            throw new Exception("A clear reached back behind the summary boundary and rewrote results the provider no longer receives.");
+        if (behindSummary.Tokens <= 0 || behindSummary.Through > wideThrough)
+            throw new Exception("A clear bounded by a summary made no progress, or claimed a span it never reached.");
+        if (ContextElider.ReclaimableTokens(wide, wideThrough, from: wideThrough) != 0)
+            throw new Exception("What a clear reports as reclaimable ignored the summary boundary.");
+        // The spend of a run that never produced an answer still has to be readable somewhere: the session total
+        // counts it, so a transcript where no turn carries it is a screen that says nothing about the run someone
+        // is asking about. Five such runs held 19 257 466 tokens of one measured session — 16% of its burn.
+        var spent = new Conversation { Id = "burn-stamp", Title = "burn" };
+        spent.Messages.Add(ChatTurn.User("跑一下回归"));
+        spent.Messages.Add(ChatTurn.FunctionCall("b1", "read_file", """{"path":"big.txt"}"""));
+        spent.Messages.Add(ChatTurn.FunctionResult("b1", new string('r', 400)));
+        var burned = new ContextBurn(120_000, 900, 100, 60_000, 4);
+        var where = spent.StampBurn(burned, stamped: -1);
+        if (where != spent.Messages.Count - 1 || spent.Messages[^1].Burned != burned)
+            throw new Exception("A run that ended without an answer filed its spend nowhere, so the total counts tokens no turn can show.");
+        if (spent.StampBurn(new ContextBurn(1, 1, 0, 0, 1), stamped: -1) != -1 || spent.Messages[^1].Burned != burned)
+            throw new Exception("A later unfinished run overwrote the reading another answer had already earned.");
+        spent.Messages.Add(ChatTurn.Assistant("答完了"));
+        if (spent.StampBurn(new ContextBurn(2, 2, 0, 0, 1), spent.Messages.Count - 1) != spent.Messages.Count - 1
+            || spent.Messages[^1].Burned?.Requests != 1)
+            throw new Exception("A finished run stopped filing its reading on the answer that owned it.");
+        Console.WriteLine("PASS: a run that ended without an answer files its spend on its own newest turn, and no run ever overwrites another's reading.");
         if (!ContextElider.IsClearable(answer) || ContextElider.IsClearable(clearedList[1]) || ContextElider.IsClearable(ChatTurn.User("用户的提问")))
             throw new Exception("A turn was billed as clearable that should never be, or a real one was missed.");
         var pictureResult = ChatTurn.FunctionResult("c2", new string ('z', 900), false, [new ChatImage("frame.png", "image/png", 24_576)]);
         var pictureThrough = ContextElider.Boundary([pictureResult], keepRecent: 0);
-        var clearedPicture = ContextElider.Clear([pictureResult], pictureThrough)[0];
+        var clearedPicture = ContextElider.Clear([pictureResult], pictureThrough, int.MaxValue).Messages[0];
         if (clearedPicture.Images.Count != 0 || !clearedPicture.Text.Contains("picture", StringComparison.OrdinalIgnoreCase))
             throw new Exception("Clearing a captured frame dropped the file reference without saying so, or kept the bytes.");
         // A boundary that would open on an unanswered call walks back, the same rule the summarizer's cut obeys —
@@ -828,6 +889,33 @@ internal static class AiContextChecks
 
         if (!yielded || !ReferenceEquals(firstSent, boundaryClient.LastMessages))
             throw new Exception("A full tool boundary sent a prefix-changing request instead of yielding first.");
+        // The handoff is a cost decision, not a fit decision. With a 120 000-token window the same loop never
+        // yields — which is how one measured run kept sending 100 000–400 000 tokens a round and spent a five-hour
+        // allowance in eighteen minutes. The yield budget is the seam the host passes its ceiling through, while
+        // trimming keeps the window, so a small ceiling over a huge window has to yield.
+        var costClient = new FakeChatClient(["ok"]);
+        var costGuard = new ToolLoopContextGuard(costClient, 200_000, yieldBudgetTokens: 1_200)
+        {
+            YieldForCompaction = true
+        };
+        await foreach (var _ in costGuard.GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "short")]))
+        {
+        }
+
+        var costYielded = false;
+        try
+        {
+            await foreach (var _ in costGuard.GetStreamingResponseAsync(loopMessages))
+            {
+            }
+        }
+        catch (ToolLoopContextBoundaryException)
+        {
+            costYielded = true;
+        }
+
+        if (!costYielded)
+            throw new Exception("A loop with a huge window and a small cost ceiling kept the turn instead of handing control back, so only the window ever decides when to compact.");
         var youngClient = new FakeChatClient(["ok"]);
         var youngGuard = new ToolLoopContextGuard(youngClient, 1200)
         {

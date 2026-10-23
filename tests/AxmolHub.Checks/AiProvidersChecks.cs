@@ -352,6 +352,21 @@ internal static class AiProvidersChecks
             if (ChatPipeline.RateLimited(notLimited))
                 throw new Exception($"A failure that is not a rate limit was labelled one: {notLimited}");
         Console.WriteLine("PASS: a rate limit is named by the provider's own words, while a bad key, an overflow, a " + "server error and a bare id full of digits stay plain failures.");
+        // A spent plan allowance arrives as 429 too, and it is not a rate limit: waiting seconds cannot fix a
+        // five-hour window, so "try again shortly" is the one sentence that guarantees another failure. The
+        // gateway spells it usage_limit_reached and states the reset in the same body; that spelling is what lets
+        // the ending name the wait instead.
+        foreach (var spent in new[]
+        {
+            """{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","limit_window_minutes":300,"resets_in_seconds":9207}}""",
+            "HTTP 429 The usage limit has been reached",
+        })
+            if (!ChatPipeline.UsageExhausted(spent))
+                throw new Exception($"A spent usage allowance was not recognised: {spent}");
+        foreach (var notExhausted in new[] { "HTTP 429 (rate_limit_error)", "usage_limit_hint", "The usage limit has been raised" })
+            if (ChatPipeline.UsageExhausted(notExhausted))
+                throw new Exception($"Something that only looks like a spent allowance was labelled one: {notExhausted}");
+        Console.WriteLine("PASS: a spent plan allowance is named apart from a rate limit, so the ending can ask for the reset instead of a retry.");
         // ProviderStore keeps keys out of JSON; CredentialStore owns the key and rehydrates it from the
         // secret store. The split is the whole point: a provider is a declaration, an account is a secret.
         var secretStore = new InMemorySecretStore();

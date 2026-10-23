@@ -204,8 +204,12 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
             // ContextTrimmer only ever sees the first iteration. The harvest sits inside the guard for the same
             // reason and one more: it must read the list as it will actually go out, assistant messages the loop
             // added since the last request included, or the reasoning it hands the wire policy is stale by a turn.
+            // The handoff is asked about against the host's cost ceiling rather than the model's window: the loop
+            // is the only place that can decide to give control back, and measuring it against "does it still fit"
+            // let one measured run send 4 520 397 input tokens in eighteen minutes without ever yielding.
             guard = new ToolLoopContextGuard(
-                reasoning is null ? client : new ReasoningHarvestClient(client, reasoning), budget)
+                reasoning is null ? client : new ReasoningHarvestClient(client, reasoning), budget,
+                ContextCompaction.DecisionRoom(budget))
             {
                 PendingInterjection = pendingInterjection,
                 YieldForCompaction = yieldForCompaction,
@@ -562,6 +566,20 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                || message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
                || message.Contains("rate_limit", StringComparison.OrdinalIgnoreCase)
                || message.Contains("ratelimit", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Whether a refusal is the account's own allowance running out rather than a rate limit.
+    ///
+    /// <para>Both arrive as 429 and they are different instructions: a rate limit is answered by waiting seconds,
+    /// while a spent allowance is answered by coming back when the window resets — measured once at 2h33m out, on
+    /// a five-hour window. Calling that "rate-limiting, try again shortly" sends somebody into the same wall three
+    /// times, which is exactly what the retry policy below will do unless the ending is named. The gateway spells
+    /// the type <c>usage_limit_reached</c> and states the reset in the same body.</para>
+    /// </summary>
+    public static bool UsageExhausted(string? message)
+        => message is { Length: > 0 }
+           && (message.Contains("usage_limit_reached", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("usage limit has been reached", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// What the tool declarations of one request cost, in tokens. A function's name, its description and its

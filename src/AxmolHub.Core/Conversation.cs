@@ -528,6 +528,28 @@ public sealed class Conversation
     public int BurnedRequestCount { get; set; }
 
     /// <summary>
+    /// Files what one run cost on the turn that owns the number, and returns which turn that was (-1 when there
+    /// was nowhere to put it).
+    ///
+    /// <para><b>Why the newest turn is the fallback.</b> A run that ended without an answer — refused, timed out,
+    /// stopped by a person — still sent its requests and was still billed, and <see cref="BurnedInputTotal"/>
+    /// already carries them: the totals are folded for every ending. Before this, the per-turn reading was filed
+    /// on a prose answer alone, so exactly those runs showed nothing anywhere. Measured on one session, five such
+    /// runs held 19 257 466 tokens — 16% of everything it burned — with no turn able to show a single one of
+    /// them, which is the worst possible place for a gap: the screen someone opens to ask "what did that cost?"
+    /// was blank for the runs that cost the most. The newest turn is by construction the run's own, and a turn
+    /// that already carries a reading belongs to an earlier answer, so it is never overwritten.</para>
+    /// </summary>
+    public int StampBurn(ContextBurn burned, int stamped)
+    {
+        var target = stamped;
+        if (target < 0 && Messages.Count > 0 && Messages[^1].Burned is null) target = Messages.Count - 1;
+        if (target < 0 || target >= Messages.Count) return -1;
+        Messages[target] = Messages[target] with { Burned = burned };
+        return target;
+    }
+
+    /// <summary>
     /// Output this session decoded, and the time the model actually spent decoding it — the two operands of the
     /// generation speed the composer's status row shows. DeepSeek Harness's own stats line quotes the same ratio
     /// (<c>decodeTokens / decodeMs</c>), and it is a session sum rather than the newest answer's, so a reply that
