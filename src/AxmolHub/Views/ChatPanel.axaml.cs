@@ -4011,38 +4011,12 @@ public partial class ChatPanel : UserControl
             bar.Children.Add(IconActionButton("BranchFromHere", "Hub.Icon.Branch", () => { if (CurrentIndex() is var current && current >= 0) BranchFromHere(current); }));
             if (_chat.ActiveConversation is { } active && active.Id == actionSession
                 && index >= 0 && index < active.Messages.Count
-                && active.Messages[index] is { RunElapsed: not null, CommitSummary: { Length: > 0 } commitSummary } commitTurn)
+                && active.Messages[index] is { GitActions: not GitActions.None,
+                    GitWorkspaceRoot: { Length: > 0 } root } gitTurn)
             {
-                var commit = new Button
+                void AddGitButton(GitActions action, string textKey)
                 {
-                    Content = HubStrings.Get("CommitSummaryAction"),
-                    Tag = "CommitSummaryAction",
-                    Classes = { "quiet", "message-action" },
-                    Padding = new Thickness(8, 2),
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                ToolTip.SetTip(commit, commitTurn.CommitSummaryFallback
-                    ? HubStrings.Get("CommitSummaryFallbackTip") : commitSummary);
-                commit.Click += async (_, _) =>
-                {
-                    var current = CurrentIndex();
-                    if (current < 0 || _chat.ActiveConversation is not { } conversation
-                        || conversation.Id != actionSession || current >= conversation.Messages.Count) return;
-                    var currentTurn = conversation.Messages[current];
-                    if (currentTurn.At != commitTurn.At || currentTurn.RunElapsed is null
-                        || !string.Equals(currentTurn.CommitSummary, commitSummary, StringComparison.Ordinal)) return;
-                    var root = _chat.WorkspaceRootFor(actionSession!);
-                    if (string.IsNullOrWhiteSpace(root))
-                    {
-                        StatusMessage?.Invoke(HubStrings.Get("CommitSummaryWorkspaceChanged"));
-                        return;
-                    }
-                    var outcome = await _chat.CommitSuggestedAsync(actionSession!, root, commitSummary, currentTurn.At);
-                    StatusMessage?.Invoke(outcome.Message);
-                };
-                bar.Children.Add(commit);
-                Button PushButton(string textKey, bool commitFirst)
-                {
+                    if (!gitTurn.GitActions.HasFlag(action)) return;
                     var button = new Button
                     {
                         Content = HubStrings.Get(textKey),
@@ -4051,29 +4025,31 @@ public partial class ChatPanel : UserControl
                         Padding = new Thickness(8, 2),
                         VerticalAlignment = VerticalAlignment.Center,
                     };
-                    ToolTip.SetTip(button, "This click authorizes pushing the current branch to its configured upstream.");
+                    ToolTip.SetTip(button, action == GitActions.Commit ? gitTurn.CommitSummary
+                        : HubStrings.Get("GitPushAuthorizationTip"));
                     button.Click += async (_, _) =>
                     {
                         var current = CurrentIndex();
                         if (current < 0 || _chat.ActiveConversation is not { } conversation
                             || conversation.Id != actionSession || current >= conversation.Messages.Count) return;
                         var currentTurn = conversation.Messages[current];
-                        if (currentTurn.At != commitTurn.At || currentTurn.RunElapsed is null
-                            || !string.Equals(currentTurn.CommitSummary, commitSummary, StringComparison.Ordinal)) return;
-                        var root = _chat.WorkspaceRootFor(actionSession!);
-                        if (string.IsNullOrWhiteSpace(root))
+                        if (currentTurn.At != gitTurn.At || !currentTurn.GitActions.HasFlag(action)) return;
+                        button.IsEnabled = false;
+                        try
                         {
-                            StatusMessage?.Invoke(HubStrings.Get("CommitSummaryWorkspaceChanged"));
-                            return;
+                            var outcome = action == GitActions.Commit
+                                ? await _chat.CommitSuggestedAsync(actionSession!, root, currentTurn.CommitSummary ?? "", currentTurn.At)
+                                : await _chat.PushSuggestedAsync(actionSession!, root, currentTurn.CommitSummary ?? "", currentTurn.At,
+                                    commitFirst: action == GitActions.CommitAndPush);
+                            StatusMessage?.Invoke(outcome.Message);
                         }
-                        var outcome = await _chat.PushSuggestedAsync(actionSession!, root, commitSummary,
-                            currentTurn.At, commitFirst);
-                        StatusMessage?.Invoke(outcome.Message);
+                        finally { button.IsEnabled = true; }
                     };
-                    return button;
+                    bar.Children.Add(button);
                 }
-                bar.Children.Add(PushButton("PushSummaryAction", commitFirst: false));
-                bar.Children.Add(PushButton("CommitPushSummaryAction", commitFirst: true));
+                AddGitButton(GitActions.Commit, "CommitSummaryAction");
+                AddGitButton(GitActions.Push, "PushSummaryAction");
+                AddGitButton(GitActions.CommitAndPush, "CommitPushSummaryAction");
             }
         }
 

@@ -112,7 +112,7 @@ public static class GitRepository
     /// as an outcome with a detail, because the caller is a pane that has to show something either way.
     /// </summary>
     public static async Task<GitRepositoryState> ReadAsync(string? workspaceRoot, ProcessRunner runner,
-        IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
+        IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default, bool includeDiffs = true)
     {
         if (string.IsNullOrWhiteSpace(workspaceRoot)) return GitRepositoryState.Stopped(GitReadOutcome.NoWorkspace);
         if (CommandShells.Resolve("git") is not { } git) return GitRepositoryState.Stopped(GitReadOutcome.GitMissing);
@@ -160,6 +160,9 @@ public static class GitRepository
         // best answer, and a snapshot whose paths resolve one folder too high shows rows that say they cannot be
         // read — which is honest — rather than nothing at all.
         var repositoryRoot = await ReadToplevelAsync(git, runner, root, sensitiveValues, cancellation) ?? root;
+        if (!includeDiffs)
+            return new GitRepositoryState(GitReadOutcome.Ok, repositoryRoot, branch.Name, branch.Ahead, branch.Behind,
+                reading.Entries, new Dictionary<string, string>(StringComparer.Ordinal), reading.Truncated, null);
 
         // The patch and its ordered name list are read together so a row's diff costs no process of its own: two
         // calls, one per question, because the list is the only spelling where a path survives intact and the
@@ -264,7 +267,6 @@ public static class GitRepository
         string summary, IEnumerable<string>? prefixes, ProcessRunner runner,
         IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
     {
-        if (!CommitSummary.IsValid(summary, prefixes)) return new(false, "invalid-summary", null);
         var git = CommandShells.Resolve("git");
         if (git is null) return new(false, "git-missing", null);
         var state = await ReadAsync(workspaceRoot, runner, sensitiveValues, cancellation).ConfigureAwait(false);
@@ -276,9 +278,8 @@ public static class GitRepository
         if (state.Branch is not { Length: > 0 }) return new(false, "branch-unavailable", null);
         if (state.Entries.Any(entry => entry.IndexState == "U" || entry.WorktreeState == "U"))
             return new(false, "conflict", null);
-        if (!state.Entries.Any(entry => entry.IndexState != " " && entry.IndexState != "?"
-                                        || entry.WorktreeState != " " || entry.IndexState == "?"))
-            return new(false, "nothing-staged", null);
+        if (state.Entries.Count == 0) return new(false, "nothing-staged", null);
+        if (!CommitSummary.IsValid(summary, prefixes)) return new(false, "invalid-summary", null);
         var stage = await runner.RunAsync(git, ["add", "-A", "--", "."], root,
             timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
         if (stage.ExitCode != 0)
@@ -312,28 +313,58 @@ public static class GitRepository
                 OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             return new(false, "workspace-changed", null);
         if (state.Branch is not { Length: > 0 }) return new(false, "branch-unavailable", null);
-        var upstream = await runner.RunAsync(git,
-            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root,
-            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
-        if (upstream.ExitCode != 0 || string.IsNullOrWhiteSpace(upstream.Output))
-            return new(false, "upstream-unavailable", FirstText(upstream.Error, upstream.Output));
-        var push = await runner.RunAsync(git, ["--no-pager", "push"], root,
-            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
-        return push.ExitCode == 0
-            ? new(true, null, push.Output.Trim())
-            : new(false, "push-failed", FirstText(push.Error, push.Output));
+        try
+        {
+            // Read the exact checked-out ref instead of trusting a display name (including detached HEAD).
+            var branch = await runner.RunAsync(git, ["symbolic-ref", "--quiet", "HEAD"], root,
+                timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+            var branchRef = branch.Output.Trim();
+            if (branch.ExitCode != 0 || !branchRef.StartsWith("refs/heads/", StringComparison.Ordinal))
+                return new(false, "branch-unavailable", FirstText(branch.Error, branch.Output));
+            var upstream = await runner.RunAsync(git,
+                ["for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)", branchRef], root,
+                timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+            var target = upstream.Output.TrimEnd('\r', '\n').Split('\0');
+            if (upstream.ExitCode != 0 || target.Length != 3 || string.IsNullOrWhiteSpace(target[0])
+                || !target[1].StartsWith("refs/heads/", StringComparison.Ordinal)
+                || !target[2].StartsWith("refs/", StringComparison.Ordinal))
+                return new(false, "upstream-unavailable", FirstText(upstream.Error, upstream.Output));
+            // This uses the configured tracking ref, without fetching or contacting a remote. With no outgoing
+            // commits, never start a push process (or ask a credential helper), even with an unreachable URL.
+            var ahead = await runner.RunAsync(git, ["rev-list", "--count", target[2] + ".." + branchRef, "--"], root,
+                timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+            if (ahead.ExitCode != 0 || !long.TryParse(ahead.Output.Trim(), out var count) || count < 0)
+                return new(false, "upstream-unavailable", FirstText(ahead.Error, ahead.Output));
+            if (count == 0) return new(false, "nothing-to-push", null);
+            // One explicit, non-forced branch refspec ignores push.default and remote push refspecs. Disable
+            // mirror/follow-tags as well: repository configuration must not widen this action to other refs.
+            var push = await runner.RunAsync(git,
+                ["--no-pager", "-c", "remote." + target[0] + ".mirror=false", "push", "--no-force",
+                    "--no-follow-tags", "--recurse-submodules=no", "--", target[0], branchRef + ":" + target[1]], root,
+                timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+            return push.ExitCode == 0
+                ? new(true, null, FirstText(push.Output, push.Error))
+                : new(false, "push-failed", FirstText(push.Error, push.Output));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new(false, "push-failed", ex is IdleTimeoutException stalled ? Stalled(stalled) : ex.Message);
+        }
     }
 
-    /// <summary>Revalidates the current repository and commits only its existing index; it never stages files.</summary>
+    /// <summary>Stages and commits non-ignored changes, then pushes; a clean worktree only pushes pending commits.</summary>
     public static async Task<GitCommitResult> CommitAndPushStagedAsync(string workspaceRoot, string expectedRoot,
         string summary, IEnumerable<string>? prefixes, ProcessRunner runner,
         IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
     {
         var commit = await CommitStagedAsync(workspaceRoot, expectedRoot, summary, prefixes, runner,
             sensitiveValues, cancellation).ConfigureAwait(false);
-        if (!commit.Success) return commit;
+        if (!commit.Success && commit.FailureKey != "nothing-staged") return commit;
         var push = await PushAsync(workspaceRoot, expectedRoot, runner, sensitiveValues, cancellation).ConfigureAwait(false);
-        return push.Success ? push : new(false, "commit-succeeded-push-failed", push.Detail);
+        // Another client or a post-commit hook may have pushed already. That is still a completed commit,
+        // not the partial failure reserved for a real push error after Hub created a commit.
+        if (commit.Success && push.FailureKey == "nothing-to-push") return commit;
+        return !commit.Success || push.Success ? push : new(false, "commit-succeeded-push-failed", push.Detail);
     }
 
     private static IEnumerable<string> StatusArguments()
@@ -543,4 +574,6 @@ public sealed record GitPatchReading(IReadOnlyDictionary<string, string> Section
 /// state a person has to be told about before they approve a checkout, not merely a branch name that reads oddly.</summary>
 public sealed record GitBranch(string? Name, int Ahead, int Behind, bool Detached);
 
+/// <summary>An action result. The keys <c>nothing-staged</c> and <c>nothing-to-push</c> are terminal no-ops,
+/// not operational errors; <c>commit-succeeded-push-failed</c> preserves a completed local commit.</summary>
 public sealed record GitCommitResult(bool Success, string? FailureKey, string? Detail);

@@ -611,6 +611,7 @@ public sealed partial class ChatWorkspace : IDisposable
     /// (<see cref = "PlanStore.BodyOf"/>) rather than each keeping their own idea of where a plan lives.</summary>
     internal string? PlanBody(ChatTurn turn, out PlanBodyState state) => _sessions.PlanBody(turn, out state);
     public bool IsRunning(string conversationId) => _execution.IsRunning(conversationId);
+    internal Task RefreshGitPresentationAsync(string conversationId) => _execution.RefreshGitPresentationAsync(conversationId);
     internal Task<(bool Success, string Message)> CommitSuggestedAsync(string conversationId, string expectedWorkspaceRoot, string summary, DateTimeOffset turnAt)
         => _execution.CommitSuggestedAsync(conversationId, expectedWorkspaceRoot, summary, turnAt);
     internal Task<(bool Success, string Message)> PushSuggestedAsync(string conversationId, string expectedWorkspaceRoot, string summary, DateTimeOffset turnAt, bool commitFirst)

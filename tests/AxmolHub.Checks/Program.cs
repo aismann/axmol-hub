@@ -22,6 +22,7 @@ internal static class Program
 
         if (args.Contains("--check-ai-commit-summary"))
         {
+            GitWorkflowEvidenceChecks.Run();
             await AiCommitSummaryChecks.RunAsync(root, args);
             return;
         }

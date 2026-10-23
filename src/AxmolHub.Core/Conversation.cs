@@ -191,12 +191,15 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     public bool ToolFailed { get; init; }
     public string? AttachedContext { get; init; }
 
-    /// <summary>A locally parsed or fallback-generated commit title associated with this completed assistant reply.</summary>
+    /// <summary>An explicitly marked proposed commit title associated with this completed assistant reply.</summary>
     public string? CommitSummary { get; init; }
-    public bool CommitSummaryFallback { get; init; }
 
     /// <summary>Hub handed an explicit Git action to the normal Agent path. Its reply cannot re-enter local Git handling.</summary>
     public bool IsGitOperationFallback { get; init; }
+
+    /// <summary>Actions supported by actual tool results and the explicit summary at this reply's completion.</summary>
+    public GitActions GitActions { get; init; }
+    public string? GitWorkspaceRoot { get; init; }
 
     /// <summary>Whether this user message was explicitly sent as a task goal. It is display metadata only: the
     /// message remains ordinary user text on the model wire, while the transcript can keep its goal card attached

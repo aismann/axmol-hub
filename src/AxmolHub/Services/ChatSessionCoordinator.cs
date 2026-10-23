@@ -404,6 +404,7 @@ internal sealed partial class ChatSessionCoordinator
         measurement.NotifyMs = measurement.ElapsedMs - notifyStarted;
         if (_active is { GoalState: ChatGoalStates.Active } goalThread && NormalizeMode(goalThread.Mode) == ChatModes.Agent && Execution.RunFor(goalThread.Id) is null && Execution.RunningCount < MaxConcurrentRuns && !goalThread.Messages.Any(turn => turn.ApprovalState == ChatApprovalStates.Pending || turn.PlanApprovalState == PlanApprovalStates.Pending))
             Execution.StartRun(goalThread.Id);
+        if (_active is { } selected) _ = Execution.RefreshGitPresentationAsync(selected.Id);
         return _active;
     }
 
@@ -698,13 +699,13 @@ internal sealed partial class ChatSessionCoordinator
         if (_repositoryReading is { } inFlight
             && string.Equals(RepositoryKey(_repositoryReadingRoot), RepositoryKey(root), StringComparison.Ordinal))
             return inFlight;
-        var task = ReadRepositoryAsync(root, scope);
+        var task = ReadRepositoryAsync(root, scope, conversationId);
         _repositoryReading = task;
         _repositoryReadingRoot = root;
         return task;
     }
 
-    private async Task<RepositorySnapshot> ReadRepositoryAsync(string workspaceRoot, WorkspaceToolScope scope)
+    private async Task<RepositorySnapshot> ReadRepositoryAsync(string workspaceRoot, WorkspaceToolScope scope, string conversationId)
     {
         // Counted where the read is really started, not where it is asked for: the coalesced path above never
         // gets here, so this number is the difference between a cache and a poll.
@@ -720,6 +721,7 @@ internal sealed partial class ChatSessionCoordinator
                 _repository = snapshot;
                 RepositoryChanged?.Invoke();
             }).ConfigureAwait(false);
+            await Execution.RefreshGitPresentationAsync(conversationId, state, workspaceRoot).ConfigureAwait(false);
             return snapshot;
         }
         finally
