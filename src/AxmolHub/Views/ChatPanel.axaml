@@ -1383,7 +1383,10 @@
         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
           <Border x:Name="ChangesPillHost" IsVisible="False" />
           <Button x:Name="ScrollToBottomButton" Classes="scroll-bottom" IsVisible="False">
-            <Path Width="14" Height="14" Stretch="Uniform" Data="{StaticResource Hub.Icon.ArrowDown}" />
+            <Grid Width="26" Height="26">
+              <Path Width="14" Height="14" Stretch="Uniform" Data="{StaticResource Hub.Icon.ArrowDown}" />
+              <local:ScrollAttentionMarquee x:Name="ScrollAttentionMarquee" IsActive="False" IsHitTestVisible="False" />
+            </Grid>
           </Button>
         </StackPanel>
       </Panel>
