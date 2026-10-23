@@ -1514,7 +1514,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The bottom entry's popup: "Settings", and the "外观" row — the shell's own two switches. 外观 opens the two
+    /// The bottom entry's popup: "Settings", the "外观" switchboard, and the License viewer. 外观 opens the two
     /// questions it answers, "界面语言" and "主题", and each of those opens its own answers. Every row is one
     /// line: a name, and a tick when it is the answer in force. Built fresh on every open, so the labels follow
     /// the UI language and exactly one tick per question is drawn without any sync machinery.
@@ -1610,6 +1610,18 @@ public partial class MainWindow : Window
         appearance.Items.Add(language);
         appearance.Items.Add(theme);
         menu.Items.Add(appearance);
+
+        var license = new MenuItem
+        {
+            Header = BuildMenuRow("Hub.Icon.Application", "License", current: false),
+            Tag = MenuRowTag.License,
+        };
+        license.Click += async (_, _) =>
+        {
+            menu.Hide();
+            await LicenseWindow.ShowAsync(this);
+        };
+        menu.Items.Add(license);
         return menu;
     }
 
@@ -1621,6 +1633,7 @@ public partial class MainWindow : Window
         internal const string Appearance = "menu:appearance";
         internal const string Language = "menu:language";
         internal const string Theme = "menu:theme";
+        internal const string License = "menu:license";
     }
 
     /// <summary>One row of the bottom menu: a glyph, a name, and a tick when this is the answer in force. A row

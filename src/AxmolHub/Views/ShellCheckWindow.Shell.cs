@@ -472,17 +472,17 @@ internal sealed class ShellLayoutChecks
         Dispatcher.UIThread.RunJobs();
         var bottomMenu = shell.BottomMenuForCheck;
         Check(bottomMenu is { IsOpen: true }, "点底部入口真的弹出菜单（事件接线有效）");
-        // Two levels, and the shape itself is the assertion: 设置 plus 外观, with 语言 and 主题 under 外观 and each
-        // of those carrying its own answers. A row that grew children, or a question that turned back into a
-        // leaf, is what would quietly put a theme value on the first level again.
-        var rows = bottomMenu!.Items.OfType<MenuItem>().ToArray();
+        // Two levels, and the shape itself is the assertion: Settings plus Appearance, with Language and Theme
+        // under Appearance and each carrying its own answers. A row that grew children, or a question that turned
+        // back into a leaf, is what would quietly put a theme value on the first level again.
+        var rows = bottomMenu!.Items.OfType<MenuItem>().Take(2).ToArray();
         var appearance = rows.Length > 1 ? rows[1] : null;
         var subRows = appearance?.Items.OfType<MenuItem>().ToArray() ?? [];
         var languageRow = subRows.FirstOrDefault(item => item.Tag as string == MainWindow.MenuRowTag.Language);
         var themeRow = subRows.FirstOrDefault(item => item.Tag as string == MainWindow.MenuRowTag.Theme);
         var languageRows = languageRow?.Items.OfType<MenuItem>().ToArray() ?? [];
         var themeRows = themeRow?.Items.OfType<MenuItem>().ToArray() ?? [];
-        Check(rows.Length == 2 && rows[0].Items.Count == 0 && appearance is { Items.Count: 2 } && !appearance.IsChecked && languageRow is { Items.Count: 2 } && !languageRow.IsChecked && themeRow is { Items.Count: 3 } && !themeRow.IsChecked && languageRows.Length == SettingsPage.LanguageChoices.Length && themeRows.Length == HubTheme.All.Length && languageRows.Concat(themeRows).All(row => row.Items.Count == 0), "弹出菜单是两层：设置 + 外观，外观下是 语言 / 主题 两行，各自再带自己的答案（实际顶层 " + rows.Length + " 行，外观下 " + subRows.Length + " 行，主题 " + themeRows.Length + " 项、语言 " + languageRows.Length + " 项）");
+        Check(rows.Length == 2 && rows[0].Items.Count == 0 && appearance is { Items.Count: 2 } && !appearance.IsChecked && languageRow is { Items.Count: 2 } && !languageRow.IsChecked && themeRow is { Items.Count: 3 } && !themeRow.IsChecked && languageRows.Length == SettingsPage.LanguageChoices.Length && themeRows.Length == HubTheme.All.Length && languageRows.Concat(themeRows).All(row => row.Items.Count == 0), "弹出菜单中的 Settings + Appearance 仍保持两层，外观下的语言 / 主题各带自己的答案（实际检查前两行，外观下 " + subRows.Length + " 行，主题 " + themeRows.Length + " 项、语言 " + languageRows.Length + " 项）");
         // A row's drawn shape is read off the header control the window built, not off the item's own visual
         // tree: a row inside a submenu nobody has opened has no template realized, so a walk that starts at the
         // item finds nothing and an unopened row would read as a broken one. The hint half of the tuple is the

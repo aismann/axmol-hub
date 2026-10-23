@@ -66,6 +66,8 @@
          project in P6 — the dependency set did not change, only its host project). Core and Cli stay
          zero-dependency and offline-buildable. -->
     <PackageReference Include="Markdown.Avalonia" Version="12.0.0-a3" />
+    <!-- Already resolved through Markdown.Avalonia; the license viewer uses its virtualized TextEditor directly. -->
+    <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
     <!-- The SVG cover on a file attachment chip. It already arrives transitively through Markdown.Avalonia.Svg,
          and a package Hub writes code against is declared here rather than leaned on through someone else's
          dependency: the day that plugin drops it, a transitive-only reference becomes a compile error nobody

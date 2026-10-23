@@ -84,7 +84,10 @@ internal sealed class HubDialogChrome
             IsHitTestVisible = false,
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxWidth = 520,
+            // Fill the caption column. A capped, stretched control is centered within a wide column,
+            // which shifts even a short title away from the header's leading inset.
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            TextAlignment = TextAlignment.Left,
         };
         title.Bind(TextBlock.TextProperty, new Binding(nameof(Window.Title))
         {

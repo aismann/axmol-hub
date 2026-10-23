@@ -1,0 +1,31 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ae="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
+        x:Class="AxmolHub.LicenseWindow"
+        Width="860" Height="620" MinWidth="600" MinHeight="420"
+        CanResize="True" ShowInTaskbar="False" WindowStartupLocation="CenterOwner"
+        Title="License">
+  <Window.Styles>
+    <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+  </Window.Styles>
+  <Grid RowDefinitions="Auto,*,Auto">
+    <ContentControl x:Name="ChromeHost" Grid.Row="0" />
+    <Border Grid.Row="1" Margin="20,14,20,12"
+            Background="{DynamicResource Hub.SurfaceSunken}"
+            BorderBrush="{DynamicResource Hub.BorderSubtle}"
+            BorderThickness="1" CornerRadius="6">
+      <!-- Keep the editor in the bounded Grid slot: its TextView virtualizes visible lines. A TextBox
+           lays out the entire license document again when its selection changes, even without wrapping. -->
+      <ae:TextEditor x:Name="LicenseText" Margin="12"
+                     IsReadOnly="True" WordWrap="False" ShowLineNumbers="False"
+                     FontFamily="{DynamicResource Hub.Font.Mono}" FontSize="13"
+                     Foreground="{DynamicResource Hub.TextPrimary}" Background="Transparent"
+                     HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" />
+    </Border>
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                Margin="20,0,20,18">
+      <Button x:Name="LicenseCloseButton" Classes="primary" Content="OK"
+              IsDefault="True" MinWidth="96" />
+    </StackPanel>
+  </Grid>
+</Window>
