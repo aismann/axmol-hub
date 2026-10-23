@@ -114,7 +114,7 @@ jobs:
       # The env above only *asks* for 10.0.x; which patch version setup-dotnet actually resolves to is
       # what decides the compiler version, and that difference has bitten for real (2026-10-03): a
       # local Ubuntu installing dotnet-sdk-8.0 through apt only gets 8.0.1xx (compiler 4.8.0.0), while
-      # the Avalonia 12.1.3 analyzers and generators are compiled against 4.14, so the source generator
+      # the Avalonia 12.1.4 analyzers and generators are compiled against 4.14, so the source generator
       # emits nothing at all and the build fails with a row of
       # `CS0103: The name 'InitializeComponent' does not exist`.
       # When a local build and CI ever disagree, compare this line first instead of guessing.
