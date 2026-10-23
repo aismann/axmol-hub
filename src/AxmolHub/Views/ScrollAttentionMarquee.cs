@@ -10,7 +10,7 @@ public sealed class ScrollAttentionMarquee : Control
 {
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(30) };
     private const double SpeedPixelsPerSecond = 28;
-    private const double TrailLength = 24;
+    private const double TrailLength = 32;
     private const int TrailDots = 25;
     private const double TrailStep = TrailLength / (TrailDots - 1);
     private bool _isActive;
