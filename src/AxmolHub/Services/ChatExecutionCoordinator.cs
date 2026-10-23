@@ -22,7 +22,6 @@ internal sealed partial class ChatExecutionCoordinator
 
     private readonly string _dataRoot;
     private readonly HashSet<string> _compressingConversations = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, string> _commitFallbackInstructions = new(StringComparer.Ordinal);
     internal Func<HubReadOnlySnapshot?>? HubSnapshotProvider { get; set; }
     internal Func<IReadOnlyList<string>>? EngineRootsProvider { get; set; }
     internal Func<string, IDisposable?>? ChangeGateProvider { get; set; }
@@ -2316,7 +2315,7 @@ internal sealed partial class ChatExecutionCoordinator
             if (conversation?.WorkspaceRoot is not { Length: > 0 } || NormalizeMode(conversation.Mode) != ChatModes.Agent)
                 return (Turn: (ChatTurn?)null, Prefixes: (IReadOnlyList<string>)Array.Empty<string>());
             var lastUser = conversation.Messages.LastOrDefault(candidate => candidate.Role == ChatRoles.User);
-            if (lastUser?.Text.StartsWith("Hub's local commit workflow could not safely handle", StringComparison.Ordinal) == true)
+            if (lastUser?.Text.StartsWith("Hub's local deterministic workflow could not safely complete the requested Git operation.", StringComparison.Ordinal) == true)
                 return (Turn: (ChatTurn?)null, Prefixes: (IReadOnlyList<string>)Array.Empty<string>());
             var turn = conversation.Messages.LastOrDefault(candidate => candidate.Role == ChatRoles.Assistant
                 && candidate.ToolCallId is not { Length: > 0 } && candidate.Text.Length > 0);
@@ -2334,11 +2333,8 @@ internal sealed partial class ChatExecutionCoordinator
             return;
         }
 
-        var instruction = CommitFallbackInstruction(snapshot.Prefixes, final.Text, "commit");
-        _commitFallbackInstructions[run.ConversationId] = instruction;
         Audit(run.ConversationId,
-            "Local commit-summary parser could not safely handle the final answer; scheduling normal Agent fallback "
-            + "through the existing tool approval policy (additional model usage)");
+            "Local commit-summary parser found no valid explicit marker; no action was scheduled");
     }
 
     private async Task StartCommitModelFallbackAsync(string conversationId, DateTimeOffset turnAt,
@@ -3198,17 +3194,8 @@ internal sealed partial class ChatExecutionCoordinator
             if (pendingPlan) AttentionRequired?.Invoke(run.ConversationId, ChatAttentionKind.PlanApproval);
             RunCompleted?.Invoke(run.ConversationId,
                 new RunOutcome(result, noticeKey, danger, detail, userTurns));
-            var fallbackInstruction = "";
-            var hasCommitFallback = result == RunResult.Completed
-                && _commitFallbackInstructions.TryRemove(run.ConversationId, out fallbackInstruction);
-            if (!hasCommitFallback) _commitFallbackInstructions.TryRemove(run.ConversationId, out _);
             run.Dispose();
             if (continueGoal) StartRun(run.ConversationId);
-            else if (hasCommitFallback)
-            {
-                if (!TryEnqueueSend(run.ConversationId, fallbackInstruction!, null, null, out var refusal))
-                    Audit(run.ConversationId, "Normal Agent commit fallback could not start: " + refusal);
-            }
             // Last, after the slot is really gone: a wake waiting for one may only start once this run has left
             // the registry, or the fleet would be one session over its own cap.
             StartNextQueuedWake();
