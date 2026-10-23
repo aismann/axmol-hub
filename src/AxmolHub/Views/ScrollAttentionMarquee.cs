@@ -9,6 +9,10 @@ namespace AxmolHub;
 public sealed class ScrollAttentionMarquee : Control
 {
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(30) };
+    private const double SpeedPixelsPerSecond = 28;
+    private const double TrailLength = 24;
+    private const int TrailDots = 25;
+    private const double TrailStep = TrailLength / (TrailDots - 1);
     private bool _isActive;
     private double _distance;
 
@@ -17,7 +21,7 @@ public sealed class ScrollAttentionMarquee : Control
         IsHitTestVisible = false;
         _timer.Tick += (_, _) =>
         {
-            _distance += 1.8;
+            _distance += SpeedPixelsPerSecond * _timer.Interval.TotalSeconds;
             var perimeter = Perimeter(Bounds.Width, Bounds.Height);
             if (perimeter > 0 && _distance >= perimeter) _distance %= perimeter;
             InvalidateVisual();
@@ -54,16 +58,15 @@ public sealed class ScrollAttentionMarquee : Control
         var color = Color.Parse("#59C7FF");
 
         // Several fading dots read as one moving beam while keeping the normal button border visible.
-        const int trailDots = 11;
-        for (var i = trailDots - 1; i >= 0; i--)
+        for (var i = TrailDots - 1; i >= 0; i--)
         {
-            var behind = i * 1.15;
+            var behind = i * TrailStep;
             var point = PointAt((_distance - behind + perimeter) % perimeter,
                 left, top, right, bottom, radius);
-            var strength = (1.0 - (double)i / trailDots);
-            var alpha = (byte)(35 + (strength * 190));
+            var strength = 1.0 - (double)i / TrailDots;
+            var alpha = (byte)(24 + (strength * 176));
             var brush = new SolidColorBrush(Color.FromArgb(alpha, color.R, color.G, color.B));
-            var dotRadius = 0.8 + (strength * 1.2);
+            var dotRadius = 0.5 + (strength * 0.5);
             context.DrawEllipse(brush, null, point, dotRadius, dotRadius);
         }
     }
