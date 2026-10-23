@@ -344,6 +344,33 @@ internal static class AiContextChecks
         if (!ContextCompaction.ShouldCompact(90_000, ContextCompaction.DecisionRoom(500_000))
             || ContextCompaction.ShouldCompact(80_000, ContextCompaction.DecisionRoom(500_000)))
             throw new Exception("A 90 000-token transcript still counts as affordable because the model's window is huge.");
+        // Over target with nothing to take back is not a failed compaction. Counting it as one is what banned a
+        // session for good: three sends of a 100 000-token first message filled the allowance, and the block
+        // outlived the transcript it was decided on.
+        var opening = new Conversation { Id = "candidates", Title = "candidates" };
+        opening.Messages.Add(ChatTurn.User(new string('u', 60_000)));
+        opening.Messages.Add(ChatTurn.Assistant("收到了"));
+        if (ContextCompaction.HasCandidates(opening.Messages, 0))
+            throw new Exception("A transcript with nothing old enough to clear and nothing to summarize reported compaction candidates.");
+        for (var pair = 0; pair < 4; pair++)
+        {
+            opening.Messages.Add(ChatTurn.FunctionCall($"c{pair}", "read_file", "{}"));
+            opening.Messages.Add(ChatTurn.FunctionResult($"c{pair}", new string('r', 4_000)));
+        }
+
+        if (!ContextCompaction.HasCandidates(opening.Messages, 0))
+            throw new Exception("A transcript with a summarizable prefix reported no compaction candidates, so auto compaction would stay blocked.");
+        if (ContextCompaction.HasCandidates(opening.Messages, summaryThroughMessageCount: 10))
+            throw new Exception("A fully summarized transcript with no old results reported compaction candidates, so a block would be lifted for nothing.");
+        // A block is lifted only for materially more to work with: the candidates that failed are still there
+        // afterwards, so "candidates exist" would reset the allowance forever and rebuy the failing request.
+        if (!ContextCompaction.ShouldRecover(2_000, 1_000) || ContextCompaction.ShouldRecover(1_999, 1_000))
+            throw new Exception("Recovery no longer waits for twice as much to take back, so a failing summary is retried every round.");
+        if (!ContextCompaction.ShouldRecover(500, 0))
+            throw new Exception("A block recorded before candidates were tracked never gets the one attempt that keeps it from being pinned by age.");
+        if (ContextCompaction.CandidateTokens(opening.Messages, 0) <= 0
+            || ContextCompaction.CandidateTokens(opening.Messages, summaryThroughMessageCount: 10) != 0)
+            throw new Exception("Candidate tokens ignored the summary boundary, so recovery would count what is no longer sent.");
         if (ContextBudget.SummaryCeilingTokens(1_000_000) != 4_096 || ContextBudget.SummaryCeilingTokens(2_048) != 512 || ContextBudget.SummaryCeilingTokens(16_000) != 2_000)
             throw new Exception("The summary ceiling is not an eighth-of-the-window with both a floor and a cap.");
         if (ContextBudget.SummaryOutputTokens(64_000) != 4_000 || ContextBudget.SummaryOutputTokens(512) != 1_024 || ContextBudget.SummaryOutputTokens(10_000_000) != 8_192)

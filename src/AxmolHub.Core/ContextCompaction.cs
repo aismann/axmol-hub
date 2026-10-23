@@ -70,6 +70,50 @@ public static class ContextCompaction
     /// re-sending. A room of zero stays zero — that is "nothing fits", not "plenty of room".</summary>
     public static int DecisionRoom(int room) => room <= 0 ? room : Math.Min(room, CostCeilingTokens);
 
+    /// <summary>How much a compaction could take back right now: the summarizable span plus the clearable results,
+    /// both counted after the summary boundary. This is the number a block records, so recovery can ask whether
+    /// there is materially more to work with instead of merely whether candidates exist — a model that answers a
+    /// summary with nothing leaves exactly the same candidates behind, and retrying those is a paid request that
+    /// fails the same way.</summary>
+    public static int CandidateTokens(IReadOnlyList<ChatTurn> messages, int summaryThroughMessageCount)
+    {
+        var start = Math.Clamp(summaryThroughMessageCount, 0, messages.Count);
+        var span = 0;
+        for (var index = start; index < ContextCompression.CutPoint(messages); index++)
+            span += ContextTrimmer.EstimateTokens(messages[index]);
+        var through = Math.Max(ContextElider.Boundary(messages), start);
+        return span + ContextElider.ReclaimableTokens(messages, through, start);
+    }
+
+    /// <summary>Whether a blocked session has enough new material to be worth another attempt.
+    ///
+    /// <para><b>Why twice as much, not "any".</b> A block is set by attempts that had something to work with and
+    /// still left the session above target — a summary the model answered with nothing, say. Those candidates are
+    /// still there afterwards, so lifting the block for their mere presence resets the allowance forever and buys
+    /// the same failing request again. Waiting for twice as much makes recovery logarithmic in the conversation's
+    /// growth: a session that keeps failing is retried once per doubling rather than once per round. A block
+    /// recorded before this was tracked carries zero, and gets one attempt so age alone can never pin it.</para>
+    /// </summary>
+    public static bool ShouldRecover(int currentCandidates, int blockedCandidates)
+        => blockedCandidates <= 0 || (long)currentCandidates >= 2L * blockedCandidates;
+
+    /// <summary>
+    /// Whether any tier could take something back from this transcript right now.
+    ///
+    /// <para><b>Why this is not the same question as "is it over target".</b> A large first message, or a batch of
+    /// results too recent to clear, leaves both tiers with nothing to do. Counting those attempts as ineffective is
+    /// what used to ban a session from ever compacting again: three sends of a 100 000-token first message reached
+    /// <see cref="MaximumIneffectiveCompactions"/>, and the block outlived the transcript it was decided on — the
+    /// hundred tool results that arrived afterwards were never compacted either.</para>
+    /// </summary>
+    public static bool HasCandidates(IReadOnlyList<ChatTurn> messages, int summaryThroughMessageCount)
+    {
+        var start = Math.Clamp(summaryThroughMessageCount, 0, messages.Count);
+        if (ContextCompression.CutPoint(messages) - start >= 2) return true;
+        var through = Math.Max(ContextElider.Boundary(messages), start);
+        return ContextElider.ReclaimableTokens(messages, through, start) > 0;
+    }
+
     /// <summary>Whether the conversation is past the point where any tier can help.</summary>
     public static bool IsHardStopped(int used, int room) => Ratio(used, room) >= HardStopRatio;
 }

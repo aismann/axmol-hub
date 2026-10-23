@@ -450,6 +450,14 @@ public sealed class Conversation
     /// way the counter cannot see.</summary>
     public bool ContextCompactionBlocked { get; set; }
 
+    /// <summary>What a compaction could have taken back at the moment the block was set, in estimated tokens.
+    ///
+    /// <para>Recovery asks this, not "are there candidates": a summary the model answered with nothing leaves its
+    /// candidates exactly where they were, so a block lifted for their mere presence would be reset forever and the
+    /// same failing request bought again. Zero means the block predates this being recorded, and that session gets
+    /// one attempt so it can never stay pinned by age alone.</para></summary>
+    public int ContextCompactionBlockedCandidates { get; set; }
+
     public string Mode { get; set; } = ChatModes.Agent;
 
     /// <summary>The durable objective for this conversation. Null means this is an ordinary prompt thread.</summary>

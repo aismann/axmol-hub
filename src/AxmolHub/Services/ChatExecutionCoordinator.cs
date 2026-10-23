@@ -80,6 +80,22 @@ internal sealed partial class ChatExecutionCoordinator
     }
 
     internal bool IsCompressingContext(string conversationId) => _compressingConversations.Contains(conversationId);
+
+    /// <summary>Whether any tier could take something back right now — see <see cref="ContextCompaction.HasCandidates"/>.
+    /// The cheap arithmetic the auto trigger uses to tell "nothing to do yet" from "tried and failed".</summary>
+    private bool CompactionHasCandidates(string conversationId)
+        => Sessions.Registry.Peek(conversationId) is { } conversation
+           && ContextCompaction.HasCandidates(conversation.Messages, SummaryMessageCount(conversation));
+
+    /// <summary>What a compaction could take back now, and what it could take back when the block was set — the
+    /// pair <see cref="ContextCompaction.ShouldRecover"/> needs to tell "there is more to work with" apart from
+    /// "the same candidates that already failed are still here".</summary>
+    private (int Current, int Blocked) CompactionCandidates(string conversationId)
+        => Sessions.Registry.Peek(conversationId) is { } conversation
+            ? (ContextCompaction.CandidateTokens(conversation.Messages, SummaryMessageCount(conversation)),
+                conversation.ContextCompactionBlockedCandidates)
+            : (0, 0);
+
     internal async Task<bool> CompressContextAsync(string conversationId, CancellationToken cancellationToken = default)
     {
         if (!CanCompressContext(conversationId) || !_compressingConversations.Add(conversationId)) return false;
@@ -708,12 +724,34 @@ internal sealed partial class ChatExecutionCoordinator
             else if (await ReadOnUiAsync(() => Sessions.Registry.Peek(conversationId)?.ContextCompactionBlocked == true)
                          .ConfigureAwait(false))
             {
-                // Silent on the transcript, loud in the audit: the third attempt is the one that says this
-                // session's floor is bigger than its room, and pressing on buys nothing.
-                Audit(conversationId, $"{because} skipped: {ContextCompaction.MaximumIneffectiveCompactions} "
-                                      + "compactions in a row left this session above target");
-                return false;
+                // A block is a verdict on the transcript it was decided on, not on the session for the rest of its
+                // life. Once a summarizable prefix or an old tool result exists, that verdict no longer describes
+                // what is here, so the attempt is allowed again: three sends of a 100 000-token first message —
+                // which no tier could have shrunk — used to ban the hundred results that arrived afterwards.
+                // ...unless the window itself is the limit: past the hard-stop point the transcript's floor does
+                // not fit, and retrying there would spend the paid tier on every round instead of saying so once.
+                // Nor is "candidates exist" enough to lift a block — a summary the model answered with nothing
+                // leaves its candidates exactly where they were, and retrying those is the same paid request
+                // failing the same way. Recovery waits for twice as much to take back (see ShouldRecover).
+                var (currentCandidates, blockedCandidates) =
+                    await ReadOnUiAsync(() => CompactionCandidates(conversationId)).ConfigureAwait(false);
+                if (ContextCompaction.IsHardStopped(used, windowRoom)
+                    || !ContextCompaction.ShouldRecover(currentCandidates, blockedCandidates))
+                {
+                    // Silent on the transcript, loud in the audit: pressing on buys nothing until there is
+                    // materially more to take back than there was when compacting last failed.
+                    Audit(conversationId, $"{because} skipped: {ContextCompaction.MaximumIneffectiveCompactions} "
+                                          + "compactions in a row left this session above target, and nothing "
+                                          + "materially new has appeared to compact since");
+                    return false;
+                }
+
+                await ResetCompactionCountersAsync(conversationId).ConfigureAwait(false);
             }
+
+            // Over target with nothing to take back is not a failed compaction: both tiers are simply out of
+            // candidates, and counting that as ineffective is what filled the allowance in the first place.
+            var nothingToDo = !await ReadOnUiAsync(() => CompactionHasCandidates(conversationId)).ConfigureAwait(false);
 
             // Only what the target needs. A clear that takes the whole span rewrites more of the transcript than
             // the saving requires, and every rewritten result is the middle of the prefix a provider caches — the
@@ -737,7 +775,8 @@ internal sealed partial class ChatExecutionCoordinator
 
             var changed = reclaimed > 0 || summarized;
             await FinishCompactionAsync(conversationId, used, room, windowRoom,
-                reachedTarget: ContextCompaction.ReachedTarget(used, room), changed: changed)
+                reachedTarget: ContextCompaction.ReachedTarget(used, room), changed: changed,
+                nothingToDo: nothingToDo)
                 .ConfigureAwait(false);
             if (!changed) return false;
 
@@ -806,7 +845,7 @@ internal sealed partial class ChatExecutionCoordinator
     }
 
     private async Task FinishCompactionAsync(string conversationId, int used, int room, int windowRoom,
-        bool reachedTarget, bool changed)
+        bool reachedTarget, bool changed, bool nothingToDo)
     {
         await ApplyOnUiAsync(() =>
         {
@@ -818,13 +857,15 @@ internal sealed partial class ChatExecutionCoordinator
                 {
                     opened.ContextIneffectiveCompactions = 0;
                     opened.ContextCompactionBlocked = false;
+                    opened.ContextCompactionBlockedCandidates = 0;
                     return;
                 }
 
                 // A compaction that changed nothing at all is the same attempt twice; one that shrank the
                 // transcript without reaching target is progress that needs another pass, so only the second
-                // spends the allowance.
-                if (!changed) opened.ContextIneffectiveCompactions++;
+                // spends the allowance. An attempt with no candidates at all is neither: nothing was there to
+                // take back, so it says nothing about whether compacting can help.
+                if (!changed && !nothingToDo) opened.ContextIneffectiveCompactions++;
                 if (opened.ContextCompactionBlocked) return;
                 if (opened.ContextIneffectiveCompactions >= ContextCompaction.MaximumIneffectiveCompactions)
                 {
@@ -842,6 +883,12 @@ internal sealed partial class ChatExecutionCoordinator
                              + $"{windowRoom}-token window, where no tier can help";
                     opened.ContextCompactionBlocked = true;
                 }
+
+                // Remember what there was to work with. Recovery has to ask for materially more, not for the same
+                // candidates that just failed: a summary the model answered with nothing leaves them untouched.
+                if (opened.ContextCompactionBlocked)
+                    opened.ContextCompactionBlockedCandidates =
+                        ContextCompaction.CandidateTokens(opened.Messages, SummaryMessageCount(opened));
 
                 blocked = opened.ContextCompactionBlocked;
             });
@@ -862,6 +909,7 @@ internal sealed partial class ChatExecutionCoordinator
             {
                 opened.ContextIneffectiveCompactions = 0;
                 opened.ContextCompactionBlocked = false;
+                opened.ContextCompactionBlockedCandidates = 0;
             });
         }).ConfigureAwait(false);
     }
