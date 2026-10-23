@@ -78,6 +78,9 @@ public partial class ChatPanel : UserControl
     private const int MaxRecalledTexts = 20;
 
     private bool _stickToBottom = true;
+    private DispatcherTimer? _scrollAttentionTimer;
+    private long _scrollAttentionUntil;
+    private bool _scrollAttentionDimmed;
     // True while a hand holds the scrollbar's thumb: the window in which automatic scrolling and streamed
     // re-measuring both stand down. Wired in the constructor off Thumb.DragStarted/DragCompleted; see ScrollToEnd
     // for what it guards and RefreshLive for what it holds back.
@@ -4880,6 +4883,8 @@ public partial class ChatPanel : UserControl
         }
 
         _liveRepaintPending = false;
+        if (bubble.PaintedText != text || (bubble.Thought.Text.Text ?? "") != thought)
+            SignalScrollAttention();
         PaintStreamingMarkdown(bubble, text, QuoteIntoComposer);
         bubble.PaintedText = text;
         if (text.Length == 0) bubble.ShowedText = false;
@@ -5077,6 +5082,40 @@ public partial class ChatPanel : UserControl
         if (_stickToBottom && !_thumbDragging) QueueVirtualFollow();
     }
 
+    private void SignalScrollAttention()
+    {
+        _scrollAttentionUntil = Environment.TickCount64 + 1600;
+        if (_scrollAttentionTimer is null)
+        {
+            _scrollAttentionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+            _scrollAttentionTimer.Tick += (_, _) =>
+            {
+                var atBottom = MessageScroller.Offset.Y + MessageScroller.Viewport.Height
+                    >= MessageScroller.Extent.Height - StickEpsilon && TranscriptTailVisible();
+                if (Environment.TickCount64 >= _scrollAttentionUntil || atBottom
+                    || !TranscriptActuallyScrollable())
+                {
+                    StopScrollAttention();
+                    return;
+                }
+
+                _scrollAttentionDimmed = !_scrollAttentionDimmed;
+                ScrollToBottomButton.Opacity = _scrollAttentionDimmed ? 0.78 : 1;
+            };
+        }
+
+        _scrollAttentionDimmed = false;
+        ScrollToBottomButton.Opacity = 1;
+        _scrollAttentionTimer.Start();
+    }
+
+    private void StopScrollAttention()
+    {
+        _scrollAttentionTimer?.Stop();
+        _scrollAttentionDimmed = false;
+        ScrollToBottomButton.Opacity = 1;
+    }
+
     private void UpdateScrollAffordance()
     {
         var extent = MessageScroller.Extent.Height;
@@ -5087,6 +5126,7 @@ public partial class ChatPanel : UserControl
         // change is interpreted by the ScrollChanged handler above.
         var scrollable = TranscriptActuallyScrollable();
         ScrollToBottomButton.IsVisible = scrollable && !atBottom;
+        if (!ScrollToBottomButton.IsVisible) StopScrollAttention();
         // The band's height is reserved by whether the transcript <i>can</i> scroll, never by where the reading
         // position happens to have stopped. The plate inside it does appear and disappear with the reading position,
         // and measured without the reservation the row grows from 22 to 28 as it rises — retaking from the
