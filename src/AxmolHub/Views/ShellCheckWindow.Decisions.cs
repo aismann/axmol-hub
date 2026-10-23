@@ -2126,6 +2126,50 @@ internal sealed class ShellDecisionsChecks
                   && panel.PlanTaskTitlesForCheck.Count == 2 && panel.PlanTasksPaintedForCheck,
                 "同一计划更新进度后保留展开状态，摘要和状态图标同步更新（实际「"
                 + panel.PlanTaskSummaryForCheck + "」）");
+            // A plan longer than the eight-row cap is the only shape where a rebuild would be visible: the list
+            // has somewhere to be scrolled to, and a status change through this same repaint must not put it back
+            // at the first row under whoever scrolled down to the step being worked on.
+            var scrollablePlanTurn = twoPlanSession.Messages[taskPlanIndex];
+            twoPlanSession.Messages[taskPlanIndex] = scrollablePlanTurn with
+            {
+                Plan = scrollablePlanTurn.Plan! with
+                {
+                    Tasks = Enumerable.Range(1, 10)
+                        .Select(number => new PlanTask(number, "Step " + number + " of the long plan")).ToArray(),
+                },
+            };
+            panel.Reload();
+            var (taskExtent, taskViewport) = panel.PlanTaskListMeasureForCheck;
+            // The cap is applied from the list's own LayoutUpdated, so the pass that builds the rows measures
+            // without it. Keep laying out until the viewport is genuinely smaller than the extent.
+            for (var pass = 0; pass < 4 && taskExtent <= taskViewport + 1; pass++)
+            {
+                shell.UpdateLayout();
+                Dispatcher.UIThread.RunJobs();
+                (taskExtent, taskViewport) = panel.PlanTaskListMeasureForCheck;
+            }
+            panel.ScrollPlanTasksForCheck(24);
+            Dispatcher.UIThread.RunJobs();
+            var scrolledTaskOffset = panel.PlanTaskScrollForCheck;
+            var scrolledPlanTurn = twoPlanSession.Messages[taskPlanIndex];
+            twoPlanSession.Messages[taskPlanIndex] = scrolledPlanTurn with
+            {
+                Plan = scrolledPlanTurn.Plan! with
+                {
+                    Tasks = scrolledPlanTurn.Plan!.Tasks!.Select(task => task with
+                    {
+                        State = task.Number == 9 ? PlanTaskStates.InProgress : PlanTaskStates.Pending,
+                    }).ToArray(),
+                },
+            };
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(taskExtent > taskViewport + 1 && scrolledTaskOffset > 0
+                  && Math.Abs(panel.PlanTaskScrollForCheck - scrolledTaskOffset) <= 1,
+                "计划步骤改状态后任务清单停在原处，不把滚到第几步的人甩回第一条（偏移 "
+                + Fmt(scrolledTaskOffset) + "→" + Fmt(panel.PlanTaskScrollForCheck) + "，extent "
+                + Fmt(taskExtent) + " / viewport " + Fmt(taskViewport) + "）");
             panel.TogglePlanTasksForCheck();
             Dispatcher.UIThread.RunJobs();
             Check(!panel.PlanTasksExpandedForCheck && panel.PlanTasksVisibleForCheck,

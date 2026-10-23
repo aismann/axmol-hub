@@ -29,6 +29,24 @@ public partial class ChatPanel
     private string _planTasksConversationId = "";
     private bool _planTasksExpanded;
 
+    /// <summary>The task row, plus the state it was last painted for so a repaint can replace only the glyphs that
+    /// actually moved. Held because the card is repainted in place: a step changing state is news about one row,
+    /// not a reason to build the list again and drop the offset the person had scrolled it to.</summary>
+    private sealed class PlanTaskRow(int number, Grid row, TextBlock label, string state)
+    {
+        internal int Number { get; } = number;
+        internal Grid Row { get; } = row;
+        internal TextBlock Label { get; } = label;
+        internal string State { get; set; } = state;
+    }
+
+    /// <summary>What the card on screen was built from — the plan it belongs to, whether it is unfolded, and its
+    /// titles. Deliberately not the task states: those are painted, and a string that moved on every status change
+    /// would put the list back to its first row under whoever was reading the last one.</summary>
+    private string _planTasksShape = "";
+    private TextBlock? _planTasksSummary;
+    private readonly List<PlanTaskRow> _planTaskRows = [];
+
     private void RefreshPlanTasksHost()
     {
         var conversation = _chat?.ActiveConversation;
@@ -59,12 +77,22 @@ public partial class ChatPanel
         {
             PlanTasksHost.Child = null;
             PlanTasksHost.IsVisible = false;
+            // The tree went with the child, so the next card is built from scratch rather than repainted into
+            // rows nobody can see.
+            ForgetPlanTaskCard();
             return;
         }
 
-        var completed = tasks.Count(task => task.State == PlanTaskStates.Completed);
-        var inProgress = tasks.Count(task => task.State == PlanTaskStates.InProgress);
-        var pendingCount = tasks.Count - completed - inProgress;
+        // Everything the card is built from and nothing it merely shows. A status change leaves this alone, which
+        // is what keeps the list — and its scroll offset — the one already on screen.
+        var shape = identity + "\u001f" + (_planTasksExpanded ? "expanded" : "folded") + "\u001f"
+                    + string.Join("\u001f", tasks.Select(task => task.Title));
+        if (shape == _planTasksShape && _planTasksSummary is not null)
+        {
+            PaintPlanTasks(tasks);
+            return;
+        }
+
         var toggle = new Button
         {
             Name = "PlanTasksToggleButton",
@@ -96,8 +124,7 @@ public partial class ChatPanel
         {
             Name = "PlanTasksSummary",
             Classes = { "plan-task-summary-text" },
-            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ChatPlanTaskSummaryFormat"), tasks.Count, completed, inProgress, pendingCount),
+            Text = PlanTaskSummaryText(tasks),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
@@ -136,50 +163,11 @@ public partial class ChatPanel
         };
 
         var list = new StackPanel { Spacing = 5, Margin = new Thickness(10, 8) };
+        _planTaskRows.Clear();
         foreach (var task in tasks)
         {
-            Control glyph = task.State switch
-            {
-                PlanTaskStates.InProgress => new ActivityGlyph
-                {
-                    Width = 14,
-                    Height = 14,
-                    Phase = ActivityPhase.RunningTool,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-                PlanTaskStates.Completed => new Path
-                {
-                    Width = 13,
-                    Height = 13,
-                    Stretch = Stretch.Uniform,
-                    Data = ThemeGeometry("Hub.Icon.Tick"),
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-                _ => new Border
-                {
-                    Width = 13,
-                    Height = 13,
-                    BorderThickness = new Thickness(1.4),
-                    CornerRadius = new CornerRadius(3),
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-            };
-            // Theme brushes resolve after attachment and must follow later theme changes.
-            switch (glyph)
-            {
-                case ActivityGlyph activity:
-                    activity.Bind(ActivityGlyph.TrackBrushProperty, new DynamicResourceExtension("Hub.Accent"));
-                    activity.Bind(ActivityGlyph.DotBrushProperty, new DynamicResourceExtension("Hub.AccentBorder"));
-                    break;
-                case Path tick:
-                    tick.Bind(Path.FillProperty, new DynamicResourceExtension("Hub.Success"));
-                    break;
-                case Border pending:
-                    pending.Bind(Border.BorderBrushProperty, new DynamicResourceExtension("Hub.TextTertiary"));
-                    break;
-            }
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("18,*") };
-            row.Children.Add(glyph);
+            row.Children.Add(PlanTaskGlyph(task.State));
             var label = new TextBlock
             {
                 Classes = { "plan-task-title" },
@@ -188,11 +176,11 @@ public partial class ChatPanel
                 FontSize = 13,
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            label.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension(
-                task.State == PlanTaskStates.Completed ? "Hub.TextTertiary" : "Hub.TextPrimary"));
+            PaintPlanTaskLabel(label, task.State);
             row.Children.Add(label);
-            Grid.SetColumn(row.Children[1], 1);
+            Grid.SetColumn(label, 1);
             list.Children.Add(row);
+            _planTaskRows.Add(new PlanTaskRow(task.Number, row, label, task.State));
         }
 
         var taskList = new ScrollViewer
@@ -222,6 +210,91 @@ public partial class ChatPanel
         content.Children.Add(taskList);
         PlanTasksHost.Child = content;
         PlanTasksHost.IsVisible = true;
+        _planTasksSummary = summary;
+        _planTasksShape = shape;
+    }
+
+    /// <summary>Drops the paint handles together with the tree they point into.</summary>
+    private void ForgetPlanTaskCard()
+    {
+        _planTasksShape = "";
+        _planTasksSummary = null;
+        _planTaskRows.Clear();
+    }
+
+    /// <summary>The one line above the list: how many tasks there are and where they stand.</summary>
+    private static string PlanTaskSummaryText(IReadOnlyList<PlanTask> tasks)
+    {
+        var completed = tasks.Count(task => task.State == PlanTaskStates.Completed);
+        var inProgress = tasks.Count(task => task.State == PlanTaskStates.InProgress);
+        return string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get("ChatPlanTaskSummaryFormat"), tasks.Count, completed, inProgress,
+            tasks.Count - completed - inProgress);
+    }
+
+    /// <summary>The ring, the tick or the empty box a task's state is drawn as. Bound to theme resources rather than
+    /// given brushes: a brush read while building would freeze the colour of the theme the card arrived in, and the
+    /// card outlives a theme switch.</summary>
+    private static Control PlanTaskGlyph(string state)
+    {
+        switch (state)
+        {
+            case PlanTaskStates.InProgress:
+                var activity = new ActivityGlyph
+                {
+                    Width = 14,
+                    Height = 14,
+                    Phase = ActivityPhase.RunningTool,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                activity.Bind(ActivityGlyph.TrackBrushProperty, new DynamicResourceExtension("Hub.Accent"));
+                activity.Bind(ActivityGlyph.DotBrushProperty, new DynamicResourceExtension("Hub.AccentBorder"));
+                return activity;
+            case PlanTaskStates.Completed:
+                var tick = new Path
+                {
+                    Width = 13,
+                    Height = 13,
+                    Stretch = Stretch.Uniform,
+                    Data = ThemeGeometry("Hub.Icon.Tick"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                tick.Bind(Path.FillProperty, new DynamicResourceExtension("Hub.Success"));
+                return tick;
+            default:
+                var pending = new Border
+                {
+                    Width = 13,
+                    Height = 13,
+                    BorderThickness = new Thickness(1.4),
+                    CornerRadius = new CornerRadius(3),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                pending.Bind(Border.BorderBrushProperty, new DynamicResourceExtension("Hub.TextTertiary"));
+                return pending;
+        }
+    }
+
+    /// <summary>A finished task's title recedes; every other one reads at full strength.</summary>
+    private static void PaintPlanTaskLabel(TextBlock label, string state)
+        => label.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension(
+            state == PlanTaskStates.Completed ? "Hub.TextTertiary" : "Hub.TextPrimary"));
+
+    /// <summary>Repaints the card already on screen: the summary line, and per row only the glyph and the title
+    /// colour whose state moved. Nothing is rebuilt, so the list keeps its scroll offset — whoever scrolled down to
+    /// the step being worked on is still looking at it when the next progress update lands.</summary>
+    private void PaintPlanTasks(IReadOnlyList<PlanTask> tasks)
+    {
+        if (_planTasksSummary is not null)
+            _planTasksSummary.Text = PlanTaskSummaryText(tasks);
+        foreach (var row in _planTaskRows)
+        {
+            var state = tasks.FirstOrDefault(task => task.Number == row.Number)?.State;
+            if (state is null || state == row.State) continue;
+            row.Row.Children[0] = PlanTaskGlyph(state);
+            PaintPlanTaskLabel(row.Label, state);
+            row.State = state;
+        }
     }
 
     /// <summary>The call the host is currently asking about, or null. Kept beside the host rather than read

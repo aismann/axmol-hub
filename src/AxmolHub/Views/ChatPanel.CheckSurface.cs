@@ -1589,6 +1589,16 @@ public partial class ChatPanel : UserControl
         && list.GetLogicalDescendants().OfType<Avalonia.Controls.Shapes.Path>().All(tick => tick.Data is not null && tick.Fill is { Opacity: > 0 });
     internal int PendingPlanTaskGlyphsForCheck => PlanTaskListForCheck?.GetLogicalDescendants().OfType<Border>().Count(border => border.Width == 13 && border.Height == 13) ?? 0;
     internal bool PlanTasksAboveComposerForCheck => PlanTasksHost.IsVisible && PlanTasksHost.TranslatePoint(new Point(0, PlanTasksHost.Bounds.Height), ComposerFrame)is { } bottom && bottom.Y <= 0;
+    /// <summary>Where a long task list is scrolled to, driven and read in one place. The fixture that drives it has
+    /// to show the list can scroll at all — extent inside the viewport makes "the offset did not move" true for the
+    /// wrong reason — so the measurement rides alongside the offset.</summary>
+    internal void ScrollPlanTasksForCheck(double offset)
+    {
+        if (PlanTaskListForCheck is { } list) list.Offset = new Point(0, Math.Max(0, offset));
+    }
+    internal double PlanTaskScrollForCheck => PlanTaskListForCheck?.Offset.Y ?? 0;
+    internal (double Extent, double Viewport) PlanTaskListMeasureForCheck
+        => PlanTaskListForCheck is { } list ? (list.Extent.Height, list.Viewport.Height) : (0, 0);
     // ── the strip, as a check reads it ──
     internal bool SteerConfirmVisibleForCheck => SteerConfirmHost.IsVisible;
     /// <summary>The draft the strip is holding up for its second tap. Read off the strip rather than the box:
