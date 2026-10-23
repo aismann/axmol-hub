@@ -1039,6 +1039,13 @@ internal sealed class ShellDecisionsChecks
         Dispatcher.UIThread.RunJobs();
         Check(iconPane is { } paintedPlan && paintedPlan.PlanCopyIconForCheck,
             "计划页代码块的复制按钮画出图标：复制图标跟渲染器走，不是只写在聊天面板作用域里的样式");
+        Check(iconPane is { } copyPlacement && copyPlacement.PlanCopyButtonInHeaderForCheck
+              && copyPlacement.PlanCopyButtonVisibleForCheck,
+            "计划 Markdown 复制按钮位于标签栏右侧，计划页选中时可见");
+        iconPane?.ClickChangesTabForCheck();
+        Check(iconPane is { } hiddenCopy && !hiddenCopy.PlanCopyButtonVisibleForCheck,
+            "切换到改动页时隐藏计划 Markdown 复制按钮");
+        iconPane?.ClickPlanTabForCheck();
         Check(iconPane is { } menuPlan && menuPlan.PlanSelectionMenuForCheck,
             "计划页的选区右键菜单同样可用（复制/引用）：两个受众都要有");
         shell.CloseInspector();
@@ -1123,9 +1130,9 @@ internal sealed class ShellDecisionsChecks
         var expandedPane = shell.InspectorPaneForCheck;
         Check(expandedPane is not null
               && expandedPane.ExpandedForCheck
-              && expandedPane.HeaderButtonCountForCheck == 3
+              && expandedPane.HeaderButtonCountForCheck == 4
               && expandedPane.PlanHostMaxWidthForCheck == 820,
-            "撑开后计划页收到聊天列的行长而不是铺满整屏，面板自己的头上也只剩三个页签（正文列宽上限 "
+            "撑开后计划页收到聊天列的行长而不是铺满整屏，面板头上只有三个页签和计划页复制按钮（正文列宽上限 "
             + Fmt(expandedPane?.PlanHostMaxWidthForCheck ?? 0) + "，头上按钮 "
             + (expandedPane?.HeaderButtonCountForCheck ?? -1) + " 枚）");
         Check(!shell.InspectorExpandToggleVisibleForCheck

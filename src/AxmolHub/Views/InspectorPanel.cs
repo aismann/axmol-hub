@@ -76,7 +76,7 @@ internal sealed partial class InspectorPanel : UserControl
         //    the column was shut. They are now the title bar's, where they outlive whichever surface is up (see
         //    MainWindow.axaml). The tabs read as text buttons whose selected one carries an underline plate
         //    rather than as a chrome-heavy TabControl. ──
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,*"), Margin = new Thickness(12, 10, 8, 8) };
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,*,Auto"), Margin = new Thickness(12, 10, 8, 8) };
         _header = header;
         _planTab = TabButton("InspectorTabPlan");
         _changesTab = TabButton("InspectorTabChanges");
@@ -127,7 +127,7 @@ internal sealed partial class InspectorPanel : UserControl
             Height = 32,
             MinWidth = 32,
             Padding = new Thickness(0),
-            Margin = new Thickness(0, 4, 4, 0),
+            Margin = new Thickness(4, 0, 0, 0),
             CornerRadius = new CornerRadius(6),
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
@@ -138,12 +138,11 @@ internal sealed partial class InspectorPanel : UserControl
         _planCopyButton.Classes.Add("inspector-plan-copy");
         _planCopyButton.Bind(ToolTip.TipProperty, new DynamicResourceExtension("CopyMarkdown"));
         _planCopyButton.Click += async (_, _) => await CopyPlanMarkdownAsync();
-        var planSurface = new Grid();
-        planSurface.Children.Add(_planHost);
-        planSurface.Children.Add(_planCopyButton);
+        Grid.SetColumn(_planCopyButton, 4);
+        header.Children.Add(_planCopyButton);
         _planScroll = new ScrollViewer
         {
-            Content = planSurface,
+            Content = _planHost,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
