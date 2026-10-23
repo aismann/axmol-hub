@@ -447,10 +447,15 @@ public partial class SettingsPage : UserControl
     private string CustomText => (CustomDownloadSourceBox.Text ?? "").Trim();
 
     /// <summary>
-    /// Writes the three permission-mode labels. Imperative for the same measured reason as
-    /// <see cref="LocalizeThemeItems"/>: a ComboBoxItem inside <c>Items</c> is not attached to the logical tree
-    /// until the dropdown opens, so <c>DynamicResource</c> resolves empty. Only <c>Content</c> is touched, so
-    /// this cannot re-enter <see cref="OnToolApprovalChanged"/>.
+    /// Writes the three permission-mode labels, and each mode's own explanation as a tooltip on that item.
+    /// Imperative for the same measured reason as <see cref="LocalizeThemeItems"/>: a ComboBoxItem inside
+    /// <c>Items</c> is not attached to the logical tree until the dropdown opens, so <c>DynamicResource</c>
+    /// resolves empty. Only <c>Content</c> and the item's tooltip are touched, so this cannot re-enter
+    /// <see cref="OnToolApprovalChanged"/>.
+    ///
+    /// <para>The hints come from <see cref="ChatPanel.ToolApprovalModeHintKey"/> rather than from copy of its own:
+    /// the composer's compact menu describes the same three tiers, and two spellings of "what auto-approve lets
+    /// through" is how the page and the menu start disagreeing about the gate.</para>
     /// </summary>
     private void LocalizeToolApprovalItems()
     {
@@ -459,6 +464,7 @@ public partial class SettingsPage : UserControl
             if (item is ComboBoxItem { Tag: string tag } mode && IsToolApprovalMode(tag))
             {
                 mode.Content = HubStrings.Get(ChatPanel.ToolApprovalModeKey(tag));
+                ToolTip.SetTip(mode, HubStrings.Get(ChatPanel.ToolApprovalModeHintKey(tag)));
             }
         }
     }

@@ -1180,7 +1180,12 @@ public static class HubTexts
             "Nothing asks any more except clearing what was built, including the screen and any tool this build "
             + "does not know"),
         ["ToolPermission"] = ("工具权限", "Tool permission"),
-        ["ToolPermissionHint"] = ("助手动手之前的默认严格程度。单个会话可以在聊天里改，不影响这里。", "How strict the assistant is by default before it acts. A single session can override this in the chat without changing it here."),
+        // The picker's own name. It used to live only inside the hint sentence below, which made the first line of
+        // the pane a definition of a concept instead of the name of the control underneath it.
+        ["DefaultApprovalModeTitle"] = ("默认审批档位", "Default approval mode"),
+        // What is left once the title carries the noun: only the override caveat, which cannot be read off the
+        // control. Shown as the title's tooltip.
+        ["ToolPermissionHint"] = ("单个会话可以在聊天里改这一档，不影响这里。", "A single session can override this in the chat without changing it here."),
         ["CommitSummaryPrefixesTitle"] = ("提交摘要前缀", "Commit summary prefixes"),
         ["CommitSummaryPrefixesHint"] = ("用逗号分隔。默认：feat:, fix:, docs:, misc:。点击提交或提交并推送后，Hub 会暂存仓库中的非忽略更改再提交；点击推送则只推送当前分支。无法本地安全处理时会启动正常 Agent 操作，并遵循现有工具审批权限，产生额外额度消耗。", "Comma-separated. Defaults: feat:, fix:, docs:, misc:. Commit and commit-and-push stage non-ignored repository changes before committing; push sends only the current branch. If local handling is unsafe, a normal Agent run takes over under the existing tool approval policy and incurs additional usage."),
         ["CommitSummaryAction"] = ("提交", "Commit"),

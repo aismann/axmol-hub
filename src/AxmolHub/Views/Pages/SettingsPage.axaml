@@ -156,21 +156,29 @@
              What the assistant may do without asking. The default belongs here because it is a standing policy
              across sessions; the per-session override lives in the composer, where the exception is actually
              being made. Labels are written in code for the same reason as the theme and source lists: a
-             ComboBoxItem in Items is not attached to the logical tree until the dropdown opens. -->
+             ComboBoxItem in Items is not attached to the logical tree until the dropdown opens.
+
+             Each tier's hint is a tooltip on its own dropdown item, not a paragraph under the picker: the
+             composer's compact menu made the same call, and a three-mode picker with three explanations printed
+             under it is the wall of text that decision exists to avoid.
+
+             The commit-prefix group used to sit between that title and its picker, which is why the pane opened
+             with a sentence about "默认严格程度" and then showed an unrelated text box before the dropdown it was
+             describing. It is a commit-message convention, not a permission, so it follows the picker. -->
         <StackPanel x:Name="PanePermission" Spacing="10" IsVisible="False">
-          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource ToolPermissionHint}" />
+          <TextBlock Text="{DynamicResource DefaultApprovalModeTitle}" FontSize="13" FontWeight="SemiBold"
+                     ToolTip.Tip="{DynamicResource ToolPermissionHint}" />
+          <ComboBox x:Name="ToolApprovalPicker" Width="240" HorizontalAlignment="Left">
+            <ComboBoxItem Tag="ask" />
+            <ComboBoxItem Tag="auto" />
+            <ComboBoxItem Tag="full" />
+          </ComboBox>
 
           <TextBlock Text="{DynamicResource CommitSummaryPrefixesTitle}" FontSize="13" FontWeight="SemiBold"
                      Margin="0,12,0,0" />
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource CommitSummaryPrefixesHint}" />
           <TextBox x:Name="CommitSummaryPrefixesBox" Width="320" HorizontalAlignment="Left"
                    PlaceholderText="feat:, fix:, docs:, misc:" />
-
-          <ComboBox x:Name="ToolApprovalPicker" Width="240" HorizontalAlignment="Left">
-            <ComboBoxItem Tag="ask" />
-            <ComboBoxItem Tag="auto" />
-            <ComboBoxItem Tag="full" />
-          </ComboBox>
 
           <!-- The 「以后都不问」 choices clicked on cards are visible in this section, and revocable here too.
                The list is built in code: every row must carry its own tool name for revocation — the same
