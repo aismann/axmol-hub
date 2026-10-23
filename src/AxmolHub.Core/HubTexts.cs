@@ -751,6 +751,15 @@ public static class HubTexts
         ["ChatWorkspaceRevokeFormat"] = ("撤销对 {0} 的授权", "Revoke access to {0}"),
         ["ChatWorkspaceRevokeReadOnlyFormat"] = ("撤销对 {0} 的只读授权", "Revoke read-only access to {0}"),
         ["ChatWorkspaceRevoked"] = ("已撤销该目录的授权，助手不再读写它。", "That directory is no longer granted; the assistant cannot read or write there now."),
+        // The single files a card opened by name. Their own heading and their own hint line, because "granted" means
+        // one exact path here and not the folder it happens to sit in — a tooltip that read them as directories would
+        // re-offer listing and searching, which that card never gave.
+        ["ChatWorkspaceGrantedFilesHintFormat"] = ("\n另有 {0} 个已授权文件：{1}", "\nAlso granted as single files ({0}): {1}"),
+        ["ChatWorkspaceGrantedFilesMenu"] = ("已授权的文件", "Granted files"),
+        ["ChatWorkspaceFileReadOnlySuffix"] = ("（只读）", " (read-only)"),
+        ["ChatWorkspaceFileRevokeFormat"] = ("撤销对 {0} 的授权", "Revoke access to {0}"),
+        ["ChatWorkspaceFileRevokeReadOnlyFormat"] = ("撤销对 {0} 的只读授权", "Revoke read-only access to {0}"),
+        ["ChatWorkspaceFileRevoked"] = ("已撤销该文件的授权，助手不再读写它。", "That file is no longer granted; the assistant cannot read or write it now."),
         // The person's own door to the same grant: the menu reads a folder and records it exactly as an approved
         // card would, so a task that needs a second directory does not depend on the assistant being willing to ask.
         // Each refusal below is the panel's own words for a `GrantVerdict` — the tool's sentences are for the model.

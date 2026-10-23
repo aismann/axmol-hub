@@ -140,8 +140,10 @@ internal static class ChatTools
         // asks. It stays there whatever the path is: the card *is* the mechanism, and a
         // call that fell through silently under 自动审批 would be a grant the person never saw. 「总是允许」 is not
         // offered — the same tier rule as the screen and another session — and here it would mean "open every
-        // directory I ever name".
-        ToolNames.RequestDirectory => ToolRisk.SystemCommand,
+        // directory I ever name". A single file shares the tier for the same reason, and 「总是允许」 is refused
+        // harder still there: it would read as "open every file I ever name", which is not something one click
+        // could have meant.
+        ToolNames.RequestDirectory or ToolNames.RequestFile => ToolRisk.SystemCommand,
         // Reading the screen writes nothing, but it shows the desktop to a model that decided when to look, and
         // the frame leaves the machine in the next request. That is the SystemCommand tier's job: it asks in
         // every mode but full. Spelled out rather than left to the fallback arm, because "unknown tool" and "this
@@ -270,15 +272,24 @@ internal static class ChatTools
     /// <summary>
     /// Whether this call would open a protected location — Hub's own data directory, an engine installation, a
     /// <c>.git</c> — which is the one grant no approval mode answers for. Asked of
-    /// <see cref="WorkspacePaths.ClassifyGrant"/>, so the gate and the card cannot disagree about what counts:
-    /// <see cref="GrantVerdict.GrantedReadOnly"/> is exactly "a card would land a read-only grant here", and the
-    /// same value is what the gate turns into a card in 完全访问 as well as in the two modes that ask anyway.
+    /// <see cref="WorkspacePaths.ClassifyGrant"/> and <see cref="WorkspacePaths.ClassifyFileGrant"/>, so the gate
+    /// and the card cannot disagree about what counts: <see cref="GrantVerdict.GrantedReadOnly"/> is exactly "a card
+    /// would land a read-only grant here", and the same value is what the gate turns into a card in 完全访问 as well
+    /// as in the two modes that ask anyway.
+    ///
+    /// <para>A file grant that is read-only <i>only</i> because of its extension is not this: a log outside any
+    /// protected location is an ordinary grant, and 完全访问 is allowed to answer it silently. What the extra
+    /// <see cref="WorkspacePaths.IsProtected"/> asks is the place, which is the part no mode can wave through.</para>
     /// </summary>
     public static bool OpensProtectedLocation(string name, string? argumentsJson, WorkspaceToolScope scope)
-        => string.Equals(name, ToolNames.RequestDirectory, StringComparison.Ordinal)
-           && ArgumentOf(argumentsJson, "path") is { Length: > 0 } path
-           && WorkspacePaths.ClassifyGrant(scope.Sandbox, scope.Guards, path).Verdict
-              == GrantVerdict.GrantedReadOnly;
+        => ArgumentOf(argumentsJson, "path") is { Length: > 0 } path
+           && (string.Equals(name, ToolNames.RequestDirectory, StringComparison.Ordinal)
+               && WorkspacePaths.ClassifyGrant(scope.Sandbox, scope.Guards, path).Verdict
+                  == GrantVerdict.GrantedReadOnly
+               || string.Equals(name, ToolNames.RequestFile, StringComparison.Ordinal)
+               && WorkspacePaths.ClassifyFileGrant(scope.Sandbox, scope.Guards, path).Verdict
+                  == GrantVerdict.GrantedReadOnly
+               && WorkspacePaths.IsProtected(path, scope.Guards));
 
     /// <summary>One string argument, exactly as the model wrote it: empty when the call names none, null when the
     /// arguments cannot be read at all. One reader for every argument the tier table looks at, because two of them
@@ -383,6 +394,7 @@ internal static class ChatTools
             AIFunctionFactory.Create(tools.CaptureScreen, Options(ToolNames.CaptureScreen)),
             AIFunctionFactory.Create(tools.ComputerUse, Options(ToolNames.ComputerUse)),
             AIFunctionFactory.Create(tools.RequestDirectory, Options(ToolNames.RequestDirectory)),
+            AIFunctionFactory.Create(tools.RequestFile, Options(ToolNames.RequestFile)),
             AIFunctionFactory.Create(tools.MemoryWrite, Options(ToolNames.MemoryWrite)),
             AIFunctionFactory.Create(tools.SendToSession, Options(ToolNames.SendToSession)),
             AIFunctionFactory.Create(tools.SpawnSession, Options(ToolNames.SpawnSession)),

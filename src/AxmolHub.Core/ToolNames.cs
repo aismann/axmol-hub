@@ -48,6 +48,8 @@ public static class ToolNames
 
     public const string RequestDirectory = "request_directory";
 
+    public const string RequestFile = "request_file";
+
     public const string CaptureScreen = "capture_screen";
 
     public const string ComputerUse = "computer_use";

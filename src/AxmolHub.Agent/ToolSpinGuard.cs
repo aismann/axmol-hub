@@ -19,7 +19,7 @@ namespace AxmolHub.Agent;
 /// rather than from counters, so a restart, a steer or a replayed session sees the same history:</para>
 /// <list type="bullet">
 /// <item>A successful state-changing call (<c>file_write</c>, <c>run_command</c>, <c>request_directory</c>,
-/// <c>memory_write</c>) ends the walk. Re-reading a file you just edited is
+/// <c>request_file</c>, <c>memory_write</c>) ends the walk. Re-reading a file you just edited is
 /// verification, not spinning.</item>
 /// <item>A result that <see cref="ToolLoopContextGuard.Elide"/> rewrote tells the model in so many words to
 /// call again if it still needs it — so a repeat after an elision is Hub asking for it, not a loop.</item>
@@ -41,9 +41,11 @@ public static class ToolSpinGuard
 
     /// <summary>The tools whose success means the world moved. Read against their results below, not trusted
     /// by name alone. <c>request_directory</c> is here because its success is a grant recorded on the session —
-    /// state a repeat would be asking for twice, and the answer to the second ask is "already granted".</summary>
+    /// state a repeat would be asking for twice, and the answer to the second ask is "already granted". Its
+    /// one-file sibling <c>request_file</c> lands the same record, so it belongs here for the same reason.</summary>
     private static readonly string[] StateChangingTools =
-        [Core.ToolNames.FileWrite, Core.ToolNames.RunCommand, Core.ToolNames.RequestDirectory, Core.ToolNames.MemoryWrite];
+        [Core.ToolNames.FileWrite, Core.ToolNames.RunCommand, Core.ToolNames.RequestDirectory,
+         Core.ToolNames.RequestFile, Core.ToolNames.MemoryWrite];
 
     /// <summary>The sentence a refused repeat hands back to the model. Matched on itself by the checks.</summary>
     public const string RefusalMarker = "has already run";
@@ -136,6 +138,9 @@ public static class ToolSpinGuard
             Core.ToolNames.FileWrite => result.StartsWith("Created ", StringComparison.Ordinal)
                             || result.StartsWith("Edited ", StringComparison.Ordinal),
             Core.ToolNames.RequestDirectory => result.StartsWith("Granted", StringComparison.Ordinal),
+            // One file is the same fact at another width: the second ask is answered "already granted", so a repeat
+            // after a landed card is a request for state that already moved.
+            Core.ToolNames.RequestFile => result.StartsWith("Granted", StringComparison.Ordinal),
             Core.ToolNames.MemoryWrite => result.StartsWith("Saved ", StringComparison.Ordinal),
             // A command may have changed files before returning a nonzero exit code, so its exit status is not
             // evidence that no state changed. Tool failures above are the cases where execution never completed.

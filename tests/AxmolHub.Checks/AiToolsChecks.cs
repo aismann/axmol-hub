@@ -558,7 +558,11 @@ internal static class AiToolsChecks
         // refused to every writing verb, because the grant says "this folder" and the guard says "never these,
         // whatever anybody approved". What a card *does* open is the location it named, and that is the pair after
         // this one — reading on, writing still off, and a grant made above the location opening neither.
-        if (WorkspacePaths.ResolveWrite(grantBox, Path.Combine(grantedRoot, ".git", "config"), guards).Verdict != WorkspacePathVerdict.ProtectedRoot || WorkspacePaths.ResolveWrite(new WorkspaceSandbox(workspace, [dataRoot]), Path.Combine(dataRoot, "state.json"), guards).Verdict != WorkspacePathVerdict.ProtectedRoot)
+        //
+        // The second clause is about a sandbox built by hand rather than by `SplitRoots`: a protected location put
+        // in the *writable* list is still not writable, and the answer names the read-only grant rather than a bare
+        // "protected", because a location the session holds is a location it may read.
+        if (WorkspacePaths.ResolveWrite(grantBox, Path.Combine(grantedRoot, ".git", "config"), guards).Verdict != WorkspacePathVerdict.ProtectedRoot || WorkspacePaths.ResolveWrite(new WorkspaceSandbox(workspace, [dataRoot]), Path.Combine(dataRoot, "state.json"), guards).Verdict != WorkspacePathVerdict.ReadOnlyRoot)
             throw new Exception("A grant on a directory above a protected location opened it.");
         // One card on the location itself, and the same place answers two ways. The anchor rule is what the last
         // clause pins: a grant *above* the location opens nothing in it, so pointing the assistant at its home
@@ -651,8 +655,126 @@ internal static class AiToolsChecks
             throw new Exception($"A protected directory's card did not say what approving it allows:{Environment.NewLine}{protectedCard}");
         if (!ToolPreviews.PreviewFor("run_command", JsonSerializer.Serialize(new { command = "ls", cwd = grantedRoot }), new WorkspaceToolScope(workspace, guards, dataRoot, "grant-card", [], log) { Sandbox = grantBox }).Contains(Path.GetFullPath(grantedRoot), StringComparison.Ordinal))
             throw new Exception("A command card did not name the directory the command would run in.");
+        // ── request_file: one exact path, its folder untouched, and a protected one read-only by derivation ──
+        // The narrowness is the whole claim. A card on one file must not become a card on the folder it lives in,
+        // or the next listing, the next search and the next command would all reach files nobody was shown.
+        var fileGrantRoot = Path.Combine(toolRoot, "file-grant");
+        Directory.CreateDirectory(fileGrantRoot);
+        var looseFile = Path.Combine(fileGrantRoot, "notes.md");
+        File.WriteAllText(looseFile, "one\n");
+        var logFile = Path.Combine(fileGrantRoot, "build.log");
+        File.WriteAllText(logFile, "line\n");
+        File.WriteAllText(Path.Combine(fileGrantRoot, "neighbour.md"), "beside\n");
+        var fileBox = new WorkspaceSandbox(workspace, [], []) { Files = [looseFile, logFile] };
+        var looseRead = WorkspacePaths.ResolveRead(fileBox, looseFile, guards);
+        if (!looseRead.IsAllowed || !looseRead.Granted || looseRead.ReadOnly || looseRead.Display != looseFile
+            || !WorkspacePaths.ResolveWrite(fileBox, looseFile, guards).IsAllowed
+            || WorkspacePaths.ResolveRead(fileBox, Path.Combine(fileGrantRoot, "neighbour.md"), guards).Verdict
+               != WorkspacePathVerdict.OutsideRoots
+            || WorkspacePaths.ResolveDirectory(fileBox, fileGrantRoot, guards).Verdict != WorkspacePathVerdict.OutsideRoots
+            || WorkspacePaths.VerifyCommandRoot(fileBox, fileGrantRoot, guards) != WorkspacePathVerdict.OutsideRoots)
+            throw new Exception("A granted file read or wrote more than that file: the folder around it became reachable.");
+        // …and a write there is an ordinary write, with the same pre-image and the same revert that dies with the
+        // grant: one kind of record whatever width the card had.
+        var fileTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "file-grant-undo", [], log) { Sandbox = fileBox });
+        var fileEdit = fileTools.FileWrite(looseFile, "one", "two");
+        var fileChange = ChatChangeStore.IdFromResult(fileEdit);
+        if (!fileEdit.StartsWith("Edited ", StringComparison.Ordinal) || fileChange is null
+            || ChatChangeStore.Restore(dataRoot, "file-grant-undo", fileChange, fileBox, guards, out _, out _) != UndoVerdict.Reverted
+            || WorkspaceTools.ReadAll(looseFile)?.Contains("two") != false
+            || ChatChangeStore.Restore(dataRoot, "file-grant-undo", fileChange, WorkspaceSandbox.For(workspace), guards, out _, out _) != UndoVerdict.RefusedPath)
+            throw new Exception($"A write into a granted file did not land, keep a pre-image and revert, or its revert outlived the grant:{Environment.NewLine}{fileEdit}");
+        // ── the protected half: reading yes, writing never, and the permission is derived rather than stored ──
+        var protectedFile = Path.Combine(dataRoot, "logs", "hub-check.log");
+        Directory.CreateDirectory(Path.GetDirectoryName(protectedFile)!);
+        File.WriteAllText(protectedFile, "line\n");
+        var guardFileBox = new WorkspaceSandbox(workspace, [], []) { Files = [protectedFile] };
+        var protectedRead = WorkspacePaths.ResolveRead(guardFileBox, protectedFile, guards);
+        if (!protectedRead.IsAllowed || !protectedRead.ReadOnly
+            || WorkspacePaths.ResolveWrite(guardFileBox, protectedFile, guards).Verdict != WorkspacePathVerdict.ReadOnlyRoot
+            || WorkspacePaths.ResolveDirectory(guardFileBox, dataRoot, guards).Verdict != WorkspacePathVerdict.ProtectedRoot)
+            throw new Exception($"A protected file granted by name was not read-only, or it opened the folder around it ({protectedRead.Verdict}).");
+        // A file outside the write allowlist is the same tier for a different reason: readable, never written. That
+        // is what makes a log outside the workspace readable at all, without ever making it editable.
+        if (!WorkspacePaths.ResolveRead(fileBox, logFile, guards).ReadOnly
+            || WorkspacePaths.ResolveWrite(fileBox, logFile, guards).Verdict != WorkspacePathVerdict.ReadOnlyRoot)
+            throw new Exception("A file outside the write allowlist was not granted read-only.");
+        // A grant is named absolutely and nothing else reaches it: the workspace's own spelling of the same file is
+        // still refused, because the grammar a relative path speaks is the workspace and only the workspace.
+        var nestedData = Path.Combine(workspace, "hubdata");
+        Directory.CreateDirectory(nestedData);
+        var nestedFile = Path.Combine(nestedData, "state.json");
+        File.WriteAllText(nestedFile, "{}\n");
+        var nestedGuards = new WorkspaceGuards(nestedData, []);
+        var nestedBox = new WorkspaceSandbox(workspace, [], []) { Files = [nestedFile] };
+        if (WorkspacePaths.ResolveRead(nestedBox, Path.Combine("hubdata", "state.json"), nestedGuards).Verdict
+            != WorkspacePathVerdict.ProtectedRoot
+            || !WorkspacePaths.ResolveRead(nestedBox, nestedFile, nestedGuards).IsAllowed)
+            throw new Exception("A granted file was reachable by a relative path, or its absolute path stopped working.");
+        // ── request_file: the body's own answers, and the sentence that makes the card the permission ──
+        static GrantVerdict GradeFile(WorkspaceSandbox box, WorkspaceGuards g, string path)
+            => WorkspacePaths.ClassifyFileGrant(box, g, path).Verdict;
+        var fileAskTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "file-ask", [], log) { Sandbox = fileBox });
+        if (!(await fileAskTools.RequestFile(looseFile)).Contains("already granted", StringComparison.Ordinal)
+            || !(await tools.RequestFile(grantedRoot)).Contains("is a directory", StringComparison.Ordinal)
+            || !(await tools.RequestFile("relative/path")).Contains("not an absolute path", StringComparison.Ordinal)
+            || !(await tools.RequestFile(Path.Combine(fileGrantRoot, "new.log"))).Contains("could never write", StringComparison.Ordinal)
+            || !(await tools.RequestFile(protectedFile)).Contains("Granted read-only", StringComparison.Ordinal)
+            || !(await tools.RequestFile(protectedFile)).Contains("read_file", StringComparison.Ordinal))
+            throw new Exception("request_file answered a file it holds, a directory, a relative path or a dead end with the wrong sentence.");
+        string? askedFile = null;
+        var freshFile = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "file-fresh", [], log)
+        {
+            ApplyGrantedFile = path =>
+            {
+                askedFile = path;
+                return Task.FromResult($"Granted: {path}.");
+            },
+        });
+        var freshFileAnswer = await freshFile.RequestFile(looseFile);
+        if (askedFile != looseFile || !freshFileAnswer.Contains($"Granted: {looseFile}", StringComparison.Ordinal))
+            throw new Exception($"A file nobody holds was not handed to the caller to persist:{Environment.NewLine}" + freshFileAnswer);
+        // The same two sentences the directory card owes: calling the tool *is* the request, and a protected file
+        // buys a reading only. A model that waits to be authorized in prose parks the task forever.
+        var fileMethod = typeof(WorkspaceTools).GetMethod(nameof(WorkspaceTools.RequestFile));
+        var fileDescription = (Attribute.GetCustomAttribute(fileMethod!, typeof(System.ComponentModel.DescriptionAttribute)) as System.ComponentModel.DescriptionAttribute)?.Description ?? "";
+        if (!fileDescription.Contains("Never ask the user for permission in prose first", StringComparison.Ordinal)
+            || !fileDescription.Contains("the card it shows *is* the approval", StringComparison.Ordinal)
+            || !fileDescription.Contains("for reading only", StringComparison.Ordinal))
+            throw new Exception("request_file's description does not say the card is the permission, or that a protected file is read-only.");
+        // ── the two cards say the tier, and the session file comes back through the shape rules ──
+        var fileCard = ToolPreviews.PreviewFor("request_file", JsonSerializer.Serialize(new { path = looseFile }), cardScope);
+        if (!fileCard.StartsWith("request_file · ", StringComparison.Ordinal)
+            || !fileCard.Contains("exists", StringComparison.Ordinal)
+            || !fileCard.Contains("read and write", StringComparison.Ordinal)
+            || !fileCard.Contains("this session only", StringComparison.Ordinal)
+            || !fileCard.Contains("folder around it is not opened", StringComparison.Ordinal))
+            throw new Exception($"A file grant card did not say what approving it allows:{Environment.NewLine}{fileCard}");
+        var protectedFileCard = ToolPreviews.PreviewFor("request_file", JsonSerializer.Serialize(new { path = protectedFile }), cardScope);
+        if (!protectedFileCard.Contains("protected location", StringComparison.Ordinal)
+            || !protectedFileCard.Contains("Hub's own data", StringComparison.Ordinal)
+            || !protectedFileCard.Contains("read only", StringComparison.Ordinal)
+            || protectedFileCard.Contains("read and write", StringComparison.Ordinal))
+            throw new Exception($"A protected file's card did not say what approving it allows:{Environment.NewLine}{protectedFileCard}");
+        if (GradeFile(WorkspaceSandbox.For(workspace), guards, "relative/path") != GrantVerdict.NotAbsolute
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, "") != GrantVerdict.NoPath
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, grantedRoot) != GrantVerdict.IsDirectory
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, Path.Combine(workspace, "src", "main.cpp")) != GrantVerdict.InsideWorkspace
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, Path.Combine(toolRoot, "no-such-folder", "x.md")) != GrantVerdict.Missing
+            || GradeFile(fileBox, guards, looseFile) != GrantVerdict.AlreadyGranted
+            || GradeFile(grantBox, guards, grantedFile) != GrantVerdict.InsideGrant
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, looseFile) != GrantVerdict.Granted
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, protectedFile) != GrantVerdict.GrantedReadOnly
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, logFile) != GrantVerdict.GrantedReadOnly
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, Path.Combine(fileGrantRoot, "new.log")) != GrantVerdict.NotWritableText
+            || GradeFile(WorkspaceSandbox.For(workspace), guards, Path.Combine(fileGrantRoot, "new.md")) != GrantVerdict.Granted)
+            throw new Exception("ClassifyFileGrant disagreed with the answers request_file gives.");
         // ── the session file is user-editable data, so its grants come back through the same rules ──
+        // The store's root has to exist before the first save: `SplitRoots` drops an entry this build cannot reach,
+        // so a fixture that never created the folder would be asserting demotion against a path that was dropped
+        // for an earlier reason — which is how this cell read as "not demoted" while nothing was wrong with it.
         var grantStoreRoot = Path.Combine(toolRoot, "grant-data");
+        Directory.CreateDirectory(grantStoreRoot);
         var grantStore = new ConversationStore(grantStoreRoot);
         var grantSession = Conversation.Create("provider");
         // The store's own data root is written into the *writable* half on purpose: a session file is user-editable
@@ -679,7 +801,27 @@ internal static class AiToolsChecks
         // The dedupe key folds case on the host that does, so one directory spelled two ways is one revoke button.
         if (OperatingSystem.IsWindows() && WorkspacePaths.NormalizeRoots([grantedRoot, grantedRoot.ToUpperInvariant()]).Count != 1)
             throw new Exception("One granted directory spelled two ways survived normalization.");
-        Console.WriteLine("PASS: a granted directory is read and written beside the workspace, its refusal names " + "request_directory, and the list is bounded, deduped and read back through the same rules.");
+        // ── the granted files ride in the same session file, under shape rules of their own ──
+        // What survives is decided by "can this build still resolve that path", not by the guards: a protected file
+        // is kept on purpose, because the grant is a reading and the reading is what the card gave.
+        var fileSession = Conversation.Create("provider");
+        fileSession.GrantedFiles = [looseFile, looseFile, "", "   ", grantedRoot, Path.Combine(toolRoot, "gone", "x.md"), protectedFile];
+        grantStore.Save(fileSession);
+        var reloadedFiles = grantStore.Load(fileSession.Id)?.GrantedFiles;
+        if (reloadedFiles is null || reloadedFiles.Count != 2
+            || !reloadedFiles.Contains(looseFile) || !reloadedFiles.Contains(protectedFile))
+            throw new Exception($"A session file's granted files were not normalized ({reloadedFiles?.Count} kept): a duplicate, a blank, a directory and a file whose folder is gone must be dropped, and a protected file kept.");
+        var manyFiles = WorkspacePaths.NormalizeFiles(Enumerable.Range(0, WorkspacePaths.MaxGrantedFiles + 3).Select(index =>
+        {
+            var file = Path.Combine(fileGrantRoot, $"cap-{index}.md");
+            File.WriteAllText(file, "x\n");
+            return file;
+        }));
+        if (manyFiles.Count != WorkspacePaths.MaxGrantedFiles)
+            throw new Exception($"The granted-file list grew past its cap ({manyFiles.Count}).");
+        Console.WriteLine("PASS: a granted directory and a granted single file are read and written beside the workspace, "
+                          + "the file's folder is not opened by it, a protected one is read-only by derivation, and both lists "
+                          + "are bounded, deduped and read back through the same rules.");
         // ── memory through the same tool surface ──
         if (!tools.MemoryWrite("project", "build-rules.md", "构建走 1kiss.ps1。", "构建约定", "改构建前先看", "project").Contains("Saved topics/build-rules.md"))
             throw new Exception("A project memory write was refused.");

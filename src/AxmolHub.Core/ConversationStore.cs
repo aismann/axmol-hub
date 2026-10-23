@@ -155,7 +155,8 @@ public sealed class ConversationStore(string root)
     /// Both grant lists through their shape rules, at the one door both the load and the save go through — see
     /// <see cref="WorkspacePaths.SplitRoots"/>. A protected location found in the writable half is moved to the
     /// read-only half rather than dropped: the card that put it there opened the reading, and a demotion keeps
-    /// exactly that.
+    /// exactly that. The granted files go through <see cref="WorkspacePaths.NormalizeFiles"/>, which takes no
+    /// guards on purpose: a file's permission is asked at every resolution, so there is no half to move it to.
     /// </summary>
     private void NormalizeGrants(Conversation conversation)
     {
@@ -163,6 +164,7 @@ public sealed class ConversationStore(string root)
             OwnGuards);
         conversation.GrantedRoots = write;
         conversation.ReadOnlyRoots = read;
+        conversation.GrantedFiles = WorkspacePaths.NormalizeFiles(conversation.GrantedFiles);
     }
 
     /// <summary>Loads one conversation; <c>null</c> when the id is unknown.

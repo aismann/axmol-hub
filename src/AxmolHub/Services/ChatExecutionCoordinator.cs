@@ -318,7 +318,10 @@ internal sealed partial class ChatExecutionCoordinator
                         () => IsWebSearchEnabled(),
                         call => deepSeekWebCalls?.GetOrAdd(call.Operation,
                             _ => new System.Collections.Concurrent.ConcurrentQueue<DeepSeekWebApiCall>()).Enqueue(call))
-                    : null)
+                    : null,
+                // The same seam one file wide: a card on a single file is recorded on the session and answered from
+                // there, because that is where the grant has to outlive the request.
+                ApplyGrantedFile: path => Sessions.ApplyGrantedFileAsync(conversationId, path))
             {
                 ComputerUse = OperatingSystem.IsWindows()
                     ? new ComputerUseBridge(WindowsScreenCapture.Operate)
@@ -1354,9 +1357,11 @@ internal sealed partial class ChatExecutionCoordinator
             // The granted directories travel with the workspace, not instead of it: a helper sent to fix something
             // in the project the parent was granted would otherwise have to ask for the same card again — and the
             // person already answered that question one turn earlier. The read-only half travels with them, or a
-            // helper asked to read the logs the parent was granted would be back to asking for the same card.
+            // helper asked to read the logs the parent was granted would be back to asking for the same card. The
+            // granted single files follow the same condition: they are the same answered question, one file wide.
             child.GrantedRoots = request.InheritWorkspace ? [.. parent.GrantedRoots] : [];
             child.ReadOnlyRoots = request.InheritWorkspace ? [.. parent.ReadOnlyRoots] : [];
+            child.GrantedFiles = request.InheritWorkspace ? [.. parent.GrantedFiles] : [];
             child.SpawnedBy = parent.Id;
             child.SpawnedTask = request.Task;
             child.SpawnedState = request.Started
@@ -3547,15 +3552,19 @@ internal sealed partial class ChatExecutionCoordinator
         => scope.Snapshot?.Projects.Select(project => project.Path).ToArray() ?? [];
 
     /// <summary>
-    /// The sandbox one call is graded against: the session's workspace, the directories it may write and the
-    /// directories it may only read — all three read from the session's own record and put through their shape
-    /// rules with the guards in hand. One expression, because three sites build a sandbox for a request, a diff and
-    /// a grant, and a site that built its own could carry a grant the others had already demoted.
+    /// The sandbox one call is graded against: the session's workspace, the directories it may write, the
+    /// directories it may only read, and the single files a card opened by name — all of them read from the
+    /// session's own record and put through their shape rules. One expression, because three sites build a sandbox
+    /// for a request, a diff and a grant, and a site that built its own could carry a grant the others had already
+    /// demoted.
     /// </summary>
     private static WorkspaceSandbox SandboxOf(Conversation? session, string? root, WorkspaceGuards guards)
     {
         var (write, read) = WorkspacePaths.SplitRoots(session?.GrantedRoots, session?.ReadOnlyRoots, guards);
-        return new WorkspaceSandbox(root, write, read);
+        return new WorkspaceSandbox(root, write, read)
+        {
+            Files = WorkspacePaths.NormalizeFiles(session?.GrantedFiles),
+        };
     }
     private readonly record struct ParkedCall(ChatPipeline.ToolCallInfo Call, string? Preview, bool Asks, bool Seen);
     private readonly record struct CallVerdict(ChatPipeline.ToolCallInfo Call, ToolRisk Risk, bool Asks, bool Malformed, bool Granted, bool SessionGrant, bool VerbGrant, bool Parks, bool ProtectedGrant);

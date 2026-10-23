@@ -15,6 +15,8 @@ namespace AxmolHub.Core;
 /// <param name="ApplyGrantedRoot">Persists one directory the person just approved on a <c>request_directory</c>
 /// card and answers the model. The seam exists because the tool body is in Core and cannot reach a session
 /// registry, and a check that only exercises the guard passes null.</param>
+/// <param name="ApplyGrantedFile">The same seam for a <c>request_file</c> card: one file, persisted on the session
+/// as one exact path, answered with what the model may do with that file and nothing beside it.</param>
 /// <param name="Sessions">Where the other sessions live, for the cross-session tools. Null in a scope that has no
 /// session store to read — those tools then say so instead of inventing a peer.</param>
 /// <param name="CrossSession">Live run state and the write path for another session, both of which belong to the
@@ -78,7 +80,11 @@ public sealed record WorkspaceToolScope(
     // parameter in the middle would silently shift every one of them. Only the app builds it by hand.
     Func<string, Task<string>>? ApplyGrantedRoot = null,
     Func<int, string, string>? UpdatePlanTask = null,
-    DeepSeekWebApiBridge? DeepSeekWeb = null)
+    DeepSeekWebApiBridge? DeepSeekWeb = null,
+    // The second door onto a grant, and the narrower one: one file rather than one place. Its own seam because a
+    // session keeps the two apart — a file grant has no folder behind it — and because the answer the model reads
+    // has to say exactly that.
+    Func<string, Task<string>>? ApplyGrantedFile = null)
 {
     internal ComputerUseBridge? ComputerUse { get; init; }
     /// <summary>A scope with nothing in it. Every file and command tool answers
@@ -175,12 +181,13 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     public const int MaxListedEntries = 300;
     public const int MaxFoundFiles = 500;
 
-    [Description("Read a text file from the session workspace, or from a directory the user granted this session. "
+    [Description("Read a text file from the session workspace, or from a directory the user granted this session, "
+                 + "or one single file the user granted with request_file. "
                  + "Lines come back without numbering so they can be copied verbatim into file_write.")]
     public string ReadFile(
         [Description("Path relative to the session workspace, for example src/main.cpp, or an absolute path inside "
-                     + "a directory the user granted this session. A relative path must not contain '..', a drive "
-                     + "letter or a leading separator.")]
+                     + "a directory or to a single file the user granted this session. A relative path must not "
+                     + "contain '..', a drive letter or a leading separator.")]
         string path,
         [Description("First line to return, counting from 1.")] int offset = 1,
         [Description("How many lines to return at most, up to 2000.")] int limit = DefaultReadLimit)
@@ -221,12 +228,14 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         return builder.ToString();
     }
 
-    [Description("Edit or create one text file in the session workspace, or in a directory the user granted this "
-                 + "session, by replacing an exact string. The file is left untouched unless old_string matches, so "
-                 + "a wrong anchor is a refusal rather than damage.")]
+    [Description("Edit or create one text file in the session workspace, in a directory the user granted this "
+                 + "session, or in a single file granted with request_file — by replacing an exact string. The file "
+                 + "is left untouched unless old_string matches, so a wrong anchor is a refusal rather than damage.")]
     public string FileWrite(
         [Description("Path relative to the session workspace, or an absolute path inside a directory the user "
-                     + "granted this session.")]
+                     + "granted this session, or to a single file granted with request_file (such a file is "
+                     + "read-only when it sits in a protected location or is not a text file type the assistant may "
+                     + "write, and this call then refuses it).")]
         string path,
         [Description("The exact text to replace, copied verbatim from read_file including indentation and line "
                      + "breaks. Leave empty only to create a file that does not exist yet.")]
@@ -683,6 +692,62 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                 // SessionGone, which only the workspace menu's own row can see — a card is always answered inside a
                 // session that exists. The sentence is the one ApplyGrantedRoot already answers when the record
                 // fails, so the two doors describe a vanished session the same way.
+                return "Refused: the session is gone, so nothing could be granted. Do not retry this call.";
+        }
+    }
+
+    [Description("Ask the user to grant this session access to one single file outside the workspace: a log a "
+                 + "diagnosis needs, a config in another checkout — the file the task or the user's own words "
+                 + "named. One approval card opens that one file for the rest of this session, by absolute path in "
+                 + "read_file and file_write; its folder is not part of it, so listing, searching and a command's "
+                 + "cwd still cannot reach it. A file inside a protected location (Hub's data directory, an engine "
+                 + "installation, a .git) or outside the write allowlist is granted for reading only, and the card "
+                 + "says so. Never ask the user for permission in prose first: calling this tool *is* the request, "
+                 + "and the card it shows *is* the approval, so a sentence that waits for the user to authorize you "
+                 + "in words parks the task forever. If the user's own words already named the file, call this tool "
+                 + "now, once, and let the card decide, and never guess a path. When the task needs more than one "
+                 + "file in a folder, ask for the folder with request_directory instead.")]
+    public async Task<string> RequestFile(
+        [Description("Absolute path of the single file to grant, for example D:\\dev\\other-project\\notes.md")]
+        string path)
+    {
+        var (verdict, full, detail) = WorkspacePaths.ClassifyFileGrant(context.Sandbox, context.Guards, path);
+        switch (verdict)
+        {
+            case GrantVerdict.Granted or GrantVerdict.GrantedReadOnly:
+                return context.ApplyGrantedFile is { } apply
+                    ? await apply(full).ConfigureAwait(false)
+                    : WorkspacePaths.FileGrantedResultFor(full, verdict == GrantVerdict.GrantedReadOnly);
+            case GrantVerdict.NoPath:
+                return "Refused: request_file needs the absolute path of one file. Do not retry it empty.";
+            case GrantVerdict.NotAbsolute:
+                return $"Refused: '{path}' is not an absolute path. Ask the user for the file's full path. Do not "
+                       + "retry a relative one.";
+            case GrantVerdict.Unusable:
+                return $"Refused: '{path}' is not a usable path ({detail}). Do not retry it.";
+            case GrantVerdict.IsDirectory:
+                return $"Refused: '{full}' is a directory, and request_file opens one file rather than the folder "
+                       + "around it. If the task needs more than that one file, ask for the directory with "
+                       + "request_directory; do not retry this path with request_file.";
+            case GrantVerdict.Missing:
+                return $"Refused: '{full}' does not exist and neither does its folder. Ask the user to confirm the "
+                       + "path; do not guess another one.";
+            case GrantVerdict.NotWritableText:
+                return $"Refused: '{full}' does not exist and the assistant could never write it — the name is "
+                       + "outside the text allowlist, or the place is protected — so this card would open nothing. "
+                       + "Ask the user to create the file, then ask again with the same path; do not retry another "
+                       + "name.";
+            case GrantVerdict.InsideWorkspace:
+                return $"'{full}' is inside the session workspace, so a relative path already reaches it. Use one "
+                       + "like src/main.cpp; do not retry this call.";
+            case GrantVerdict.AlreadyGranted:
+                return $"'{full}' is already granted to this session. Name it by absolute path in read_file or "
+                       + "file_write; do not ask again.";
+            case GrantVerdict.InsideGrant:
+                return $"'{full}' is already inside '{detail}', which this session holds. Work there with absolute "
+                       + "paths; do not ask again.";
+            default:
+                // SessionGone, which only the person's own door can see.
                 return "Refused: the session is gone, so nothing could be granted. Do not retry this call.";
         }
     }

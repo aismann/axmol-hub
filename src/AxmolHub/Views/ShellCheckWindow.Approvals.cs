@@ -495,23 +495,25 @@ internal sealed class ShellApprovalsChecks
                 new WorkspaceToolScope(null, new WorkspaceGuards(null, []), null, "schema", [], null, null)));
             var schema = string.Join("\n", agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
                 .Select(tool => tool.JsonSchema.GetRawText()));
-            // Twenty-two rather than twenty since the search name is declared with a refusing body when it is not
-            // offered: the transcript keeps an earlier call's name in front of the model either way, and a name the
-            // request does not declare is the one the invoking client will not run.
-            Check(agentTools.Count == 22
-                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Select(tool => tool.Name)
-                      .All(name => name.Contains('_', StringComparison.Ordinal))
+            // What this line guards is "no name is declared twice" — the incident was 22 entries for 21 names, and
+            // whichever declaration the bridge happened to resolve answered the call. It is not a quota: a count
+            // has to be edited with every new tool, and an edited number hides the very duplicate it was there for.
+            // The presence checks below keep the survey of what a model is offered, without pricing the next tool.
+            var agentToolNames = agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
+                .Select(tool => tool.Name).ToArray();
+            Check(agentToolNames.Distinct(StringComparer.Ordinal).Count() == agentToolNames.Length
+                  && agentToolNames.All(name => name.Contains('_', StringComparison.Ordinal))
                   && schema.Contains("old_string") && schema.Contains("new_string")
                   && schema.Contains("replace_all") && schema.Contains("timeout_seconds")
                   && schema.Contains("ignore_case") && schema.Contains("max_matches")
                   && schema.Contains("fullscreen") && schema.Contains("inherit_workspace")
-                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "capture_screen")
-                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "computer_use")
-                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "spawn_session")
-                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>().Any(tool => tool.Name == "web_search")
+                  && agentToolNames.Contains("capture_screen", StringComparer.Ordinal)
+                  && agentToolNames.Contains("computer_use", StringComparer.Ordinal)
+                  && agentToolNames.Contains("spawn_session", StringComparer.Ordinal)
+                  && agentToolNames.Contains("web_search", StringComparer.Ordinal)
                   && !schema.Contains("oldString") && !schema.Contains("ignoreCase"),
-                "Agent 档注册二十二个工具（包含 computer_use）、名字都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
-                + agentTools.Count + " 个）");
+                "Agent 档的工具名互不重复、都是 snake_case，参数在线上也是模型发出的那个形状（实际 "
+                + agentToolNames.Length + " 个）");
             var computerGrantRoundTrip = new Conversation();
             ComputerUseGrants.Add(computerGrantRoundTrip.AllowedComputerApps, "Editor App");
             var grantSessionCopy = System.Text.Json.JsonSerializer.Deserialize<Conversation>(
@@ -525,13 +527,13 @@ internal sealed class ShellApprovalsChecks
                 "对话级与应用级 Computer Use 授权都能往返保存到 JSON 状态");
 
             // The capability this build took away, pinned where the list itself is: the model may ask for a directory
-            // the task or the user named, and has no way at all to move the session's own root — a name that is gone
-            // from ChatTools' table but still registered (or the reverse) is exactly the drift a count cannot see.
-            Check(agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
-                      .All(tool => tool.Name != "set_workspace")
-                  && agentTools.OfType<Microsoft.Extensions.AI.AIFunction>()
-                      .Any(tool => tool.Name == "request_directory"),
-                "模型拿到的工具表里没有 set_workspace——决定工作目录的能力只在人手里——而 request_directory 还在");
+            // or one file the task or the user named, and has no way at all to move the session's own root — a name
+            // that is gone from ChatTools' table but still registered (or the reverse) is exactly the drift a count
+            // cannot see.
+            Check(!agentToolNames.Contains("set_workspace", StringComparer.Ordinal)
+                  && agentToolNames.Contains("request_directory", StringComparer.Ordinal)
+                  && agentToolNames.Contains("request_file", StringComparer.Ordinal),
+                "模型拿到的工具表里没有 set_workspace——决定工作目录的能力只在人手里——而 request_directory 与 request_file 都还在");
 
             // ask_user's own schema cell, kept out of the line above for the reason that line already gives: a
             // count assertion is the one every new tool trips, and a missing keyword hides behind the number that

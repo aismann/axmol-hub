@@ -757,6 +757,9 @@ public partial class ChatPanel : UserControl
         // would promise writing the file tools refuse.
         var granted = _chat.ActiveGrantedRoots;
         var readOnly = _chat.ActiveReadOnlyRoots;
+        // And the single files, which are their own line because their grant is one path wide: a tooltip that folded
+        // them in with the directories would read as "listing and searching work there", which those cards never gave.
+        var grantedFiles = _chat.ActiveGrantedFiles;
         WorkspaceChipLabel.Text = root is { Length: > 0 } ? FolderNameOf(root) : HubStrings.Get("ChatWorkspaceNone");
         var hint = root is { Length: > 0 }
             ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
@@ -771,7 +774,12 @@ public partial class ChatPanel : UserControl
             + (readOnly.Count == 0
                 ? ""
                 : string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("ChatWorkspaceReadOnlyHintFormat"), readOnly.Count, string.Join(" · ", readOnly))));
+                    HubStrings.Get("ChatWorkspaceReadOnlyHintFormat"), readOnly.Count, string.Join(" · ", readOnly)))
+            + (grantedFiles.Count == 0
+                ? ""
+                : string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("ChatWorkspaceGrantedFilesHintFormat"), grantedFiles.Count,
+                    string.Join(" · ", grantedFiles.Select(FileGrantLabel)))));
         // And it is on screen whenever a session is. The directory is what a session works in, and both things the
         // chip carries are needed for as long as the session lasts: reading out which folder the tools are confined
         // to, and taking back a granted directory. Picking another one is the person's own move at any point —
@@ -782,6 +790,12 @@ public partial class ChatPanel : UserControl
     private static string FolderNameOf(string path)
         => System.IO.Path.GetFileName(path.TrimEnd(
             System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar));
+
+    /// <summary>One granted file as the chip reads it out: its full path, and the read-only marker when the guard
+    /// says the grant is a reading — the same derivation the tools ask at every resolution, so the tooltip cannot
+    /// promise a write the next call refuses.</summary>
+    private static string FileGrantLabel((string Path, bool ReadOnly) file)
+        => file.Path + (file.ReadOnly ? HubStrings.Get("ChatWorkspaceFileReadOnlySuffix") : "");
 
     private void UpdateContextRing()
     {
@@ -1196,6 +1210,41 @@ public partial class ChatPanel : UserControl
             // and "revoke access to logs, read-only" are answers to two different questions — and the row is still
             // the only way to take either back.
             AddRevokeRows(readOnly, readOnly: true);
+        }
+
+        // The single files: another heading, because the row here takes back one path and not a folder. Nothing
+        // else on the menu can name such a grant, so without these the assistant holds a permission the person
+        // can see in the tooltip and never take back.
+        var files = _chat.ActiveGrantedFiles;
+        if (files.Count > 0)
+        {
+            menu.Items.Add(new MenuItem
+            {
+                Header = HubStrings.Get("ChatWorkspaceGrantedFilesMenu"),
+                IsEnabled = false,
+            });
+            foreach (var file in files)
+            {
+                var target = file.Path;
+                var revokeFile = new MenuItem
+                {
+                    Header = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                        HubStrings.Get(file.ReadOnly
+                            ? "ChatWorkspaceFileRevokeReadOnlyFormat"
+                            : "ChatWorkspaceFileRevokeFormat"),
+                        System.IO.Path.GetFileName(target)),
+                    Tag = target,
+                };
+                ToolTip.SetTip(revokeFile, target);
+                revokeFile.Click += (_, _) =>
+                {
+                    menu.Hide();
+                    if (_chat.ActiveConversation is not { } session) return;
+                    if (_chat.RevokeGrantedFile(session.Id, target))
+                        AppendNotice(HubStrings.Get("ChatWorkspaceFileRevoked"), danger: false);
+                };
+                menu.Items.Add(revokeFile);
+            }
         }
 
         return menu;

@@ -227,6 +227,60 @@ internal sealed partial class ChatSessionCoordinator
     internal IReadOnlyList<string> ActiveReadOnlyRoots
         => _active is { } session ? (_sessions.Peek(session.Id) ?? session).ReadOnlyRoots : [];
 
+    /// <summary>
+    /// The same record for a card on one file: one exact path on the session, and the answer the model reads says
+    /// what it may do with that file and what the grant does not cover. The permission is asked here rather than
+    /// stored, for the reason <see cref="WorkspacePaths.FileGrantIsReadOnly"/> gives — the audit line and the answer
+    /// agree with every later resolution because they all ask the guard.
+    /// </summary>
+    internal async Task<string> ApplyGrantedFileAsync(string conversationId, string path)
+    {
+        var guards = new WorkspaceGuards(_dataRoot, Execution.EngineRootsProvider?.Invoke() ?? []);
+        var readOnly = WorkspacePaths.FileGrantIsReadOnly(path, guards);
+        var added = false;
+        await Execution.ApplyOnUiAsync(() =>
+        {
+            added = _sessions.TryUpdate(conversationId, opened =>
+            {
+                // Through the shape rules: one exact path, deduped, bounded, and never a directory.
+                opened.GrantedFiles = WorkspacePaths.NormalizeFiles([.. opened.GrantedFiles, path]);
+            });
+            if (added) Execution.Changed?.Invoke();
+        }).ConfigureAwait(false);
+
+        if (!added)
+            return $"Refused: session {conversationId} is gone, so nothing could be granted. Do not retry this call.";
+        Execution.Audit(conversationId, $"Granted file{(readOnly ? " (read-only)" : "")}: {path}");
+        return WorkspacePaths.FileGrantedResultFor(path, readOnly);
+    }
+
+    internal IReadOnlyList<(string Path, bool ReadOnly)> ActiveGrantedFiles
+        => _active is { } session
+           && (_sessions.Peek(session.Id) ?? session).GrantedFiles is { Count: > 0 } files
+            ? WorkspacePaths.FileGrants(files,
+                new WorkspaceGuards(_dataRoot, Execution.EngineRootsProvider?.Invoke() ?? []))
+            : [];
+
+    internal bool RevokeGrantedFile(string conversationId, string path)
+    {
+        if (WorkspacePaths.CanonicalRoot(path) is not { } key) return false;
+        var revoked = false;
+        _sessions.TryUpdate(conversationId, opened =>
+        {
+            var kept = opened.GrantedFiles
+                .Where(file => !string.Equals(WorkspacePaths.CanonicalRoot(file), key, StringComparison.Ordinal))
+                .ToList();
+            if (kept.Count == opened.GrantedFiles.Count) return;
+            opened.GrantedFiles = kept;
+            revoked = true;
+        });
+        if (!revoked) return false;
+
+        Execution.Audit(conversationId, $"Revoked file: {path}");
+        Execution.Changed?.Invoke();
+        return true;
+    }
+
     internal bool RevokeGrantedRoot(string conversationId, string path)
     {
         if (WorkspacePaths.CanonicalRoot(path) is not { } key) return false;
@@ -649,9 +703,11 @@ internal sealed partial class ChatSessionCoordinator
             WorkspaceRoot = source.WorkspaceRoot,
             // And the directories granted to it, for the same reason: a fork that kept the workspace but dropped
             // the grant would be a copy of the task that has to ask the same question again, and the copy is the
-            // one the person already answered.
+            // one the person already answered. The single files travel with them — one file is a grant like any
+            // other, and the folder a fork works in has nothing to do with which files were opened by name.
             GrantedRoots = [.. source.GrantedRoots],
             ReadOnlyRoots = [.. source.ReadOnlyRoots],
+            GrantedFiles = [.. source.GrantedFiles],
             Messages = prefix,
             ChangeHistoryIds = [.. source.ChangeHistoryIds
                 .Concat(prefix.SelectMany(turn => new[] { turn.ChangeId, turn.UndoRevisionId }))

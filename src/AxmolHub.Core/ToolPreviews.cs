@@ -23,6 +23,7 @@ public static class ToolPreviews
             ToolNames.FileWrite => WritePreview(arguments, scope),
             ToolNames.RunCommand => CommandPreview(arguments, scope),
             ToolNames.RequestDirectory => GrantPreview(Text(arguments, "path"), scope, projectPaths),
+            ToolNames.RequestFile => FileGrantPreview(Text(arguments, "path"), scope),
             ToolNames.CaptureScreen => CapturePreview(arguments, scope),
             ToolNames.WebFetch => FetchPreview(arguments, scope),
             ToolNames.SendToSession => SendPreview(arguments),
@@ -155,15 +156,60 @@ public static class ToolPreviews
             == WorkspaceTarget.RegisteredProject) facts.Add("registered Hub project");
         // Named rather than flagged: the person deciding is agreeing to one of three very different places, and
         // what is in the data directory is the part they cannot see from the path.
-        if (protectedLocation is { } location)
-            facts.Add(location.Kind switch
-            {
-                ProtectedKind.DataRoot => "protected location — Hub's own data: every session's transcript, the "
-                                          + "settings and the logs",
-                ProtectedKind.Engine => "protected location — an engine installation",
-                _ => "protected location — a .git directory: its hooks and history",
-            });
+        if (protectedLocation is { } location) facts.Add(ProtectedFact(location));
         return facts;
+    }
+
+    /// <summary>
+    /// The one sentence for "which of the three places this is", shared by both grant cards. A directory and a file
+    /// inside the data directory are the same fact about the place, and two spellings of it would eventually stop
+    /// agreeing about what a person is agreeing to.
+    /// </summary>
+    private static string ProtectedFact((ProtectedKind Kind, string Anchor) location) => location.Kind switch
+    {
+        ProtectedKind.DataRoot => "protected location — Hub's own data: every session's transcript, the settings "
+                                  + "and the logs",
+        ProtectedKind.Engine => "protected location — an engine installation",
+        _ => "protected location — a .git directory: its hooks and history",
+    };
+
+    /// <summary>
+    /// What a card on one <b>file</b> is asking for. Narrower than a directory card in the one way that has to be
+    /// visible before the yes: the file is what is being opened, and the folder around it is not. So the facts say
+    /// whether it is there, which of the three protected places it sits in when it sits in one, and the tier — and
+    /// the tier is read from <see cref="WorkspacePaths.FileGrantIsReadOnly"/>, the same function every resolution
+    /// asks, never from a second opinion held here.
+    /// </summary>
+    private static string FileGrantPreview(string path, WorkspaceToolScope scope)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "request_file · (no path given)";
+
+        string? full = null;
+        if (Path.IsPathRooted(path))
+        {
+            try
+            {
+                full = Path.GetFullPath(path.Trim());
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException
+                                           or System.Security.SecurityException)
+            {
+                full = null;
+            }
+        }
+
+        if (full is null) return $"request_file · {path}\nnot an absolute path — a card needs the file's full path";
+
+        var facts = new List<string> { File.Exists(full) ? "exists" : "does not exist yet" };
+        if (WorkspacePaths.ProtectedLocationOf(full, scope.Guards) is { } location) facts.Add(ProtectedFact(location));
+        else if (!WorkspacePaths.IsWritableText(Path.GetFileName(full)))
+            facts.Add("its extension is outside the write allowlist");
+        if (WorkspacePaths.ClassifyFileGrant(scope.Sandbox, scope.Guards, full).Verdict
+            is GrantVerdict.AlreadyGranted or GrantVerdict.InsideGrant)
+            facts.Add("already reachable by this session");
+        facts.Add(WorkspacePaths.FileGrantIsReadOnly(full, scope.Guards) ? "read only" : "read and write");
+        facts.Add("this session only · the folder around it is not opened");
+        return $"request_file · {path}\n{string.Join(" · ", facts)}";
     }
 
     /// <summary>Who is being written to, and whether that session is being started up to answer: a person
