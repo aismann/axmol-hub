@@ -2067,10 +2067,9 @@ public partial class SettingsPage : UserControl
         heading.Children.Add(actions);
         section.Children.Add(heading);
 
-        // The add/edit-model draft is always the first row of ITS provider's list — the flags are page-wide,
-        // so without the id gate every group would render a copy of the same draft. _modelDraftProviderId is
-        // the id that answers "whose model draft is this"; it is not _editingProviderId, which is the id of
-        // the provider whose own edit form is open.
+        // The model draft belongs only to its provider — without the id gate every group would render a copy.
+        // Add drafts lead the list; an edit draft replaces its model row in place. _modelDraftProviderId answers
+        // "whose model draft is this"; it is not _editingProviderId, which owns the provider edit form.
         var modelDraftOpen = _modelDraftProviderId == provider.Id
             && (_addingModel || _editingModelName is not null);
         if (provider.Models.Count == 0 && !modelDraftOpen)
@@ -2095,24 +2094,39 @@ public partial class SettingsPage : UserControl
             return section;
         }
 
-        // The add/edit-model draft is always the first row, above every configured model.
-        if (modelDraftOpen)
+        var editingModel = modelDraftOpen && _editingModelName is not null;
+        var editDraftInserted = false;
+        if (modelDraftOpen && !editingModel)
         {
             listContent.Children.Add(BuildModelDraftRow(provider));
         }
 
         foreach (var model in provider.Models)
         {
+            if (editingModel && string.Equals(model.Name, _editingModelName, StringComparison.Ordinal))
+            {
+                listContent.Children.Add(BuildModelDraftRow(provider));
+                editDraftInserted = true;
+                continue;
+            }
+
             listContent.Children.Add(BuildModelRow(provider, model));
+        }
+
+        // Keep a stale edit draft reachable if the model disappeared during a refresh; normally edits replace
+        // exactly the matching model row above.
+        if (editingModel && !editDraftInserted)
+        {
+            listContent.Children.Insert(0, BuildModelDraftRow(provider));
         }
 
         section.Children.Add(listContent);
         return section;
     }
 
-    /// <summary>The add-model draft row: an inline input with confirm/cancel, always first in the list. When a
-    /// model is being edited (context-window override), the name is pre-filled and read-only, and a second
-    /// field carries the token count.</summary>
+    /// <summary>The add/edit-model draft row. Adds appear at the start of the list; edits replace the selected
+    /// model row in place. In edit mode the name is pre-filled and read-only, and a second field carries the
+    /// context-window token count.</summary>
     private Control BuildModelDraftRow(ModelProvider provider)
     {
         var stack = new StackPanel { Spacing = 4, Tag = SectionTags.ModelDraft };
@@ -2145,28 +2159,55 @@ public partial class SettingsPage : UserControl
             tokensField = BuildField(HubStrings.Get("ModelContextEditHint"), tokens);
         }
 
-        var buttons = new StackPanel
+        // The three controls share one row edge, so they need one height: the buttons stretch to the row the
+        // input sets rather than carrying a height of their own. An explicit button height (34 was tried) plus
+        // the input's own padding left 3px of input above and below the buttons — centred, and still visibly
+        // misaligned, because the eye compares the two boxes' edges, not their middle.
+        // A Grid rather than a horizontal StackPanel: the panel's cross-axis sizing would have to be trusted to
+        // hand the buttons the row's full height, while a Grid cell gives it unconditionally.
+        var buttons = new Grid
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
+            ColumnDefinitions = new ColumnDefinitions("Auto,Auto"),
+            ColumnSpacing = 8,
+            VerticalAlignment = VerticalAlignment.Stretch,
         };
-        var cancel = new Button { Content = HubStrings.Get("Cancel"), Classes = { "quiet" } };
+        var cancel = new Button
+        {
+            Content = HubStrings.Get("Cancel"),
+            Classes = { "quiet" },
+            MinWidth = 72,
+            Padding = new Thickness(12, 0),
+            Margin = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
         cancel.Click += (_, _) => CloseDraft();
         var confirm = new Button
         {
             Content = HubStrings.Get(editing ? "Save" : "Add"),
             Classes = { "primary" },
             IsDefault = true,
+            MinWidth = 72,
+            Padding = new Thickness(12, 0),
+            Margin = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Stretch,
         };
         confirm.Click += (_, _) =>
         {
             if (editing) CommitModelEditDraft(provider, name, tokens!);
             else CommitModelDraft(provider, input);
         };
+        // Both buttons land in column 0 unless told otherwise: a Grid stacks overlapping children there, so the
+        // later-added "保存" painted straight over "取消" and the row looked as if the cancel had been deleted.
         buttons.Children.Add(cancel);
         buttons.Children.Add(confirm);
+        Grid.SetColumn(cancel, 0);
+        Grid.SetColumn(confirm, 1);
 
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        // The TextBox theme carries a 6px top margin — the gap a field wants under the label above it. This
+        // row has no label above it, so the margin only pushed the input's box 3px below the buttons' centre.
+        input.Margin = new Thickness(0);
+        buttons.Margin = new Thickness(10, 0, 0, 0);
         Grid.SetColumn(input, 0);
         Grid.SetColumn(buttons, 1);
         row.Children.Add(input);
