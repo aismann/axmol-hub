@@ -292,14 +292,18 @@
                   BorderThickness="1"
                   CornerRadius="4">
             <!-- WPF used the font glyph "✓" (a Segoe UI private-use glyph? no, an ordinary character);
-                 switching to a vector path no longer depends on any font's glyph coverage. -->
+                 switching to a vector path no longer depends on any font's glyph coverage.
+
+                 No Width or Height here: the glyph is drawn at its final size (Hub.Icon.CheckTick) and
+                 Stretch="None" keeps it that size, so the Path measures to the ink and the two
+                 alignments centre it in the box. A stretched 24-grid icon cannot be centred this way —
+                 it is pinned to its slot's top-left — see that glyph's comment. -->
             <Path Name="Tick"
-                  Width="12" Height="12"
                   HorizontalAlignment="Center" VerticalAlignment="Center"
-                  Stretch="Uniform"
+                  Stretch="None"
                   IsVisible="False"
                   Fill="{DynamicResource Hub.CheckMark}"
-                  Data="{StaticResource Hub.Icon.Tick}" />
+                  Data="{StaticResource Hub.Icon.CheckTick}" />
           </Border>
           <ContentPresenter Name="PART_ContentPresenter"
                             Content="{TemplateBinding Content}"
