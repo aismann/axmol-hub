@@ -218,8 +218,23 @@ public static class WorkspacePaths
         ".git", ".idea", ".vs", "bin", "build", "dist", "node_modules", "obj", "out",
     };
 
+    /// <summary>Plain-text files a tool leaves behind rather than a person naming them. A log is text whatever it
+    /// is called, and "0 file(s) searched" over a directory of <c>hub-*.log</c> is the wrong answer to a question
+    /// about text — that is one of the places the assistant is asked to look at. Kept apart from
+    /// <see cref="TextExtensions"/> on purpose: that list is the <i>write</i> allowlist, and widening it to read a
+    /// log would widen what the assistant may edit, which is not what a search needs.</summary>
+    private static readonly HashSet<string> DataTextExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".log", ".out", ".err", ".trace", ".csv", ".tsv", ".diff",
+    };
+
     public static bool IsTextFile(string fileName)
         => TextExtensions.Contains(Path.GetExtension(fileName)) || TextFileNames.Contains(fileName);
+
+    /// <summary>Whether a search may open this file: a source file, or one of the plain-text outputs a tool writes.
+    /// The bytes are checked before anything is scanned, so this decides cost and noise rather than safety.</summary>
+    public static bool IsSearchableText(string fileName)
+        => IsTextFile(fileName) || DataTextExtensions.Contains(Path.GetExtension(fileName));
 
     /// <summary>The write allowlist is the read allowlist: nothing outside it is ever written, so a model that
     /// wants to touch a binary or a build artifact has to ask the user instead.</summary>

@@ -778,6 +778,30 @@ internal static class AiToolsChecks
             throw new Exception($"** did not cross more than one directory:{Environment.NewLine}{markdown}");
         if (!tools.FindFiles("nothing-here-*.xyz", "probe").Contains("No file matched", StringComparison.Ordinal))
             throw new Exception("find_files found nothing and said something else.");
+        // A log is text whatever it is called. The list a search uses is its own and not the write allowlist — "0
+        // files searched" over a directory of hub-*.log was the answer to a real question about a real directory,
+        // and it is the shape of the request that produced the read-only grant in the first place.
+        File.WriteAllText(Path.Combine(probe, "hub-1.log"), "[1] probe-log-marker from the log\n");
+        File.WriteAllText(Path.Combine(probe, "hub-2.log"), "[2] nothing here\n");
+        var logs = tools.SearchText("probe-log-marker", path: "probe");
+        if (!logs.Contains("probe/hub-1.log:1:") || logs.Contains("hub-2.log:", StringComparison.Ordinal))
+            throw new Exception($"search_text did not read a .log file, or read one with no match:{Environment.NewLine}{logs}");
+        // One file as the scope: how one log is grepped, and the only way in when the file is past any budget.
+        var oneLog = tools.SearchText("probe-log-marker", path: Path.Combine(probe, "hub-1.log"));
+        if (!oneLog.Contains("probe/hub-1.log:1:") || !oneLog.Contains("in probe/hub-1.log", StringComparison.Ordinal))
+            throw new Exception($"search_text refused a single file, or searched something else:{Environment.NewLine}{oneLog}");
+        // …and the write allowlist did not move with it: reading a log is not being allowed to edit one.
+        var logWrite = tools.FileWrite(Path.Combine(probe, "hub-1.log"), "probe-log-marker", "x");
+        if (!logWrite.Contains("not a text file", StringComparison.Ordinal))
+            throw new Exception($"A .log became writable when the search learned to read it:{Environment.NewLine}{logWrite}");
+        // A file past the per-file cap is named rather than skipped in silence: an answer that quietly ignored the
+        // sixteen-megabyte log is an answer whose "no match" the model cannot act on.
+        File.WriteAllText(Path.Combine(probe, "huge.log"),
+            new string('y', (int)WorkspaceTools.MaxSearchFileBytes + 16));
+        var skippedBig = tools.SearchText("probe-log-marker", path: "probe");
+        if (!skippedBig.Contains("bigger than 8 MiB", StringComparison.Ordinal)
+            || !skippedBig.Contains("probe/hub-1.log:1:", StringComparison.Ordinal))
+            throw new Exception($"A file past the per-file cap was skipped in silence:{Environment.NewLine}{skippedBig}");
         Console.WriteLine("PASS: search_text, list_directory and find_files look around without a shell and refuse in sentences.");
         // ── workspace_map: what a directory IS, before anything is read out of it ──
         // The tools above answer questions about contents. None of them answers "what is this tree", and a model that

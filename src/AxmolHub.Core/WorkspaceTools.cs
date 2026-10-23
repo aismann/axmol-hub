@@ -161,8 +161,14 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     /// <summary>One minified bundle line can be a megabyte. Kept short so a single hit cannot eat the result.</summary>
     public const int MaxSearchLineCharacters = 200;
 
-    /// <summary>Bigger than this is generated or vendored, not where a source question lives.</summary>
-    public const long MaxSearchFileBytes = 1024 * 1024;
+    /// <summary>One file a search will open. Bigger than this is a vendored bundle rather than a source file or a
+    /// log — but a log is allowed to be big, which is why this is megabytes and not a hundred kilobytes.</summary>
+    public const long MaxSearchFileBytes = 8 * 1024 * 1024;
+
+    /// <summary>How many bytes one call may open in total. The file count bounds the walking, not the reading: eight
+    /// logs of eight megabytes are a minute of scanning, and one call has no business spending it. A budget says
+    /// "this answer was cut" rather than leaving a short result to be read as "there is nothing there".</summary>
+    public const long MaxSearchBytes = 64 * 1024 * 1024;
 
     public const int DefaultListDepth = 1;
     public const int MaxListDepth = 4;
@@ -1215,22 +1221,35 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
 
     [Description("Find text inside the session workspace, or inside a directory the user granted this session, "
                  + "with a regular expression and get back path:line: content, ready to open with read_file at that "
-                 + "offset. This is how to look around a project without running a shell command.")]
+                 + "offset. This is how to look around a project without running a shell command, and it reads a "
+                 + "single file too when the question is about one log.")]
     public string SearchText(
         [Description("Regular expression matched per line. Characters that are not operators must be escaped.")]
         string pattern,
         [Description("Only search files this glob names: \"*.cpp\" matches that name at any depth, \"include/*.h\" "
                      + "matches one directory deep. Patterns are matched inside 'path', not from the workspace root. "
-                     + "Empty searches every text file.")]
+                     + "Empty searches every text file, and it is ignored when 'path' names one file.")]
         string glob = "",
         [Description("Directory to search: relative to the workspace, or an absolute path inside a directory the "
-                     + "user granted this session. Empty or \".\" means the whole workspace.")]
+                     + "user granted this session. One file instead of a directory searches just that file. Empty or "
+                     + "\".\" means the whole workspace.")]
         string path = "",
         [Description("Match letters of either case.")] bool ignore_case = false,
         [Description("Stop after this many matches, up to 500.")] int max_matches = DefaultSearchMatches)
     {
         var directory = WorkspacePaths.ResolveDirectory(context.Sandbox, path, context.Guards);
-        if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Display, path);
+        // A file where a directory was expected is how one log is searched: the model was pointed at that file, and
+        // answering "not a directory" would send it back to reading windows by hand. One file is resolved by the
+        // read verb, so the sandbox decides it either way — and only that verdict may open the branch, because a
+        // defaulted WorkspacePath is Allowed and would read the workspace as if it were a file.
+        var single = directory.IsAllowed
+            ? null
+            : WorkspacePaths.ResolveRead(context.Sandbox, path, context.Guards) is { IsAllowed: true } read
+                ? read
+                : (WorkspacePath?)null;
+        if (!directory.IsAllowed && single is null) return Refusal(directory.Verdict, directory.Display, path);
+        var oneFile = single is not null;
+        var named = single ?? default;
         if (string.IsNullOrWhiteSpace(pattern))
             return "Refused: search_text needs a pattern. Say what to look for, or call list_directory to see the "
                    + "shape of the project. Do not retry it empty.";
@@ -1255,23 +1274,45 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var matched = new HashSet<string>(StringComparer.Ordinal);
         var searched = 0;
         var walked = 0;
-        var unreadable = 0;
+        var tooLarge = 0;
+        var notText = 0;
+        long scanned = 0;
+        var budgetHit = false;
 
-        foreach (var file in WalkFiles(directory.Full, MaxScannedFiles))
+        IEnumerable<string> candidates = oneFile ? [named.Full] : WalkFiles(directory.Full, MaxScannedFiles);
+        foreach (var file in candidates)
         {
             walked++;
             // The glob filters inside the directory that was asked for; the path printed is the one read_file
-            // takes, which is the workspace-relative one. Those differ as soon as path is not the root.
-            var within = RelativeOf(directory.Full, file);
-            if (!wants(within) || !WorkspacePaths.IsTextFile(Path.GetFileName(file))) continue;
+            // takes, which is the workspace-relative one. Those differ as soon as path is not the root. Naming one
+            // file is already the filter, so a glob beside it is ignored rather than answering "no match" about the
+            // file the caller named.
+            var within = oneFile ? Path.GetFileName(file) : RelativeOf(directory.Full, file);
+            if (!oneFile && !wants(within)) continue;
+            // A log is text whatever it is called — that list is the search's own, and not the write allowlist.
+            if (!WorkspacePaths.IsSearchableText(Path.GetFileName(file))) continue;
             searched++;
-            if (new FileInfo(file).Length > MaxSearchFileBytes || ReadAll(file) is not { } text)
+            var length = new FileInfo(file).Length;
+            if (length > MaxSearchFileBytes)
             {
-                unreadable++;
+                tooLarge++;
                 continue;
             }
 
-            var shown = WorkspaceRelativeOf(directory, file);
+            if (scanned + length > MaxSearchBytes)
+            {
+                budgetHit = true;
+                break;
+            }
+
+            scanned += length;
+            if (ReadAll(file) is not { } text)
+            {
+                notText++;
+                continue;
+            }
+
+            var shown = oneFile ? named.Display : WorkspaceRelativeOf(directory, file);
             var lines = SplitLines(text);
             for (var line = 0; line < lines.Count; line++)
             {
@@ -1284,22 +1325,30 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             if (hits.Count >= cap) break;
         }
 
-        var scope = $"{(string.IsNullOrWhiteSpace(glob) ? "any text file" : $"files matching {glob}")}"
-                    + $" under {LabelOf(directory)}";
+        // What was left out, said once: a search that silently skipped a sixteen-megabyte log is a search whose
+        // "no match" the model has to distrust.
+        var notes = new StringBuilder();
+        if (tooLarge > 0)
+            notes.Append($" {tooLarge} file(s) were bigger than {MaxSearchFileBytes / 1024 / 1024} MiB and were skipped.");
+        if (notText > 0) notes.Append($" {notText} file(s) were not UTF-8 text.");
+        if (budgetHit)
+            notes.Append($" The scan stopped at its {MaxSearchBytes / 1024 / 1024} MiB budget, so a match further on "
+                         + "was not seen — narrow path or glob.");
+        else if (walked >= MaxScannedFiles)
+            notes.Append($" The walk hit its {MaxScannedFiles}-file limit, so a deeper directory may hold more.");
+
+        var scope = $"{(string.IsNullOrWhiteSpace(glob) || oneFile ? "any text file" : $"files matching {glob}")}"
+                    + (oneFile ? $" in {named.Display}" : $" under {LabelOf(directory)}");
         if (hits.Count == 0)
             return $"search_text · {pattern} · {scope}\nNo match in the {searched} file(s) searched."
-                   + (unreadable > 0 ? $" {unreadable} file(s) were too large or not UTF-8 text." : "")
-                   + (walked >= MaxScannedFiles ? $" The walk stopped at {MaxScannedFiles} files." : "")
-                   + " Try a shorter pattern, or widen path. Do not retry this one unchanged.";
+                   + notes + " Try a shorter pattern, or widen path. Do not retry this one unchanged.";
 
         var builder = new StringBuilder($"search_text · {pattern} · {scope}\n")
             .AppendJoin('\n', hits)
             .Append($"\n{hits.Count} match(es) in {matched.Count} file(s) of the {searched} searched.");
-        if (unreadable > 0) builder.Append($" {unreadable} file(s) were skipped as too large or not UTF-8 text.");
         if (hits.Count >= cap)
             builder.Append($" The answer was cut at {cap} matches — narrow with glob or path, do not ask again the same way.");
-        else if (walked >= MaxScannedFiles)
-            builder.Append($" The walk hit its {MaxScannedFiles}-file limit, so a deeper directory may hold more.");
+        builder.Append(notes);
         return builder.ToString();
     }
 
