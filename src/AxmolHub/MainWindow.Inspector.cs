@@ -23,6 +23,7 @@ public partial class MainWindow
     /// what keeps the chat column from being squeezed past its own floor on a narrow window.</summary>
     private const double InspectorMin = 300;
     private const double InspectorMax = 520;
+    private const double InspectorCollapseThreshold = 200;
     private const double InspectorDefault = 360;
 
     /// <summary>Which tab and which plan the column is currently holding. Remembered rather than re-asked, so a
@@ -329,6 +330,13 @@ public partial class MainWindow
         if (!_inspectorGrabbing) return;
         // The grip is on the right, so dragging left grows the pane: the delta is inverted against the sidebar's.
         var width = _inspectorGrabStartWidth - (e.GetPosition(this).X - _inspectorGrabStartX);
+        if (width < InspectorCollapseThreshold)
+        {
+            _inspectorGrabbing = false;
+            e.Pointer.Capture(null);
+            CloseInspector();
+            return;
+        }
         Inspector.Width = InspectorClamp(width);
     }
 

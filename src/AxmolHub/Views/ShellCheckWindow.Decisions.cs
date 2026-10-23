@@ -921,6 +921,23 @@ internal sealed class ShellDecisionsChecks
               && shell.InspectorWidthForCheck is >= 300 and <= 520,
             "打开审阅面板：它是聊天右边真实的一列，宽度落在可读区间里（实际 "
             + shell.InspectorWidthForCheck + "）");
+        shell.SetInspectorWidthForCheck(360);
+        shell.DragInspectorForCheck(-120);
+        Check(shell.InspectorVisibleForCheck && shell.InspectorWidthForCheck == 480
+              && shell.InspectorPreferenceWidthForCheck == 480,
+            "向左拖动右栏手柄正常放宽，并保存宽度（实际 " + shell.InspectorWidthForCheck + "）");
+        shell.OpenInspector("changes", -1);
+        shell.DragInspectorForCheck(281);
+        Check(!shell.InspectorVisibleForCheck && !shell.InspectorGripVisibleForCheck
+              && !shell.InspectorPreferenceOpenForCheck
+              && shell.InspectorPreferenceWidthForCheck == 480,
+            "继续向右拖过收起阈值：右栏关闭、宽度偏好仍保留（实际 "
+            + shell.InspectorWidthForCheck + "）");
+        shell.ClickInspectorToggleForCheck();
+        Check(shell.InspectorVisibleForCheck && shell.InspectorWidthForCheck == 480
+              && shell.InspectorTabForCheck == "changes",
+            "标题栏重新打开右栏时恢复原宽度和当前页签（宽度 "
+            + shell.InspectorWidthForCheck + "，页签「" + shell.InspectorTabForCheck + "」）");
         shell.NavigateTo("Projects");
         Check(!shell.InspectorVisibleForCheck, "离开助手页，审阅面板跟着收起：它是助手的，不是每页的");
         shell.NavigateTo("Assistant");

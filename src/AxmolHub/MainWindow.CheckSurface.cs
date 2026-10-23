@@ -475,6 +475,8 @@ public partial class MainWindow
     private Rect InWindow(Visual target) => target.TranslatePoint(new Point(0, 0), this)is { } origin ? new Rect(origin, target.Bounds.Size) : default;
     internal bool InspectorVisibleForCheck => InspectorColumn.IsVisible;
     internal double InspectorWidthForCheck => Inspector.Width;
+    internal double InspectorPreferenceWidthForCheck => _preferences.InspectorWidth;
+    internal bool InspectorPreferenceOpenForCheck => _preferences.InspectorOpen;
     /// <summary>The title bar's drawer button, as a check drives and reads it. Its tooltip is asserted rather than
     /// assumed because the button carries no text of its own: if that one string is not wired, the control has no
     /// name anywhere on the screen.</summary>
@@ -516,6 +518,26 @@ public partial class MainWindow
     /// <summary>Writes the width the grip writes, so a check can start from a width that is not the default and
     /// tell "the column kept what you dragged it to" from "both numbers happen to be 360".</summary>
     internal void SetInspectorWidthForCheck(double width) => Inspector.Width = InspectorClamp(width);
+    /// <summary>Drives the inspector's real grip handlers with a synthetic horizontal drag for the shell check.</summary>
+    internal void DragInspectorForCheck(double horizontalDelta)
+    {
+        var pointer = new Pointer(0, PointerType.Mouse, isPrimary: true);
+        var origin = new Point(100, 100);
+        InspectorResizeGrip.RaiseEvent(new PointerPressedEventArgs(
+            InspectorResizeGrip, pointer, this, origin, 0,
+            new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed),
+            KeyModifiers.None, 1));
+        InspectorResizeGrip.RaiseEvent(new PointerEventArgs(
+            InputElement.PointerMovedEvent, InspectorResizeGrip, pointer, this,
+            origin + new Vector(horizontalDelta, 0), 0,
+            new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other),
+            KeyModifiers.None));
+        if (_inspectorGrabbing)
+            InspectorResizeGrip.RaiseEvent(new PointerReleasedEventArgs(
+                InspectorResizeGrip, pointer, this, origin + new Vector(horizontalDelta, 0), 0,
+                new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased),
+                KeyModifiers.None, MouseButton.Left));
+    }
     /// <summary>The pane itself, so a check can press the header's own arrow rather than the method behind it.</summary>
     internal InspectorPanel? InspectorPaneForCheck => InspectorPane as InspectorPanel;
     /// <summary>Which tab the <em>shell</em> last asked for. The pane's own visibility cannot tell the two routes
