@@ -195,6 +195,9 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     public string? CommitSummary { get; init; }
     public bool CommitSummaryFallback { get; init; }
 
+    /// <summary>Hub handed an explicit Git action to the normal Agent path. Its reply cannot re-enter local Git handling.</summary>
+    public bool IsGitOperationFallback { get; init; }
+
     /// <summary>Whether this user message was explicitly sent as a task goal. It is display metadata only: the
     /// message remains ordinary user text on the model wire, while the transcript can keep its goal card attached
     /// to this exact message after the composer selection has been consumed.</summary>

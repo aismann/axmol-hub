@@ -5,9 +5,11 @@ namespace AxmolHub;
 internal sealed class ShellCheckSuite
 {
     private readonly Action<bool, string> Check;
+    private readonly CheckReport _report;
     internal ShellCheckSuite(CheckReport report, Action<bool, string> check, ShellCheckFixture fixture)
     {
         Check = check;
+        _report = report;
         var shell = new ShellLayoutChecks(report, check, fixture);
         var providers = new ShellProvidersChecks(report, check, fixture);
         var assistant = new ShellAssistantChecks(report, check, fixture);
@@ -77,6 +79,12 @@ internal sealed class ShellCheckSuite
 
     internal async Task RunAsync(string scratchRoot)
     {
+        var gitWorkflow = new ShellGitWorkflowChecks(_report, Check);
+        if (Environment.GetEnvironmentVariable("AXMOL_GIT_WORKFLOW_CHECK_ONLY") == "1")
+        {
+            await gitWorkflow.VerifyAsync();
+            return;
+        }
         // The starting point must be Chinese: the assertions below hard-code "this is a Chinese UI".
         // App forces Chinese in verification mode; if that forcing is removed, this blows up
         // immediately rather than only on some machine whose language is English.
@@ -130,6 +138,7 @@ internal sealed class ShellCheckSuite
         await Shell.CheckDrawnDialogsAsync(shell);
         Shell.CheckHostShellCard(shell);
         await Assistant.CheckAssistantAsync(scratchRoot, shell);
+        await gitWorkflow.VerifyAsync();
         await diffSelection.VerifyAsync(shell);
         Sessions.CheckWorkspaceGroups(scratchRoot, shell);
         await Shell.CheckDataRootSwitch(scratchRoot, shell);

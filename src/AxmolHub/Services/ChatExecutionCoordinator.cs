@@ -954,11 +954,10 @@ internal sealed partial class ChatExecutionCoordinator
                 "stage-failed" => "CommitSummaryStageFailed",
                 _ => "CommitSummaryFailed",
             };
-            if (result.FailureKey is not ("workspace-changed" or "git-missing")
-                && !(action == "commit" && result.FailureKey is "nothing-staged" or "stage-failed"))
-                await StartCommitModelFallbackAsync(conversationId, turnAt,
-                    result.FailureKey == "commit-succeeded-push-failed" ? "push" : action,
-                    facts.Prefixes).ConfigureAwait(false);
+            // A clean index/worktree is a terminal no-op, including commit-and-push; it is not an AI failure.
+            if (result.FailureKey is not ("workspace-changed" or "git-missing" or "nothing-staged"))
+                await StartGitOperationFallbackAsync(conversationId,
+                    result.FailureKey == "commit-succeeded-push-failed" ? "push" : action).ConfigureAwait(false);
             return (false, HubStrings.Get(messageKey));
         }
         Audit(conversationId, action == "push"
@@ -1045,7 +1044,8 @@ internal sealed partial class ChatExecutionCoordinator
         IReadOnlyList<byte[]>? pictures, out string? refusalKey)
         => TryEnqueueSend(conversationId, text, attachedContext, pictures, false, out refusalKey);
     internal bool TryEnqueueSend(string conversationId, string text, string? attachedContext,
-        IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey, string? expectedPlanToken = null)
+        IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey, string? expectedPlanToken = null,
+        bool isGitOperationFallback = false)
     {
         refusalKey = null;
         if (_compressingConversations.Contains(conversationId))
@@ -1096,7 +1096,11 @@ internal sealed partial class ChatExecutionCoordinator
                 var context = pending is null ? attachedContext : PlanRevisionInstruction
                     + (string.IsNullOrEmpty(attachedContext) ? "" : "\n\n" + attachedContext);
                 var userTurn = ChatTurn.User(text, context, StorePictures(conversationId, pictures),
-                    isGoal: isGoal && pending is null) with { Plan = pending?.Plan };
+                    isGoal: isGoal && pending is null) with
+                {
+                    Plan = pending?.Plan,
+                    IsGitOperationFallback = isGitOperationFallback,
+                };
                 opened.ProviderId = choice.Provider.Id;
                 opened.ModelName = choice.ModelName;
                 if (pending is not null)
@@ -2297,9 +2301,6 @@ internal sealed partial class ChatExecutionCoordinator
             detail = ex.Message;
         }
 
-        if (result == RunResult.Completed && run.SaidAnything)
-            await PrepareCommitSummaryAsync(run).ConfigureAwait(false);
-
         await WriteRunLogAsync(run, result, compacted).ConfigureAwait(false);
         // Compaction is reported only when nothing more important happened: a failure the user has to act on
         // must not be replaced by an informational line.
@@ -2307,62 +2308,23 @@ internal sealed partial class ChatExecutionCoordinator
             noticeKey ?? (compacted ? "ChatContextCompacted" : null), noticeDanger, detail);
     }
 
-    private async Task PrepareCommitSummaryAsync(ConversationRun run)
-    {
-        var snapshot = await ReadOnUiAsync(() =>
+    private Task StartGitOperationFallbackAsync(string conversationId, string action)
+        => ApplyOnUiAsync(() =>
         {
-            var conversation = Sessions.Registry.Peek(run.ConversationId);
-            if (conversation?.WorkspaceRoot is not { Length: > 0 } || NormalizeMode(conversation.Mode) != ChatModes.Agent)
-                return (Turn: (ChatTurn?)null, Prefixes: (IReadOnlyList<string>)Array.Empty<string>());
-            var lastUser = conversation.Messages.LastOrDefault(candidate => candidate.Role == ChatRoles.User);
-            if (lastUser?.Text.StartsWith("Hub's local deterministic workflow could not safely complete the requested Git operation.", StringComparison.Ordinal) == true)
-                return (Turn: (ChatTurn?)null, Prefixes: (IReadOnlyList<string>)Array.Empty<string>());
-            var turn = conversation.Messages.LastOrDefault(candidate => candidate.Role == ChatRoles.Assistant
-                && candidate.ToolCallId is not { Length: > 0 } && candidate.Text.Length > 0);
-            return (Turn: turn, Prefixes: (IReadOnlyList<string>)CommitSummary.NormalizePrefixes(
-                PreferencesProvider?.Invoke().CommitSummaryPrefixes));
-        }).ConfigureAwait(false);
-        if (snapshot.Turn is not { } final) return;
-        if (CommitSummary.Parse(final.Text, snapshot.Prefixes) is { } parsed)
-        {
-            Sessions.Registry.TryUpdate(run.ConversationId, conversation =>
+            var actionName = HubStrings.Get(action switch
             {
-                var index = conversation.Messages.FindIndex(turn => turn.At == final.At && turn.Role == ChatRoles.Assistant);
-                if (index >= 0) conversation.Messages[index] = conversation.Messages[index] with { CommitSummary = parsed };
+                "push" => "PushSummaryAction",
+                "commit-push" => "CommitPushSummaryAction",
+                _ => "CommitSummaryAction",
             });
-            return;
-        }
-
-        Audit(run.ConversationId,
-            "Local commit-summary parser found no valid explicit marker; no action was scheduled");
-    }
-
-    private async Task StartCommitModelFallbackAsync(string conversationId, DateTimeOffset turnAt,
-        string action, IReadOnlyList<string> prefixes)
-    {
-        var answer = await ReadOnUiAsync(() =>
-        {
-            var conversation = Sessions.Registry.Peek(conversationId);
-            return conversation?.Messages.FirstOrDefault(turn => turn.At == turnAt)?.Text ?? "";
-        }).ConfigureAwait(false);
-        await ApplyOnUiAsync(() =>
-        {
-            var instruction = CommitFallbackInstruction(prefixes, answer, action);
-            if (!TryEnqueueSend(conversationId, instruction, null, null, out var refusal))
+            var instruction = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("GitOperationFallbackPrompt"), actionName);
+            if (!TryEnqueueSend(conversationId, instruction, null, null, false, out var refusal,
+                    isGitOperationFallback: true))
                 Audit(conversationId, "Normal Agent git-operation fallback could not start: " + refusal);
             else
                 Audit(conversationId, "Started normal Agent git-operation fallback through existing tool approvals; additional model usage applies");
-        }).ConfigureAwait(false);
-    }
-
-    private static string CommitFallbackInstruction(IReadOnlyList<string> prefixes, string answer, string action)
-        => "Hub's local deterministic workflow could not safely complete the requested Git operation. Take over the entire operation "
-           + "using your normal Agent tools and the active tool approval policy. Inspect the repository and choose the appropriate Git steps; "
-           + "you may stage changes with git add when needed. Avoid discarding or overwriting user work. For a commit, use a concise imperative "
-           + "title with an allowed prefix (" + string.Join(", ", prefixes) + "). For push, target the current branch's configured upstream. "
-           + "For commit-and-push, complete the commit before pushing and clearly report partial success. Report outcomes based on tool results. "
-           + "Requested operation: " + action + ".\n\nCompleted assistant answer:\n"
-           + answer[..Math.Min(answer.Length, 10000)];
+        });
 
     private async Task<bool> ShouldCorrectLimitationsAsync(ConversationRun run)
     {
@@ -3120,6 +3082,20 @@ internal sealed partial class ChatExecutionCoordinator
                 // ending already has its own notice line, and a duration beside it would be the same sentence
                 // twice with two different clocks.
                 var stamped = result == RunResult.Completed ? StampRunElapsed(opened, run.Elapsed) : -1;
+                // This is display metadata only, never an entry into the Git workflow. Missing/invalid markers
+                // are ordinary replies, not requests for Git or for another model call. Only button clicks may
+                // enter RunCommitActionAsync; a handed-off Agent reply is terminal regardless of its wording.
+                if (stamped >= 0 && receivedText && opened.WorkspaceRoot is { Length: > 0 }
+                    && NormalizeMode(opened.Mode) == ChatModes.Agent
+                    && opened.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User)?.IsGitOperationFallback != true
+                    && opened.Messages[stamped].Text.Contains(CommitSummary.Marker, StringComparison.OrdinalIgnoreCase))
+                {
+                    var final = opened.Messages[stamped];
+                    opened.Messages[stamped] = final with
+                    {
+                        CommitSummary = CommitSummary.Parse(final.Text, PreferencesProvider?.Invoke().CommitSummaryPrefixes),
+                    };
+                }
                 // The burn, unlike the clock above, is folded for <b>every</b> ending. A round the person stopped,
                 // one the provider refused, one that timed out — each really did send its requests and really was
                 // billed for them, and skipping the fold because no answer landed would understate the session by
