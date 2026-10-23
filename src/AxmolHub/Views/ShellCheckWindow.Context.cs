@@ -27,13 +27,12 @@ internal sealed class ShellContextChecks
         for (var file = 1; file <= 5; file++)
             System.IO.File.WriteAllText(System.IO.Path.Combine(workspace, $"big-{file}.txt"), bigRows);
 
-        // A threshold test owns its threshold. This provider declares no window, and the fallback for an
-        // undescribed model is a hosted-sized number now rather than the 2023 default of 8192 — so the fixture
-        // states the small window it is testing against instead of inheriting whatever the fallback happens to
-        // be this release. Five tool results are nowhere near half of a hosted-sized window, and nothing would compact.
+        // A threshold test owns its threshold. The provider declares a 10,000-token window so the fixed system
+        // prompt and tool schemas do not consume nearly all of it before the first result; repeated file results
+        // then cross the 85% trigger during this tool loop, independent of the hosted-model fallback.
         var fixtureProvider = chat.Providers.FirstOrDefault(candidate => candidate.Id == providerId);
         var savedWindow = fixtureProvider?.MaxContextTokens;
-        if (fixtureProvider is not null) fixtureProvider.MaxContextTokens = 8192;
+        if (fixtureProvider is not null) fixtureProvider.MaxContextTokens = 10_000;
         var session = chat.StartConversation(providerId);
         // Five calls rather than a dozen: each one is a request, and the reply that follows is another, so the
         // fixture stays small on purpose — the loop has no round cap, and this check is about compaction, not
