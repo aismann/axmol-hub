@@ -197,7 +197,7 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// <summary>Hub handed an explicit Git action to the normal Agent path. Its reply cannot re-enter local Git handling.</summary>
     public bool IsGitOperationFallback { get; init; }
 
-    /// <summary>Actions supported by actual tool results and the explicit summary at this reply's completion.</summary>
+    /// <summary>Display actions from Hub's latest read-only Git snapshot, independent of reply text or tool history.</summary>
     public GitActions GitActions { get; init; }
     public string? GitWorkspaceRoot { get; init; }
 

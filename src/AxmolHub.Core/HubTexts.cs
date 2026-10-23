@@ -1177,7 +1177,6 @@ public static class HubTexts
         ["CommitSummaryPrefixesTitle"] = ("提交摘要前缀", "Commit summary prefixes"),
         ["CommitSummaryPrefixesHint"] = ("用逗号分隔。默认：feat:, fix:, docs:, misc:。点击提交或提交并推送后，Hub 会暂存仓库中的非忽略更改再提交；点击推送则只推送当前分支。无法本地安全处理时会启动正常 Agent 操作，并遵循现有工具审批权限，产生额外额度消耗。", "Comma-separated. Defaults: feat:, fix:, docs:, misc:. Commit and commit-and-push stage non-ignored repository changes before committing; push sends only the current branch. If local handling is unsafe, a normal Agent run takes over under the existing tool approval policy and incurs additional usage."),
         ["CommitSummaryAction"] = ("提交", "Commit"),
-        ["GitOperationFallbackPrompt"] = ("请按当前审批权限接手完成 Git {0}。", "Take over Git {0} under the current approval policy."),
         ["GitActionExpired"] = ("该操作已过期或会话正忙，请使用当前消息的操作。", "This action is stale or the session is busy; use the current message's actions."),
         ["GitPushAuthorizationTip"] = ("点击即授权推送当前分支到已配置的上游。", "Click to authorize pushing the current branch to its configured upstream."),
         ["PushSummaryNothingToPush"] = ("当前分支没有待推送的提交。", "The current branch has no commits to push."),

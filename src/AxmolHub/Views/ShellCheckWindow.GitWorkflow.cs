@@ -88,12 +88,15 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
                     : new ScriptedChatClient([], exception: new InvalidOperationException("Unexpected automatic Git fallback"));
                 var sent = chat.TryEnqueueSend(session.Id, fixture.Request, null, out var refusal);
                 await WaitForIdleAsync(chat);
+                await WaitForConditionAsync(() => chat.StoredCopyForCheck(session.Id)?.Messages.LastOrDefault()?.GitActions
+                    == (GitActions.Commit | GitActions.Push | GitActions.CommitAndPush));
                 Dispatcher.UIThread.RunJobs();
                 var stored = chat.StoredCopyForCheck(session.Id);
                 var final = stored?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant);
                 if (!sent || chat.RunningCount != 0 || requests != beforeRequests + 1
                     || completions != beforeCompletions + 1 || stored?.Messages.Count != 2
-                    || final?.CommitSummary != fixture.Summary || final?.RunElapsed is null)
+                    || final?.CommitSummary != fixture.Summary || final?.RunElapsed is null
+                    || final.GitActions != (GitActions.Commit | GitActions.Push | GitActions.CommitAndPush))
                     failures.Add(fixture.Name + ": sent=" + sent + ", refusal=" + refusal
                         + ", messages=" + stored?.Messages.Count + ", notice=" + stored?.LastNotice?.Key
                         + ", detail=" + stored?.LastNotice?.Detail + ", final=" + final?.Text);
@@ -111,14 +114,14 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
                 return;
             }
 
-            // Exercise the real button handoff: no upstream makes local push fail, then normal Agent takes over.
-            // The fallback deliberately returns another valid marker: it must remain terminal, with no new button.
+            // A failed explicit operation hands off once. Its reply can refresh display state using Git reads,
+            // but a remaining dirty worktree must never automatically execute another action or Agent request.
             chat.SeedGoalForCheck(suggestion.Id, "完成这个目标");
             var beforeFallback = requests;
             chat.ClientOverride = (_, _) => ++requests == beforeFallback + 1
                 ? new ScriptedChatClient(["Git operation finished.\nCommit summary: " + title])
                 : new ScriptedChatClient([], exception: new InvalidOperationException("Recursive fallback"));
-            chat.TryEnqueueSend(suggestion.Id, "push", null, out _);
+            chat.TryEnqueueSend(suggestion.Id, "@hub push", null, out _);
             await WaitForConditionAsync(() => chat.StoredCopyForCheck(suggestion.Id)?.Messages
                 .LastOrDefault()?.Role == ChatRoles.Notice);
             await WaitForIdleAsync(chat);
@@ -127,7 +130,8 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
             if (requests != beforeFallback + 1 || chat.RunningCount != 0
                 || fallbackCopy?.Messages.Count != 7 || fallbackCopy.GoalState != ChatGoalStates.Paused
                 || fallbackCopy.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User)?.IsGitOperationFallback != true
-                || fallbackCopy.Messages.LastOrDefault()?.CommitSummary is not null)
+                || fallbackCopy.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User)?.Text != HubStrings.Get("PushSummaryAction")
+                || fallbackCopy.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant && turn.ToolCallId is null)?.CommitSummary != title)
                 failures.Add("Agent 兜底完成后重新进入本地工作流");
             observations.Add("显式推送兜底请求=" + (requests - beforeFallback));
 
@@ -137,7 +141,7 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
             await Git("remote", "add", "origin", remote);
             await Git("push", "-u", "origin", "main");
             var beforeNoOp = requests;
-            foreach (var action in new[] { "commit", "commit+push", "push" })
+            foreach (var action in new[] { "@hub commit", "@hub commit+push", "@hub push" })
             {
                 var beforeCount = chat.StoredCopyForCheck(suggestion.Id)!.Messages.Count;
                 chat.TryEnqueueSend(suggestion.Id, action, null, out _);
@@ -161,6 +165,7 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
             chat.ClientOverride = (_, _) => agentCommit;
             chat.TryEnqueueSend(agentSession.Id, "执行本轮提交任务", null, out _);
             await WaitForIdleAsync(chat);
+            await WaitForConditionAsync(() => chat.StoredCopyForCheck(agentSession.Id)?.Messages.LastOrDefault()?.GitActions == GitActions.Push);
             var committedReply = chat.StoredCopyForCheck(agentSession.Id)?.Messages.LastOrDefault();
             var agentCommitActions = committedReply?.GitActions ?? GitActions.None;
             var agentPush = new ApprovalChatClient
@@ -183,19 +188,66 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
             chat.TryEnqueueSend(localSession.Id, "完成新的修复", null, out _);
             await WaitForIdleAsync(chat);
             await File.WriteAllTextAsync(Path.Combine(workspace, "local.txt"), "locally committed\n");
+            await chat.RefreshGitPresentationAsync(localSession.Id);
             var beforeLocalRequests = requests;
             var beforeLocalHead = (await Git("rev-parse", "HEAD")).Output;
             var localMessages = chat.StoredCopyForCheck(localSession.Id)!.Messages.Count;
-            chat.TryEnqueueSend(localSession.Id, "commit", null, out _);
+            chat.TryEnqueueSend(localSession.Id, "@hub commit", null, out _);
             await WaitForConditionAsync(() => chat.StoredCopyForCheck(localSession.Id)?.Messages.Count >= localMessages + 2);
             var afterLocalHead = (await Git("rev-parse", "HEAD")).Output;
             localMessages = chat.StoredCopyForCheck(localSession.Id)!.Messages.Count;
-            chat.TryEnqueueSend(localSession.Id, "push", null, out _);
+            chat.TryEnqueueSend(localSession.Id, "@hub push", null, out _);
             await WaitForConditionAsync(() => chat.StoredCopyForCheck(localSession.Id)?.Messages.Count >= localMessages + 2);
             var upstream = await Git("rev-parse", "@{u}");
-            check(requests == beforeLocalRequests && beforeLocalHead != afterLocalHead
-                  && upstream.Output == afterLocalHead && chat.RunningCount == 0,
-                "独立 commit 和 push 文本通过本地入口完成，不增加模型请求（额外请求=" + (requests - beforeLocalRequests) + "）");
+            var localRequests = requests - beforeLocalRequests;
+            var plain = chat.StartConversation(provider.Id);
+            chat.SetWorkspaceRoot(plain.Id, workspace);
+            chat.SelectMode(ChatModes.Agent);
+            var plainRequests = 0;
+            chat.ClientOverride = (_, _) => { plainRequests++; return new ScriptedChatClient(["Request handled by the model."]); };
+            await File.WriteAllTextAsync(Path.Combine(workspace, "plain-request.txt"), "Do not intercept ordinary model messages.\n");
+            var plainTexts = new[] { "commit", "提交", "push", "推送", "commit+push", "提交并推送" };
+            foreach (var text in plainTexts)
+            {
+                chat.TryEnqueueSend(plain.Id, text, null, out _);
+                await WaitForIdleAsync(chat);
+            }
+            var plainCopy = chat.StoredCopyForCheck(plain.Id);
+            var ordinaryUntouched = (await Git("rev-parse", "HEAD")).Output == afterLocalHead
+                && (await Git("diff", "--cached", "--stat")).Output.Length == 0
+                && plainCopy?.Messages.Where(turn => turn.Role == ChatRoles.User).Select(turn => turn.Text).SequenceEqual(plainTexts) == true
+                && plainCopy.Messages.All(turn => !turn.IsGitOperationFallback);
+            File.Delete(Path.Combine(workspace, "plain-request.txt"));
+            check(localRequests == 0 && beforeLocalHead != afterLocalHead
+                  && upstream.Output == afterLocalHead && chat.RunningCount == 0 && plainRequests == plainTexts.Length && ordinaryUntouched,
+                "仅 @hub commit/push 走本地；普通中英文操作原样发给模型（本地额外请求=" + localRequests
+                + "，普通请求=" + plainRequests + "/" + plainTexts.Length + "）");
+
+            // The retained local commit must not be repeated when only the push needs an Agent retry.
+            var partial = chat.StartConversation(provider.Id);
+            chat.SetWorkspaceRoot(partial.Id, workspace);
+            chat.SelectMode(ChatModes.Agent);
+            chat.ClientOverride = (_, _) => new ScriptedChatClient(["Done.\nCommit summary: " + title]);
+            chat.TryEnqueueSend(partial.Id, "完成部分成功夹具", null, out _);
+            await WaitForIdleAsync(chat);
+            await File.WriteAllTextAsync(Path.Combine(workspace, "partial.txt"), "keep this local commit\n");
+            await chat.RefreshGitPresentationAsync(partial.Id);
+            await Git("config", "remote.origin.pushurl", Path.Combine(root, "missing-remote.git"));
+            var partialRequests = 0;
+            chat.ClientOverride = (_, _) => { partialRequests++; return new ScriptedChatClient(["Push retry needs user attention."]); };
+            chat.TryEnqueueSend(partial.Id, "@hub commit+push", null, out _);
+            await WaitForConditionAsync(() => chat.StoredCopyForCheck(partial.Id)?.Messages.LastOrDefault()?.Role == ChatRoles.Notice);
+            await WaitForIdleAsync(chat);
+            var partialCopy = chat.StoredCopyForCheck(partial.Id);
+            var handoff = partialCopy?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User);
+            var retained = (await Git("rev-parse", "HEAD")).Output;
+            check(partialRequests == 1 && handoff?.Text == HubStrings.Get("PushSummaryAction")
+                  && handoff.IsGitOperationFallback && retained != afterLocalHead
+                  && (await Git("status", "--porcelain")).Output.Length == 0,
+                "提交并推送部分成功后只用简单推送消息交接一次，保留本地提交（请求=" + partialRequests
+                + "，消息=" + handoff?.Text + "）");
+            await Git("config", "--unset", "remote.origin.pushurl");
+            await Git("push");
 
             await VerifyRestoredButtonsAsync(root, workspace, provider.Id);
 
@@ -228,7 +280,7 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
         noTitle.WorkspaceRoot = workspace;
         noTitle.ModelName = "offline-check-model";
         noTitle.Append(ChatTurn.User("检查修复"));
-        noTitle.Append(ChatTurn.Assistant("Task finished without a commit title.") with { RunElapsed = TimeSpan.FromSeconds(1) });
+        noTitle.Append(ChatTurn.Assistant("Task finished without a commit title."));
         store.Save(noTitle);
         await File.WriteAllTextAsync(Path.Combine(workspace, "reopened.txt"), "dirty after restart\n");
         var runner = new ProcessRunner(_ => { });
@@ -271,14 +323,29 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
             }
             passed &= requests == 0;
 
+            // No reopen or manual repository refresh: the task-completion path itself must show all three
+            // real controls even when the new final answer has neither a marker nor a claimed Git outcome.
+            reopened.TryEnqueueSend(noTitle.Id, "完成当前任务", null, out _);
+            await WaitForIdleAsync(reopened);
+            await WaitForConditionAsync(() => reopened.StoredCopyForCheck(noTitle.Id)?.Messages.LastOrDefault()?.GitActions
+                == (GitActions.Commit | GitActions.Push | GitActions.CommitAndPush));
+            host.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var completionButtons = HasButton("CommitSummaryAction") && HasButton("PushSummaryAction")
+                && HasButton("CommitPushSummaryAction");
+            passed &= completionButtons && requests == 1
+                && reopened.StoredCopyForCheck(noTitle.Id)?.Messages.LastOrDefault()?.CommitSummary is null;
+            observations.Add("无摘要任务结束三按钮=" + completionButtons + "，请求=" + requests);
+
             // Missing title stays a user-click boundary: visible controls are not permission for an AI request.
             var button = panel.GetLogicalDescendants().OfType<Button>()
                 .FirstOrDefault(control => control.Tag as string == "CommitSummaryAction");
             button?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await WaitForConditionAsync(() => requests == 1);
+            await WaitForConditionAsync(() => requests == 2);
             await WaitForIdleAsync(reopened);
-            passed &= button is not null && requests == 1
-                && reopened.StoredCopyForCheck(noTitle.Id)?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User)?.IsGitOperationFallback == true;
+            passed &= button is not null && requests == 2
+                && reopened.StoredCopyForCheck(noTitle.Id)?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User)?.IsGitOperationFallback == true
+                && reopened.StoredCopyForCheck(noTitle.Id)?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User)?.Text == HubStrings.Get("CommitSummaryAction");
             observations.Add("点击后模型请求=" + requests);
 
             File.Delete(Path.Combine(workspace, "reopened.txt"));

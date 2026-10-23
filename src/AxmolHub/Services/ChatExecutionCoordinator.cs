@@ -888,22 +888,20 @@ internal sealed partial class ChatExecutionCoordinator
         => _runs.TryGetValue(conversationId, out var run) ? run : null;
     internal string? GoalStateFor(string conversationId)
         => (Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId))?.GoalState;
-    /// <summary>Restore controls on an explicit session open/refresh, not on a model completion or repaint.</summary>
+    /// <summary>Refresh display state using Git reads only; this never executes a Git write or starts an Agent.</summary>
     internal async Task RefreshGitPresentationAsync(string conversationId, GitRepositoryState? repository = null,
         string? expectedWorkspaceRoot = null)
     {
         var target = await ReadOnUiAsync(() =>
         {
             var conversation = Sessions.Registry.Peek(conversationId);
-            if (conversation?.WorkspaceRoot is not { Length: > 0 } root || NormalizeMode(conversation.Mode) != ChatModes.Agent
+            if (conversation?.WorkspaceRoot is not { Length: > 0 } root
                 || RunFor(conversationId) is not null || _localGitActions.ContainsKey(conversationId))
                 return (Root: (string?)null, Turn: (ChatTurn?)null, Count: 0);
             var latest = conversation.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
                 && turn.ToolCallId is null && turn.Text.Length > 0 && turn.PlanApprovalState is null);
-            // An interrupted reply is not an action target. Older records with an explicit summary predate
-            // RunElapsed/GitActions; restore them without inventing a completed result for ordinary prose.
-            if (latest is null || latest.RunElapsed is null
-                && CommitSummary.Parse(latest.Text, PreferencesProvider?.Invoke().CommitSummaryPrefixes) is null)
+            // Reply metadata supplies a location/title, not evidence of whether there is work to commit.
+            if (latest is null)
                 return (Root: (string?)null, Turn: (ChatTurn?)null, Count: 0);
             return (Root: (string?)root, Turn: latest, Count: conversation.Messages.Count);
         }).ConfigureAwait(false);
@@ -914,7 +912,6 @@ internal sealed partial class ChatExecutionCoordinator
             var runner = new ProcessRunner(line => LogProvider?.Invoke()?.Write(line));
             var state = repository ?? await GitRepository.ReadAsync(target.Root, runner, Providers.SensitiveValues(), includeDiffs: false)
                 .ConfigureAwait(false);
-            if (!state.IsReadable) return;
             await ApplyOnUiAsync(() =>
             {
                 if (RunFor(conversationId) is not null || _localGitActions.ContainsKey(conversationId)) return;
@@ -975,6 +972,7 @@ internal sealed partial class ChatExecutionCoordinator
         finally
         {
             _localGitActions.TryRemove(conversationId, out _);
+            await RefreshGitPresentationAsync(conversationId).ConfigureAwait(false);
         }
     }
 
@@ -1021,13 +1019,6 @@ internal sealed partial class ChatExecutionCoordinator
             var noOp = result.FailureKey is "nothing-staged" or "nothing-to-push";
             Audit(conversationId, (noOp ? "Hub-triggered git action finished with no changes: " : "Hub-triggered git action failed: ")
                 + result.FailureKey + " · " + result.Detail);
-            await UpdateGitPresentationAsync(conversationId, turnAt, result.FailureKey == "commit-succeeded-push-failed"
-                ? GitActions.Push : noOp
-                    ? (action == "commit" ? GitActions.Push : action == "push" ? GitActions.Commit | GitActions.CommitAndPush : GitActions.None)
-                    : GitActions.None,
-                replace: result.FailureKey == "commit-succeeded-push-failed",
-                retireCommit: result.FailureKey is "commit-succeeded-push-failed" or "nothing-staged" || action == "commit-push" && noOp,
-                retirePush: result.FailureKey == "nothing-to-push").ConfigureAwait(false);
             var messageKey = result.FailureKey switch
             {
                 "commit-succeeded-push-failed" => "CommitPushPartialFailure",
@@ -1053,9 +1044,6 @@ internal sealed partial class ChatExecutionCoordinator
             ? "Hub-triggered git push succeeded"
             : action == "commit-push" ? "Hub-triggered local git commit and push succeeded: " + summary
             : "Hub-triggered local git commit succeeded: " + summary);
-        await UpdateGitPresentationAsync(conversationId, turnAt,
-            action == "commit" ? GitActions.Push : action == "push" ? GitActions.Commit | GitActions.CommitAndPush : GitActions.None,
-            replace: action == "commit", retireCommit: action != "push", retirePush: action != "commit").ConfigureAwait(false);
         return (true, HubStrings.Get(action switch
         {
             "push" => "PushSummarySucceeded",
@@ -1063,39 +1051,6 @@ internal sealed partial class ChatExecutionCoordinator
             _ => "CommitSummarySucceeded",
         }));
     }
-
-    private Task UpdateGitPresentationAsync(string conversationId, DateTimeOffset turnAt, GitActions allowed, bool replace = false,
-        bool retireCommit = false, bool retirePush = false)
-        => ApplyOnUiAsync(() =>
-        {
-            Sessions.Registry.TryUpdate(conversationId, conversation =>
-            {
-                var index = conversation.Messages.FindIndex(turn => turn.At == turnAt && turn.Role == ChatRoles.Assistant);
-                if (index < 0) return;
-                var source = conversation.Messages[index];
-                for (var i = 0; i < conversation.Messages.Count; i++)
-                {
-                    var prior = conversation.Messages[i];
-                    if (i == index || prior.GitWorkspaceRoot != source.GitWorkspaceRoot) continue;
-                    var remaining = prior.GitActions;
-                    if (retireCommit) remaining &= GitActions.Push;
-                    if (retirePush) remaining &= ~GitActions.Push;
-                    conversation.Messages[i] = prior with
-                    {
-                        GitActions = remaining,
-                        CommitSummary = remaining.HasFlag(GitActions.Commit) ? prior.CommitSummary : null,
-                    };
-                }
-                var actions = replace ? allowed : source.GitActions & allowed;
-                conversation.Messages[index] = source with
-                {
-                    GitActions = actions,
-                    CommitSummary = actions.HasFlag(GitActions.Commit) ? source.CommitSummary : null,
-                };
-            });
-            Sessions.RepositoryChanged?.Invoke();
-            Changed?.Invoke();
-        });
 
     internal bool IsCurrentGoalTurn(string conversationId, DateTimeOffset at)
         => (Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId))?.GoalTurnAt == at;
@@ -2471,9 +2426,7 @@ internal sealed partial class ChatExecutionCoordinator
                 "commit-push" => "CommitPushSummaryAction",
                 _ => "CommitSummaryAction",
             });
-            var instruction = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("GitOperationFallbackPrompt"), actionName);
-            if (!TryEnqueueSend(conversationId, instruction, null, null, false, out var refusal,
+            if (!TryEnqueueSend(conversationId, actionName, null, null, false, out var refusal,
                     isGitOperationFallback: true))
                 Audit(conversationId, "Normal Agent git-operation fallback could not start: " + refusal);
             else
@@ -3236,37 +3189,21 @@ internal sealed partial class ChatExecutionCoordinator
                 // ending already has its own notice line, and a duration beside it would be the same sentence
                 // twice with two different clocks.
                 var stamped = result == RunResult.Completed ? StampRunElapsed(opened, run.Elapsed) : -1;
-                // This is display metadata only, never an entry into the Git workflow. Missing/invalid markers
-                // are ordinary replies, not requests for Git or for another model call. Only explicit user actions may
-                // enter RunCommitActionAsync; a handed-off Agent reply is terminal regardless of its wording.
-                if (stamped >= 0 && receivedText && opened.WorkspaceRoot is { Length: > 0 } gitRoot
-                    && NormalizeMode(opened.Mode) == ChatModes.Agent)
+                // A summary is an optional title, never a visibility condition. Retire old controls until
+                // the post-run read-only Git snapshot lands; neither prose nor a tool-result guess is authority.
+                if (stamped >= 0)
                 {
-                    var final = opened.Messages[stamped];
-                    var summary = CommitSummary.Parse(final.Text, PreferencesProvider?.Invoke().CommitSummaryPrefixes);
-                    var userIndex = opened.Messages.FindLastIndex(turn => turn.Role == ChatRoles.User);
-                    var history = opened.Messages.Skip(Math.Max(0, userIndex)).ToList();
-                    var actions = GitWorkflow.ActionsFor(history, gitRoot, summary);
-                    var evidence = GitWorkflow.EvidenceFor(history, gitRoot);
-                    // Retire earlier proposals too: an old message must not offer the commit just completed.
-                    for (var i = 0; i < stamped; i++)
+                    for (var i = 0; i < opened.Messages.Count; i++)
                     {
-                        var prior = opened.Messages[i];
-                        if (prior.GitWorkspaceRoot != gitRoot || prior.GitActions == GitActions.None) continue;
-                        var remaining = prior.GitActions;
-                        if (evidence.Committed) remaining &= GitActions.Push;
-                        if (evidence.Pushed) remaining &= ~GitActions.Push;
-                        opened.Messages[i] = prior with
-                        {
-                            GitActions = remaining,
-                            CommitSummary = remaining.HasFlag(GitActions.Commit) ? prior.CommitSummary : null,
-                        };
+                        var turn = opened.Messages[i];
+                        if (turn.GitActions != GitActions.None)
+                            opened.Messages[i] = turn with { GitActions = GitActions.None };
                     }
+                    var final = opened.Messages[stamped];
                     opened.Messages[stamped] = final with
                     {
-                        CommitSummary = actions.HasFlag(GitActions.Commit) ? summary : null,
-                        GitActions = actions,
-                        GitWorkspaceRoot = gitRoot,
+                        CommitSummary = CommitSummary.Parse(final.Text, PreferencesProvider?.Invoke().CommitSummaryPrefixes),
+                        GitWorkspaceRoot = opened.WorkspaceRoot,
                     };
                 }
                 // The burn, unlike the clock above, is folded for <b>every</b> ending. A round the person stopped,
@@ -3346,6 +3283,7 @@ internal sealed partial class ChatExecutionCoordinator
                 new RunOutcome(result, noticeKey, danger, detail, userTurns));
             run.Dispose();
             if (continueGoal) StartRun(run.ConversationId);
+            else if (result == RunResult.Completed) _ = RefreshGitPresentationAsync(run.ConversationId);
             // Last, after the slot is really gone: a wake waiting for one may only start once this run has left
             // the registry, or the fleet would be one session over its own cap.
             StartNextQueuedWake();
