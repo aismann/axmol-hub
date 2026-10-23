@@ -145,26 +145,39 @@ public sealed class ConversationStore(string root)
 
     /// <summary>
     /// The guards this store can build by itself: its own data root, and no engine list — engines are an app fact
-    /// that lives above it. That is enough to keep the one directory that must never be granted out of a session
-    /// file; the engine roots are filtered where that list exists, and every path is graded against the full guards
-    /// again when a tool uses it.
+    /// that lives above it. That is enough to keep the one directory that must never be written through out of a
+    /// session file's writable half, where it is demoted to the read-only half instead; an engine root is demoted
+    /// where that list exists, and every path is graded against the full guards again when a tool uses it.
     /// </summary>
     private WorkspaceGuards OwnGuards => new(root, []);
+
+    /// <summary>
+    /// Both grant lists through their shape rules, at the one door both the load and the save go through — see
+    /// <see cref="WorkspacePaths.SplitRoots"/>. A protected location found in the writable half is moved to the
+    /// read-only half rather than dropped: the card that put it there opened the reading, and a demotion keeps
+    /// exactly that.
+    /// </summary>
+    private void NormalizeGrants(Conversation conversation)
+    {
+        var (write, read) = WorkspacePaths.SplitRoots(conversation.GrantedRoots, conversation.ReadOnlyRoots,
+            OwnGuards);
+        conversation.GrantedRoots = write;
+        conversation.ReadOnlyRoots = read;
+    }
 
     /// <summary>Loads one conversation; <c>null</c> when the id is unknown.
     ///
     /// <para>The granted directories go through their shape rules on the way out — see
-    /// <see cref="WorkspacePaths.NormalizeRoots"/>. A session file is user-editable data: one that grew past the
-    /// cap, named a directory twice in two spellings, or kept a folder that has since been deleted must arrive at
-    /// the guard as a list it can trust, or every later reader would have to re-check it and one of them would
-    /// eventually forget.</para></summary>
+    /// <see cref="NormalizeGrants"/>. A session file is user-editable data: one that grew past the cap, named a
+    /// directory twice in two spellings, kept a folder that has since been deleted, or wrote a protected location
+    /// into the writable half must arrive at the guard as a list it can trust, or every later reader would have to
+    /// re-check it and one of them would eventually forget.</para></summary>
     public Conversation? Load(string id)
     {
         var path = ConversationPath(id);
         if (!File.Exists(path)) return null;
         var conversation = Read(path);
-        if (conversation is not null)
-            conversation.GrantedRoots = WorkspacePaths.NormalizeRoots(conversation.GrantedRoots, OwnGuards);
+        if (conversation is not null) NormalizeGrants(conversation);
         return conversation;
     }
 
@@ -196,7 +209,7 @@ public sealed class ConversationStore(string root)
     /// the cap or kept a spelling that no longer resolves cannot reach the disk from any caller.</summary>
     public void Save(Conversation conversation)
     {
-        conversation.GrantedRoots = WorkspacePaths.NormalizeRoots(conversation.GrantedRoots, OwnGuards);
+        NormalizeGrants(conversation);
         StateStore.WriteJson(ConversationPath(conversation.Id), conversation);
         lock (_indexGate)
         {

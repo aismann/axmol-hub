@@ -265,14 +265,32 @@ internal static class ChatTools
     /// call names none, which is the workspace itself. <c>null</c> means the arguments cannot be read at all, and a
     /// call this build cannot read is not one it can vouch for — the caller grades it as a reach past the sandbox
     /// rather than as a command in the workspace.</summary>
-    private static string? CwdOf(string? argumentsJson)
+    private static string? CwdOf(string? argumentsJson) => ArgumentOf(argumentsJson, "cwd");
+
+    /// <summary>
+    /// Whether this call would open a protected location — Hub's own data directory, an engine installation, a
+    /// <c>.git</c> — which is the one grant no approval mode answers for. Asked of
+    /// <see cref="WorkspacePaths.ClassifyGrant"/>, so the gate and the card cannot disagree about what counts:
+    /// <see cref="GrantVerdict.GrantedReadOnly"/> is exactly "a card would land a read-only grant here", and the
+    /// same value is what the gate turns into a card in 完全访问 as well as in the two modes that ask anyway.
+    /// </summary>
+    public static bool OpensProtectedLocation(string name, string? argumentsJson, WorkspaceToolScope scope)
+        => string.Equals(name, ToolNames.RequestDirectory, StringComparison.Ordinal)
+           && ArgumentOf(argumentsJson, "path") is { Length: > 0 } path
+           && WorkspacePaths.ClassifyGrant(scope.Sandbox, scope.Guards, path).Verdict
+              == GrantVerdict.GrantedReadOnly;
+
+    /// <summary>One string argument, exactly as the model wrote it: empty when the call names none, null when the
+    /// arguments cannot be read at all. One reader for every argument the tier table looks at, because two of them
+    /// disagreeing is a call tiered against one directory and executed into another.</summary>
+    private static string? ArgumentOf(string? argumentsJson, string name)
     {
         if (string.IsNullOrWhiteSpace(argumentsJson)) return "";
         try
         {
             using var document = JsonDocument.Parse(argumentsJson);
             if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
-            return document.RootElement.TryGetProperty("cwd", out var value) && value.ValueKind == JsonValueKind.String
+            return document.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
                 ? value.GetString() ?? ""
                 : "";
         }

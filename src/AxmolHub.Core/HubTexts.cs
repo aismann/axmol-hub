@@ -739,13 +739,17 @@ public static class HubTexts
         ["ChatWorkspaceMenuClear"] = ("清除工作目录", "Clear the workspace"),
         ["ChatWorkspaceCleared"] = ("已清除工作目录，文件与命令工具将拒答。", "Workspace cleared. The file and command tools will now refuse."),
         ["ChatWorkspaceRejected"] = ("这个目录不能用作工作目录：", "That directory cannot be used as a workspace: "),
-        ["ChatWorkspaceProtected"] = ("这是 Hub 的数据目录、引擎安装目录或 .git，助手在任何审批档位下都不能写它。", "That is Hub's data directory, an engine installation or a .git directory. The assistant cannot write there in any approval mode."),
+        ["ChatWorkspaceProtected"] = ("这是 Hub 的数据目录、引擎安装目录或 .git，不能作为助手的工作目录。要在会话里读它，用「授权一个目录…」——那是只读的。", "That is Hub's data directory, an engine installation or a .git directory, so it cannot be the assistant's workspace. To read one in a session, use “Grant a folder…” — that grant is read-only."),
         // The directories beyond the workspace that this session was granted on a card. Their own words, because a
         // grant is a permission the user gave and must be able to take back — and the count is on the line so the
         // chip's tooltip answers "how much did I open" without being read to the end.
         ["ChatWorkspaceGrantedHintFormat"] = ("\n另有 {0} 个已授权目录：{1}", "\nAlso granted to this session ({0}): {1}"),
+        // The other list on the same chip. A protected location is granted for reading, and a tooltip that folded
+        // the two together would promise the writing the file tools refuse.
+        ["ChatWorkspaceReadOnlyHintFormat"] = ("\n另有 {0} 个只读授权目录：{1}", "\nGranted read-only to this session ({0}): {1}"),
         ["ChatWorkspaceGrantedMenu"] = ("已授权的目录", "Granted to this session"),
         ["ChatWorkspaceRevokeFormat"] = ("撤销对 {0} 的授权", "Revoke access to {0}"),
+        ["ChatWorkspaceRevokeReadOnlyFormat"] = ("撤销对 {0} 的只读授权", "Revoke read-only access to {0}"),
         ["ChatWorkspaceRevoked"] = ("已撤销该目录的授权，助手不再读写它。", "That directory is no longer granted; the assistant cannot read or write there now."),
         // The person's own door to the same grant: the menu reads a folder and records it exactly as an approved
         // card would, so a task that needs a second directory does not depend on the assistant being willing to ask.
@@ -753,6 +757,9 @@ public static class HubTexts
         ["ChatWorkspaceMenuGrant"] = ("授权一个目录…", "Grant a folder…"),
         ["ChatWorkspaceGrantPickTitle"] = ("选择要授权给本会话的目录", "Choose a folder to grant to this session"),
         ["ChatWorkspaceGrantDoneFormat"] = ("已授权「{0}」，助手现在可以读写它。", "“{0}” is granted: the assistant can read and write there now."),
+        // The same answer, narrower, for the three kinds of protected location: the grant is a reading one, and the
+        // notice says so at the moment the person makes it rather than at the first refused write.
+        ["ChatWorkspaceGrantReadOnlyFormat"] = ("已授权「{0}」（只读）：这是 Hub 的数据目录、引擎安装目录或 .git，助手可以读它，但不能写。", "“{0}” is granted read-only: that is Hub's data directory, an engine installation or a .git, so the assistant can read it and never write it."),
         ["ChatWorkspaceGrantSameFormat"] = ("「{0}」就是本会话的工作目录，不需要授权。", "“{0}” is this session's workspace already, so it needs no grant."),
         ["ChatWorkspaceGrantInsideFormat"] = ("「{0}」在工作目录里面，相对路径已经能到它。", "“{0}” is inside the workspace, so a relative path already reaches it."),
         ["ChatWorkspaceGrantAlreadyFormat"] = ("「{0}」已经授权给本会话了。", "“{0}” is already granted to this session."),

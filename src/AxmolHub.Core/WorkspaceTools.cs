@@ -627,7 +627,10 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                  + "request, and the card it shows *is* the approval, so a sentence that waits for the user to "
                  + "authorize you in words parks the task forever. If the user's own words already named the "
                  + "directory, call this tool now, once, and let the card decide; only a directory nobody has named "
-                 + "yet is worth asking about first, and never one you guessed at.")]
+                 + "yet is worth asking about first, and never one you guessed at. A protected location — Hub's own "
+                 + "data directory, an engine installation, a .git directory — is granted for reading only, because "
+                 + "no mode opens writing there; the card says so, and the directory has to be named itself, not "
+                 + "covered by a grant on the folder above it.")]
     public async Task<string> RequestDirectory(
         [Description("Absolute path of the directory to grant, for example D:\\dev\\other-project")]
         string path)
@@ -635,10 +638,12 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var (verdict, full, detail) = WorkspacePaths.ClassifyGrant(context.Sandbox, context.Guards, path);
         switch (verdict)
         {
-            case GrantVerdict.Granted:
+            case GrantVerdict.Granted or GrantVerdict.GrantedReadOnly:
+                // One record, whichever door it came through: the app writes the session file and answers with the
+                // sentence, and a build with nobody to persist to answers with that same sentence.
                 return context.ApplyGrantedRoot is { } apply
                     ? await apply(full).ConfigureAwait(false)
-                    : $"Granted {full} to this session: read and write, alongside the workspace.";
+                    : WorkspacePaths.GrantedResultFor(full, verdict == GrantVerdict.GrantedReadOnly);
             case GrantVerdict.NoPath:
                 return "Refused: request_directory needs the absolute path of a directory. Do not retry it empty.";
             case GrantVerdict.NotAbsolute:
@@ -649,8 +654,6 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             case GrantVerdict.Missing:
                 return $"Refused: '{full}' does not exist or is not a directory. Ask the user to confirm the path; do "
                        + "not guess another one.";
-            case GrantVerdict.Protected:
-                return WorkspacePaths.ResultFor(WorkspacePathVerdict.ProtectedRoot, full);
             case GrantVerdict.SameAsWorkspace:
                 return $"'{full}' already is this session's workspace, so it needs no grant. Work in it with "
                        + "relative paths and do not retry this call.";

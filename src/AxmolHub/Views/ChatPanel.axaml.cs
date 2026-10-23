@@ -753,16 +753,25 @@ public partial class ChatPanel : UserControl
         var root = _chat.ActiveWorkspaceRoot;
         // The directories this session holds beyond its workspace. They ride on the chip because a grant is a
         // permission a person gave and has to be able to take back: the tooltip names them, the menu revokes one.
+        // Two lists, because a grant of a protected location is reading only, and a tooltip that read them as one
+        // would promise writing the file tools refuse.
         var granted = _chat.ActiveGrantedRoots;
+        var readOnly = _chat.ActiveReadOnlyRoots;
         WorkspaceChipLabel.Text = root is { Length: > 0 } ? FolderNameOf(root) : HubStrings.Get("ChatWorkspaceNone");
         var hint = root is { Length: > 0 }
             ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("ChatWorkspaceChipHintFormat"), root)
             : HubStrings.Get("ChatWorkspaceChipHint");
-        ToolTip.SetTip(WorkspaceChip, granted.Count == 0
-            ? hint
-            : hint + string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ChatWorkspaceGrantedHintFormat"), granted.Count, string.Join(" · ", granted)));
+        ToolTip.SetTip(WorkspaceChip,
+            hint
+            + (granted.Count == 0
+                ? ""
+                : string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("ChatWorkspaceGrantedHintFormat"), granted.Count, string.Join(" · ", granted)))
+            + (readOnly.Count == 0
+                ? ""
+                : string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("ChatWorkspaceReadOnlyHintFormat"), readOnly.Count, string.Join(" · ", readOnly))));
         // And it is on screen whenever a session is. The directory is what a session works in, and both things the
         // chip carries are needed for as long as the session lasts: reading out which folder the tools are confined
         // to, and taking back a granted directory. Picking another one is the person's own move at any point —
@@ -1174,23 +1183,36 @@ public partial class ChatPanel : UserControl
         }
 
         var granted = _chat.ActiveGrantedRoots;
-        if (granted.Count > 0)
+        var readOnly = _chat.ActiveReadOnlyRoots;
+        if (granted.Count > 0 || readOnly.Count > 0)
         {
             menu.Items.Add(new MenuItem
             {
                 Header = HubStrings.Get("ChatWorkspaceGrantedMenu"),
                 IsEnabled = false,
             });
-            foreach (var directory in granted)
+            AddRevokeRows(granted, readOnly: false);
+            // The read-only ones sit under the same heading and say what they are, because "revoke access to logs"
+            // and "revoke access to logs, read-only" are answers to two different questions — and the row is still
+            // the only way to take either back.
+            AddRevokeRows(readOnly, readOnly: true);
+        }
+
+        return menu;
+
+        void AddRevokeRows(IReadOnlyList<string> directories, bool readOnly)
+        {
+            foreach (var directory in directories)
             {
+                var target = directory;
                 var revoke = new MenuItem
                 {
                     Header = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                        HubStrings.Get("ChatWorkspaceRevokeFormat"), FolderNameOf(directory)),
-                    Tag = directory,
+                        HubStrings.Get(readOnly ? "ChatWorkspaceRevokeReadOnlyFormat" : "ChatWorkspaceRevokeFormat"),
+                        FolderNameOf(target)),
+                    Tag = target,
                 };
-                ToolTip.SetTip(revoke, directory);
-                var target = directory;
+                ToolTip.SetTip(revoke, target);
                 revoke.Click += (_, _) =>
                 {
                     menu.Hide();
@@ -1201,8 +1223,6 @@ public partial class ChatPanel : UserControl
                 menu.Items.Add(revoke);
             }
         }
-
-        return menu;
     }
 
     /// <summary>Refusals come back as a verdict, not as text: the sentences in <c>WorkspacePaths</c> are written
@@ -1264,11 +1284,14 @@ public partial class ChatPanel : UserControl
         var (verdict, detail) = await _chat.GrantDirectoryAsync(session.Id, picked);
         switch (verdict)
         {
-            case null:
+            // The two that landed. A protected location lands read-only — the same answer the model's card gets —
+            // and the notice has to say so, or the next refusal to write there reads as a bug rather than as the
+            // grant it actually was.
+            case GrantVerdict.Granted:
                 AppendNotice(Notice("ChatWorkspaceGrantDoneFormat", picked), danger: false);
                 return;
-            case GrantVerdict.Protected:
-                AppendNotice(HubStrings.Get("ChatWorkspaceProtected"), danger: true);
+            case GrantVerdict.GrantedReadOnly:
+                AppendNotice(Notice("ChatWorkspaceGrantReadOnlyFormat", picked), danger: true);
                 return;
             // The four that answer "you already have it": said plainly and without the danger colour, because
             // nothing went wrong — the folder the person named is simply reachable by another spelling.

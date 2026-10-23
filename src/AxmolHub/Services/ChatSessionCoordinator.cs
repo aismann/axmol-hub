@@ -186,32 +186,46 @@ internal sealed partial class ChatSessionCoordinator
         return true;
     }
 
+    /// <summary>
+    /// Records one grant, in whichever of the session's two lists the guard says it belongs to, and answers the
+    /// model with what it may now do there. The list is the guard's decision rather than the caller's: this is one
+    /// of the two doors into the grant and the other one already went through
+    /// <see cref="WorkspacePaths.ClassifyGrant"/>, so a protected location is read-only whichever door it came
+    /// through — and <see cref="WorkspacePaths.SplitRoots"/> demotes it if a caller ever says otherwise.
+    /// </summary>
     internal async Task<string> ApplyGrantedRootAsync(string conversationId, string path)
     {
+        var guards = new WorkspaceGuards(_dataRoot, Execution.EngineRootsProvider?.Invoke() ?? []);
+        var readOnly = WorkspacePaths.IsProtected(path, guards);
         var added = false;
         await Execution.ApplyOnUiAsync(() =>
         {
             added = _sessions.TryUpdate(conversationId, opened =>
             {
-                // Through the shape rules and with the guards in hand: this is one of the two doors into the list,
-                // so a duplicate spelling, a directory that vanished, or a protected location cannot arrive here
-                // either — the card was asked about a directory, the session keeps a directory.
-                opened.GrantedRoots = WorkspacePaths.NormalizeRoots([.. opened.GrantedRoots, path],
-                    new WorkspaceGuards(_dataRoot, Execution.EngineRootsProvider?.Invoke() ?? []));
+                // Through the shape rules and with the guards in hand: a duplicate spelling, a directory that has
+                // vanished, or a protected location arriving in the writable half cannot reach the session file —
+                // the card was asked about a directory, the session keeps a directory.
+                var (write, read) = WorkspacePaths.SplitRoots(
+                    readOnly ? opened.GrantedRoots : [.. opened.GrantedRoots, path],
+                    readOnly ? [.. opened.ReadOnlyRoots, path] : opened.ReadOnlyRoots,
+                    guards);
+                opened.GrantedRoots = write;
+                opened.ReadOnlyRoots = read;
             });
             if (added) Execution.Changed?.Invoke();
         }).ConfigureAwait(false);
 
         if (!added)
             return $"Refused: session {conversationId} is gone, so nothing could be granted. Do not retry this call.";
-        Execution.Audit(conversationId, $"Granted directory: {path}");
-        return $"Granted: {path} is readable and writable for this session, alongside the workspace. Name it by "
-               + "absolute path in read_file, file_write, list_directory, search_text, find_files, workspace_map, "
-               + "and in run_command's cwd.";
+        Execution.Audit(conversationId, $"Granted directory: {path}{(readOnly ? " (read-only)" : "")}");
+        return WorkspacePaths.GrantedResultFor(path, readOnly);
     }
 
     internal IReadOnlyList<string> ActiveGrantedRoots
         => _active is { } session ? (_sessions.Peek(session.Id) ?? session).GrantedRoots : [];
+
+    internal IReadOnlyList<string> ActiveReadOnlyRoots
+        => _active is { } session ? (_sessions.Peek(session.Id) ?? session).ReadOnlyRoots : [];
 
     internal bool RevokeGrantedRoot(string conversationId, string path)
     {
@@ -219,11 +233,17 @@ internal sealed partial class ChatSessionCoordinator
         var revoked = false;
         _sessions.TryUpdate(conversationId, opened =>
         {
-            var kept = opened.GrantedRoots
+            // Both lists, because the revoke row names a directory and remembering which permission it came with
+            // is not something a person should have to do to take it back.
+            var write = opened.GrantedRoots
                 .Where(granted => !string.Equals(WorkspacePaths.CanonicalRoot(granted), key, StringComparison.Ordinal))
                 .ToList();
-            if (kept.Count == opened.GrantedRoots.Count) return;
-            opened.GrantedRoots = kept;
+            var read = opened.ReadOnlyRoots
+                .Where(granted => !string.Equals(WorkspacePaths.CanonicalRoot(granted), key, StringComparison.Ordinal))
+                .ToList();
+            if (write.Count == opened.GrantedRoots.Count && read.Count == opened.ReadOnlyRoots.Count) return;
+            opened.GrantedRoots = write;
+            opened.ReadOnlyRoots = read;
             revoked = true;
         });
         if (!revoked) return false;
@@ -239,18 +259,21 @@ internal sealed partial class ChatSessionCoordinator
         var guards = new WorkspaceGuards(_dataRoot, Execution.EngineRootsProvider?.Invoke() ?? []);
         if (_sessions.Peek(conversationId) is not { } session) return (GrantVerdict.SessionGone, "");
 
-        var sandbox = new WorkspaceSandbox(session.WorkspaceRoot,
-            WorkspacePaths.NormalizeRoots(session.GrantedRoots, guards));
-        var (verdict, full, detail) = WorkspacePaths.ClassifyGrant(sandbox, guards, path);
-        if (verdict is not GrantVerdict.Granted) return (verdict, detail);
+        var (write, read) = WorkspacePaths.SplitRoots(session.GrantedRoots, session.ReadOnlyRoots, guards);
+        var (verdict, full, detail) = WorkspacePaths.ClassifyGrant(
+            new WorkspaceSandbox(session.WorkspaceRoot, write, read), guards, path);
+        if (verdict is not (GrantVerdict.Granted or GrantVerdict.GrantedReadOnly)) return (verdict, detail);
 
         // The record an approved card writes, guards and all: one grant, whichever door it came through. The
         // write is read back rather than assumed, because the session can be closed between the click and here.
         await ApplyGrantedRootAsync(conversationId, full).ConfigureAwait(false);
-        var landed = (_sessions.Peek(conversationId) ?? session).GrantedRoots.Any(granted =>
-            string.Equals(WorkspacePaths.CanonicalRoot(granted), WorkspacePaths.CanonicalRoot(full),
-                StringComparison.Ordinal));
-        return landed ? (null, "") : (GrantVerdict.SessionGone, "");
+        var reopened = _sessions.Peek(conversationId) ?? session;
+        var wanted = WorkspacePaths.CanonicalRoot(full);
+        var landed = reopened.GrantedRoots.Concat(reopened.ReadOnlyRoots).Any(granted =>
+            string.Equals(WorkspacePaths.CanonicalRoot(granted), wanted, StringComparison.Ordinal));
+        // The verdict that landed rather than a bare "it worked": the panel says 「已授权」 or 「已授权（只读）」 from
+        // the same value the tool answers the model with, so the two doors describe one record one way.
+        return landed ? (verdict, "") : (GrantVerdict.SessionGone, "");
     }
 
     internal Conversation StartConversation(string? providerId = null)
@@ -628,6 +651,7 @@ internal sealed partial class ChatSessionCoordinator
             // the grant would be a copy of the task that has to ask the same question again, and the copy is the
             // one the person already answered.
             GrantedRoots = [.. source.GrantedRoots],
+            ReadOnlyRoots = [.. source.ReadOnlyRoots],
             Messages = prefix,
             ChangeHistoryIds = [.. source.ChangeHistoryIds
                 .Concat(prefix.SelectMany(turn => new[] { turn.ChangeId, turn.UndoRevisionId }))

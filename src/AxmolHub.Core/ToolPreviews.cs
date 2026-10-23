@@ -121,18 +121,25 @@ public static class ToolPreviews
     /// What a grant card is asking for, in the terms the answer is given in: the directory, whether it is there,
     /// whether Hub already knows it — and, on the same line, what a yes would allow. "read and write · this session
     /// only" is part of the card rather than a footnote, because the scope of the yes is the thing being decided: a
-    /// grant that quietly outlived the session, or quietly covered writing, would be an approval nobody gave.
+    /// grant that quietly outlived the session, or quietly covered writing, would be an approval nobody gave. A
+    /// protected location is the one case where the yes is narrower — reading — and the card says which of the
+    /// three places it is, because "Hub's own data" and "one repository's .git" are not the same thing to agree to.
     /// </summary>
     private static string GrantPreview(string path, WorkspaceToolScope scope, IReadOnlyList<string>? projectPaths)
     {
         if (string.IsNullOrWhiteSpace(path)) return "request_directory · (no path given)";
 
-        var facts = DirectoryFacts(path, scope, projectPaths);
+        // Read through the classifier and the guards the gate reads, so a card can never describe a directory
+        // differently than the answer will grade it.
+        var protectedLocation = Path.IsPathRooted(path)
+            ? WorkspacePaths.ProtectedLocationOf(path, scope.Guards)
+            : null;
+        var facts = DirectoryFacts(path, scope, projectPaths, protectedLocation);
         if (Path.IsPathRooted(path)
             && WorkspacePaths.ClassifyWorkspaceTarget(path, scope.WorkspaceRoot, projectPaths, scope.Guards)
             is WorkspaceTarget.SameAsSandbox or WorkspaceTarget.InsideSandbox)
             facts.Add("already inside the session workspace");
-        facts.Add("read and write");
+        facts.Add(protectedLocation is null ? "read and write" : "read only");
         facts.Add("this session only");
         return $"request_directory · {path}\n{string.Join(" · ", facts)}";
     }
@@ -140,13 +147,22 @@ public static class ToolPreviews
     /// <summary>The directory facts the grant card shows. Read through the classifier the tier table reads, so a
     /// card can never describe a directory differently than the gate graded it.</summary>
     private static List<string> DirectoryFacts(string path, WorkspaceToolScope scope,
-        IReadOnlyList<string>? projectPaths)
+        IReadOnlyList<string>? projectPaths, (ProtectedKind Kind, string Anchor)? protectedLocation)
     {
         var facts = new List<string> { Directory.Exists(path) ? "exists" : "does not exist" };
         if (Directory.Exists(Path.Combine(path, ".git"))) facts.Add("git repository");
         if (WorkspacePaths.ClassifyWorkspaceTarget(path, scope.WorkspaceRoot, projectPaths, scope.Guards)
             == WorkspaceTarget.RegisteredProject) facts.Add("registered Hub project");
-        if (WorkspacePaths.IsProtected(path, scope.Guards)) facts.Add("protected location — will be refused");
+        // Named rather than flagged: the person deciding is agreeing to one of three very different places, and
+        // what is in the data directory is the part they cannot see from the path.
+        if (protectedLocation is { } location)
+            facts.Add(location.Kind switch
+            {
+                ProtectedKind.DataRoot => "protected location — Hub's own data: every session's transcript, the "
+                                          + "settings and the logs",
+                ProtectedKind.Engine => "protected location — an engine installation",
+                _ => "protected location — a .git directory: its hooks and history",
+            });
         return facts;
     }
 

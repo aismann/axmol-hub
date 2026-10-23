@@ -71,6 +71,19 @@ internal static class AiWorkspaceChecks
                 throw new Exception($"'{path}' was not refused as a protected root by both verbs.");
         }
 
+        // …and that floor is a *writing* one now. A card that names the location itself opens it for reading — the
+        // analysis the assistant is actually asked for — while a write and a command's directory stay refused, and
+        // a grant made above the location opens nothing inside it: here the workspace contains the data root, and
+        // the data root is still refused through the workspace's own spelling.
+        var hubData = Path.Combine(workspace, "hubdata");
+        var stateFile = Path.Combine(hubData, "state.json");
+        File.WriteAllText(stateFile, "{}\n");
+        var readOnly = new WorkspaceSandbox(workspace, [], [hubData]);
+        if (WorkspacePaths.ResolveRead(readOnly, stateFile, guards).Verdict != WorkspacePathVerdict.Allowed
+            || WorkspacePaths.ResolveWrite(readOnly, stateFile, guards).Verdict != WorkspacePathVerdict.ReadOnlyRoot
+            || WorkspacePaths.VerifyCommandRoot(readOnly, hubData, guards) != WorkspacePathVerdict.ReadOnlyRoot
+            || WorkspacePaths.ResolveRead(WorkspaceSandbox.For(workspace), stateFile, guards).Verdict != WorkspacePathVerdict.ProtectedRoot)
+            throw new Exception("A read-only grant of a protected location did not answer reading yes and writing no.");
         // A directory verb exists for the read-only look-around tools, and it carries the same rule: listing is
         // reading. The workspace root itself being protected is refused too, because a search started there would
         // walk out of the sandbox one file at a time.

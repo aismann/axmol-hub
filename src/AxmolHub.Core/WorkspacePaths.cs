@@ -13,7 +13,13 @@ public enum WorkspacePathVerdict
     /// than a second meaning for <see cref="EscapesWorkspace"/> because the way out is different: the spelling was
     /// fine and the place was not, so the remedy is a grant and not a rewritten path.</summary>
     OutsideRoots,
+    /// <summary>A protected location — the Hub data directory, an engine installation or a .git — that no grant
+    /// of this session names. Reading it takes one of those cards; writing it takes nothing this build can grant.
+    /// </summary>
     ProtectedRoot,
+    /// <summary>The directory this session holds for reading only, because it is a protected location: the read
+    /// verbs may use it, and every write and a shell's <c>cwd</c> may not.</summary>
+    ReadOnlyRoot,
     ReparsePoint,
     ExtensionNotAllowed,
     NotAFile,
@@ -22,7 +28,8 @@ public enum WorkspacePathVerdict
 }
 
 public readonly record struct WorkspacePath(
-    WorkspacePathVerdict Verdict, string Full, string Relative, string Root = "", bool Granted = false)
+    WorkspacePathVerdict Verdict, string Full, string Relative, string Root = "", bool Granted = false,
+    bool ReadOnly = false)
 {
     public bool IsAllowed => Verdict == WorkspacePathVerdict.Allowed;
 
@@ -43,26 +50,42 @@ public readonly record struct WorkspacePath(
 
 /// <summary>
 /// Roots the assistant never writes into, whatever the approval mode says. <see cref="ToolApprovalModes.Full"/>
-/// promises "nothing asks", not "anything goes": these stay closed.
+/// promises "nothing asks", not "anything goes": these stay closed to every writing verb, and to a shell's
+/// <c>cwd</c>, which runs with write access whatever the call was for. The data directory and an engine
+/// installation are on it because Hub or the toolchain owns them, and <c>.git</c> because rewriting history is
+/// never what a coding request meant.
 ///
-/// <para>This is the list in the other direction from <see cref="WorkspaceSandbox.Granted"/>, and the two never
-/// meet: a grant says where the assistant may work because a person pointed at it, a guard says what no grant and
-/// no mode can open. The data directory and an engine installation are on it because Hub or the toolchain owns
-/// them, and <c>.git</c> because rewriting history is never what a coding request meant.</para>
+/// <para>What they no longer close is <b>reading</b>. A person may open one of these places to a session with a
+/// <c>request_directory</c> card, and what lands is a read-only grant: analysing Hub's own logs, one session file
+/// or an engine's headers is a thing a person can want, while nobody wants the assistant editing them. The grant
+/// has to name the location itself — a grant <i>above</i> it does not count, because a home directory is granted
+/// for the project inside it and not for Hub's records. See <see cref="WorkspacePaths.CoversProtected"/>.</para>
 /// </summary>
 public sealed record WorkspaceGuards(string? DataRoot, IReadOnlyList<string> EngineRoots);
+
+/// <summary>Which protected location a path sits in. Named separately from "protected or not" because the grant
+/// card has to tell a person what they are opening: Hub's own records, an engine's installation, or one
+/// repository's <c>.git</c> are three different things to say yes to.</summary>
+public enum ProtectedKind
+{
+    DataRoot,
+    Engine,
+    Git,
+}
 
 /// <summary>
 /// Every directory one request's file and command tools may touch: the session's workspace — the root the person
 /// pointed the session at, and the only one a relative path resolves against — plus the directories the person has
-/// granted this session, which are addressed absolutely.
+/// granted this session, which are addressed absolutely. A grant is read-and-write, except on a protected
+/// location, where it is read only: that second list is <see cref="ReadOnly"/>.
 ///
 /// <para>A grant adds a place to work; it never moves the workspace. Moving it stays the person's own move, made
 /// on the composer's chip, because the directory a session is born into is what the sidebar groups it by, what the
 /// repository pane reads and what a command runs in by default — none of which a reference checkout two folders
 /// away should change.</para>
 /// </summary>
-public sealed record WorkspaceSandbox(string? Primary, IReadOnlyList<string> Granted)
+public sealed record WorkspaceSandbox(
+    string? Primary, IReadOnlyList<string> Granted, IReadOnlyList<string>? ReadOnly = null)
 {
     public static WorkspaceSandbox Empty { get; } = new(null, []);
 
@@ -70,16 +93,29 @@ public sealed record WorkspaceSandbox(string? Primary, IReadOnlyList<string> Gra
     /// to, an assertion that names one folder — says so here rather than with a list of one.</summary>
     public static WorkspaceSandbox For(string? root) => new(root, []);
 
+    /// <summary>The directories a person approved for reading only. A protected location is the only thing that can
+    /// land here — the write floor is what no grant opens — and it is its own list rather than a flag on a grant
+    /// because the two answers are stored apart: a session file whose writable half lost an entry still reads what
+    /// it was allowed to read.</summary>
+    public IReadOnlyList<string> ReadOnlyRoots => ReadOnly ?? [];
+
+    /// <summary>Every directory beyond the workspace this session holds, whichever permission it holds it with.
+    /// The classifier asks this list one question — "has a card already opened that place?" — because "you can
+    /// already read this" is one fact however it was granted.</summary>
+    public IReadOnlyList<string> Grants { get; } = RootsOf(null, Granted, ReadOnly);
+
     /// <summary>Primary first, then the grants in the order they were approved. A path is graded against them in
     /// this order, so a directory reached by both spellings resolves as the workspace and keeps the relative
     /// spelling every older session knows it by.</summary>
-    public IReadOnlyList<string> Roots { get; } = RootsOf(Primary, Granted);
+    public IReadOnlyList<string> Roots { get; } = RootsOf(Primary, Granted, ReadOnly);
 
-    private static IReadOnlyList<string> RootsOf(string? primary, IReadOnlyList<string>? granted)
+    private static IReadOnlyList<string> RootsOf(
+        string? primary, IReadOnlyList<string>? granted, IReadOnlyList<string>? readOnly)
     {
         var roots = new List<string>();
         if (primary is { Length: > 0 }) roots.Add(primary);
         roots.AddRange(granted ?? []);
+        roots.AddRange(readOnly ?? []);
         return roots;
     }
 }
@@ -104,12 +140,15 @@ public enum WorkspaceTarget
 /// <c>request_directory</c> card, or the person on the workspace menu's own grant row. One ruling, two renderings:
 /// <see cref="WorkspaceTools.RequestDirectory"/> turns these into sentences for the model, the panel turns them
 /// into the interface's own words, and neither can drift from the other because the answer is a value rather than
-/// a string. <see cref="Granted"/> is the only one that changes anything.
+/// a string. <see cref="Granted"/> and <see cref="GrantedReadOnly"/> are the two that change anything.
 /// </summary>
 public enum GrantVerdict
 {
     /// <summary>The directory may be added to the session's sandbox.</summary>
     Granted,
+    /// <summary>The directory may be added for reading only: it is a protected location — the Hub data directory,
+    /// an engine installation or a .git — so a person's card opens the reading and nothing opens the writing.</summary>
+    GrantedReadOnly,
     /// <summary>No path in the argument at all.</summary>
     NoPath,
     /// <summary>A relative path: a grant is always named by its absolute path.</summary>
@@ -118,8 +157,6 @@ public enum GrantVerdict
     Unusable,
     /// <summary>Nothing at that path, or a file rather than a directory.</summary>
     Missing,
-    /// <summary>The Hub data directory, an engine installation or a .git: refused in every mode.</summary>
-    Protected,
     /// <summary>The session's own workspace, which needs no grant.</summary>
     SameAsWorkspace,
     /// <summary>Inside the workspace, where a relative path already reaches.</summary>
@@ -223,55 +260,73 @@ public static class WorkspacePaths
     }
 
     /// <summary>
-    /// How many directories one session may hold beyond its workspace. A hand-sized number, the same shape as
-    /// <see cref="ToolTrust.Limit"/>: a grant is a person's decision, and a writer nobody is watching must not be
-    /// able to grow the session file without a bound.
+    /// How many directories one session may hold beyond its workspace, counted per list: eight it may write, eight
+    /// it may only read. A hand-sized number, the same shape as <see cref="ToolTrust.Limit"/>: a grant is a
+    /// person's decision, and a writer nobody is watching must not be able to grow the session file without a bound.
     /// </summary>
     public const int MaxGrantedRoots = 8;
 
     /// <summary>
-    /// The list a session's grants are read and written through, in one place because four callers touch it — the
-    /// session store on load and on save, the request that builds a sandbox, the tool that adds a directory, and
-    /// the UI that revokes one — and they must not disagree about what an entry means.
+    /// The two lists a session's grants are read and written through, in one place because five callers touch them
+    /// — the session store on load and on save, the request that builds a sandbox, the tool that adds a directory,
+    /// and the UI that revokes one — and they must not disagree about what an entry means.
     ///
-    /// <para>An entry has to be a directory this build can resolve and reach, and one the guards do not already
-    /// refuse: a list that kept the data directory would be a list every later reader has to re-check, and the
-    /// check would eventually be forgotten somewhere. The user's own spelling is what survives — the canonical key
-    /// only decides whether two entries are the same directory. <paramref name="guards"/> is optional because the
-    /// session store normalizes on load and on save without knowing the engine roots; every path is graded against
-    /// the guards again when it is used, which is the floor under both.</para>
+    /// <para>Which list an entry lands in is decided here and nowhere else: a protected location is demoted to
+    /// read-only. That is also the answer for a session file that put one in the writable list by hand, and for a
+    /// directory that became protected after the grant was made (an engine installed inside a granted folder).
+    /// An entry has to be a directory this build can resolve and reach; the user's own spelling is what survives —
+    /// the canonical key only decides whether two entries are the same directory, and one directory appears once
+    /// across both lists. <paramref name="guards"/> is optional because the session store normalizes on load and on
+    /// save without knowing the engine roots; every path is graded against the guards again when it is used, which
+    /// is the floor under both.</para>
     /// </summary>
-    public static List<string> NormalizeRoots(IEnumerable<string>? roots, WorkspaceGuards? guards = null)
+    public static (List<string> Write, List<string> ReadOnly) SplitRoots(
+        IEnumerable<string>? granted, IEnumerable<string>? readOnly, WorkspaceGuards? guards = null)
     {
-        var kept = new List<string>();
-        if (roots is null) return kept;
-
+        var write = new List<string>();
+        var read = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var root in roots)
+
+        void Take(IEnumerable<string>? roots)
         {
-            if (kept.Count >= MaxGrantedRoots) break;
-            if (string.IsNullOrWhiteSpace(root)) continue;
-
-            string full;
-            try
+            foreach (var root in roots ?? [])
             {
-                full = Path.GetFullPath(root.Trim());
-            }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
-            {
-                continue;
-            }
+                if (string.IsNullOrWhiteSpace(root)) continue;
 
-            if (!Directory.Exists(full)) continue;
-            if (guards is not null && IsProtected(full, guards)) continue;
-            // Folded to compare and never to store: `D:\dev\ws` and `d:/DEV/ws` are one directory, and a list that
-            // showed them twice would offer the same revoke button twice.
-            if (CanonicalRoot(full) is not { } key || !seen.Add(key)) continue;
-            kept.Add(full);
+                string full;
+                try
+                {
+                    full = Path.GetFullPath(root.Trim());
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException
+                                               or System.Security.SecurityException)
+                {
+                    continue;
+                }
+
+                if (!Directory.Exists(full)) continue;
+                // Folded to compare and never to store: `D:\dev\ws` and `d:/DEV/ws` are one directory, and a list
+                // that showed them twice would offer the same revoke button twice.
+                if (CanonicalRoot(full) is not { } key || !seen.Add(key)) continue;
+                if (guards is not null && IsProtected(full, guards))
+                {
+                    if (read.Count < MaxGrantedRoots) read.Add(full);
+                    continue;
+                }
+
+                if (write.Count < MaxGrantedRoots) write.Add(full);
+            }
         }
 
-        return kept;
+        Take(granted);
+        Take(readOnly);
+        return (write, read);
     }
+
+    /// <summary>The writable half on its own, for a caller that holds one list — a caller with no read-only grant to
+    /// carry. Same rules, one answer.</summary>
+    public static List<string> NormalizeRoots(IEnumerable<string>? roots, WorkspaceGuards? guards = null)
+        => SplitRoots(roots, null, guards).Write;
 
     public static WorkspacePath ResolveRead(WorkspaceSandbox sandbox, string relative, WorkspaceGuards guards)
     {
@@ -291,6 +346,10 @@ public static class WorkspacePaths
     {
         var resolved = Resolve(sandbox, relative, guards);
         if (!resolved.IsAllowed) return resolved;
+        // A read-only grant is the whole of what a protected location gets, and the refusal says so rather than
+        // claiming the path is protected: the model *was* granted this directory and needs to know what the grant
+        // covered.
+        if (resolved.ReadOnly) return WorkspacePath.Refuse(WorkspacePathVerdict.ReadOnlyRoot, resolved.Display);
         if (Directory.Exists(resolved.Full)) return WorkspacePath.Refuse(WorkspacePathVerdict.NotAFile, resolved.Display);
         if (!IsWritableText(Path.GetFileName(resolved.Full)))
             return WorkspacePath.Refuse(WorkspacePathVerdict.ExtensionNotAllowed, resolved.Display);
@@ -336,9 +395,16 @@ public static class WorkspacePaths
     /// file tool goes through — so "this command stays inside a directory the person allowed" and "this command
     /// costs a card" are one expression rather than two that can drift apart — asked of a directory argument that
     /// is empty for the workspace itself.
+    ///
+    /// <para>A read-only grant is refused here too, and that is the honest reading of what a shell is: it runs
+    /// with write access whatever the card said the directory was for, so a command is not a read. Listing,
+    /// searching and reading files inside that directory stay allowed.</para>
     /// </summary>
     public static WorkspacePathVerdict VerifyCommandRoot(WorkspaceSandbox sandbox, string? root, WorkspaceGuards guards)
-        => ResolveDirectory(sandbox, root, guards).Verdict;
+    {
+        var resolved = ResolveDirectory(sandbox, root, guards);
+        return resolved.IsAllowed && resolved.ReadOnly ? WorkspacePathVerdict.ReadOnlyRoot : resolved.Verdict;
+    }
 
     public static WorkspacePathVerdict VerifyCommandRoot(string? root, WorkspaceGuards guards)
         => VerifyCommandRoot(WorkspaceSandbox.For(root), root, guards);
@@ -364,8 +430,10 @@ public static class WorkspacePaths
             return WorkspaceTarget.Unreadable;
         }
 
-        // A protected root is refused by the tool itself in every mode, so the gate never gets to be lenient about
-        // it; classifying it as anything but unreadable would let a card promise a sandbox the write will refuse.
+        // A protected location cannot be a session's workspace in any mode, so the gate never gets to be lenient
+        // about one; classifying it as anything but unreadable would let a card promise a sandbox the tools would
+        // refuse. Reading it is a different question with a different answer, and that one is a grant — see
+        // ClassifyGrant, which offers it as read-only.
         if (IsProtected(full, guards)) return WorkspaceTarget.Unreadable;
 
         var wanted = CanonicalRoot(full);
@@ -385,18 +453,71 @@ public static class WorkspacePaths
         return WorkspaceTarget.Other;
     }
 
-    public static bool IsProtected(string fullPath, WorkspaceGuards guards)
+    /// <summary>
+    /// The protected location <paramref name="fullPath"/> sits in, or null when it sits in none. Returned as the
+    /// location itself rather than a flag because a grant opens a <i>place</i>: the question
+    /// <see cref="CoversProtected"/> asks needs that place spelled out, and the grant card needs to know which of
+    /// the three it is.
+    ///
+    /// <para><c>.git</c> is caught segment by segment rather than only as a root, and the anchor is the directory
+    /// up to and including that segment — so one card can open a repository's <c>.git</c> and a card on the
+    /// repository above it cannot.</para>
+    /// </summary>
+    public static (ProtectedKind Kind, string Anchor)? ProtectedLocationOf(string fullPath, WorkspaceGuards guards)
     {
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        if (IsInside(fullPath, guards.DataRoot, comparison)) return true;
+        if (IsInside(fullPath, guards.DataRoot, comparison)) return (ProtectedKind.DataRoot, guards.DataRoot!);
         foreach (var engineRoot in guards.EngineRoots)
-            if (IsInside(fullPath, engineRoot, comparison)) return true;
+            if (IsInside(fullPath, engineRoot, comparison)) return (ProtectedKind.Engine, engineRoot);
 
-        // .git is refused segment by segment, not just as the workspace root: rewriting history or hooks is
-        // never what a coding request meant.
-        foreach (var segment in fullPath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
-            if (segment.Equals(".git", StringComparison.Ordinal)) return true;
-        return false;
+        // Rewriting history or hooks is never what a coding request meant, however deep in the tree it is asked.
+        var segments = fullPath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var at = Array.FindIndex(segments, segment => segment.Equals(".git", StringComparison.Ordinal));
+        return at < 0
+            ? null
+            : (ProtectedKind.Git, string.Join(Path.DirectorySeparatorChar.ToString(), segments, 0, at + 1));
+    }
+
+    public static bool IsProtected(string fullPath, WorkspaceGuards guards)
+        => ProtectedLocationOf(fullPath, guards) is not null;
+
+    /// <summary>
+    /// Whether a grant this session holds opens <paramref name="anchor"/>: the grant has to be that location or
+    /// sit inside it. A grant <i>above</i> it deliberately does not count — a home directory, or the folder the
+    /// data root happens to live in, is granted for the project inside it, and reading Hub's own records was not
+    /// what that card said. It is the same rule that keeps a repository's <c>.git</c> out of a grant on the
+    /// repository.
+    /// </summary>
+    public static bool CoversProtected(string? grantedRoot, string? anchor)
+        => anchor is not null
+           && grantedRoot is not null
+           && (string.Equals(CanonicalRoot(grantedRoot), CanonicalRoot(anchor), StringComparison.Ordinal)
+               || IsUnder(anchor, grantedRoot));
+
+    /// <summary>Whether the guards refuse this path even now: a protected location that no grant of this session
+    /// names. The one expression every resolving verb asks, so "reading the data root needs a card" cannot be true
+    /// in one place and false in another.</summary>
+    private static bool RefusedAsProtected(WorkspaceSandbox sandbox, string full, WorkspaceGuards guards)
+        => ProtectedLocationOf(full, guards) is { } location
+           && !sandbox.Grants.Any(granted => CoversProtected(granted, location.Anchor));
+
+    /// <summary>Whether this path sits inside a directory granted for reading only. Asked of the path rather than
+    /// of the root it resolved in, because a relative path can land there too when the workspace contains the
+    /// place a read-only grant was made for — one directory, reachable by two spellings.</summary>
+    private static bool ReadOnlyHere(WorkspaceSandbox sandbox, string full)
+    {
+        if (sandbox.ReadOnlyRoots.Count == 0) return false;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        try
+        {
+            return sandbox.ReadOnlyRoots.Any(root => IsInside(full, root, comparison));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException
+                                       or System.Security.SecurityException)
+        {
+            // A root this build cannot resolve holds nothing, which is what the next reader would say too.
+            return false;
+        }
     }
 
     private static WorkspacePath Resolve(WorkspaceSandbox sandbox, string relative, WorkspaceGuards guards)
@@ -425,15 +546,17 @@ public static class WorkspacePaths
             return WorkspacePath.Refuse(WorkspacePathVerdict.EscapesWorkspace, relative);
         }
 
-        if (IsProtected(full, guards)) return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, relative);
+        if (RefusedAsProtected(sandbox, full, guards)) return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, relative);
         if (ContainsReparsePoint(full, workspaceRoot)) return WorkspacePath.Refuse(WorkspacePathVerdict.ReparsePoint, relative);
-        return new WorkspacePath(WorkspacePathVerdict.Allowed, full, Path.GetRelativePath(workspaceRoot, full), workspaceRoot);
+        return new WorkspacePath(WorkspacePathVerdict.Allowed, full, Path.GetRelativePath(workspaceRoot, full), workspaceRoot,
+            ReadOnly: ReadOnlyHere(sandbox, full));
     }
 
     /// <summary>
-    /// An absolute path, graded against every root this session has. The protected locations are asked first and
-    /// on their own: a grant must never open one, and a refusal that said "not one of your roots" about the Hub
-    /// data directory would send the model off to request a grant it can never be given.
+    /// An absolute path, graded against every root this session has. A protected location is refused only when no
+    /// grant this session holds names it: one card opens the reading, and its refusal has to say so — a refusal
+    /// that said "not one of your roots" about the Hub data directory would send the model off to ask for the very
+    /// grant that would work, spelled as if it could not.
     ///
     /// <para>The reparse walk stops at the root that matched rather than at the workspace, because the directory a
     /// person granted is the boundary now: a link between it and the file is a way out of <i>that</i> directory,
@@ -451,7 +574,7 @@ public static class WorkspacePaths
             return WorkspacePath.Refuse(WorkspacePathVerdict.EscapesWorkspace, path);
         }
 
-        if (IsProtected(full, guards)) return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, path);
+        if (RefusedAsProtected(sandbox, full, guards)) return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, path);
 
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         foreach (var root in sandbox.Roots)
@@ -470,7 +593,7 @@ public static class WorkspacePaths
             if (!inside) continue;
             if (ContainsReparsePoint(full, root)) return WorkspacePath.Refuse(WorkspacePathVerdict.ReparsePoint, path);
             return new WorkspacePath(WorkspacePathVerdict.Allowed, full, Path.GetRelativePath(root, full), root,
-                !SameRoot(root, sandbox.Primary, comparison));
+                !SameRoot(root, sandbox.Primary, comparison), ReadOnlyHere(sandbox, full));
         }
 
         return WorkspacePath.Refuse(WorkspacePathVerdict.OutsideRoots, path);
@@ -540,27 +663,34 @@ public static class WorkspacePaths
         }
 
         if (!Directory.Exists(full)) return (GrantVerdict.Missing, full, "");
-        // The floor under every card: a person cannot approve what the guard would refuse in every mode, and a card
-        // that promised the Hub data directory or a .git would be a card that lies.
-        if (IsProtected(full, guards)) return (GrantVerdict.Protected, full, "");
+        // A protected location is opened by its own card and by nothing else, and what it lands is a read-only
+        // grant. So the two arms that ask "does the workspace already reach this?" are skipped for it: a relative
+        // path never reaches the Hub data directory however the workspace is spelled, and answering "inside the
+        // session workspace" would promise a sandbox the tools would refuse.
+        var readOnly = IsProtected(full, guards);
+        var wanted = CanonicalRoot(full);
 
-        if (CanonicalRoot(sandbox.Primary) is { } workspace)
+        if (!readOnly && CanonicalRoot(sandbox.Primary) is { } workspace)
         {
-            if (string.Equals(CanonicalRoot(full), workspace, StringComparison.Ordinal))
+            if (string.Equals(wanted, workspace, StringComparison.Ordinal))
                 return (GrantVerdict.SameAsWorkspace, full, "");
             if (IsUnder(workspace, full)) return (GrantVerdict.InsideWorkspace, full, "");
             if (IsUnder(full, workspace)) return (GrantVerdict.ContainsWorkspace, full, workspace);
         }
 
-        if (sandbox.Granted.Any(granted =>
-                string.Equals(CanonicalRoot(granted), CanonicalRoot(full), StringComparison.Ordinal)))
+        if (sandbox.Grants.Any(granted =>
+                string.Equals(CanonicalRoot(granted), wanted, StringComparison.Ordinal)))
             return (GrantVerdict.AlreadyGranted, full, "");
         // Nesting is named rather than merged: a request quietly covered by a grant already held, or one that would
         // cover a grant on its own, is answered with which directory is in the way — a second, silently wider grant
-        // is a card promising one folder and a session holding two.
-        if (sandbox.Granted.FirstOrDefault(granted => IsUnder(granted, full)) is { } alreadyHeld)
+        // is a card promising one folder and a session holding two. "You can already read this" is one fact however
+        // the permission arrived, so both lists are asked.
+        if (sandbox.Grants.FirstOrDefault(granted => IsUnder(granted, full)) is { } alreadyHeld)
             return (GrantVerdict.InsideGrant, full, alreadyHeld);
-        if (sandbox.Granted.FirstOrDefault(granted => IsUnder(full, granted)) is { } underneath)
+        // A protected location and a grant *below* it are left to overlap on purpose: the person asked for the
+        // whole place, the wider read is what the card offered, and nothing a read-only grant can cover is a loss.
+        if (readOnly) return (GrantVerdict.GrantedReadOnly, full, "");
+        if (sandbox.Grants.FirstOrDefault(granted => IsUnder(full, granted)) is { } underneath)
             return (GrantVerdict.ContainsGrant, full, underneath);
 
         return (GrantVerdict.Granted, full, "");
@@ -607,8 +737,15 @@ public static class WorkspacePaths
             + "workspace. Do not retry another spelling of this path.",
         WorkspacePathVerdict.ProtectedRoot =>
             $"Refused: '{detail}' is inside a protected location (the Hub data directory, an engine installation "
-            + "or a .git directory). Those are read-only for the assistant in every approval mode, and a granted "
-            + "directory does not open them. Do not retry; tell the user what you needed and let them do it.",
+            + "or a .git directory) and this session holds no grant for it. Reading one of those is worth asking "
+            + "for: call request_directory with its absolute path and one approval card opens it for this session, "
+            + "read-only. Writing there stays refused in every approval mode, so a change is the user's to make. "
+            + "Do not retry another spelling of this path.",
+        WorkspacePathVerdict.ReadOnlyRoot =>
+            $"Refused: '{detail}' is granted to this session for reading only, because it is a protected location. "
+            + "Use read_file, list_directory, search_text, find_files or workspace_map on it. A write, and a "
+            + "command run there — a shell runs with write access — would need a permission this grant never gave. "
+            + "Ask the user to make that change; do not retry.",
         WorkspacePathVerdict.ReparsePoint =>
             $"Refused: '{detail}' resolves through a symbolic link or junction, which could point outside the "
             + "workspace. Do not retry through the link; ask the user for the real path.",
@@ -626,4 +763,20 @@ public static class WorkspacePaths
             + "read_file first and edit it with the exact text to replace. Do not retry an empty old_string.",
         _ => "The path was accepted.",
     };
+
+    /// <summary>
+    /// What the model is told when a card actually landed a grant. One sentence with two renderings, because the
+    /// tool body answers with it when there is no session to persist to and the app answers with it after the
+    /// session file was written: "readable and writable" and "readable only" are the whole difference in what the
+    /// model may do there next, and two spellings of it would eventually stop agreeing.
+    /// </summary>
+    public static string GrantedResultFor(string full, bool readOnly)
+        => readOnly
+            ? $"Granted read-only: '{full}' is a protected location, so this session may read it and never write "
+              + "it. Name it by absolute path in read_file, list_directory, search_text, find_files or "
+              + "workspace_map. file_write will refuse it and no command can run there; ask the user for a change, "
+              + "and do not ask for this directory again."
+            : $"Granted: {full} is readable and writable for this session, alongside the workspace. Name it by "
+              + "absolute path in read_file, file_write, list_directory, search_text, find_files, workspace_map, "
+              + "and in run_command's cwd.";
 }

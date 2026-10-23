@@ -210,6 +210,14 @@ public sealed partial class ChatWorkspace : IDisposable
     public IReadOnlyList<string> ActiveGrantedRoots { get => _sessions.ActiveGrantedRoots; }
 
     /// <summary>
+    /// The directories this session may read and not write, which is what a grant of a protected location lands:
+    /// Hub's own data directory, an engine installation, a <c>.git</c>. Read by the chip and the menu beside the
+    /// writable ones, because a permission a person gave has to be visible to be taken back — and read by the same
+    /// unnormalized road, for the same reason.
+    /// </summary>
+    public IReadOnlyList<string> ActiveReadOnlyRoots { get => _sessions.ActiveReadOnlyRoots; }
+
+    /// <summary>
     /// Takes one grant away. The next request is built without it, so every tool refuses that directory at once —
     /// including a revert of a write made there, which is the honest answer rather than a path followed after the
     /// person said no. Nothing already written on disk is touched, and the workspace is not involved.
@@ -220,7 +228,9 @@ public sealed partial class ChatWorkspace : IDisposable
     /// they name and records it exactly as an approved card would. A second entrance, never a second rule — the
     /// checks are <see cref = "WorkspacePaths.ClassifyGrant"/>, the ones the card's body already runs — because the
     /// alternative is a permission that exists only if the model decides to ask for it, and a task parked on a
-    /// model's mood is not a sandbox. <c>null</c> means the grant was recorded; every other answer is a
+    /// model's mood is not a sandbox. <see cref="GrantVerdict.Granted"/> and
+    /// <see cref="GrantVerdict.GrantedReadOnly"/> are the two that landed — the second says the record it wrote is
+    /// read-only, because a protected location is what was asked for. Every other answer is a
     /// <see cref = "GrantVerdict"/> for the panel to put in its own words, with <c>Detail</c> naming the other
     /// directory that answer turns on (empty when there is none).
     /// </summary>

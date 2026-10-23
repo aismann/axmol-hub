@@ -554,17 +554,37 @@ internal static class AiToolsChecks
         // the second root, or "src/lib.cpp" would name two different files.
         if (WorkspacePaths.ResolveRead(grantBox, "src/lib.cpp", guards).Verdict != WorkspacePathVerdict.NotAFile)
             throw new Exception("A relative path resolved against a granted directory.");
-        // The floor under every grant: a protected location is refused even inside a directory a person granted,
-        // because the grant says "this folder" and the guard says "never these, whatever anybody approved".
+        // The write floor under every grant: a protected location inside a directory a person granted is still
+        // refused to every writing verb, because the grant says "this folder" and the guard says "never these,
+        // whatever anybody approved". What a card *does* open is the location it named, and that is the pair after
+        // this one — reading on, writing still off, and a grant made above the location opening neither.
         if (WorkspacePaths.ResolveWrite(grantBox, Path.Combine(grantedRoot, ".git", "config"), guards).Verdict != WorkspacePathVerdict.ProtectedRoot || WorkspacePaths.ResolveWrite(new WorkspaceSandbox(workspace, [dataRoot]), Path.Combine(dataRoot, "state.json"), guards).Verdict != WorkspacePathVerdict.ProtectedRoot)
-            throw new Exception("A grant opened a protected location.");
+            throw new Exception("A grant on a directory above a protected location opened it.");
+        // One card on the location itself, and the same place answers two ways. The anchor rule is what the last
+        // clause pins: a grant *above* the location opens nothing in it, so pointing the assistant at its home
+        // directory does not hand it Hub's records — the card has to name the place.
+        var dataFile = Path.Combine(dataRoot, "state.json");
+        File.WriteAllText(dataFile, "{\"one\":1}\n");
+        var readOnlyBox = new WorkspaceSandbox(workspace, [], [dataRoot]);
+        var aboveBox = new WorkspaceSandbox(workspace, [toolRoot], []);
+        if (WorkspacePaths.ResolveRead(readOnlyBox, dataFile, guards).Verdict != WorkspacePathVerdict.Allowed
+            || WorkspacePaths.ResolveDirectory(readOnlyBox, dataRoot, guards).Verdict != WorkspacePathVerdict.Allowed
+            || WorkspacePaths.ResolveWrite(readOnlyBox, dataFile, guards).Verdict != WorkspacePathVerdict.ReadOnlyRoot
+            || WorkspacePaths.VerifyCommandRoot(readOnlyBox, dataRoot, guards) != WorkspacePathVerdict.ReadOnlyRoot
+            || WorkspacePaths.ResolveRead(aboveBox, dataFile, guards).Verdict != WorkspacePathVerdict.ProtectedRoot
+            || WorkspacePaths.ResolveWrite(aboveBox, dataFile, guards).Verdict != WorkspacePathVerdict.ProtectedRoot)
+            throw new Exception("A read-only grant did not read-only: the data directory was writable, or a grant above it opened it.");
         // A command's directory goes through the same resolution, so "this call stays inside a directory the person
         // allowed" and "this call is exempt from a card" are one expression rather than two that can drift apart.
         if (WorkspacePaths.VerifyCommandRoot(grantBox, grantedRoot, guards) != WorkspacePathVerdict.Allowed || WorkspacePaths.VerifyCommandRoot(grantBox, "", guards) != WorkspacePathVerdict.Allowed || WorkspacePaths.VerifyCommandRoot(grantBox, outsiderRoot, guards) != WorkspacePathVerdict.OutsideRoots || WorkspacePaths.VerifyCommandRoot(grantBox, dataRoot, guards) != WorkspacePathVerdict.ProtectedRoot)
             throw new Exception("A command's directory was not graded against every root the session holds.");
-        // ── request_directory: the card is the mechanism, so the body's own refusals are what it answers ──
-        if (!(await tools.RequestDirectory("relative/path")).Contains("not an absolute path", StringComparison.Ordinal) || !(await tools.RequestDirectory(Path.Combine(toolRoot, "no-such-folder"))).Contains("does not exist", StringComparison.Ordinal) || !(await tools.RequestDirectory(dataRoot)).Contains("protected location", StringComparison.Ordinal) || !(await tools.RequestDirectory(Path.Combine(workspace, "src"))).Contains("inside the session workspace", StringComparison.Ordinal) || !(await tools.RequestDirectory(toolRoot)).Contains("contains the session workspace", StringComparison.Ordinal))
-            throw new Exception("request_directory accepted a relative, missing, protected, internal or enclosing directory.");
+        // ── request_directory: the card is the mechanism, so the body's own answers are what it gives — and a
+        // protected location is answered with a read-only grant rather than a refusal ──
+        var protectedGrantAnswer = await tools.RequestDirectory(dataRoot);
+        if (!protectedGrantAnswer.Contains("Granted read-only", StringComparison.Ordinal) || !protectedGrantAnswer.Contains("absolute path", StringComparison.Ordinal) || !WorkspacePaths.ResultFor(WorkspacePathVerdict.ProtectedRoot, dataFile).Contains("request_directory", StringComparison.Ordinal))
+            throw new Exception($"A protected location was not granted read-only, or its refusal stopped naming the door:{Environment.NewLine}{protectedGrantAnswer}");
+        if (!(await tools.RequestDirectory("relative/path")).Contains("not an absolute path", StringComparison.Ordinal) || !(await tools.RequestDirectory(Path.Combine(toolRoot, "no-such-folder"))).Contains("does not exist", StringComparison.Ordinal) || !(await tools.RequestDirectory(Path.Combine(workspace, "src"))).Contains("inside the session workspace", StringComparison.Ordinal) || !(await tools.RequestDirectory(toolRoot)).Contains("contains the session workspace", StringComparison.Ordinal))
+            throw new Exception("request_directory accepted a relative, missing, internal or enclosing directory.");
         // The description is the only sentence the model reads before it decides whether asking is even allowed, and
         // the card *is* the permission: a model that waits to be authorized in prose parks the task forever, which is
         // exactly what one did while this line was missing.
@@ -579,7 +599,7 @@ internal static class AiToolsChecks
         var grantParent = Path.Combine(root, "grant-parent");
         var grantLeaf = Path.Combine(grantParent, "leaf");
         Directory.CreateDirectory(grantLeaf);
-        if (GradeGrant(WorkspaceSandbox.For(workspace), guards, "relative/path") != GrantVerdict.NotAbsolute || GradeGrant(WorkspaceSandbox.For(workspace), guards, "") != GrantVerdict.NoPath || GradeGrant(WorkspaceSandbox.For(workspace), guards, Path.Combine(toolRoot, "no-such-folder")) != GrantVerdict.Missing || GradeGrant(WorkspaceSandbox.For(workspace), guards, dataRoot) != GrantVerdict.Protected || GradeGrant(WorkspaceSandbox.For(workspace), guards, workspace) != GrantVerdict.SameAsWorkspace || GradeGrant(WorkspaceSandbox.For(workspace), guards, Path.Combine(workspace, "src")) != GrantVerdict.InsideWorkspace || GradeGrant(WorkspaceSandbox.For(workspace), guards, toolRoot) != GrantVerdict.ContainsWorkspace || GradeGrant(WorkspaceSandbox.For(workspace), guards, outsiderRoot) != GrantVerdict.Granted || GradeGrant(new WorkspaceSandbox(workspace, [grantedRoot]), guards, grantedRoot) != GrantVerdict.AlreadyGranted || GradeGrant(new WorkspaceSandbox(workspace, [grantedRoot]), guards, Path.Combine(grantedRoot, "src")) != GrantVerdict.InsideGrant || GradeGrant(new WorkspaceSandbox(outsiderRoot, [grantLeaf]), guards, grantParent) != GrantVerdict.ContainsGrant)
+        if (GradeGrant(WorkspaceSandbox.For(workspace), guards, "relative/path") != GrantVerdict.NotAbsolute || GradeGrant(WorkspaceSandbox.For(workspace), guards, "") != GrantVerdict.NoPath || GradeGrant(WorkspaceSandbox.For(workspace), guards, Path.Combine(toolRoot, "no-such-folder")) != GrantVerdict.Missing || GradeGrant(WorkspaceSandbox.For(workspace), guards, dataRoot) != GrantVerdict.GrantedReadOnly || GradeGrant(WorkspaceSandbox.For(workspace), guards, Path.Combine(grantedRoot, ".git")) != GrantVerdict.GrantedReadOnly || GradeGrant(new WorkspaceSandbox(workspace, [], [dataRoot]), guards, dataRoot) != GrantVerdict.AlreadyGranted || GradeGrant(WorkspaceSandbox.For(workspace), guards, workspace) != GrantVerdict.SameAsWorkspace || GradeGrant(WorkspaceSandbox.For(workspace), guards, Path.Combine(workspace, "src")) != GrantVerdict.InsideWorkspace || GradeGrant(WorkspaceSandbox.For(workspace), guards, toolRoot) != GrantVerdict.ContainsWorkspace || GradeGrant(WorkspaceSandbox.For(workspace), guards, outsiderRoot) != GrantVerdict.Granted || GradeGrant(new WorkspaceSandbox(workspace, [grantedRoot]), guards, grantedRoot) != GrantVerdict.AlreadyGranted || GradeGrant(new WorkspaceSandbox(workspace, [grantedRoot]), guards, Path.Combine(grantedRoot, "src")) != GrantVerdict.InsideGrant || GradeGrant(new WorkspaceSandbox(outsiderRoot, [grantLeaf]), guards, grantParent) != GrantVerdict.ContainsGrant)
             throw new Exception("ClassifyGrant disagreed with the answers request_directory gives.");
         var holdingTools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "grant-ask", [], log) { Sandbox = grantBox });
         if (!(await holdingTools.RequestDirectory(grantedRoot)).Contains("already granted", StringComparison.Ordinal) || !(await holdingTools.RequestDirectory(Path.Combine(grantedRoot, "src"))).Contains("already inside", StringComparison.Ordinal))
@@ -620,19 +640,33 @@ internal static class AiToolsChecks
         var grantCard = ToolPreviews.PreviewFor("request_directory", JsonSerializer.Serialize(new { path = grantedRoot }), cardScope);
         if (!grantCard.StartsWith("request_directory · ", StringComparison.Ordinal) || !grantCard.Contains("exists", StringComparison.Ordinal) || !grantCard.Contains("read and write", StringComparison.Ordinal) || !grantCard.Contains("this session only", StringComparison.Ordinal))
             throw new Exception($"A grant card did not say what approving it allows:{Environment.NewLine}{grantCard}");
-        if (!ToolPreviews.PreviewFor("request_directory", JsonSerializer.Serialize(new { path = dataRoot }), cardScope).Contains("protected location", StringComparison.Ordinal))
-            throw new Exception("A protected directory did not preview as one on a grant card.");
+        // A protected directory is what a person can now say yes to, so its card has to say both halves: which of
+        // the three places it is — "Hub's own data" is the part the path does not tell them — and that the yes is a
+        // reading one. "read and write" on this card would be the sentence that makes the next refusal look wrong.
+        var protectedCard = ToolPreviews.PreviewFor("request_directory", JsonSerializer.Serialize(new { path = dataRoot }), cardScope);
+        if (!protectedCard.Contains("protected location", StringComparison.Ordinal)
+            || !protectedCard.Contains("Hub's own data", StringComparison.Ordinal)
+            || !protectedCard.Contains("read only", StringComparison.Ordinal)
+            || protectedCard.Contains("read and write", StringComparison.Ordinal))
+            throw new Exception($"A protected directory's card did not say what approving it allows:{Environment.NewLine}{protectedCard}");
         if (!ToolPreviews.PreviewFor("run_command", JsonSerializer.Serialize(new { command = "ls", cwd = grantedRoot }), new WorkspaceToolScope(workspace, guards, dataRoot, "grant-card", [], log) { Sandbox = grantBox }).Contains(Path.GetFullPath(grantedRoot), StringComparison.Ordinal))
             throw new Exception("A command card did not name the directory the command would run in.");
         // ── the session file is user-editable data, so its grants come back through the same rules ──
         var grantStoreRoot = Path.Combine(toolRoot, "grant-data");
         var grantStore = new ConversationStore(grantStoreRoot);
         var grantSession = Conversation.Create("provider");
+        // The store's own data root is written into the *writable* half on purpose: a session file is user-editable
+        // data, so a protected location found there has to be demoted to the read-only half rather than read as a
+        // write grant — and rather than dropped, which would lose the reading the card gave.
         grantSession.GrantedRoots = [grantedRoot, grantedRoot, "", "   ", grantStoreRoot, Path.Combine(toolRoot, "gone")];
         grantStore.Save(grantSession);
-        var reloadedGrants = grantStore.Load(grantSession.Id)?.GrantedRoots;
+        var reloaded = grantStore.Load(grantSession.Id);
+        var reloadedGrants = reloaded?.GrantedRoots;
+        var reloadedReadOnly = reloaded?.ReadOnlyRoots;
         if (reloadedGrants is null || reloadedGrants.Count != 1 || !string.Equals(reloadedGrants[0], grantedRoot, StringComparison.Ordinal))
-            throw new Exception($"A session file's granted directories were not normalized ({reloadedGrants?.Count} kept); " + "a duplicate, a blank, a missing folder and the data directory all survive this road.");
+            throw new Exception($"A session file's granted directories were not normalized ({reloadedGrants?.Count} kept); " + "a duplicate, a blank and a missing folder all survive this road.");
+        if (reloadedReadOnly is null || reloadedReadOnly.Count != 1 || !string.Equals(reloadedReadOnly[0], grantStoreRoot, StringComparison.Ordinal))
+            throw new Exception($"A protected location in a session file was not demoted to the read-only side ({reloadedReadOnly?.Count} kept).");
         // …and the cap is the other half of the same rule: a loop that keeps asking cannot grow the file without bound.
         var manyGrants = WorkspacePaths.NormalizeRoots(Enumerable.Range(0, WorkspacePaths.MaxGrantedRoots + 4).Select(index =>
         {
@@ -944,8 +978,13 @@ internal static class AiToolsChecks
         var projectPreview = ToolPreviews.PreviewFor("request_directory", JsonSerializer.Serialize(new { path = otherProject }), scope, [workspace, otherProject]);
         if (!projectPreview.Contains("registered Hub project", StringComparison.Ordinal))
             throw new Exception($"A registered project did not preview as one:{Environment.NewLine}{projectPreview}");
-        if (!Preview("request_directory", JsonSerializer.Serialize(new { path = toolEngineRoot })).Contains("protected location", StringComparison.Ordinal))
-            throw new Exception("A protected directory did not preview as one.");
+        // The three protected kinds say which one they are, because "an engine installation" and "Hub's own data"
+        // are different places to agree to open — and both cards say the yes is a reading one.
+        var engineCard = Preview("request_directory", JsonSerializer.Serialize(new { path = toolEngineRoot }));
+        if (!engineCard.Contains("protected location — an engine installation", StringComparison.Ordinal)
+            || !engineCard.Contains("read only", StringComparison.Ordinal)
+            || engineCard.Contains("read and write", StringComparison.Ordinal))
+            throw new Exception($"A protected directory did not preview as the place it is:{Environment.NewLine}{engineCard}");
         if (!Preview("memory_write", """{"scope":"project","name":"a.md","mode":"append","content":"内容"}""").Contains("memory_append · project · a.md"))
             throw new Exception("A memory write did not preview with its scope, name and mode.");
         if (Preview("read_file", """{"path":"src/main.cpp"}""") != "read_file · src/main.cpp" || Preview("memory_read", """{"scope":"global","name":"MEMORY.md"}""") != "memory_read · global · MEMORY.md" || Preview("没登记过的工具", "{}") != "没登记过的工具")

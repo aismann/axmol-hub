@@ -1569,6 +1569,30 @@ internal sealed class ShellSessionsChecks
                   && chat.WorkspaceRootFor(session.Id) == Path.GetFullPath(workspace),
                 "把 Hub 数据目录当工作区被拒，且原来的绑定没有被这次拒绝动过");
 
+            // The other door into a grant, and the one this build used to refuse outright: a protected location is
+            // granted read-only from the menu exactly as it is from the model's card, the chip says which permission
+            // it is, and the row that takes it back says so too. The two doors answering one directory two ways is
+            // the drift this pins shut — and the revoke row is the only way back out.
+            var protectedFolder = Path.GetFullPath(Path.Combine(dataRoot, "shell-check-protected"));
+            Directory.CreateDirectory(protectedFolder);
+            var (protectedVerdict, _) = await chat.GrantDirectoryAsync(session.Id, protectedFolder);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            var readOnlyHint = string.Format(CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatWorkspaceReadOnlyHintFormat"), 1, protectedFolder);
+            var readOnlyRevoke = string.Format(CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatWorkspaceRevokeReadOnlyFormat"), "shell-check-protected");
+            Check(protectedVerdict == GrantVerdict.GrantedReadOnly
+                  && chat.ActiveReadOnlyRoots.Contains(protectedFolder, StringComparer.Ordinal)
+                  && chat.ActiveGrantedRoots.Count == 0
+                  && panel.WorkspaceChipHintForCheck.Contains(readOnlyHint, StringComparison.Ordinal)
+                  && panel.WorkspaceMenuTitlesForCheck.Contains(readOnlyRevoke, StringComparer.Ordinal),
+                "受保护目录从菜单这扇门落成只读授权，胶囊提示与撤销行都写明只读（实际「"
+                + panel.WorkspaceChipHintForCheck.Replace('\n', '·') + "」/ "
+                + string.Join(" / ", panel.WorkspaceMenuTitlesForCheck) + "）");
+            Check(chat.RevokeGrantedRoot(session.Id, protectedFolder) && chat.ActiveReadOnlyRoots.Count == 0,
+                "只读授权由它自己的撤销行拿回，助手随即读不到那个目录");
+
             Check(panel.ClickWorkspaceMenuClearForCheck() && chat.WorkspaceRootFor(session.Id) is null,
                 "菜单里的「清除」把会话的目录绑定取消掉");
             panel.Reload();

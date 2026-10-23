@@ -629,6 +629,14 @@ public sealed class Conversation
     /// writer goes through.</summary>
     public List<string> GrantedRoots { get; set; } = [];
 
+    /// <summary>Directories this session may read and never write, because they are protected locations — the Hub
+    /// data directory, an engine installation, a .git — and a person approved a card that said so. Kept apart from
+    /// <see cref="GrantedRoots"/> rather than as a flag on an entry: the two answers are stored separately, so a
+    /// session file that lost one still reads what it was allowed to read. Shape rules live in
+    /// <see cref="WorkspacePaths.SplitRoots"/>, which every reader and writer goes through — including the
+    /// demotion of anything this list must hold when it is found in the writable one.</summary>
+    public List<string> ReadOnlyRoots { get; set; } = [];
+
     /// <summary>Longest auto-title before ellipsis; short enough to fit the session list.</summary>
     private const int MaxTitleLength = 48;
 

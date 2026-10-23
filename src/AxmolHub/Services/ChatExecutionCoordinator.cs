@@ -326,9 +326,10 @@ internal sealed partial class ChatExecutionCoordinator
                     : OperatingSystem.IsLinux() ? LinuxComputerUse.InputBridge() : null,
                 // Read from the session's own record rather than the screen: a parked call answered after a
                 // restart acts on the directories its card was shown for. Normalized here, with the guards in
-                // hand, because the list comes out of a user-editable session file — a root the guard refuses in
-                // every mode is dropped rather than carried and explained later.
-                Sandbox = new WorkspaceSandbox(root, WorkspacePaths.NormalizeRoots(session?.GrantedRoots, guards)),
+                // hand, because the lists come out of a user-editable session file — a protected location that a
+                // hand edit (or an engine installed later) put in the writable half is demoted to the read-only
+                // one rather than dropped, and every other stale entry is left out of both.
+                Sandbox = SandboxOf(session, root, guards),
             },
             // Null on a session file written before the setting existed reads as allowed, which is the only
             // honest reading of "nobody ever turned it off". Read here rather than at the call site because the
@@ -521,8 +522,9 @@ internal sealed partial class ChatExecutionCoordinator
             conversationId,
             _dataRoot,
             // Stored revisions read only Hub's private snapshot objects. Legacy preview reconstruction still uses
-            // the current sandbox and therefore continues to honor revoked grants.
-            new WorkspaceSandbox(session?.WorkspaceRoot, WorkspacePaths.NormalizeRoots(session?.GrantedRoots, guards)),
+            // the current sandbox and therefore continues to honor revoked grants — the read-only ones included,
+            // so a diff of a path outside them reads as the refusal it is.
+            SandboxOf(session, session?.WorkspaceRoot, guards),
             guards,
             ChatChanges.InspectorLimits,
             out state);
@@ -1351,8 +1353,10 @@ internal sealed partial class ChatExecutionCoordinator
             child.WorkspaceRoot = request.InheritWorkspace ? parent.WorkspaceRoot : null;
             // The granted directories travel with the workspace, not instead of it: a helper sent to fix something
             // in the project the parent was granted would otherwise have to ask for the same card again — and the
-            // person already answered that question one turn earlier.
+            // person already answered that question one turn earlier. The read-only half travels with them, or a
+            // helper asked to read the logs the parent was granted would be back to asking for the same card.
             child.GrantedRoots = request.InheritWorkspace ? [.. parent.GrantedRoots] : [];
+            child.ReadOnlyRoots = request.InheritWorkspace ? [.. parent.ReadOnlyRoots] : [];
             child.SpawnedBy = parent.Id;
             child.SpawnedTask = request.Task;
             child.SpawnedState = request.Started
@@ -1667,10 +1671,18 @@ internal sealed partial class ChatExecutionCoordinator
                 // which answers with the sentence about what the model got wrong — the alternative is a card that
                 // renders an empty question and a run parked on it forever.
                 var malformed = asks && !AskUserQuestion.TryParse(member.ArgumentsJson, out _, out _, out _);
+                // A grant of a protected location asks in every mode, 完全访问 included. That mode is a sentence
+                // about interruptions and not about opening Hub's own records: the floor under that place has
+                // always been "no mode answers for it", and an approval nobody clicks is not an approval. The
+                // read-only grant it lands is the whole of what the card can give.
+                var protectedGrant = ChatTools.OpensProtectedLocation(member.Name, member.ArgumentsJson,
+                    scope.Workspace);
                 var parks = ComputerUseGrants.IsComputerUseTool(member.Name)
                     ? computerApp.Length > 0 && !computerGrant
-                    : !granted && !malformed && ToolApprovalPolicy.RequiresApproval(mode, risk);
-                return new CallVerdict(member, risk, asks, malformed, granted, sessionGrant, verbGrant, parks);
+                    : !granted && !malformed
+                      && (protectedGrant || ToolApprovalPolicy.RequiresApproval(mode, risk));
+                return new CallVerdict(member, risk, asks, malformed, granted, sessionGrant, verbGrant, parks,
+                    protectedGrant);
             }
 
             void AuditVerdict(CallVerdict verdict)
@@ -1681,7 +1693,8 @@ internal sealed partial class ChatExecutionCoordinator
                 // card was meant to answer.
                 Audit(run.ConversationId,
                     $"Tool gate: {(verdict.Malformed ? "refused-malformed-question"
-                        : VerdictFor(verdict.Parks, verdict.Granted, verdict.SessionGrant, verdict.VerbGrant))} {verdict.Call.Name}"
+                        : VerdictFor(verdict.Parks, verdict.Granted, verdict.SessionGrant, verdict.VerbGrant,
+                            verdict.ProtectedGrant))} {verdict.Call.Name}"
                     + $" · {mode} · {verdict.Risk} · {scope.Workspace.WorkspaceRoot ?? "(no workspace)"}");
             }
 
@@ -3532,10 +3545,24 @@ internal sealed partial class ChatExecutionCoordinator
            + "the parent automatically. Keep it to what was asked: the parent is paying for both of you.";
     private static IReadOnlyList<string> ProjectPaths(ChatToolScope scope)
         => scope.Snapshot?.Projects.Select(project => project.Path).ToArray() ?? [];
+
+    /// <summary>
+    /// The sandbox one call is graded against: the session's workspace, the directories it may write and the
+    /// directories it may only read — all three read from the session's own record and put through their shape
+    /// rules with the guards in hand. One expression, because three sites build a sandbox for a request, a diff and
+    /// a grant, and a site that built its own could carry a grant the others had already demoted.
+    /// </summary>
+    private static WorkspaceSandbox SandboxOf(Conversation? session, string? root, WorkspaceGuards guards)
+    {
+        var (write, read) = WorkspacePaths.SplitRoots(session?.GrantedRoots, session?.ReadOnlyRoots, guards);
+        return new WorkspaceSandbox(root, write, read);
+    }
     private readonly record struct ParkedCall(ChatPipeline.ToolCallInfo Call, string? Preview, bool Asks, bool Seen);
-    private readonly record struct CallVerdict(ChatPipeline.ToolCallInfo Call, ToolRisk Risk, bool Asks, bool Malformed, bool Granted, bool SessionGrant, bool VerbGrant, bool Parks);
-    private static string VerdictFor(bool parks, bool granted, bool sessionGrant, bool verbGrant)
-        => parks ? "asked"
+    private readonly record struct CallVerdict(ChatPipeline.ToolCallInfo Call, ToolRisk Risk, bool Asks, bool Malformed, bool Granted, bool SessionGrant, bool VerbGrant, bool Parks, bool ProtectedGrant);
+    private static string VerdictFor(bool parks, bool granted, bool sessionGrant, bool verbGrant,
+        bool protectedGrant)
+        => protectedGrant ? "asked-protected-grant"
+            : parks ? "asked"
             : verbGrant ? "allowed-by-command-verb-grant"
             : granted ? sessionGrant ? "allowed-by-session-grant" : "allowed-by-app-grant"
             : "allowed-by-mode";
