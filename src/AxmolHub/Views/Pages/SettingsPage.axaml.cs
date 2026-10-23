@@ -162,6 +162,7 @@ public partial class SettingsPage : UserControl
         WebFetchCheck.IsCheckedChanged += (_, _) => OnWebFetchChanged();
         WebSearchCheck.IsCheckedChanged += (_, _) => OnWebSearchChanged();
         ShowThinkingCheck.IsCheckedChanged += (_, _) => OnShowThinkingChanged();
+        CommitSummaryPrefixesBox.LostFocus += (_, _) => OnCommitSummaryPrefixesChanged();
         WireProviders();
         InitializeCategories();
 
@@ -319,6 +320,7 @@ public partial class SettingsPage : UserControl
             WebFetchCheck.IsChecked = _preferences.AllowOutboundWebFetch;
             WebSearchCheck.IsChecked = _preferences.AllowHostedWebSearch || _preferences.AllowDeepSeekWebApi;
             ShowThinkingCheck.IsChecked = _preferences.ShowThinking;
+            CommitSummaryPrefixesBox.Text = string.Join(", ", CommitSummary.NormalizePrefixes(_preferences.CommitSummaryPrefixes));
             // Re-render the update card from the last known check: this re-localizes the status line
             // on a language switch (it is written imperatively) and reflects a check the shell already
             // ran at startup (the update dot and this card share UpdateService.Last).
@@ -1093,6 +1095,17 @@ public partial class SettingsPage : UserControl
         var value = ShowThinkingCheck.IsChecked == true;
         if (value == _preferences.ShowThinking) return;
         _preferences.ShowThinking = value;
+        _preferencesStore.Save(_preferences);
+        _chat.NotifyAppSettingsChanged();
+    }
+
+    private void OnCommitSummaryPrefixesChanged()
+    {
+        if (!_ready) return;
+        var parsed = CommitSummary.NormalizePrefixes((CommitSummaryPrefixesBox.Text ?? "")
+            .Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        _preferences.CommitSummaryPrefixes = [.. parsed];
+        CommitSummaryPrefixesBox.Text = string.Join(", ", parsed);
         _preferencesStore.Save(_preferences);
         _chat.NotifyAppSettingsChanged();
     }

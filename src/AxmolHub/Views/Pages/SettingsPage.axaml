@@ -160,6 +160,12 @@
         <StackPanel x:Name="PanePermission" Spacing="10" IsVisible="False">
           <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource ToolPermissionHint}" />
 
+          <TextBlock Text="{DynamicResource CommitSummaryPrefixesTitle}" FontSize="13" FontWeight="SemiBold"
+                     Margin="0,12,0,0" />
+          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource CommitSummaryPrefixesHint}" />
+          <TextBox x:Name="CommitSummaryPrefixesBox" Width="320" HorizontalAlignment="Left"
+                   PlaceholderText="feat:, fix:, docs:, misc:" />
+
           <ComboBox x:Name="ToolApprovalPicker" Width="240" HorizontalAlignment="Left">
             <ComboBoxItem Tag="ask" />
             <ComboBoxItem Tag="auto" />

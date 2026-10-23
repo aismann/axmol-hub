@@ -191,6 +191,10 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     public bool ToolFailed { get; init; }
     public string? AttachedContext { get; init; }
 
+    /// <summary>A locally parsed or fallback-generated commit title associated with this completed assistant reply.</summary>
+    public string? CommitSummary { get; init; }
+    public bool CommitSummaryFallback { get; init; }
+
     /// <summary>Whether this user message was explicitly sent as a task goal. It is display metadata only: the
     /// message remains ordinary user text on the model wire, while the transcript can keep its goal card attached
     /// to this exact message after the composer selection has been consumed.</summary>

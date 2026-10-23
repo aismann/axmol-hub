@@ -63,6 +63,7 @@ public partial class ChatPanel : UserControl
     /// is: the viewer covers the whole window, so it cannot live in this page, but the sets it pages through
     /// are this page's business (the transcript's pictures, or this composer's draft).</summary>
     internal Action<IReadOnlyList<PictureRef>, int>? ShowPictureViewer { get; set; }
+    internal Action<string>? StatusMessage { get; set; }
 
     /// <summary>
     /// What this composer has already sent, oldest first, for the Up arrow to walk back through — along with the
@@ -4012,6 +4013,72 @@ public partial class ChatPanel : UserControl
             if (isLast)
                 bar.Children.Add(IconActionButton("RegenerateMessage", "Hub.Icon.Refresh", RegenerateCurrent));
             bar.Children.Add(IconActionButton("BranchFromHere", "Hub.Icon.Branch", () => { if (CurrentIndex() is var current && current >= 0) BranchFromHere(current); }));
+            if (_chat.ActiveConversation is { } active && active.Id == actionSession
+                && index >= 0 && index < active.Messages.Count
+                && active.Messages[index] is { RunElapsed: not null, CommitSummary: { Length: > 0 } commitSummary } commitTurn)
+            {
+                var commit = new Button
+                {
+                    Content = HubStrings.Get("CommitSummaryAction"),
+                    Tag = "CommitSummaryAction",
+                    Classes = { "quiet", "message-action" },
+                    Padding = new Thickness(8, 2),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                ToolTip.SetTip(commit, commitTurn.CommitSummaryFallback
+                    ? HubStrings.Get("CommitSummaryFallbackTip") : commitSummary);
+                commit.Click += async (_, _) =>
+                {
+                    var current = CurrentIndex();
+                    if (current < 0 || _chat.ActiveConversation is not { } conversation
+                        || conversation.Id != actionSession || current >= conversation.Messages.Count) return;
+                    var currentTurn = conversation.Messages[current];
+                    if (currentTurn.At != commitTurn.At || currentTurn.RunElapsed is null
+                        || !string.Equals(currentTurn.CommitSummary, commitSummary, StringComparison.Ordinal)) return;
+                    var root = _chat.WorkspaceRootFor(actionSession!);
+                    if (string.IsNullOrWhiteSpace(root))
+                    {
+                        StatusMessage?.Invoke(HubStrings.Get("CommitSummaryWorkspaceChanged"));
+                        return;
+                    }
+                    var outcome = await _chat.CommitSuggestedAsync(actionSession!, root, commitSummary, currentTurn.At);
+                    StatusMessage?.Invoke(outcome.Message);
+                };
+                bar.Children.Add(commit);
+                Button PushButton(string textKey, bool commitFirst)
+                {
+                    var button = new Button
+                    {
+                        Content = HubStrings.Get(textKey),
+                        Tag = textKey,
+                        Classes = { "quiet", "message-action" },
+                        Padding = new Thickness(8, 2),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    };
+                    ToolTip.SetTip(button, "This click authorizes pushing the current branch to its configured upstream.");
+                    button.Click += async (_, _) =>
+                    {
+                        var current = CurrentIndex();
+                        if (current < 0 || _chat.ActiveConversation is not { } conversation
+                            || conversation.Id != actionSession || current >= conversation.Messages.Count) return;
+                        var currentTurn = conversation.Messages[current];
+                        if (currentTurn.At != commitTurn.At || currentTurn.RunElapsed is null
+                            || !string.Equals(currentTurn.CommitSummary, commitSummary, StringComparison.Ordinal)) return;
+                        var root = _chat.WorkspaceRootFor(actionSession!);
+                        if (string.IsNullOrWhiteSpace(root))
+                        {
+                            StatusMessage?.Invoke(HubStrings.Get("CommitSummaryWorkspaceChanged"));
+                            return;
+                        }
+                        var outcome = await _chat.PushSuggestedAsync(actionSession!, root, commitSummary,
+                            currentTurn.At, commitFirst);
+                        StatusMessage?.Invoke(outcome.Message);
+                    };
+                    return button;
+                }
+                bar.Children.Add(PushButton("PushSummaryAction", commitFirst: false));
+                bar.Children.Add(PushButton("CommitPushSummaryAction", commitFirst: true));
+            }
         }
 
         if (role == ChatRoles.User && actionSession is not null && _inlineDrafts.ContainsKey((actionSession, actionKey)))

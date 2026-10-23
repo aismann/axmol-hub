@@ -20,6 +20,12 @@ internal static class Program
             return;
         }
 
+        if (args.Contains("--check-ai-commit-summary"))
+        {
+            await AiCommitSummaryChecks.RunAsync(root, args);
+            return;
+        }
+
         if (args.Contains("--check-ai-providers"))
         {
             await AiProvidersChecks.RunAsync(root, args);

@@ -1,0 +1,49 @@
+namespace AxmolHub.Core;
+
+/// <summary>Parses the explicit, single-line commit summary marker used by assistant replies.</summary>
+public static class CommitSummary
+{
+    public const string Marker = "Commit summary:";
+    public static readonly string[] DefaultPrefixes = ["feat:", "fix:", "docs:", "misc:"];
+
+    public static IReadOnlyList<string> NormalizePrefixes(IEnumerable<string>? prefixes)
+    {
+        var result = new List<string>();
+        foreach (var item in prefixes ?? [])
+        {
+            var value = item.Trim();
+            if (value.Length is < 2 or > 32 || value.Any(char.IsControl)) continue;
+            if (!value.EndsWith(':')) value += ":";
+            if (!result.Contains(value, StringComparer.OrdinalIgnoreCase)) result.Add(value);
+        }
+        return result.Count == 0 ? DefaultPrefixes : result;
+    }
+
+    public static string? Parse(string? text, IEnumerable<string>? prefixes = null)
+    {
+        if (string.IsNullOrEmpty(text)) return null;
+        var allowed = NormalizePrefixes(prefixes);
+        string? found = null;
+        foreach (var line in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith(Marker, StringComparison.OrdinalIgnoreCase)) continue;
+            if (found is not null) return null;
+            var summary = trimmed[Marker.Length..].Trim();
+            if (!IsValid(summary, allowed)) return null;
+            found = summary;
+        }
+        return found;
+    }
+
+    public static bool IsValid(string? summary, IEnumerable<string>? prefixes = null)
+    {
+        if (string.IsNullOrWhiteSpace(summary) || summary.Length > 120
+            || summary.Contains('\n') || summary.Contains('\r') || summary.Any(char.IsControl)
+            || summary.StartsWith('-') || summary.EndsWith('.')) return false;
+        var trimmed = summary.Trim();
+        if (!string.Equals(trimmed, summary, StringComparison.Ordinal)) return false;
+        return NormalizePrefixes(prefixes).Any(prefix => summary.StartsWith(prefix + " ", StringComparison.OrdinalIgnoreCase)
+            && summary.Length > prefix.Length + 1);
+    }
+}

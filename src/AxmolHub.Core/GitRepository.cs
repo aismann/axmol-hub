@@ -259,6 +259,71 @@ public static class GitRepository
         yield return "--show-toplevel";
     }
 
+    /// <summary>Revalidates the current repository and commits only its existing index; it never stages files.</summary>
+    public static async Task<GitCommitResult> CommitStagedAsync(string workspaceRoot, string expectedRoot,
+        string summary, IEnumerable<string>? prefixes, ProcessRunner runner,
+        IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
+    {
+        if (!CommitSummary.IsValid(summary, prefixes)) return new(false, "invalid-summary", null);
+        var git = CommandShells.Resolve("git");
+        if (git is null) return new(false, "git-missing", null);
+        var state = await ReadAsync(workspaceRoot, runner, sensitiveValues, cancellation).ConfigureAwait(false);
+        if (!state.IsReadable || state.Root is not { Length: > 0 } root)
+            return new(false, "repository-unavailable", state.Detail);
+        if (!string.Equals(WorkspacePaths.CanonicalRoot(root), WorkspacePaths.CanonicalRoot(expectedRoot),
+                OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            return new(false, "workspace-changed", null);
+        if (state.Branch is not { Length: > 0 }) return new(false, "branch-unavailable", null);
+        if (state.Entries.Any(entry => entry.IndexState == "U" || entry.WorktreeState == "U"))
+            return new(false, "conflict", null);
+        if (!state.Entries.Any(entry => entry.IndexState != " " && entry.IndexState != "?"))
+            return new(false, "nothing-staged", null);
+        var result = await runner.RunAsync(git,
+            ["--no-pager", "-c", "core.quotepath=false", "commit", "-m", summary], root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        return result.ExitCode == 0
+            ? new(true, null, result.Output.Trim())
+            : new(false, "commit-failed", FirstText(result.Error, result.Output));
+    }
+
+    /// <summary>Pushes the checked-out branch to its configured upstream after the user explicitly clicks a push action.</summary>
+    public static async Task<GitCommitResult> PushAsync(string workspaceRoot, string expectedRoot,
+        ProcessRunner runner, IReadOnlyList<string>? sensitiveValues = null,
+        CancellationToken cancellation = default)
+    {
+        var git = CommandShells.Resolve("git");
+        if (git is null) return new(false, "git-missing", null);
+        var state = await ReadAsync(workspaceRoot, runner, sensitiveValues, cancellation).ConfigureAwait(false);
+        if (!state.IsReadable || state.Root is not { Length: > 0 } root)
+            return new(false, "repository-unavailable", state.Detail);
+        if (!string.Equals(WorkspacePaths.CanonicalRoot(root), WorkspacePaths.CanonicalRoot(expectedRoot),
+                OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            return new(false, "workspace-changed", null);
+        if (state.Branch is not { Length: > 0 }) return new(false, "branch-unavailable", null);
+        var upstream = await runner.RunAsync(git,
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        if (upstream.ExitCode != 0 || string.IsNullOrWhiteSpace(upstream.Output))
+            return new(false, "upstream-unavailable", FirstText(upstream.Error, upstream.Output));
+        var push = await runner.RunAsync(git, ["--no-pager", "push"], root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        return push.ExitCode == 0
+            ? new(true, null, push.Output.Trim())
+            : new(false, "push-failed", FirstText(push.Error, push.Output));
+    }
+
+    /// <summary>Revalidates the current repository and commits only its existing index; it never stages files.</summary>
+    public static async Task<GitCommitResult> CommitAndPushStagedAsync(string workspaceRoot, string expectedRoot,
+        string summary, IEnumerable<string>? prefixes, ProcessRunner runner,
+        IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
+    {
+        var commit = await CommitStagedAsync(workspaceRoot, expectedRoot, summary, prefixes, runner,
+            sensitiveValues, cancellation).ConfigureAwait(false);
+        if (!commit.Success) return commit;
+        var push = await PushAsync(workspaceRoot, expectedRoot, runner, sensitiveValues, cancellation).ConfigureAwait(false);
+        return push.Success ? push : new(false, "commit-succeeded-push-failed", push.Detail);
+    }
+
     private static IEnumerable<string> StatusArguments()
     {
         foreach (var baseArgument in BaseArguments) yield return baseArgument;
@@ -465,3 +530,5 @@ public sealed record GitPatchReading(IReadOnlyDictionary<string, string> Section
 /// <summary>The branch line's three facts. <paramref name="Detached"/> is kept because a detached HEAD is a
 /// state a person has to be told about before they approve a checkout, not merely a branch name that reads oddly.</summary>
 public sealed record GitBranch(string? Name, int Ahead, int Behind, bool Detached);
+
+public sealed record GitCommitResult(bool Success, string? FailureKey, string? Detail);

@@ -64,6 +64,9 @@ public sealed class HubPreferences
     /// </summary>
     public List<string> TrustedCommands { get; set; } = [];
 
+    /// <summary>Commit title prefixes accepted by the assistant's local commit-summary parser.</summary>
+    public List<string> CommitSummaryPrefixes { get; set; } = [.. CommitSummary.DefaultPrefixes];
+
     /// <summary>Applications the user has permanently authorized for Computer Use.</summary>
     [System.Text.Json.Serialization.JsonInclude]
     internal List<string> TrustedComputerApps { get; set; } = [];
@@ -189,6 +192,7 @@ public sealed class PreferencesStore(string path)
         // And the command-verb list with the same care and the same reason: the shape rules live in CommandTrust so
         // the store, the card's verb button and the settings page cannot disagree about what a stored verb means.
         preferences.TrustedCommands = CommandTrust.Normalize(preferences.TrustedCommands);
+        preferences.CommitSummaryPrefixes = [.. CommitSummary.NormalizePrefixes(preferences.CommitSummaryPrefixes)];
         preferences.TrustedComputerApps = ComputerUseGrants.Normalize(preferences.TrustedComputerApps);
         // The routing ceiling is a cost guard: a value this build cannot read falls back to the shipped ceiling
         // rather than to "no ceiling", which is the one way a hand-edited settings file could spend past the

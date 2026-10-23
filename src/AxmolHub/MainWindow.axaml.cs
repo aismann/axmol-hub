@@ -393,6 +393,7 @@ public partial class MainWindow : Window
         // whether the column is up at all, is not asked of the panel: both now live on the title bar's own
         // buttons, which are wired straight to the two methods here (see InitializeInspector).
         panel.ShowPictureViewer = (set, index) => OpenPictureViewer(set, index);
+        panel.StatusMessage = SetStatus;
         panel.OpenInspector = (tab, turnIndex) => OpenInspector(tab, turnIndex);
         panel.RefreshInspector = RefreshInspector;
         // The pane's header tabs are the reader's choice, and this column repaints on a schedule of its own —
