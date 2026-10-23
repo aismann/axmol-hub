@@ -2059,8 +2059,10 @@ internal sealed class ShellDecisionsChecks
                 "空着输入框时计划卡到达（实际 " + panel.PendingPlanApprovalCardsForCheck + " 张待批准计划卡）");
             var initialTaskSummary = string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("ChatPlanTaskSummaryFormat"), 2, 0, 0, 2);
-            Check(!panel.PlanTasksExpandedForCheck && panel.PlanTaskSummaryForCheck == initialTaskSummary,
-                "新计划任务卡默认折叠，摘要显示总数及各状态计数（实际「" + panel.PlanTaskSummaryForCheck + "」）");
+            var legacyPlanTaskState = System.Text.Json.JsonSerializer.Deserialize<Conversation>("{\"Id\":\"legacy-plan-task-state\"}");
+            Check(!panel.PlanTasksExpandedForCheck && panel.PlanTaskSummaryForCheck == initialTaskSummary
+                  && legacyPlanTaskState?.PlanTasksExpanded == false,
+                "新计划及缺少展开字段的旧会话默认折叠，摘要显示任务状态计数（实际「" + panel.PlanTaskSummaryForCheck + "」）");
             panel.TogglePlanTasksForCheck();
             Dispatcher.UIThread.RunJobs();
             Check(panel.PlanTaskTitlesForCheck.SequenceEqual(
@@ -2072,6 +2074,14 @@ internal sealed class ShellDecisionsChecks
                 "展开后计划任务出现在 composer 上方，文字与空心方框都有可见画刷（实际 "
                 + string.Join(" / ", panel.PlanTaskTitlesForCheck) + "，空心图标 "
                 + panel.PendingPlanTaskGlyphsForCheck + " 个）");
+            chat.OpenConversation(rejectedSession.Id);
+            panel.Reload();
+            chat.OpenConversation(twoPlanSession.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.PlanTasksExpandedForCheck
+                  && chat.StoredCopyForCheck(twoPlanSession.Id)?.PlanTasksExpanded == true,
+                "切换会话再返回恢复计划任务卡展开状态，session JSON 持久化该选择");
             var taskPlanIndex = twoPlanSession.Messages.FindLastIndex(turn => turn.Plan?.Tasks is { Count: > 0 });
             var taskPlanTurn = twoPlanSession.Messages[taskPlanIndex];
             twoPlanSession.Messages[taskPlanIndex] = taskPlanTurn with

@@ -259,8 +259,8 @@ public static class GitRepository
         yield return "--show-toplevel";
     }
 
-    /// <summary>Revalidates the current repository and commits only its existing index; it never stages files.</summary>
-    public static async Task<GitCommitResult> CommitStagedAsync(string workspaceRoot, string expectedRoot,
+    /// <summary>Stages all non-ignored worktree changes, then revalidates and commits the resulting index.</summary>
+    public static async Task<GitCommitResult> CommitWorkingTreeAsync(string workspaceRoot, string expectedRoot,
         string summary, IEnumerable<string>? prefixes, ProcessRunner runner,
         IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
     {

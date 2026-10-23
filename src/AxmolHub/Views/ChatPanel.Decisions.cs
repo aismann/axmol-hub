@@ -26,6 +26,7 @@ namespace AxmolHub;
 public partial class ChatPanel
 {
     private string _planTasksIdentity = "";
+    private string _planTasksConversationId = "";
     private bool _planTasksExpanded;
 
     private void RefreshPlanTasksHost()
@@ -39,8 +40,17 @@ public partial class ChatPanel
             : conversation.Id + ":" + (plan.Id ?? planTurn!.At.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture));
         if (identity != _planTasksIdentity)
         {
+            if (conversation is not null && conversation.Id == _planTasksConversationId && _planTasksIdentity.Length > 0)
+            {
+                _planTasksExpanded = false;
+                _chat?.SetPlanTasksExpanded(conversation.Id, false);
+            }
+            else
+            {
+                _planTasksExpanded = conversation?.PlanTasksExpanded ?? false;
+            }
             _planTasksIdentity = identity;
-            _planTasksExpanded = false;
+            _planTasksConversationId = conversation?.Id ?? "";
         }
 
         // Saved task metadata is history; only current work or a pending decision needs composer space.
@@ -120,6 +130,8 @@ public partial class ChatPanel
         toggle.Click += (_, _) =>
         {
             _planTasksExpanded = !_planTasksExpanded;
+            if (conversation is not null)
+                _chat?.SetPlanTasksExpanded(conversation.Id, _planTasksExpanded);
             RefreshPlanTasksHost();
         };
 

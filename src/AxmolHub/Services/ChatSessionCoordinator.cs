@@ -86,6 +86,9 @@ internal sealed partial class ChatSessionCoordinator
         return true;
     }
 
+    internal bool SetPlanTasksExpanded(string conversationId, bool expanded)
+        => _sessions.TryUpdate(conversationId, conversation => conversation.PlanTasksExpanded = expanded);
+
     internal bool SetRouting(string conversationId, string routing)
     {
         var normalized = ChatRouting.Normalize(routing);

@@ -415,6 +415,9 @@ public sealed class Conversation
     public string ProviderId { get; set; } = "";
     public string ModelName { get; set; } = "";
     public List<ChatTurn> Messages { get; set; } = [];
+    /// <summary>Whether the current plan-task card is expanded. Stored per session so switching conversations
+    /// and reopening Hub preserve the reader's choice; older sessions default to collapsed.</summary>
+    public bool PlanTasksExpanded { get; set; }
     /// <summary>Durable references to every file revision this session can still reach. Kept outside the
     /// transcript so compaction, edit-and-resend and history trimming cannot erase file history.</summary>
     public List<string> ChangeHistoryIds { get; set; } = [];

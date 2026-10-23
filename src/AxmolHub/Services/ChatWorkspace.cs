@@ -133,6 +133,8 @@ public sealed partial class ChatWorkspace : IDisposable
     /// decides how much to spend on <i>this</i> work, so the session that is going somewhere careful is exactly
     /// the one a person has to be able to opt out of.</summary>
     public bool SetRouting(string conversationId, string routing) => _sessions.SetRouting(conversationId, routing);
+    public bool SetPlanTasksExpanded(string conversationId, bool expanded)
+        => _sessions.SetPlanTasksExpanded(conversationId, expanded);
     public string RoutingFor(string conversationId) => _sessions.RoutingFor(conversationId);
     public string ActiveRouting { get => _sessions.ActiveRouting; }
 
