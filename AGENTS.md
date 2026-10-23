@@ -101,6 +101,25 @@ On other hosts, use the installed `dotnet` executable in the same command. Use t
 line determine the outcome. Inspect the saved log and report after exit, and preserve and report failures instead
 of deleting checks to make the run green.
 
+## Screenshot verification (`--drive`, DEBUG builds only)
+
+To look at a specific state of the real window (after a feature or a UI bug fix), use `--drive <script.json>`. It is
+compiled in but inert in release builds, skips the single-instance broker (so it runs beside the user's own Hub), and —
+unlike the automation modes — runs against the **user's real data root** (`--data-root` still overrides) without pinning
+language/theme; settings are edited on a temp copy so the user's file is untouched. This is the one sanctioned exception
+to the `--data-root ./data` rule above; it is for development, packaged installs do not support it.
+
+```sh
+/opt/homebrew/bin/dotnet run --project src/AxmolHub -- --drive ./tmp/drive/script.json
+```
+
+Script: `{"out":"tmp/drive","steps":[{"do":"navigate","page":"Assistant"},{"do":"click","text":"..."},
+{"do":"type","name":"...","value":"..."},{"do":"wait","ms":300|"until":"name-or-text"},{"do":"resize","w":1100,"h":700},
+{"do":"language","value":"en-US"},{"do":"screenshot","file":"a.png"}]}`. The exit code and `<out>/drive.evidence.txt`
+report each step; the first failing step stops the run. `click`/`type` locate a visible control by `name`
+(`Control.Name`) first, else by exact visible `text`. Run it through `run_command` with `timeout_seconds: 300` (the first
+build is slow); keep the script and output under ignored `tmp/`. View the PNGs afterwards. See `Services/DriveRunner.cs`.
+
 ## Checks and assertions
 
 An assertion is a claim that can be false, in a suite that must still finish. Prefer a small set of checks

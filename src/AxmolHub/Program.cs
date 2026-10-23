@@ -87,7 +87,7 @@ internal static class Program
 
         // Argument parsing must happen before AppBuilder: it decides which window to show.
         App.Options = HubHostOptions.Parse(args);
-        if (!App.Options.IsAutomation)
+        if (!App.Options.IsAutomation && !App.Options.IsDrive)
         {
             App.Activations = DeepLinkActivationBroker.Start(HubHostOptions.DeepLinkArgument(args));
             if (App.Activations.IsSecondaryInstance)

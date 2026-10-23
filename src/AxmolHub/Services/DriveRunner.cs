@@ -1,0 +1,225 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Avalonia;
+using AxmolHub.Core;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Controls.Primitives;
+using Avalonia.Interactivity;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+
+namespace AxmolHub;
+
+/// <summary>
+/// <c>--drive &lt;script.json&gt;</c> (DEBUG builds only): runs a scripted sequence against the real product window
+/// and screenshots it, so a developer or the assistant can reach a specific state and look at it.
+/// <code>{ "out": "tmp/drive", "steps": [ {"do":"navigate","page":"Assistant"}, {"do":"click","text":"Settings"},
+/// {"do":"type","name":"Composer","value":"hi"}, {"do":"wait","ms":300}, {"do":"resize","w":1100,"h":700},
+/// {"do":"language","value":"en-US"}, {"do":"screenshot","file":"a.png"} ] }</code>
+/// <c>click</c>/<c>type</c> (value to enter) locate a control by <c>name</c> (Control.Name) or <c>text</c> (visible text), and
+/// <c>wait</c> also accepts <c>until</c> (a name or text) with an optional <c>ms</c> timeout. The run exits 0 when
+/// every step succeeded and no shot is blank, and leaves <c>drive.evidence.txt</c> in <c>out</c>. It uses the user's
+/// real data root; settings are protected by the copy made in <see cref="HubHostOptions.Parse"/>.
+/// </summary>
+internal static class DriveRunner
+{
+    private static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(120);
+
+    public static void Attach(MainWindow window, IClassicDesktopStyleApplicationLifetime lifetime, string scriptPath)
+    {
+        var finished = false;
+        var report = new StringBuilder();
+        var outDir = Path.GetDirectoryName(Path.GetFullPath(scriptPath))!;
+
+        void Finish(int code)
+        {
+            if (finished) return;
+            finished = true;
+            var line = (code == 0 ? "OK" : "FAIL") + " drive";
+            report.Insert(0, line + Environment.NewLine);
+            Console.WriteLine(report.ToString());
+            try
+            {
+                Directory.CreateDirectory(outDir);
+                File.WriteAllText(Path.Combine(outDir, "drive.evidence.txt"), report.ToString().Replace("\r\n", "\n"));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+            }
+
+            lifetime.Shutdown(code);
+        }
+
+        window.Opened += (_, _) => Dispatcher.UIThread.Post(async () =>
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(scriptPath));
+                var root = doc.RootElement;
+                if (root.TryGetProperty("out", out var o) && o.GetString() is { Length: > 0 } od)
+                    outDir = Path.GetFullPath(od);
+                Directory.CreateDirectory(outDir);
+                report.AppendLine("data-root: " + App.Options.ResolveDataRoot(new PreferencesStore(App.Options.PreferencesPath).Load()));
+
+                var failed = false;
+                var digests = new HashSet<string>();
+                var shots = 0;
+                var original = window.PreferredLanguage;
+                var index = 0;
+                foreach (var step in root.GetProperty("steps").EnumerateArray())
+                {
+                    index++;
+                    var kind = Str(step, "do");
+                    string? error = null;
+                    try
+                    {
+                        error = await RunStep(window, step, kind, outDir, digests, () => shots++);
+                    }
+                    catch (Exception ex)
+                    {
+                        error = ex.GetType().Name + ": " + ex.Message;
+                    }
+
+                    report.AppendLine($"{(error is null ? "ok  " : "FAIL")} #{index} {kind}" + (error is null ? "" : " - " + error));
+                    if (error is not null)
+                    {
+                        failed = true;
+                        break;
+                    }
+                }
+
+                window.UseLanguage(original);
+                report.AppendLine($"shots: {shots} (distinct {digests.Count})");
+                Finish(failed ? 1 : 0);
+            }
+            catch (Exception ex)
+            {
+                report.AppendLine(ex.GetType().Name + ": " + ex.Message);
+                Finish(1);
+            }
+        }, DispatcherPriority.Loaded);
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            report.AppendLine("script exceeded " + Ceiling.TotalSeconds + "s");
+            Finish(1);
+        }, Ceiling);
+    }
+
+    private static async Task<string?> RunStep(MainWindow window, JsonElement step, string kind, string outDir,
+        HashSet<string> digests, Action shotTaken)
+    {
+        switch (kind)
+        {
+            case "navigate":
+                window.NavigateTo(Str(step, "page"));
+                await Settle();
+                return null;
+            case "language":
+                window.UseLanguage(Str(step, "value"));
+                await Settle();
+                return null;
+            case "resize":
+                window.Width = step.GetProperty("w").GetDouble();
+                window.Height = step.GetProperty("h").GetDouble();
+                await Settle();
+                return null;
+            case "wait":
+            {
+                var ms = step.TryGetProperty("ms", out var m) ? m.GetInt32() : 5000;
+                if (step.TryGetProperty("until", out var u))
+                {
+                    var target = u.GetString() ?? "";
+                    var deadline = DateTime.UtcNow.AddMilliseconds(ms);
+                    while (Find(window, target, target) is null)
+                    {
+                        if (DateTime.UtcNow > deadline) return "timeout waiting for '" + target + "'";
+                        await Task.Delay(50);
+                    }
+
+                    await Settle();
+                    return null;
+                }
+
+                await Task.Delay(ms);
+                await Settle();
+                return null;
+            }
+            case "click":
+            case "type":
+            {
+                var control = Find(window, Opt(step, "name"), Opt(step, "text"));
+                if (control is null) return "control not found: " + step;
+                if (kind == "type")
+                {
+                    if (control is not TextBox box) return "not a TextBox: " + control.GetType().Name;
+                    box.Focus();
+                    box.Text = Str(step, "value");
+                }
+                else if (control is ListBoxItem item) item.IsSelected = true;
+                else if (control is ToggleButton toggle) toggle.IsChecked = !toggle.IsChecked;
+                else if (control is Button button) button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                else return "not clickable: " + control.GetType().Name;
+                await Settle();
+                return null;
+            }
+            case "screenshot":
+            {
+                await Settle();
+                var path = Path.Combine(outDir, Str(step, "file"));
+                var stats = SmokeCapture.Capture(window, path);
+                digests.Add(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))));
+                shotTaken();
+                return stats.IsBlank() ? "blank frame: " + path : null;
+            }
+            default:
+                return "unknown step: " + kind;
+        }
+    }
+
+    private static async Task Settle()
+    {
+        await Task.Delay(50);
+        Dispatcher.UIThread.RunJobs();
+        await Task.Delay(50);
+    }
+
+    private static string Str(JsonElement e, string key) => e.GetProperty(key).GetString() ?? "";
+
+    private static string? Opt(JsonElement e, string key) => e.TryGetProperty(key, out var v) ? v.GetString() : null;
+
+    /// <summary>First visible control whose Name equals <paramref name="name"/>, else whose visible text
+    /// equals <paramref name="text"/>; a text match resolves up to its nearest interactive ancestor.</summary>
+    private static Control? Find(Visual root, string? name, string? text)
+    {
+        foreach (var v in root.GetVisualDescendants())
+        {
+            if (v is not Control c || !c.IsVisible || c.Bounds.Width <= 0) continue;
+            if (name is { Length: > 0 } && c.Name == name) return c;
+        }
+
+        if (text is not { Length: > 0 }) return null;
+        foreach (var v in root.GetVisualDescendants())
+        {
+            if (v is not Control c || !c.IsVisible || c.Bounds.Width <= 0) continue;
+            var shown = c switch
+            {
+                TextBlock tb => tb.Text,
+                ContentControl cc when cc.Content is string s => s,
+                _ => null,
+            };
+            if (shown != text) continue;
+            for (var p = (Visual)c; p is not null; p = p.GetVisualParent())
+            {
+                if (p is ListBoxItem or ToggleButton or Button or TextBox) return (Control)p;
+            }
+
+            return c;
+        }
+
+        return null;
+    }
+}

@@ -394,7 +394,7 @@ public partial class App : Application
         // is a deliberate press on that button.
         // Automation / gallery / verification modes never phone home — a self-check binary checking
         // for updates would be a side effect nobody asked for and would fail on offline CI.
-        if (!Options.IsAutomation)
+        if (!Options.IsAutomation && !Options.IsDrive)
         {
             window.Opened += async (_, _) => await UpdateService.Instance.CheckAsync();
         }
@@ -402,7 +402,11 @@ public partial class App : Application
         // The three screenshot switches are mutually exclusive: --smoke exits right after one shot,
         // while --smoke-pages switches pages eight times in a row.
         // When both are passed, --smoke-pages wins (broader coverage) without an error.
-        if (Options.SmokePagesDirectory is { } pagesDirectory)
+        if (Options.DriveScriptPath is { } driveScript)
+        {
+            DriveRunner.Attach(window, desktop, driveScript);
+        }
+        else if (Options.SmokePagesDirectory is { } pagesDirectory)
         {
             PageShots.Attach(window, desktop, pagesDirectory);
         }

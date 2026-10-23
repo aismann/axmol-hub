@@ -26,8 +26,13 @@ internal sealed record HubHostOptions(
     // Directory for the diagnostic wire recording, or null to record nothing. Deliberately not part of
     // IsAutomation: it is meant to be used while a person is really driving the assistant, which is the only way
     // to reach a failure that shows up after thirty tool rounds.
-    string? WireLogDirectory)
+    string? WireLogDirectory,
+    // Development-only scripted screenshot run (DEBUG builds); null in release builds. Not part of IsAutomation:
+    // it runs against the user's real data root and settings, so nothing is pinned.
+    string? DriveScriptPath = null)
 {
+    public bool IsDrive => DriveScriptPath is not null;
+
     /// <summary>
     /// Verification / screenshot modes. They run the **product window** (<c>--smoke</c>,
     /// <c>--smoke-pages</c>) but with no one around to click buttons — any modal dialog would turn
@@ -147,9 +152,28 @@ internal sealed record HubHostOptions(
 
     public static HubHostOptions Parse(string[] args)
     {
+        string? drive = null;
+#if DEBUG
+        drive = Value(args, "--drive");
+#endif
+        var preferencesPath = Value(args, "--preferences") ?? DefaultPreferencesPath;
+        if (drive is not null)
+        {
+            // The run may change language/theme/window size; work on a copy so the user's settings survive it.
+            var copy = Path.Combine(Path.GetTempPath(), "axmolhub-drive-" + Environment.ProcessId + ".json");
+            try
+            {
+                if (File.Exists(preferencesPath)) File.Copy(preferencesPath, copy, true);
+                preferencesPath = copy;
+            }
+            catch (IOException)
+            {
+            }
+        }
+
         return new HubHostOptions(
             Value(args, "--data-root"),
-            Value(args, "--preferences") ?? DefaultPreferencesPath,
+            preferencesPath,
             Value(args, "--smoke"),
             Value(args, "--smoke-pages"),
             Value(args, "--shot-provider-picker"),
@@ -164,7 +188,8 @@ internal sealed record HubHostOptions(
             Trailing(args, "--verify-ops"),
             args.Any(a => string.Equals(a, "--gallery", StringComparison.OrdinalIgnoreCase)),
             args.Any(a => string.Equals(a, "--test-system-attention", StringComparison.OrdinalIgnoreCase)),
-            Value(args, "--wire-log"));
+            Value(args, "--wire-log"),
+            drive);
     }
 
     /// <summary>
