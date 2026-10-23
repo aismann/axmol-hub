@@ -350,7 +350,7 @@ internal static class AiContextChecks
         var opening = new Conversation { Id = "candidates", Title = "candidates" };
         opening.Messages.Add(ChatTurn.User(new string('u', 60_000)));
         opening.Messages.Add(ChatTurn.Assistant("收到了"));
-        if (ContextCompaction.HasCandidates(opening.Messages, 0))
+        if (ContextCompaction.CandidateTokens(opening.Messages, 0) > 0)
             throw new Exception("A transcript with nothing old enough to clear and nothing to summarize reported compaction candidates.");
         for (var pair = 0; pair < 4; pair++)
         {
@@ -358,19 +358,29 @@ internal static class AiContextChecks
             opening.Messages.Add(ChatTurn.FunctionResult($"c{pair}", new string('r', 4_000)));
         }
 
-        if (!ContextCompaction.HasCandidates(opening.Messages, 0))
+        if (ContextCompaction.CandidateTokens(opening.Messages, 0) <= 0)
             throw new Exception("A transcript with a summarizable prefix reported no compaction candidates, so auto compaction would stay blocked.");
-        if (ContextCompaction.HasCandidates(opening.Messages, summaryThroughMessageCount: 10))
+        if (ContextCompaction.CandidateTokens(opening.Messages, summaryThroughMessageCount: 10) != 0)
             throw new Exception("A fully summarized transcript with no old results reported compaction candidates, so a block would be lifted for nothing.");
+        // One message is not a prefix: the summarizer and the request builder both refuse fewer than two, so a
+        // candidate measure that counted one reports work no tier can do — the attempt then looks like a failure,
+        // and three of those block a session that is perfectly well.
+        var single = new Conversation { Id = "candidates-one", Title = "one" };
+        single.Messages.Add(ChatTurn.User(new string('u', 60_000)));
+        single.Messages.Add(ChatTurn.Assistant("收到"));
+        single.Messages.Add(ChatTurn.User("继续"));
+        single.Messages.Add(ChatTurn.Assistant("好"));
+        single.Messages.Add(ChatTurn.User("再继续"));
+        if (ContextCompaction.CanSummarize(single.Messages, 0))
+            throw new Exception("A prefix of one message was reported as summarizable, so the candidate measure and the summarizer disagree.");
+        if (ContextCompaction.CandidateTokens(single.Messages, 0) != 0)
+            throw new Exception("A history whose cut leaves one message behind reported a summary candidate, so an attempt that could do nothing counts as a failure.");
         // A block is lifted only for materially more to work with: the candidates that failed are still there
         // afterwards, so "candidates exist" would reset the allowance forever and rebuy the failing request.
         if (!ContextCompaction.ShouldRecover(2_000, 1_000) || ContextCompaction.ShouldRecover(1_999, 1_000))
             throw new Exception("Recovery no longer waits for twice as much to take back, so a failing summary is retried every round.");
         if (!ContextCompaction.ShouldRecover(500, 0))
             throw new Exception("A block recorded before candidates were tracked never gets the one attempt that keeps it from being pinned by age.");
-        if (ContextCompaction.CandidateTokens(opening.Messages, 0) <= 0
-            || ContextCompaction.CandidateTokens(opening.Messages, summaryThroughMessageCount: 10) != 0)
-            throw new Exception("Candidate tokens ignored the summary boundary, so recovery would count what is no longer sent.");
         if (ContextBudget.SummaryCeilingTokens(1_000_000) != 4_096 || ContextBudget.SummaryCeilingTokens(2_048) != 512 || ContextBudget.SummaryCeilingTokens(16_000) != 2_000)
             throw new Exception("The summary ceiling is not an eighth-of-the-window with both a floor and a cap.");
         if (ContextBudget.SummaryOutputTokens(64_000) != 4_000 || ContextBudget.SummaryOutputTokens(512) != 1_024 || ContextBudget.SummaryOutputTokens(10_000_000) != 8_192)

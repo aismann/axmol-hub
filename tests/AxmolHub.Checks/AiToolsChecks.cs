@@ -1276,13 +1276,20 @@ internal static class AiToolsChecks
         if (!ambiguous.Contains("matches 2 windows", StringComparison.Ordinal) || !ambiguous.Contains("Axmol Hub", StringComparison.Ordinal) || ambiguous.Contains("Outlook", StringComparison.Ordinal) || asked.Count != 1)
             throw new Exception($"An ambiguous target was not refused as ambiguous: {ambiguous}");
         var noTarget = grabbing.CaptureScreen("", false);
-        if (!noTarget.Contains("needs a window title", StringComparison.Ordinal))
+        // The wording followed the Computer Use gate: a capture now has to name the window it wants, because the
+        // grant is asked for that application. Asserting the sentence rather than the reason is what made this red
+        // for two days after the tool said something true and different.
+        if (!noTarget.Contains("needs the named application window", StringComparison.Ordinal))
             throw new Exception($"A call with neither target nor fullscreen answered: {noTarget}");
-        // The only cell that may draw the display, and it must not be handed a window.
+        // Whole-display capture is gone, not merely discouraged: the Computer Use grant is asked for one application,
+        // so a frame of the display has nothing to authorise it. The refusal has to say that and name the way out —
+        // the assertion this replaces still expected a fullscreen frame to land and be stored.
         asked.Clear();
         var display = grabbing.CaptureScreen("", fullscreen: true);
-        if (!display.Contains("the whole display", StringComparison.Ordinal) || asked.Single()is not null || landed.Count != 1 || display.Contains("blank", StringComparison.OrdinalIgnoreCase))
-            throw new Exception($"A fullscreen capture did not land as one stored frame: {display}");
+        if (!display.Contains("only captures a named application window", StringComparison.Ordinal)
+            || !display.Contains("computer_use", StringComparison.Ordinal)
+            || asked.Count != 0 || landed.Count != 0)
+            throw new Exception($"A fullscreen capture was not refused as unavailable: {display}");
         // The blank rule: nothing is stored and no picture is attached. This is the branch that decides whether the
         // channel is trustworthy, because a black PNG is a valid file, a valid header and a plausible byte count.
         var storedWith = landed.Count;
@@ -1298,6 +1305,12 @@ internal static class AiToolsChecks
         if (!emptyHand.Contains("no frame", StringComparison.Ordinal))
             throw new Exception($"A host that drew nothing answered: {emptyHand}");
         drawing = false;
+        // And the case that works: one named window, one frame, stored under the turn that named it. This used to be
+        // the fullscreen cell, which is now refused, so the stored frame has to come from the path people actually
+        // use.
+        var named = grabbing.CaptureScreen("Outlook");
+        if (!named.Contains("pid 300", StringComparison.Ordinal) || landed.Count != 1)
+            throw new Exception($"A named capture did not land as one stored frame: {named}");
         // The card says which window is about to leave the machine, in the same words the tool will act on.
         var card = ToolPreviews.PreviewFor("capture_screen", """{"target":"Outlook"}""", new WorkspaceToolScope(workspace, guards, dataRoot, session.Id, [], null, Screen: host));
         if (!card.Contains("window \"Outlook\"", StringComparison.Ordinal) || !card.Contains("pid 300", StringComparison.Ordinal) || !card.Contains("1000×700", StringComparison.Ordinal))

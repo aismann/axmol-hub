@@ -75,21 +75,15 @@ internal sealed partial class ChatExecutionCoordinator
             return false;
 
         var start = SummaryMessageCount(conversation);
-        var end = ContextCompression.CutPoint(conversation.Messages);
-        return end - start >= 2 && Providers.ModelFor(conversationId) is not null;
+        return ContextCompaction.CanSummarize(conversation.Messages, start)
+               && Providers.ModelFor(conversationId) is not null;
     }
 
     internal bool IsCompressingContext(string conversationId) => _compressingConversations.Contains(conversationId);
 
-    /// <summary>Whether any tier could take something back right now — see <see cref="ContextCompaction.HasCandidates"/>.
-    /// The cheap arithmetic the auto trigger uses to tell "nothing to do yet" from "tried and failed".</summary>
-    private bool CompactionHasCandidates(string conversationId)
-        => Sessions.Registry.Peek(conversationId) is { } conversation
-           && ContextCompaction.HasCandidates(conversation.Messages, SummaryMessageCount(conversation));
-
     /// <summary>What a compaction could take back now, and what it could take back when the block was set — the
     /// pair <see cref="ContextCompaction.ShouldRecover"/> needs to tell "there is more to work with" apart from
-    /// "the same candidates that already failed are still here".</summary>
+    /// "the same candidates that already failed are still here". Zero for the first is "nothing to do".</summary>
     private (int Current, int Blocked) CompactionCandidates(string conversationId)
         => Sessions.Registry.Peek(conversationId) is { } conversation
             ? (ContextCompaction.CandidateTokens(conversation.Messages, SummaryMessageCount(conversation)),
@@ -187,7 +181,7 @@ internal sealed partial class ChatExecutionCoordinator
 
         var start = SummaryMessageCount(conversation);
         var end = ContextCompression.CutPoint(conversation.Messages);
-        if (end - start < 2) return null;
+        if (end - start < ContextCompaction.SummarizablePrefixMinimum) return null;
         // The plan's body comes back into its message before the copy is taken — otherwise the summarizer is
         // handed an empty assistant turn and the plan leaves this session's summary for good.
         var archived = MaterializePlans(conversation.Messages.Skip(start).Take(end - start)).ToList();
@@ -720,6 +714,11 @@ internal sealed partial class ChatExecutionCoordinator
         {
             var (used, room, windowRoom) = await ReadOnUiAsync(() => CompactionReading(conversationId)).ConfigureAwait(false);
             if (!forced && !ContextCompaction.ShouldCompact(used, room)) return false;
+            // One measurement per attempt. "Is there anything to take back" and "is there now twice as much as when
+            // this last failed" are the same number, and the cut point behind it walks the transcript building a
+            // set — asking twice per attempt is a scan the thread that paints the window does not need to pay for.
+            var (currentCandidates, blockedCandidates) =
+                await ReadOnUiAsync(() => CompactionCandidates(conversationId)).ConfigureAwait(false);
             if (forced) await ResetCompactionCountersAsync(conversationId).ConfigureAwait(false);
             else if (await ReadOnUiAsync(() => Sessions.Registry.Peek(conversationId)?.ContextCompactionBlocked == true)
                          .ConfigureAwait(false))
@@ -733,8 +732,6 @@ internal sealed partial class ChatExecutionCoordinator
                 // Nor is "candidates exist" enough to lift a block — a summary the model answered with nothing
                 // leaves its candidates exactly where they were, and retrying those is the same paid request
                 // failing the same way. Recovery waits for twice as much to take back (see ShouldRecover).
-                var (currentCandidates, blockedCandidates) =
-                    await ReadOnUiAsync(() => CompactionCandidates(conversationId)).ConfigureAwait(false);
                 if (ContextCompaction.IsHardStopped(used, windowRoom)
                     || !ContextCompaction.ShouldRecover(currentCandidates, blockedCandidates))
                 {
@@ -751,7 +748,7 @@ internal sealed partial class ChatExecutionCoordinator
 
             // Over target with nothing to take back is not a failed compaction: both tiers are simply out of
             // candidates, and counting that as ineffective is what filled the allowance in the first place.
-            var nothingToDo = !await ReadOnUiAsync(() => CompactionHasCandidates(conversationId)).ConfigureAwait(false);
+            var nothingToDo = currentCandidates <= 0;
 
             // Only what the target needs. A clear that takes the whole span rewrites more of the transcript than
             // the saving requires, and every rewritten result is the middle of the prefix a provider caches — the

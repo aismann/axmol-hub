@@ -70,17 +70,40 @@ public static class ContextCompaction
     /// re-sending. A room of zero stays zero — that is "nothing fits", not "plenty of room".</summary>
     public static int DecisionRoom(int room) => room <= 0 ? room : Math.Min(room, CostCeilingTokens);
 
+    /// <summary>The fewest messages a prefix must hold before summarizing it is worth a request. One message is
+    /// not a prefix: both <c>CanCompressContext</c> and the request builder refuse fewer, so a candidate measure that
+    /// counted them would report work no tier can do — the attempt then looks like a failure, and three of those
+    /// block a session that is perfectly well.</summary>
+    public const int SummarizablePrefixMinimum = 2;
+
+    /// <summary>Whether this transcript has a prefix the summarizer may take, by the same rule the summarizer is
+    /// asked with — one place, because the two drifting apart is exactly what reported a phantom candidate.</summary>
+    public static bool CanSummarize(IReadOnlyList<ChatTurn> messages, int summaryThroughMessageCount)
+        => ContextCompression.CutPoint(messages)
+           - Math.Clamp(summaryThroughMessageCount, 0, messages.Count) >= SummarizablePrefixMinimum;
+
     /// <summary>How much a compaction could take back right now: the summarizable span plus the clearable results,
     /// both counted after the summary boundary. This is the number a block records, so recovery can ask whether
     /// there is materially more to work with instead of merely whether candidates exist — a model that answers a
     /// summary with nothing leaves exactly the same candidates behind, and retrying those is a paid request that
-    /// fails the same way.</summary>
+    /// fails the same way.
+    ///
+    /// <para>Zero means no tier has anything to take back, which is the whole of "there are no candidates": the
+    /// two questions were once two functions, each scanning the history for a cut point on every compaction
+    /// attempt.</para>
+    ///
+    /// <para><b>The cut point is computed once, outside the loop, on purpose.</b> It walks the transcript and
+    /// builds a set of answered call ids per step of its own while loop, so asking it per iteration turns a linear
+    /// sum into a quadratic one — on a session with a thousand turns, on the thread that paints the window.</para>
+    /// </summary>
     public static int CandidateTokens(IReadOnlyList<ChatTurn> messages, int summaryThroughMessageCount)
     {
         var start = Math.Clamp(summaryThroughMessageCount, 0, messages.Count);
+        var cut = ContextCompression.CutPoint(messages);
         var span = 0;
-        for (var index = start; index < ContextCompression.CutPoint(messages); index++)
-            span += ContextTrimmer.EstimateTokens(messages[index]);
+        if (cut - start >= SummarizablePrefixMinimum)
+            for (var index = start; index < cut; index++)
+                span += ContextTrimmer.EstimateTokens(messages[index]);
         var through = Math.Max(ContextElider.Boundary(messages), start);
         return span + ContextElider.ReclaimableTokens(messages, through, start);
     }
@@ -96,23 +119,6 @@ public static class ContextCompaction
     /// </summary>
     public static bool ShouldRecover(int currentCandidates, int blockedCandidates)
         => blockedCandidates <= 0 || (long)currentCandidates >= 2L * blockedCandidates;
-
-    /// <summary>
-    /// Whether any tier could take something back from this transcript right now.
-    ///
-    /// <para><b>Why this is not the same question as "is it over target".</b> A large first message, or a batch of
-    /// results too recent to clear, leaves both tiers with nothing to do. Counting those attempts as ineffective is
-    /// what used to ban a session from ever compacting again: three sends of a 100 000-token first message reached
-    /// <see cref="MaximumIneffectiveCompactions"/>, and the block outlived the transcript it was decided on — the
-    /// hundred tool results that arrived afterwards were never compacted either.</para>
-    /// </summary>
-    public static bool HasCandidates(IReadOnlyList<ChatTurn> messages, int summaryThroughMessageCount)
-    {
-        var start = Math.Clamp(summaryThroughMessageCount, 0, messages.Count);
-        if (ContextCompression.CutPoint(messages) - start >= 2) return true;
-        var through = Math.Max(ContextElider.Boundary(messages), start);
-        return ContextElider.ReclaimableTokens(messages, through, start) > 0;
-    }
 
     /// <summary>Whether the conversation is past the point where any tier can help.</summary>
     public static bool IsHardStopped(int used, int room) => Ratio(used, room) >= HardStopRatio;

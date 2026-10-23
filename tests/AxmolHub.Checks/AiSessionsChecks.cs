@@ -279,12 +279,13 @@ internal static class AiSessionsChecks
         Console.WriteLine("PASS: ContextTrimmer accounts for attached context.");
         var openAiProvider = AiProviderManifest.CreateBuiltIn("openai")!;
         var deepSeekProvider = AiProviderManifest.CreateBuiltIn("deepseek")!;
-        // The ladder as the shipped manifest names it. `ultra` came off in the 2026-10-13 retune, and this list is a
-        // restatement rather than a read-back on purpose: copying the manifest would assert only that the parser
-        // agrees with itself, while naming the tiers catches a projection that drops or reorders one of them. When
-        // the manifest changes again, this line and the one below are the two that have to be told.
-        if (!ModelCatalog.SupportsReasoningEffort(openAiProvider, "gpt-6.1-sol") || ModelCatalog.EffortsFor(openAiProvider, "gpt-6.1-sol")is not ["low", "medium", "high", "xhigh", "max"])
-            throw new Exception("Declared reasoning tiers should still load, per model, and decide what is offered.");
+        // The built-in manifest describes no tiers for these models any more: the service publishes the ladder at
+        // runtime, so what can be checked here is that nothing is *claimed*. The list this used to restate — low,
+        // medium, high, xhigh, max — came off the manifest in the 2026-10-13 retune, and a restatement that outlives
+        // the thing it restates is how a green check starts lying about the product.
+        if (ModelCatalog.EffortsFor(openAiProvider, "gpt-6.1-sol").Count != 0
+            || !ModelCatalog.MaySendEffort(openAiProvider, "gpt-6.1-sol", ChatReasoningEfforts.High))
+            throw new Exception("A model the manifest leaves undescribed claimed declared tiers, or stopped being askable with one.");
         // "Nobody told us" is no longer the same as "it cannot". The assertion this replaces demanded that an
         // unknown model report no support at all — and that is precisely why the tier menu never appeared for the
         // 205 models on the default gateway: the manifest names one model, the gateway publishes nothing, and a
