@@ -1125,7 +1125,7 @@ internal sealed partial class ChatExecutionCoordinator
         }
 
         if (!isGitOperationFallback && !isGoal && pictures is not { Count: > 0 } && string.IsNullOrEmpty(attachedContext)
-            && expectedPlanToken is null && GitWorkflow.ParseRequest(text) is { } gitAction
+            && expectedPlanToken is null && GitWorkflow.ParseRequest(text, out var explicitTitle, out var validGitSyntax) is { } gitAction
             && (Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId)) is { } gitConversation
             && NormalizeMode(gitConversation.Mode) == ChatModes.Agent && PendingPlanToken(gitConversation) is null)
         {
@@ -1134,13 +1134,19 @@ internal sealed partial class ChatExecutionCoordinator
                 refusalKey = "ChatSessionBusy";
                 return false;
             }
+            if (!validGitSyntax || explicitTitle is not null
+                && !CommitSummary.IsValid(explicitTitle, PreferencesProvider?.Invoke().CommitSummaryPrefixes))
+            {
+                refusalKey = "GitCommitTitleInvalid";
+                return false;
+            }
             if (gitConversation.WorkspaceRoot is { Length: > 0 } root)
             {
                 var source = gitConversation.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
                     && turn.ToolCallId is null && turn.Text.Length > 0);
                 Sessions.Registry.TryUpdate(conversationId, opened => opened.Append(ChatTurn.User(text)));
                 Changed?.Invoke();
-                _ = CompleteLocalGitRequestAsync(conversationId, root, source, gitAction);
+                _ = CompleteLocalGitRequestAsync(conversationId, root, source, gitAction, explicitTitle);
                 return true;
             }
         }
@@ -1224,10 +1230,11 @@ internal sealed partial class ChatExecutionCoordinator
         return true;
     }
 
-    private async Task CompleteLocalGitRequestAsync(string conversationId, string root, ChatTurn? source, string action)
+    private async Task CompleteLocalGitRequestAsync(string conversationId, string root, ChatTurn? source, string action,
+        string? explicitTitle = null)
     {
-        var title = source?.GitWorkspaceRoot == root && source.GitActions.HasFlag(GitActions.Commit)
-            ? source.CommitSummary ?? "" : "";
+        var title = explicitTitle ?? (source?.GitWorkspaceRoot == root && source.GitActions.HasFlag(GitActions.Commit)
+            ? source.CommitSummary ?? "" : "");
         var outcome = await RunCommitActionAsync(conversationId, root, title, source?.At ?? default, action,
             explicitText: true).ConfigureAwait(false);
         await ApplyOnUiAsync(() =>

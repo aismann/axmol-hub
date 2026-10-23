@@ -1189,6 +1189,7 @@ public static class HubTexts
         ["CommitPushPartialFailure"] = ("本地提交已创建，但推送失败；请检查远端状态。", "The local commit succeeded, but push failed; check the remote state."),
         ["CommitSummaryWorkspaceChanged"] = ("会话工作目录已变化，未提交。", "The session workspace changed; nothing was committed."),
         ["CommitSummaryInvalid"] = ("提交摘要格式无效，未提交。", "The commit summary is invalid; nothing was committed."),
+        ["GitCommitTitleInvalid"] = ("请使用 @hub commit \"fix: 提交标题\"；标题须符合已配置前缀、为单行且不超过 120 字符。", "Use @hub commit \"fix: commit title\"; the title must use a configured prefix, be one line, and contain at most 120 characters."),
         ["CommitSummaryGitMissing"] = ("未找到 Git，未提交。", "Git was not found; nothing was committed."),
         ["CommitSummaryBusy"] = ("仓库正被另一项 Hub 操作占用，未提交。", "The repository is busy with another Hub operation; nothing was committed."),
         ["CommitSummaryRepoUnavailable"] = ("无法重新验证 Git 仓库状态，未提交。", "Could not revalidate repository state; nothing was committed."),

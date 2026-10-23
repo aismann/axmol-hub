@@ -31,6 +31,29 @@ internal static class GitWorkflowEvidenceChecks
                      ("do not commit", null), ("explain git commit", null), ("commit && push", null), ("git commit -m x", null),
                      ("@hub commit && push", null), ("explain @hub commit", null), ("@hub commit -m x", null) })
             if (GitWorkflow.ParseRequest(text) != expected) throw new Exception("Ambiguous Git request recognized: " + text);
-        Console.WriteLine("PASS: local Git text routing accepts only exact @hub actions; ordinary English and Chinese requests stay on the Agent path.");
+        foreach (var (text, expectedTitle, expectedSyntax) in new (string, string?, bool)[]
+        {
+            ("@hub commit \"fix: supplied title\"", "fix: supplied title", true),
+            ("@hub commit 'fix: single quoted title'", "fix: single quoted title", true),
+            ("@hub commit 'fix: title' && push", null, false),
+            (" @HUB COMMIT \"docs: 中文标题\" ", "docs: 中文标题", true),
+            ("@hub commit \"fix: escaped \\\"quote\\\"\"", "fix: escaped \"quote\"", true),
+            ("@hub commit \"\"", "", true),
+            ("@hub commit \"chore: unconfigured\"", "chore: unconfigured", true),
+            ("@hub commit \"fix: first\\nsecond\"", "fix: first\nsecond", true),
+            ("@hub commit \"fix: broken", null, false),
+            ("@hub commit \"fix: title\" && push", null, false),
+            ("@hub commit fix: unquoted", null, false),
+        })
+        {
+            var action = GitWorkflow.ParseRequest(text, out var title, out var validSyntax);
+            if (action != "commit" || title != expectedTitle || validSyntax != expectedSyntax)
+                throw new Exception("Explicit commit title parsing failed: " + text);
+            if (validSyntax && (string.IsNullOrEmpty(title) || title.Contains('\n') || title.StartsWith("chore:"))
+                && CommitSummary.IsValid(title)) throw new Exception("An invalid explicit title was accepted.");
+        }
+        if (!CommitSummary.IsValid("chore: configured title", ["chore:"]))
+            throw new Exception("Configured prefixes were not honored for explicit titles.");
+        Console.WriteLine("PASS: exact @hub actions accept optional quoted commit titles as data; malformed or noncompliant titles cannot execute.");
     }
 }

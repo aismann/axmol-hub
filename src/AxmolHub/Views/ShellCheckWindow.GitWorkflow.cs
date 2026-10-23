@@ -194,6 +194,27 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
             var localMessages = chat.StoredCopyForCheck(localSession.Id)!.Messages.Count;
             chat.TryEnqueueSend(localSession.Id, "@hub commit", null, out _);
             await WaitForConditionAsync(() => chat.StoredCopyForCheck(localSession.Id)?.Messages.Count >= localMessages + 2);
+            var afterBareCommit = (await Git("rev-parse", "HEAD")).Output;
+            await File.WriteAllTextAsync(Path.Combine(workspace, "explicit-title.txt"), "use the user's title\n");
+            var beforeInvalidStatus = (await Git("status", "--porcelain")).Output;
+            var invalidRefused = true;
+            foreach (var invalid in new[] { "@hub commit \"chore: invalid prefix\"", "@hub commit \"fix: missing quote", "@hub commit \"\"" })
+                invalidRefused &= !chat.TryEnqueueSend(localSession.Id, invalid, null, out var error) && error == "GitCommitTitleInvalid";
+            invalidRefused &= (await Git("status", "--porcelain")).Output == beforeInvalidStatus
+                && (await Git("rev-parse", "HEAD")).Output == afterBareCommit;
+            const string explicitTitle = "fix: preserve user title $(echo literal); 中文";
+            localMessages = chat.StoredCopyForCheck(localSession.Id)!.Messages.Count;
+            chat.TryEnqueueSend(localSession.Id, "@hub commit \"" + explicitTitle + "\"", null, out _);
+            await WaitForConditionAsync(() => chat.StoredCopyForCheck(localSession.Id)?.Messages.Count >= localMessages + 2);
+            var exactTitle = (await Git("log", "-1", "--format=%s")).Output.TrimEnd('\r', '\n') == explicitTitle;
+            // A fresh conversation has no assistant summary at all; the supplied title is sufficient.
+            var suppliedOnly = chat.StartConversation(provider.Id);
+            chat.SetWorkspaceRoot(suppliedOnly.Id, workspace);
+            chat.SelectMode(ChatModes.Agent);
+            await File.WriteAllTextAsync(Path.Combine(workspace, "explicit-only.txt"), "no model title needed\n");
+            chat.TryEnqueueSend(suppliedOnly.Id, "@hub commit 'docs: use supplied title without summary'", null, out _);
+            await WaitForConditionAsync(() => chat.StoredCopyForCheck(suppliedOnly.Id)?.Messages.Count >= 2);
+            exactTitle &= (await Git("log", "-1", "--format=%s")).Output.TrimEnd('\r', '\n') == "docs: use supplied title without summary";
             var afterLocalHead = (await Git("rev-parse", "HEAD")).Output;
             localMessages = chat.StoredCopyForCheck(localSession.Id)!.Messages.Count;
             chat.TryEnqueueSend(localSession.Id, "@hub push", null, out _);
@@ -218,10 +239,10 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
                 && plainCopy?.Messages.Where(turn => turn.Role == ChatRoles.User).Select(turn => turn.Text).SequenceEqual(plainTexts) == true
                 && plainCopy.Messages.All(turn => !turn.IsGitOperationFallback);
             File.Delete(Path.Combine(workspace, "plain-request.txt"));
-            check(localRequests == 0 && beforeLocalHead != afterLocalHead
+            check(localRequests == 0 && invalidRefused && exactTitle && beforeLocalHead != afterBareCommit
                   && upstream.Output == afterLocalHead && chat.RunningCount == 0 && plainRequests == plainTexts.Length && ordinaryUntouched,
                 "仅 @hub commit/push 走本地；普通中英文操作原样发给模型（本地额外请求=" + localRequests
-                + "，普通请求=" + plainRequests + "/" + plainTexts.Length + "）");
+                + "，普通请求=" + plainRequests + "/" + plainTexts.Length + "，显式标题=" + exactTitle + "，拒绝无效=" + invalidRefused + "）");
 
             // The retained local commit must not be repeated when only the push needs an Agent retry.
             var partial = chat.StartConversation(provider.Id);
