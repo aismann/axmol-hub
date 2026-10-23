@@ -465,18 +465,30 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
       <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
-    <Style Selector="Button.plan-review-open">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="MinHeight" Value="0" />
-      <Setter Property="Padding" Value="6,3" />
-      <Setter Property="CornerRadius" Value="6" />
-      <Setter Property="FontSize" Value="12" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.Accent}" />
+    <!-- The heading of the review card is the way into the plan, so it is a button — wearing the neutral plate the
+         exits wear, taken down to a pill and a size smaller: 26 tall, 12,2 padding, Hub.Radius.Pill. Smaller and
+         round on purpose, because a fourth plate at the exits' size read as another answer to the review instead
+         of the title you press. The chevron is the whole "this opens" hint at rest; the plate's own hover (an
+         accent ring) carries it from there, and the key the removed "View plan" link used survives as its tip. -->
+    <Style Selector="Button.plan-review-heading">
+      <Setter Property="CornerRadius" Value="{DynamicResource Hub.Radius.Pill}" />
+      <Setter Property="MinHeight" Value="26" />
+      <Setter Property="Padding" Value="12,2" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="HorizontalAlignment" Value="Left" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
-    <Style Selector="Button.plan-review-open:pointerover">
-      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    <Style Selector="Path.plan-review-chevron">
+      <Setter Property="Width" Value="9" />
+      <Setter Property="Height" Value="9" />
+      <Setter Property="Stretch" Value="Uniform" />
+      <Setter Property="Fill" Value="{DynamicResource Hub.TextTertiary}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="5,0,0,0" />
+    </Style>
+    <!-- The ring already answers the pointer; the chevron follows it so the pill has one hover state, not two. -->
+    <Style Selector="Button.plan-review-heading:pointerover Path.plan-review-chevron">
+      <Setter Property="Fill" Value="{DynamicResource Hub.Accent}" />
     </Style>
     <!-- MinHeight 0 because the theme's 34 would house an 18px cap in a plate, and a plate is what this list
          stopped having. The padding is what the cap plus its hover hint needs and no more. -->

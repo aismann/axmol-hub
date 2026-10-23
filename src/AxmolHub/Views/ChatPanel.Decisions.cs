@@ -1359,28 +1359,33 @@ public partial class ChatPanel
     // ── content: a pending plan ──
 
     /// <summary>Approval is an explicit action; revision is an ordinary chat message, including pictures.
-    /// Focusing the composer does not consume the pending decision or spend a request.</summary>
+    /// Focusing the composer does not consume the pending decision or spend a request. The card's own heading is
+    /// the way into the plan: a "View plan" link on the same row said the same thing twice and owned the whole
+    /// right-hand side to say it, while the heading is the one thing on the card that names the document.</summary>
     private Control BuildPlanReviewHost(string conversationId, int turnIndex)
     {
         var host = new StackPanel { Spacing = 6 };
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        header.Children.Add(new TextBlock
+        // The heading wears the neutral plate the exits wear, as a pill and a size smaller, so it reads as the
+        // card's title being pressable instead of as a fourth action on the row below it.
+        var head = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        head.Children.Add(new TextBlock
         {
             Name = "PlanReviewTitle",
             Classes = { "plan-review-title" },
             Text = HubStrings.Get("ChatPlanReviewTitle"),
         });
+        head.Children.Add(new Path { Classes = { "plan-review-chevron" }, Data = ThemeGeometry("Hub.Icon.ChevronRight") });
         var open = new Button
         {
             Name = "PlanReviewOpenButton",
-            Classes = { "plan-review-open" },
+            Classes = { "approval-plate", "plan-review-heading" },
             Tag = "ChatPlanReviewOpen",
-            Content = HubStrings.Get("ChatPlanReviewOpen"),
+            Content = head,
         };
         open.Click += (_, _) => OpenInspector?.Invoke("plan", turnIndex);
-        Grid.SetColumn(open, 1);
-        header.Children.Add(open);
-        host.Children.Add(header);
+        // The key the removed link used still names the act, so the heading does not need a second label on screen.
+        ToolTip.SetTip(open, HubStrings.Get("ChatPlanReviewOpen"));
+        host.Children.Add(open);
 
         var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 2, 0, 0) };
         // Both exits wear the neutral plate the permission card's refuse button wears: they are answers on the same
