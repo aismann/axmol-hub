@@ -44,85 +44,46 @@ public partial class SettingsPage : UserControl
     internal bool UpdateChannelLabelsAreLocalizedForCheck => UpdateChannelPicker.Items.OfType<ComboBoxItem>().All(item => item.Content is string text && text.Length > 0);
     internal bool UpdateChannelPickerEnabledForCheck => UpdateChannelPicker.IsEnabled;
     internal string[] TrustedComputerAppsForCheck => (_chat?.TrustedComputerApps ?? []).ToArray();
-    internal int TrustedComputerAppRowsForCheck => TrustedComputerAppList.Children.OfType<Control>().Count(child => Equals(child.Tag, "trusted-computer-app-row"));
-    internal bool TrustedComputerAppsEmptyShownForCheck => TrustedComputerAppList.Children.OfType<Control>().Any(child => Equals(child.Tag, "trusted-computer-apps-none"));
+    internal int TrustedComputerAppRowsForCheck => TrustedComputerAppList.Children.OfType<Control>().Count(child => Equals(child.Tag, TrustGrantRowTag.ComputerApp));
+    /// <summary>Whether that list is on the page at all — an empty one takes its heading and its revoke-all button
+    /// with it, which is the whole point of the ledger's single empty line.</summary>
+    internal bool TrustedComputerAppGroupShownForCheck => TrustedComputerAppGroup.IsVisible;
 
-    internal bool TrustComputerAppForCheck(string app)
-    {
-        var granted = _chat?.TrustComputerApp(app) == true;
-        if (granted)
-            RebuildTrustedComputerApps();
-        return granted;
-    }
-
-    internal bool RevokeTrustedComputerAppForCheck(string app)
-    {
-        var revoked = _chat?.RevokeTrustedComputerApp(app) == true;
-        if (revoked)
-            RebuildTrustedComputerApps();
-        return revoked;
-    }
+    internal bool TrustComputerAppForCheck(string app) => ApplyTrustGrantForCheck(() => _chat?.TrustComputerApp(app) == true);
+    internal bool RevokeTrustedComputerAppForCheck(string app) => ApplyTrustGrantForCheck(() => _chat?.RevokeTrustedComputerApp(app) == true);
+    internal bool RevokeAllTrustedComputerAppsForCheck() => ApplyTrustGrantForCheck(() => _chat?.RevokeAllTrustedComputerApps() == true);
 
     /// <summary>The trust list as stored, for the assertion that a grant written from a card lands here.</summary>
     internal string[] TrustedToolsForCheck => (_chat?.TrustedTools ?? []).ToArray();
-    /// <summary>How many rows the page drew, counting the empty-state line as none.</summary>
-    internal int TrustedToolRowsShownForCheck => TrustedToolList.Children.OfType<Control>().Count(child => TrustedToolRowTag.Row.Equals(child.Tag));
-    internal bool TrustedToolsEmptyShownForCheck => TrustedToolList.Children.OfType<Control>().Any(child => TrustedToolRowTag.None.Equals(child.Tag));
-
-    /// <summary>Grants a tool through the same workspace call the card's button makes, so the page is checked
-    /// against the write path rather than against a copy of it.</summary>
-    internal bool TrustToolForCheck(string tool)
-    {
-        var granted = _chat?.TrustTool(tool) == true;
-        if (granted)
-            RebuildTrustedTools();
-        return granted;
-    }
-
-    internal bool RevokeTrustedToolForCheck(string tool)
-    {
-        var revoked = _chat?.RevokeTrustedTool(tool) == true;
-        if (revoked)
-            RebuildTrustedTools();
-        return revoked;
-    }
-
-    internal bool RevokeAllTrustedToolsForCheck()
-    {
-        var revoked = _chat?.RevokeAllTrustedTools() == true;
-        if (revoked)
-            RebuildTrustedTools();
-        return revoked;
-    }
+    /// <summary>How many rows the page drew. Rows are the whole list now: an empty ledger draws no group at all and
+    /// says so in the one line all three lists share.</summary>
+    internal int TrustedToolRowsShownForCheck => TrustedToolList.Children.OfType<Control>().Count(child => TrustGrantRowTag.Tool.Equals(child.Tag));
+    internal bool TrustedToolGroupShownForCheck => TrustedToolGroup.IsVisible;
 
     /// <summary>The verb list as stored, and the rows it drew — the assertion that a grant written from a card's
     /// verb button lands here and can be taken back from here.</summary>
     internal string[] TrustedCommandsForCheck => (_chat?.TrustedCommands ?? []).ToArray();
-    internal int TrustedCommandRowsShownForCheck => TrustedCommandList.Children.OfType<Control>().Count(child => TrustedCommandRowTag.Row.Equals(child.Tag));
-    internal bool TrustedCommandsEmptyShownForCheck => TrustedCommandList.Children.OfType<Control>().Any(child => TrustedCommandRowTag.None.Equals(child.Tag));
+    internal int TrustedCommandRowsShownForCheck => TrustedCommandList.Children.OfType<Control>().Count(child => TrustGrantRowTag.Command.Equals(child.Tag));
+    internal bool TrustedCommandGroupShownForCheck => TrustedCommandGroup.IsVisible;
 
-    internal bool TrustCommandForCheck(string key)
-    {
-        var granted = _chat?.TrustCommand(key) == true;
-        if (granted)
-            RebuildTrustedCommands();
-        return granted;
-    }
+    /// <summary>Whether the ledger's own line stands in for it — shown only while all three lists are empty.</summary>
+    internal bool TrustGrantsEmptyShownForCheck => TrustGrantsEmptyLine.IsVisible;
 
-    internal bool RevokeTrustedCommandForCheck(string key)
-    {
-        var revoked = _chat?.RevokeTrustedCommand(key) == true;
-        if (revoked)
-            RebuildTrustedCommands();
-        return revoked;
-    }
+    internal bool TrustToolForCheck(string tool) => ApplyTrustGrantForCheck(() => _chat?.TrustTool(tool) == true);
+    internal bool RevokeTrustedToolForCheck(string tool) => ApplyTrustGrantForCheck(() => _chat?.RevokeTrustedTool(tool) == true);
+    internal bool RevokeAllTrustedToolsForCheck() => ApplyTrustGrantForCheck(() => _chat?.RevokeAllTrustedTools() == true);
+    internal bool TrustCommandForCheck(string key) => ApplyTrustGrantForCheck(() => _chat?.TrustCommand(key) == true);
+    internal bool RevokeTrustedCommandForCheck(string key) => ApplyTrustGrantForCheck(() => _chat?.RevokeTrustedCommand(key) == true);
+    internal bool RevokeAllTrustedCommandsForCheck() => ApplyTrustGrantForCheck(() => _chat?.RevokeAllTrustedCommands() == true);
 
-    internal bool RevokeAllTrustedCommandsForCheck()
+    /// <summary>Writes one grant or revocation through the same workspace call the card's button makes, then
+    /// re-renders the ledger. One helper for nine seams: the page is checked against the write path rather than
+    /// against a copy of it, and a per-list rebuild is exactly the copy that drifts.</summary>
+    private bool ApplyTrustGrantForCheck(Func<bool> apply)
     {
-        var revoked = _chat?.RevokeAllTrustedCommands() == true;
-        if (revoked)
-            RebuildTrustedCommands();
-        return revoked;
+        var changed = apply();
+        if (changed) RebuildTrustedGrants();
+        return changed;
     }
 
     /// <summary>Reads the switch the way the assistant does, for a self-check that has to prove the preference is

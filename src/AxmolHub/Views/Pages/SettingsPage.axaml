@@ -180,30 +180,47 @@
           <TextBox x:Name="CommitSummaryPrefixesBox" Width="320" HorizontalAlignment="Left"
                    PlaceholderText="feat:, fix:, docs:, misc:" />
 
-          <!-- The 「以后都不问」 choices clicked on cards are visible in this section, and revocable here too.
-               The list is built in code: every row must carry its own tool name for revocation — the same
-               reason as ProviderGroupList. -->
-          <TextBlock Text="{DynamicResource TrustedToolsTitle}" FontSize="13" FontWeight="SemiBold"
-                     Margin="0,12,0,0" />
-          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource TrustedToolsHint}" />
-          <StackPanel x:Name="TrustedToolList" Spacing="4" />
-          <Button x:Name="RevokeAllTrustedToolsButton" Classes="quiet" HorizontalAlignment="Left"
-                  Content="{DynamicResource RevokeAllTrustedTools}" />
+          <!-- The 「以后都不问」 ledger. One header for all three lists: they answer one question — what the
+               assistant will not ask about again — and this is a record, not an input. Nothing here can be
+               granted from this page; the buttons that grant live on the card where the decision is made, which
+               is why the empty state is a sentence naming that card rather than a control. Each list is drawn in
+               code (RebuildTrustedGrants) because every row must carry its own key for revocation — the same
+               reason as ProviderGroupList — and the whole ledger collapses to that one line while all three lists
+               are empty, so three empty ledgers stop looking like three settings that failed to render. -->
+          <TextBlock Text="{DynamicResource TrustGrantsTitle}" FontSize="13" FontWeight="SemiBold"
+                     Margin="0,12,0,0" ToolTip.Tip="{DynamicResource TrustGrantsHint}" />
+          <TextBlock x:Name="TrustGrantsEmptyLine" Classes="muted" TextWrapping="Wrap"
+                     Text="{DynamicResource TrustGrantsNone}" />
 
-          <TextBlock Text="{DynamicResource TrustedComputerAppsTitle}" FontSize="13" FontWeight="SemiBold"
-                     Margin="0,12,0,0" />
-          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource TrustedComputerAppsHint}" />
-          <StackPanel x:Name="TrustedComputerAppList" Spacing="4" />
+          <StackPanel x:Name="TrustedToolGroup" Spacing="4" IsVisible="False">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Text="{DynamicResource TrustedToolsTitle}" Classes="muted" VerticalAlignment="Center" />
+              <Button Grid.Column="1" x:Name="RevokeAllTrustedToolsButton" Classes="quiet"
+                      Content="{DynamicResource RevokeAllTrustedTools}" />
+            </Grid>
+            <StackPanel x:Name="TrustedToolList" Spacing="4" />
+          </StackPanel>
 
-          <!-- The other half of that list: the git write verbs a card's verb button stopped asking about. A
-               separate list because the two grants are different sizes — one whole tool, one verb — and the
-               revocation has to say which is which. Built in code, as the list above is. -->
-          <TextBlock Text="{DynamicResource TrustedCommandsTitle}" FontSize="13" FontWeight="SemiBold"
-                     Margin="0,12,0,0" />
-          <TextBlock Classes="muted" TextWrapping="Wrap" Text="{DynamicResource TrustedCommandsHint}" />
-          <StackPanel x:Name="TrustedCommandList" Spacing="4" />
-          <Button x:Name="RevokeAllTrustedCommandsButton" Classes="quiet" HorizontalAlignment="Left"
-                  Content="{DynamicResource RevokeAllTrustedTools}" />
+          <StackPanel x:Name="TrustedCommandGroup" Spacing="4" IsVisible="False">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Text="{DynamicResource TrustedCommandsTitle}" Classes="muted" VerticalAlignment="Center" />
+              <Button Grid.Column="1" x:Name="RevokeAllTrustedCommandsButton" Classes="quiet"
+                      Content="{DynamicResource RevokeAllTrustedTools}" />
+            </Grid>
+            <StackPanel x:Name="TrustedCommandList" Spacing="4" />
+          </StackPanel>
+
+          <!-- The third list is granted by a different button (「始终允许」 on the Computer Use card) and means
+               something narrower, so its label carries that sentence as a tooltip rather than the shared caveat. -->
+          <StackPanel x:Name="TrustedComputerAppGroup" Spacing="4" IsVisible="False">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Text="{DynamicResource TrustedComputerAppsTitle}" Classes="muted"
+                         VerticalAlignment="Center" ToolTip.Tip="{DynamicResource TrustedComputerAppsHint}" />
+              <Button Grid.Column="1" x:Name="RevokeAllTrustedComputerAppsButton" Classes="quiet"
+                      Content="{DynamicResource RevokeAllTrustedTools}" />
+            </Grid>
+            <StackPanel x:Name="TrustedComputerAppList" Spacing="4" />
+          </StackPanel>
 
           <!-- Sub-session spawning gets its own switch rather than folding into the three tiers above: the
                approval mode governs "should one action ask first", while this governs "may the assistant open

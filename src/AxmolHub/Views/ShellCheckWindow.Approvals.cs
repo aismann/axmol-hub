@@ -482,7 +482,7 @@ internal sealed class ShellApprovalsChecks
             // whatever the code did. The keys that really do mean a game project keep the word, which is why this
             // names its keys instead of scanning the table.
             Check(!HubTexts.Get("ToolApprovalAutoHint", HubTexts.ChineseLanguage).Contains("工程", StringComparison.Ordinal)
-                  && !HubTexts.Get("TrustedToolsHint", HubTexts.ChineseLanguage).Contains("工程", StringComparison.Ordinal)
+                  && !HubTexts.Get("TrustGrantsHint", HubTexts.ChineseLanguage).Contains("工程", StringComparison.Ordinal)
                   && !HubTexts.Get("ApprovalAllowAlwaysTip", HubTexts.ChineseLanguage).Contains("工程", StringComparison.Ordinal)
                   && HubTexts.Get("ChatProjectPrefix", HubTexts.ChineseLanguage).Contains("工程", StringComparison.Ordinal),
                 "描述沙箱与信任的中文文案说「工作目录」，只有真指 Axmol 工程的那条还留着「工程」");
@@ -2074,44 +2074,42 @@ internal sealed class ShellApprovalsChecks
             settings.SelectToolApproval(ToolApprovalModes.Ask);
             Dispatcher.UIThread.RunJobs();
 
-            // The trust list is where a grant made on a card goes once the session that made it is gone, and the
-            // revoke buttons are the only way back: a click three tasks ago cannot be found again on a card.
-            Check(settings.TrustedToolsEmptyShownForCheck && settings.TrustedToolRowsShownForCheck == 0
-                  && settings.TrustedToolsForCheck.Length == 0,
-                "信任清单为空时设置页说明还没有信任过任何工具，而不是画一个空列表");
-            Check(settings.TrustedComputerAppsEmptyShownForCheck
+            // The ledger is where a grant made on a card goes once the session that made it is gone, and the revoke
+            // buttons are the only way back: a click three tasks ago cannot be found again on a card. It is a record,
+            // not a setting — nothing on the page grants anything — so while all three lists are empty it says that
+            // in one line and draws no group at all, instead of three headings over three empty lists that read as
+            // three settings which failed to render.
+            Check(settings.TrustGrantsEmptyShownForCheck
+                  && !settings.TrustedToolGroupShownForCheck && !settings.TrustedCommandGroupShownForCheck
+                  && !settings.TrustedComputerAppGroupShownForCheck
+                  && settings.TrustedToolRowsShownForCheck == 0 && settings.TrustedCommandRowsShownForCheck == 0
                   && settings.TrustedComputerAppRowsForCheck == 0
-                  && settings.TrustComputerAppForCheck("Computer Use Fixture App")
+                  && settings.TrustedToolsForCheck.Length == 0 && settings.TrustedCommandsForCheck.Length == 0
+                  && settings.TrustedComputerAppsForCheck.Length == 0,
+                "没有授权时三份清单都不画，只留一行说明，而不是三个空列表各自解释一遍");
+            Check(settings.TrustComputerAppForCheck("Computer Use Fixture App")
+                  && settings.TrustedComputerAppGroupShownForCheck && !settings.TrustGrantsEmptyShownForCheck
                   && settings.TrustedComputerAppRowsForCheck == 1
                   && settings.TrustedComputerAppsForCheck.SequenceEqual(new[] { "Computer Use Fixture App" })
                   && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedComputerApps
                       .SequenceEqual(new[] { "Computer Use Fixture App" })
                   && settings.RevokeTrustedComputerAppForCheck("Computer Use Fixture App")
-                  && settings.TrustedComputerAppsEmptyShownForCheck,
+                  && !settings.TrustedComputerAppGroupShownForCheck && settings.TrustGrantsEmptyShownForCheck,
                 "设置页显示始终允许的应用，持久保存，并能逐项撤销回空状态");
             Check(settings.TrustToolForCheck("run_command")
+                  && settings.TrustedToolGroupShownForCheck
                   && settings.TrustedToolsForCheck.SequenceEqual(new[] { "run_command" }, StringComparer.Ordinal)
                   && settings.TrustedToolRowsShownForCheck == 1,
                 "一条授权写进应用级清单，设置页立刻看得见那一行（实际 "
                 + string.Join(",", settings.TrustedToolsForCheck) + "）");
             Check(settings.RevokeTrustedToolForCheck("run_command")
-                  && settings.TrustedToolsForCheck.Length == 0 && settings.TrustedToolsEmptyShownForCheck,
-                "撤销那一行之后清单回到空状态，那句说明也回来了");
-            settings.TrustToolForCheck("file_write");
-            settings.TrustToolForCheck("run_command");
-            Check(settings.TrustedToolRowsShownForCheck == 2 && settings.RevokeAllTrustedToolsForCheck()
                   && settings.TrustedToolsForCheck.Length == 0
-                  && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedTools.Count == 0,
-                "「全部撤销」一次收干净，设置文件里也不留残留");
-
+                  && !settings.TrustedToolGroupShownForCheck && settings.TrustGrantsEmptyShownForCheck,
+                "撤销那一行之后清单连同标题一起收掉，那句说明也回来");
             // The verb list beside it, drawn and revoked the same way — and written into the settings file, because
-            // the whole point of the narrow grant is that it outlives the session whose card it was answered on. The
-            // wording on the page is checked too: this list has to say what a verb grant does not cover, or a person
-            // reads "以后都不问 git push" as covering a push hidden inside a shell.
-            Check(settings.TrustedCommandsEmptyShownForCheck && settings.TrustedCommandRowsShownForCheck == 0
-                  && settings.TrustedCommandsForCheck.Length == 0,
-                "命令动词清单为空时设置页说明还没有信任过任何命令动词");
+            // the whole point of the narrow grant is that it outlives the session whose card it was answered on.
             Check(settings.TrustCommandForCheck("git push")
+                  && settings.TrustedCommandGroupShownForCheck
                   && settings.TrustedCommandsForCheck.SequenceEqual(new[] { "git push" }, StringComparer.Ordinal)
                   && settings.TrustedCommandRowsShownForCheck == 1
                   && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedCommands
@@ -2119,18 +2117,61 @@ internal sealed class ShellApprovalsChecks
                 "卡上按动词授权写下的那条，设置页看得见、设置文件里也在（实际 "
                 + string.Join(",", settings.TrustedCommandsForCheck) + "）");
             Check(settings.RevokeTrustedCommandForCheck("git push")
-                  && settings.TrustedCommandsForCheck.Length == 0 && settings.TrustedCommandsEmptyShownForCheck,
-                "撤销那个动词之后清单回到空状态，那句说明也回来了");
-            settings.TrustCommandForCheck("git push");
-            settings.TrustCommandForCheck("git commit");
-            Check(settings.TrustedCommandRowsShownForCheck == 2 && settings.RevokeAllTrustedCommandsForCheck()
                   && settings.TrustedCommandsForCheck.Length == 0
-                  && new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedCommands.Count
-                      == 0,
-                "命令动词的「全部撤销」一次收干净，设置文件里也不留残留");
-            Check(HubStrings.Get("TrustedCommandsHint").Contains("包在 shell 里", StringComparison.Ordinal)
-                  && HubStrings.Get("TrustedCommandsHint").Contains("多个动词", StringComparison.Ordinal),
-                "命令动词那一节把授权够不到的两处写出来：包在 shell 里的调用、一次写多个动词的行");
+                  && !settings.TrustedCommandGroupShownForCheck && settings.TrustGrantsEmptyShownForCheck,
+                "撤销那个动词之后清单回到空状态，那句说明也回来了");
+
+            // Three lists, one behaviour: filled to two rows, emptied by one press, then read back from the file. One
+            // claim looping three cases rather than three near-identical assertions — the third list had no such
+            // button at all until this was written as one question.
+            var revokeAllCases = new (string Name, Func<bool> Fill, Func<int> Rows, Func<bool> RevokeAll, Func<int> Stored)[]
+            {
+                ("工具",
+                    () => settings.TrustToolForCheck("file_write") && settings.TrustToolForCheck("run_command"),
+                    () => settings.TrustedToolRowsShownForCheck,
+                    settings.RevokeAllTrustedToolsForCheck,
+                    () => new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedTools.Count),
+                ("命令动词",
+                    () => settings.TrustCommandForCheck("git push") && settings.TrustCommandForCheck("git commit"),
+                    () => settings.TrustedCommandRowsShownForCheck,
+                    settings.RevokeAllTrustedCommandsForCheck,
+                    () => new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedCommands.Count),
+                ("桌面应用",
+                    () => settings.TrustComputerAppForCheck("Computer Use Fixture App")
+                        && settings.TrustComputerAppForCheck("Computer Use Fixture App 2"),
+                    () => settings.TrustedComputerAppRowsForCheck,
+                    settings.RevokeAllTrustedComputerAppsForCheck,
+                    () => new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedComputerApps.Count),
+            };
+            var revokeAllProblems = new List<string>();
+            foreach (var grantCase in revokeAllCases)
+            {
+                if (!grantCase.Fill() || grantCase.Rows() != 2)
+                {
+                    revokeAllProblems.Add(grantCase.Name + " 没能填到两行（实际 " + grantCase.Rows() + " 行）");
+                    continue;
+                }
+
+                if (!grantCase.RevokeAll() || grantCase.Rows() != 0 || grantCase.Stored() != 0
+                    || !settings.TrustGrantsEmptyShownForCheck)
+                {
+                    revokeAllProblems.Add(grantCase.Name + " 撤销后仍有残留（行 " + grantCase.Rows() + "，文件 "
+                        + grantCase.Stored() + " 条）");
+                }
+            }
+
+            Check(revokeAllProblems.Count == 0,
+                "三份授权清单的「全部撤销」各自一次收干净，设置文件里也不留残留"
+                + (revokeAllProblems.Count == 0 ? "" : "（实际 " + string.Join("；", revokeAllProblems) + "）"));
+
+            // The one place the ledger's caveat can still be read: it moved off the page into the heading's tooltip.
+            // What it has to say is what a grant does not reach — a workspace boundary, a shell wrapper, and a line
+            // spelling two verbs — because a person who reads "以后都不问 git push" as covering a wrapped push would
+            // be wrong in a way nothing else on the page corrects.
+            Check(HubStrings.Get("TrustGrantsHint").Contains("越出工作目录", StringComparison.Ordinal)
+                  && HubStrings.Get("TrustGrantsHint").Contains("包在 shell 里", StringComparison.Ordinal)
+                  && HubStrings.Get("TrustGrantsHint").Contains("多个动词", StringComparison.Ordinal),
+                "授权清单的说明写出授权够不到的三处：越出工作目录、包在 shell 里的调用、一次写多个动词的行");
 
             // The compact menu is a per-session picker only. The standing default remains a settings-page
             // concern, so changing a session never silently rewrites it.

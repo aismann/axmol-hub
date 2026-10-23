@@ -884,7 +884,6 @@ public static class HubTexts
         ["ComputerUseGrantHint"] = ("仅授权此应用的截图和输入操作。", "Grants screenshot and input actions for this app only."),
         ["TrustedComputerAppsTitle"] = ("始终允许的桌面应用", "Always allowed desktop apps"),
         ["TrustedComputerAppsHint"] = ("这些应用可在没有重复审批的情况下接受 Computer Use 操作。", "These apps can receive Computer Use actions without another approval."),
-        ["TrustedComputerAppsNone"] = ("没有始终允许的应用。", "No apps are always allowed."),
         ["ChatPlanApprovalQuestion"] = ("是否按这个计划开始执行？", "Start implementing this plan?"),
         ["ChatPlanApprove"] = ("批准并执行", "Approve and implement"),
         ["ChatPlanRevise"] = ("退回修改", "Request revision"),
@@ -1211,23 +1210,25 @@ public static class HubTexts
         ["CommitSummaryStageFailed"] = ("无法暂存仓库更改；未创建提交。", "Could not stage repository changes; no commit was created."),
         ["CommitSummaryFailed"] = ("Git 提交失败；请检查仓库状态。", "Git commit failed; check the repository state."),
         ["CommitSummarySucceeded"] = ("已暂存并提交仓库更改。", "Staged and committed repository changes."),
-        // The app-wide trust list: what a card's "always allow" writes, seen where it can be taken back. The hint
-        // carries the one caveat a list of verbs cannot — a grant never covers what leaves the workspace.
+        // The app-wide trust ledger: what a card's "always allow" wrote, shown where it can be taken back. One
+        // header, one empty line and one caveat for all three lists, because they answer one question — what will
+        // not ask again — and three headers with three paragraphs over three mostly-empty lists read as three
+        // broken settings. The caveat names what no grant reaches: work past the workspace, a write hidden inside a
+        // shell, and a line that spells more than one verb.
+        ["TrustGrantsTitle"] = ("以后都不问", "What it stops asking about"),
+        ["TrustGrantsHint"] = ("在审批卡上点过「以后都不问」的条目，本机每个会话都不再问；越出工作目录的操作不受影响，包在 shell 里的调用和一次写多个动词的行仍要问。",
+            "What was clicked on an approval card stops asking in every session on this machine. Nothing that "
+            + "reaches past the workspace is covered, nor is a write hidden inside a shell or a line spelling more "
+            + "than one verb."),
+        ["TrustGrantsNone"] = ("还没有任何授权。在审批卡上点「以后都不问」会记在这里。",
+            "Nothing is trusted yet. Clicking \"Stop asking\" on an approval card records it here."),
         ["TrustedToolsTitle"] = ("以后都不问的工具", "Tools it stops asking about"),
-        ["TrustedToolsHint"] = ("在审批卡上点过「以后都不问」的工具，本机每个会话都不再问；越出工作目录的操作不受这条信任影响。",
-            "Tools clicked on an approval card stop asking in every session on this machine. Nothing that reaches "
-            + "past the workspace is covered by a grant."),
-        ["TrustedToolsNone"] = ("还没有信任过任何工具。", "Nothing is trusted yet."),
         ["RevokeTrustedTool"] = ("撤销", "Revoke"),
         ["RevokeAllTrustedTools"] = ("全部撤销", "Revoke all"),
-        // The other half of the same list: the git write verbs a card's verb button wrote. Its hint carries what a
-        // verb grant deliberately does not reach — a wrapper, or a line that writes two verbs.
+        // The other half of the same ledger: the git write verbs a card's verb button wrote. A separate list rather
+        // than one merged column, because a grant is either a whole tool or a single verb, and the revoke has to say
+        // which one it takes back.
         ["TrustedCommandsTitle"] = ("以后都不问的命令动词", "Command verbs it stops asking about"),
-        ["TrustedCommandsHint"] = ("在审批卡上点过「以后都不问 git …」的动词，本机每个会话都不再问；只认直接写在命令行里的那个动词，包在 shell 里的调用和一次写多个动词的行仍要问。",
-            "Verbs clicked on an approval card stop asking in every session on this machine. Only the verb a line "
-            + "spells itself is covered: a write hidden inside a shell, or a line writing more than one verb, still "
-            + "asks."),
-        ["TrustedCommandsNone"] = ("还没有信任过任何命令动词。", "No command verb is trusted yet."),
         ["RunningSessionsFormat"] = ("{0} 个会话运行中", "{0} sessions running"),
         // The strip's repository slot. It speaks in two states only: something uncommitted, and a read that could
         // not answer. A clean tree, a directory that is not a repository and a directory nobody has read yet all

@@ -143,6 +143,7 @@ public partial class SettingsPage : UserControl
         // session that made it may be long archived, while the trust it wrote is still answering for every session.
         RevokeAllTrustedToolsButton.Click += (_, _) => RevokeAllTrusted();
         RevokeAllTrustedCommandsButton.Click += (_, _) => RevokeAllTrustedCommands();
+        RevokeAllTrustedComputerAppsButton.Click += (_, _) => RevokeAllTrustedComputerApps();
         UpdateChannelPicker.SelectionChanged += (_, _) => OnUpdateChannelChanged();
         CustomDownloadSourceBox.LostFocus += (_, _) => OnCustomDownloadSourceChanged();
         ChooseDataDirectoryButton.Click += async (_, _) => await ChooseDataDirectoryAsync();
@@ -288,12 +289,10 @@ public partial class SettingsPage : UserControl
             LocalizeThemeItems();
             LocalizeDownloadSourceItems();
             LocalizeToolApprovalItems();
-            // The trust list is rebuilt rather than re-bound, for the same reason the provider groups are: every
-            // row carries the tool name its revoke button has to write back — and the verb list below it is drawn
-            // the same way, from the same signal.
-            RebuildTrustedTools();
-            RebuildTrustedComputerApps();
-            RebuildTrustedCommands();
+            // The ledger is rebuilt rather than re-bound, for the same reason the provider groups are: every row
+            // carries the key its revoke button has to write back, and the empty line is a property of all three
+            // lists together.
+            RebuildTrustedGrants();
             LocalizeUpdateChannelItems();
             SelectLanguage(HubStrings.Language);
             SelectTheme(_preferences.Theme);
@@ -550,177 +549,113 @@ public partial class SettingsPage : UserControl
     }
 
     /// <summary>
-    /// The app-wide trust list, as rows. Built in code because each row's revoke button has to carry the tool name
-    /// it belongs to — the same reason <see cref="RebuildProviderGroups"/> is not a bound template.
+    /// The app-wide trust ledger: three lists, one heading and one line that speaks for all of them. Built in code
+    /// because each row's revoke button has to carry the key it belongs to — the same reason
+    /// <see cref="RebuildProviderGroups"/> is not a bound template.
+    ///
+    /// <para>One renderer for the three lists rather than one per list: "nothing is granted yet" is a property of the
+    /// whole ledger, so a list that drew its own empty line could only speak for itself while the other two happened
+    /// to be empty as well. It is also what lets a group leave the page entirely — a heading and a revoke-all button
+    /// over no rows is a control that does nothing, and three of those read as three settings that failed to
+    /// render.</para>
     ///
     /// <para>No per-row tier annotation: which card a grant came from is a fact about a session's sandbox, and this
-    /// page has no session in front of it. What a grant does and does not cover is said once, in the hint above the
-    /// list, where it is true for every row.</para>
+    /// page has no session in front of it. What a grant does and does not cover is said once, on the ledger's
+    /// heading, where it is true for every row.</para>
     /// </summary>
-    private void RebuildTrustedTools()
+    private void RebuildTrustedGrants()
     {
         TrustedToolList.Children.Clear();
+        TrustedCommandList.Children.Clear();
+        TrustedComputerAppList.Children.Clear();
         if (_chat is null) return;
-        var trusted = _chat.TrustedTools;
-        if (trusted.Count == 0)
+
+        foreach (var tool in _chat.TrustedTools)
         {
-            TrustedToolList.Children.Add(new TextBlock
-            {
-                Text = HubStrings.Get("TrustedToolsNone"),
-                Classes = { "muted" },
-                TextWrapping = TextWrapping.Wrap,
-                Tag = TrustedToolRowTag.None,
-            });
-            RevokeAllTrustedToolsButton.IsVisible = false;
-            return;
+            TrustedToolList.Children.Add(TrustRow(tool, TrustGrantRowTag.Tool, () => RevokeTrusted(tool)));
         }
 
-        RevokeAllTrustedToolsButton.IsVisible = true;
-        foreach (var tool in trusted)
+        foreach (var verb in _chat.TrustedCommands)
         {
-            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Tag = TrustedToolRowTag.Row };
-            row.Children.Add(new TextBlock
-            {
-                Text = tool,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextWrapping = TextWrapping.Wrap,
-            });
-            var revoke = new Button
-            {
-                Classes = { "quiet" },
-                Content = HubStrings.Get("RevokeTrustedTool"),
-                Tag = tool,
-            };
-            revoke.Click += (_, _) => RevokeTrusted(tool);
-            row.Children.Add(revoke);
-            Grid.SetColumn(revoke, 1);
-            TrustedToolList.Children.Add(row);
+            TrustedCommandList.Children.Add(TrustRow(verb, TrustGrantRowTag.Command, () => RevokeTrustedCommand(verb)));
         }
+
+        foreach (var app in _chat.TrustedComputerApps)
+        {
+            TrustedComputerAppList.Children.Add(TrustRow(app, TrustGrantRowTag.ComputerApp, () => RevokeTrustedComputerApp(app)));
+        }
+
+        ShowTrustGroup(TrustedToolGroup, TrustedToolList);
+        ShowTrustGroup(TrustedCommandGroup, TrustedCommandList);
+        ShowTrustGroup(TrustedComputerAppGroup, TrustedComputerAppList);
+        TrustGrantsEmptyLine.IsVisible = TrustedToolList.Children.Count == 0
+            && TrustedCommandList.Children.Count == 0
+            && TrustedComputerAppList.Children.Count == 0;
     }
+
+    /// <summary>One grant, as a row: the key the settings file stores, and the button that takes exactly it back.</summary>
+    private static Grid TrustRow(string key, object tag, Action revoke)
+    {
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Tag = tag };
+        row.Children.Add(new TextBlock
+        {
+            Text = key,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var button = new Button
+        {
+            Classes = { "quiet" },
+            Content = HubStrings.Get("RevokeTrustedTool"),
+            Tag = key,
+        };
+        button.Click += (_, _) => revoke();
+        Grid.SetColumn(button, 1);
+        row.Children.Add(button);
+        return row;
+    }
+
+    /// <summary>An empty list takes its heading and its revoke-all button off the page with it.</summary>
+    private static void ShowTrustGroup(Control group, StackPanel list) => group.IsVisible = list.Children.Count > 0;
 
     private void RevokeTrusted(string tool)
     {
-        if (!_chat.RevokeTrustedTool(tool)) return;
-        RebuildTrustedTools();
+        if (_chat.RevokeTrustedTool(tool)) RebuildTrustedGrants();
     }
 
     private void RevokeAllTrusted()
     {
-        if (!_chat.RevokeAllTrustedTools()) return;
-        RebuildTrustedTools();
-    }
-
-    /// <summary>
-    /// The command-verb list, drawn the way the tool list is drawn and for the same reason: each row carries its
-    /// own key for revocation, so what the page shows and what it takes back cannot drift apart. The key is the two
-    /// words the card showed ("git push"), which is what the settings file stores, so revoking here is exactly
-    /// undoing the card's third button.
-    /// </summary>
-    private void RebuildTrustedCommands()
-    {
-        TrustedCommandList.Children.Clear();
-        if (_chat is null) return;
-        var trusted = _chat.TrustedCommands;
-        if (trusted.Count == 0)
-        {
-            TrustedCommandList.Children.Add(new TextBlock
-            {
-                Text = HubStrings.Get("TrustedCommandsNone"),
-                Classes = { "muted" },
-                TextWrapping = TextWrapping.Wrap,
-                Tag = TrustedCommandRowTag.None,
-            });
-            RevokeAllTrustedCommandsButton.IsVisible = false;
-            return;
-        }
-
-        RevokeAllTrustedCommandsButton.IsVisible = true;
-        foreach (var key in trusted)
-        {
-            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Tag = TrustedCommandRowTag.Row };
-            row.Children.Add(new TextBlock
-            {
-                Text = key,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextWrapping = TextWrapping.Wrap,
-            });
-            var revoke = new Button
-            {
-                Classes = { "quiet" },
-                Content = HubStrings.Get("RevokeTrustedTool"),
-                Tag = key,
-            };
-            revoke.Click += (_, _) => RevokeTrustedCommand(key);
-            row.Children.Add(revoke);
-            Grid.SetColumn(revoke, 1);
-            TrustedCommandList.Children.Add(row);
-        }
-    }
-
-    private void RebuildTrustedComputerApps()
-    {
-        TrustedComputerAppList.Children.Clear();
-        if (_chat is null) return;
-        var apps = _chat.TrustedComputerApps;
-        if (apps.Count == 0)
-        {
-            TrustedComputerAppList.Children.Add(new TextBlock
-            {
-                Text = HubStrings.Get("TrustedComputerAppsNone"),
-                Classes = { "muted" },
-                TextWrapping = TextWrapping.Wrap,
-                Tag = "trusted-computer-apps-none",
-            });
-            return;
-        }
-
-        foreach (var app in apps)
-        {
-            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Tag = "trusted-computer-app-row" };
-            row.Children.Add(new TextBlock
-            {
-                Text = app,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextWrapping = TextWrapping.Wrap,
-            });
-            var revoke = new Button
-            {
-                Classes = { "quiet" },
-                Content = HubStrings.Get("RevokeTrustedTool"),
-                Tag = app,
-            };
-            revoke.Click += (_, _) =>
-            {
-                if (_chat.RevokeTrustedComputerApp(app)) RebuildTrustedComputerApps();
-            };
-            Grid.SetColumn(revoke, 1);
-            row.Children.Add(revoke);
-            TrustedComputerAppList.Children.Add(row);
-        }
+        if (_chat.RevokeAllTrustedTools()) RebuildTrustedGrants();
     }
 
     private void RevokeTrustedCommand(string key)
     {
-        if (!_chat.RevokeTrustedCommand(key)) return;
-        RebuildTrustedCommands();
+        if (_chat.RevokeTrustedCommand(key)) RebuildTrustedGrants();
     }
 
     private void RevokeAllTrustedCommands()
     {
-        if (!_chat.RevokeAllTrustedCommands()) return;
-        RebuildTrustedCommands();
+        if (_chat.RevokeAllTrustedCommands()) RebuildTrustedGrants();
     }
 
-    private static class TrustedToolRowTag
+    private void RevokeTrustedComputerApp(string app)
     {
-        internal const string Row = "trusted-tool-row";
-        internal const string None = "trusted-tools-none";
+        if (_chat.RevokeTrustedComputerApp(app)) RebuildTrustedGrants();
     }
 
-    private static class TrustedCommandRowTag
+    private void RevokeAllTrustedComputerApps()
     {
-        internal const string Row = "trusted-command-row";
-        internal const string None = "trusted-commands-none";
+        if (_chat.RevokeAllTrustedComputerApps()) RebuildTrustedGrants();
+    }
+
+    /// <summary>The <c>Tag</c> a ledger row carries, one per list. What the self-checks count a row by lives here,
+    /// so a row and the count of it cannot disagree about the string — it used to be spelled three times over, two
+    /// of them as literals in the check surface.</summary>
+    private static class TrustGrantRowTag
+    {
+        internal const string Tool = "trusted-tool-row";
+        internal const string Command = "trusted-command-row";
+        internal const string ComputerApp = "trusted-computer-app-row";
     }
 
     private bool TrySaveDownloadSource(string source, string custom)
