@@ -259,8 +259,8 @@ public static class GitRepository
         yield return "--show-toplevel";
     }
 
-    /// <summary>Stages all non-ignored worktree changes, then revalidates and commits the resulting index.</summary>
-    public static async Task<GitCommitResult> CommitWorkingTreeAsync(string workspaceRoot, string expectedRoot,
+    /// <summary>Stages non-ignored worktree changes, then revalidates and commits the resulting index.</summary>
+    public static async Task<GitCommitResult> CommitStagedAsync(string workspaceRoot, string expectedRoot,
         string summary, IEnumerable<string>? prefixes, ProcessRunner runner,
         IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
     {
@@ -274,6 +274,18 @@ public static class GitRepository
                 OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             return new(false, "workspace-changed", null);
         if (state.Branch is not { Length: > 0 }) return new(false, "branch-unavailable", null);
+        if (state.Entries.Any(entry => entry.IndexState == "U" || entry.WorktreeState == "U"))
+            return new(false, "conflict", null);
+        if (!state.Entries.Any(entry => entry.IndexState != " " && entry.IndexState != "?"
+                                        || entry.WorktreeState != " " || entry.IndexState == "?"))
+            return new(false, "nothing-staged", null);
+        var stage = await runner.RunAsync(git, ["add", "-A", "--", "."], root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        if (stage.ExitCode != 0)
+            return new(false, "stage-failed", FirstText(stage.Error, stage.Output));
+        state = await ReadAsync(root, runner, sensitiveValues, cancellation).ConfigureAwait(false);
+        if (!state.IsReadable || state.Root is not { Length: > 0 })
+            return new(false, "repository-unavailable", state.Detail);
         if (state.Entries.Any(entry => entry.IndexState == "U" || entry.WorktreeState == "U"))
             return new(false, "conflict", null);
         if (!state.Entries.Any(entry => entry.IndexState != " " && entry.IndexState != "?"))

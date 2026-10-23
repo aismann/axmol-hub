@@ -40,6 +40,7 @@ internal static class AiCommitSummaryChecks
                 await File.WriteAllTextAsync(Path.Combine(repo, "staged.txt"), "staged change\n");
                 await RunGit("add", "staged.txt");
                 await File.WriteAllTextAsync(Path.Combine(repo, "unstaged.txt"), "unstaged change\n");
+                await File.WriteAllTextAsync(Path.Combine(repo, "untracked.txt"), "new file\n");
                 var repository = await GitRepository.ReadAsync(repo, runner);
                 if (!repository.IsReadable || repository.Root is not { } repositoryRoot)
                     throw new Exception("Git fixture repository could not be read.");
@@ -49,10 +50,10 @@ internal static class AiCommitSummaryChecks
                 var committed = await runner.RunAsync(git, ["show", "--format=", "--name-only", "HEAD"], repo);
                 var status = await GitRepository.ReadAsync(repo, runner);
                 if (!committed.Output.Contains("staged.txt", StringComparison.Ordinal)
-                    || committed.Output.Contains("unstaged.txt", StringComparison.Ordinal)
-                    || !status.Entries.Any(entry => entry.RelativePath == "unstaged.txt"
-                        && entry.IndexState == " " && entry.WorktreeState == "M"))
-                    throw new Exception("Hub's staged-only commit included unstaged work or failed to leave it in the worktree.");
+                    || !committed.Output.Contains("unstaged.txt", StringComparison.Ordinal)
+                    || !committed.Output.Contains("untracked.txt", StringComparison.Ordinal)
+                    || status.Entries.Count != 0)
+                    throw new Exception("Hub's deterministic commit did not stage and commit all non-ignored tracked and untracked changes.");
                 var noneStaged = await GitRepository.CommitStagedAsync(repo, repositoryRoot,
                     "fix: no staged changes", ["feat:", "fix:"], runner);
                 if (noneStaged.Success || noneStaged.FailureKey != "nothing-staged")
@@ -97,7 +98,7 @@ internal static class AiCommitSummaryChecks
         {
             Console.WriteLine("SKIP: git executable unavailable; repository commit fixture not run.");
         }
-        Console.WriteLine("PASS: commit summaries require one explicit marker, an allowed prefix and a bounded title; legacy settings retain defaults; local commits include staged files only.");
+        Console.WriteLine("PASS: commit summaries require one explicit marker, an allowed prefix and a bounded title; legacy settings retain defaults; local commits stage and commit tracked, staged and untracked changes.");
         return;
     }
 }

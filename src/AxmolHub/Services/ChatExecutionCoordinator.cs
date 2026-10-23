@@ -952,9 +952,11 @@ internal sealed partial class ChatExecutionCoordinator
                 "branch-unavailable" => "CommitSummaryBranchUnavailable",
                 "conflict" => "CommitSummaryConflict",
                 "nothing-staged" => "CommitSummaryNothingStaged",
+                "stage-failed" => "CommitSummaryStageFailed",
                 _ => "CommitSummaryFailed",
             };
-            if (result.FailureKey is not ("workspace-changed" or "git-missing"))
+            if (result.FailureKey is not ("workspace-changed" or "git-missing")
+                && !(action == "commit" && result.FailureKey is "nothing-staged" or "stage-failed"))
                 await StartCommitModelFallbackAsync(conversationId, turnAt,
                     result.FailureKey == "commit-succeeded-push-failed" ? "push" : action,
                     facts.Prefixes).ConfigureAwait(false);
@@ -2358,13 +2360,12 @@ internal sealed partial class ChatExecutionCoordinator
     }
 
     private static string CommitFallbackInstruction(IReadOnlyList<string> prefixes, string answer, string action)
-        => "Hub's local commit workflow could not safely handle the requested operation, so take over the whole operation "
-           + "using your normal Agent tools. First inspect the repository and current staged index. Never stage files or alter the index; "
-           + "operate only on files already staged by the user. Do not use shell chaining or wrappers; issue each git command as a "
-           + "single run_command so Hub's existing approval policy can inspect it. For a commit, choose one concise imperative title "
-           + "with an allowed prefix (" + string.Join(", ", prefixes) + "). For push, push only the current branch to its configured upstream. "
-           + "If commit-and-push was requested, commit staged files first, then push; clearly report partial success. Do not claim an operation "
-           + "succeeded unless its tool result confirms it. Requested operation: " + action + ".\n\nCompleted assistant answer:\n"
+        => "Hub's local deterministic workflow could not safely complete the requested Git operation. Take over the entire operation "
+           + "using your normal Agent tools and the active tool approval policy. Inspect the repository and choose the appropriate Git steps; "
+           + "you may stage changes with git add when needed. Avoid discarding or overwriting user work. For a commit, use a concise imperative "
+           + "title with an allowed prefix (" + string.Join(", ", prefixes) + "). For push, target the current branch's configured upstream. "
+           + "For commit-and-push, complete the commit before pushing and clearly report partial success. Report outcomes based on tool results. "
+           + "Requested operation: " + action + ".\n\nCompleted assistant answer:\n"
            + answer[..Math.Min(answer.Length, 10000)];
 
     private async Task<bool> ShouldCorrectLimitationsAsync(ConversationRun run)
