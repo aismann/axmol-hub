@@ -1968,6 +1968,13 @@ internal sealed class ShellAssistantChecks
         var compressionSession = StartAgentSession(shell.Chat, checkProvider.Id);
         for (var i = 0; i < 10; i++)
             shell.Chat.SeedTurnForCheck(compressionSession.Id, $"较早的上下文 {i}: " + new string('x', 500));
+        // A real session normally already has a measured request. Without that anchor this fixture only
+        // exercised the estimator, so it missed the stale pre-compaction reading that kept the ring full.
+        compressionSession.LastInputTokens = 12_000;
+        compressionSession.LastCachedInputTokens = 6_000;
+        compressionSession.LastUsageAt = DateTimeOffset.Now;
+        compressionSession.LastUsageModelId = checkModel;
+        compressionSession.ContextEstimateDriftPermille = 1_500;
         ScriptedChatClient? summaryRequest = null;
         shell.Chat.ClientOverride = (_, _) => summaryRequest = new ScriptedChatClient(["保留的历史摘要"]);
         panel.SetInputForCheck("");
@@ -1982,6 +1989,17 @@ internal sealed class ShellAssistantChecks
         var compressionTask = panel.ContextCompressionTaskForCheck;
         Check(compressionTask is not null, "压缩按钮触发了实际模型摘要请求");
         if (compressionTask is not null) await compressionTask;
+
+        // Read the painted arc immediately: opening the popover, reloading, or switching sessions here would
+        // hide a missed completion notification. The old check did all three before reading only the estimate.
+        var compressedUsage = panel.ContextReadingForCheck;
+        Check(!compressedUsage.IsMeasured && compressedUsage.Used == compressedUsage.Estimated
+              && compressedUsage.Used < usageBeforeCompression
+              && panel.ContextArcForCheck == Math.Clamp(compressedUsage.Fill, 0, 1)
+              && panel.ContextPopoverPercentForCheck == (int)Math.Round(compressedUsage.Fill * 100) + "%"
+              && !panel.ContextCompressButtonEnabledForCheck,
+            "压缩完成立即按保留上下文更新圆环，不沿用压缩前的实测输入，也不等待重开面板（原占用 "
+            + usageBeforeCompression + "，当前 " + compressedUsage.Used + "，弧 " + panel.ContextArcForCheck + "）");
 
         // The summarizing request read back off the request itself: the six headings are a contract with the
         // next model read, and the answer budget is what stops a thinking model from spending the whole budget on
@@ -2003,8 +2021,11 @@ internal sealed class ShellAssistantChecks
         var compressedCopy = shell.Chat.StoredCopyForCheck(compressionSession.Id);
         Check(compressedCopy?.ContextSummary == "保留的历史摘要"
               && compressedCopy.ContextSummaryThroughMessageCount == 6
-              && compressedCopy.Messages.Count == 10,
-            "摘要落盘并记录压缩边界，原始对话仍保留以供查看");
+              && compressedCopy.Messages.Count == 10
+              && compressedCopy.LastUsageAt is null
+              && compressedCopy.LastInputTokens == 12_000 && compressedCopy.LastCachedInputTokens == 6_000
+              && compressedCopy.ContextEstimateDriftPermille == 1_500,
+            "摘要与压缩边界落盘，旧测量锚点失效，但原始对话、历史用量与校准仍保留");
 
         // A summarizing request runs over a transcript saturated with tool calls, and it carries the session's
         // declarations for their schema while running nothing itself: that history with no declarations at all
@@ -2057,9 +2078,6 @@ internal sealed class ShellAssistantChecks
               && shell.Chat.PreparedSystemPromptForCheck(compressionSession.Id)
                   .Contains("保留的历史摘要", StringComparison.Ordinal),
             "后续模型请求使用摘要与最近四条消息，而不再发送已压缩的前缀");
-        Check(panel.ContextUsedForCheck < usageBeforeCompression
-              && !panel.ContextCompressButtonEnabledForCheck,
-            "压缩后估算占用下降，且没有更多可压缩的早期内容时按钮禁用");
         // The summary is not a display nicety here: it rides in the system message of every later request, so a
         // meter that cannot name it is metering a cost it does not show. A heading with nothing in it is not
         // shown at all, which is the other half of the same rule — a column of zeros teaches a reader to skip it.

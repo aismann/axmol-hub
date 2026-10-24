@@ -150,6 +150,9 @@ internal sealed partial class ChatExecutionCoordinator
                             .SequenceEqual(request.Value.SourcePrefix)) return;
                     conversation.ContextSummary = text;
                     conversation.ContextSummaryThroughMessageCount = request.Value.SummarizedThrough;
+                    // The measured request contained the old prefix, not this summary. Retire only its meter
+                    // anchor; keep the usage counters and tokenizer calibration until the next request reports.
+                    conversation.LastUsageAt = null;
                     // A summary that landed is the transcript moving, which is exactly what the counter was
                     // counting the absence of. The verdict that stopped automatic compaction was measured against
                     // the window before this one, so it goes with it.
@@ -831,6 +834,8 @@ internal sealed partial class ChatExecutionCoordinator
             if (!Sessions.Registry.TryUpdate(conversationId, opened =>
                 {
                     opened.Messages = cleared.Messages;
+                    // Cleared tool results no longer cost their measured size on the next request either.
+                    opened.LastUsageAt = null;
                     // Where the pass stopped, not where it was aimed: the results it left behind have to be
                     // reachable by the next one, and the watermark is what decides that.
                     opened.ContextElidedThroughMessageCount = cleared.Through;
@@ -3727,7 +3732,7 @@ internal sealed partial class ChatExecutionCoordinator
         if (room <= 0) return 0;
         // The model's own number where the session has one: a router that escalates on a guess is a router that
         // escalates on the shape of Hub's arithmetic rather than on the size of the conversation.
-        var used = conversation is not null && MatchesMeasuredModel(conversation, modelName)
+        var used = conversation is { LastUsageAt: not null } && MatchesMeasuredModel(conversation, modelName)
             ? SentTokens(conversation, 0)
             : history.Sum(ContextTrimmer.EstimateTokens);
         return (double)used / room;

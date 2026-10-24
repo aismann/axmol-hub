@@ -515,6 +515,8 @@ public sealed class Conversation
     /// which is not the same claim as "nothing was cached" — see <see cref="LastInputTokens"/>.</summary>
     public int LastCachedInputTokens { get; set; }
 
+    /// <summary>The meter anchor for the last measured transcript. Compaction clears it because the next
+    /// request contains different text; the historical counts and tokenizer calibration remain valid.</summary>
     public DateTimeOffset? LastUsageAt { get; set; }
     public string? LastUsageModelId { get; set; }
 
