@@ -1132,6 +1132,29 @@ internal sealed class ShellProvidersChecks
                 "密钥探测带上 provider 声明的静态头（outcome=" + probeOutcome + " user-agent=「"
                     + (probeUserAgent ?? "无") + "」）");
         }
+        // ── A catalog refresh must not erase a wire the preset declared for one model ──
+        //
+        // Measured here because the merge lives in this assembly: the declared wire and the fetched window arrive on
+        // the same per-model record, and whole-record replacement used to let a catalog wipe the wire the moment the
+        // model appeared in its list. A gateway that publishes a window and no endpoint list is that shape exactly.
+        var wireMergeRoot = Path.Combine(scratchRoot, "per-model-wire-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(wireMergeRoot);
+        var wireMergeHandler = new ModelListProbeHandler(
+            """{"object":"list","data":[{"id":"gpt-6.1-sol","context_length":400000}]}""");
+        using (var wireMergeHttp = new System.Net.Http.HttpClient(wireMergeHandler))
+        using (var wireMergeWorkspace = new ChatWorkspace(wireMergeRoot))
+        {
+            wireMergeWorkspace.AddPreset("agentrouter");
+            wireMergeWorkspace.AddCredential("agentrouter", "", "sk-wire-merge", CredentialSources.ApiKey);
+            wireMergeWorkspace.ModelListHttp = wireMergeHttp;
+            await wireMergeWorkspace.RefreshModelsAsync("agentrouter");
+            var mergedProvider = wireMergeWorkspace.Providers.First(provider => provider.Id == "agentrouter");
+            var mergedWire = AxmolHub.Agent.ChatClientFactory.ProtocolFor(mergedProvider, "gpt-6.1-sol");
+            var mergedWindow = ContextBudget.CapabilitiesOf(mergedProvider, "gpt-6.1-sol")?.ContextTokens;
+            Check(mergedWire == ModelProtocols.Responses && mergedWindow == 400000,
+                "目录刷新保留预设按模型声明的 wire，同时收下目录给的窗口（wire=" + mergedWire
+                    + " window=" + (mergedWindow?.ToString(CultureInfo.InvariantCulture) ?? "无") + "）");
+        }
         // ── What a fresh provider looks like before anything is fetched ──
         //
         // This is the state a user meets on a freshly adopted preset, and it is the one that has no model at

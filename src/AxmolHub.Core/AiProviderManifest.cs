@@ -266,8 +266,8 @@ public sealed class AiProviderEntry
     public int? MaxContextTokens { get; set; }
 
     /// <summary>
-    /// Which request wire this endpoint answers on — one of <see cref="ModelProtocols"/>, absent means "not
-    /// declared" and therefore chat.
+    /// Which request wire this endpoint answers on — one of <see cref="AxmolHub.Core.ModelProtocols"/>, absent
+    /// means "not declared" and therefore chat.
     ///
     /// <para>The field exists because the two OpenAI wires are decided by the <b>model</b> (one provider serves
     /// some models on <c>/responses</c> and others on <c>/chat/completions</c>) while Anthropic's
@@ -282,6 +282,23 @@ public sealed class AiProviderEntry
     /// repository's provider layer has always refused.</para>
     /// </summary>
     public string? Protocol { get; set; }
+
+    /// <summary>
+    /// The wire one of this preset's <b>own</b> models answers on, keyed by model id — for a gateway that serves
+    /// different models on different wires behind one endpoint and one key. AgentRouter is the case that forced it:
+    /// its gpt models answer on <c>/v1/responses</c> and refuse <c>/v1/chat/completions</c> outright, while the
+    /// chat models on the same key answer on chat only.
+    ///
+    /// <para><b>Asked only when <see cref="Protocol"/> is silent</b>, and deliberately unable to say anything
+    /// provider-wide: a preset may name a wire for a model it can prove and never for the endpoint, because a
+    /// provider-wide claim is exactly the one an aggregating gateway makes false. The order stays owned by
+    /// <c>ChatClientFactory.ProtocolFor</c> — provider, then model, then chat.</para>
+    ///
+    /// <para>Values go through <c>ModelProtocols.IsKnown</c> for the same reason <see cref="Protocol"/> does: a
+    /// family label such as <c>openai</c> is not a wire. An unknown value is dropped rather than raised, because
+    /// this file is hand-editable and a typo in it must not be able to stop the app from starting.</para>
+    /// </summary>
+    public Dictionary<string, string> ModelProtocols { get; set; } = [];
 
     /// <summary>Which source knows how to read this provider's model catalog
     /// (<see cref="ModelCapabilitySources.All"/>). Absent means the OpenAI-compatible default.</summary>
@@ -530,6 +547,12 @@ public static class AiProviderManifest
                 // protocol nothing builds a body for. Unknown is "nothing declared", which is chat — the same
                 // answer a manifest written before this field existed gets.
                 Protocol = ModelProtocols.IsKnown(entry.Protocol) ? entry.Protocol : null,
+                // Landed on the record the resolution chain already reads, rather than on a field of its own:
+                // ModelCapabilities.Protocol is the second rung of ChatClientFactory.ProtocolFor, so a preset that
+                // names one model's wire needs no new branch anywhere. The build does not overwrite what a catalog
+                // later says — see ChatProviderCoordinator.MergeCapabilities, which keeps this value when the
+                // endpoint publishes nothing about endpoints.
+                ModelCapabilities = PerModelWires(entry.ModelProtocols),
                 // Copied into its own dictionary for the same reason as OAuth below: a provider that outlives this
                 // call must not hold a reference into a document that gets re-read.
                 ExtraHeaders = new Dictionary<string, string>(entry.ExtraHeaders, StringComparer.OrdinalIgnoreCase),
@@ -561,5 +584,23 @@ public static class AiProviderManifest
                     ? new AiProviderKeyValidation { Type = validation.Type, Path = validation.Path }
                     : null,
             };
+    }
+
+    /// <summary>
+    /// Translates <see cref="AiProviderEntry.ModelProtocols"/> into the per-model record the resolution chain
+    /// reads. Model id in, wire out — and the two ways a hand-written line can be wrong (an unknown wire name, an
+    /// empty id) are both "skip this line" rather than a throw, for the same reason the field is filtered at all.
+    /// </summary>
+    private static Dictionary<string, ModelCapabilities> PerModelWires(
+        IReadOnlyDictionary<string, string> declared)
+    {
+        var result = new Dictionary<string, ModelCapabilities>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (model, wire) in declared)
+        {
+            if (model.Length == 0 || !ModelProtocols.IsKnown(wire)) continue;
+            result[model] = new ModelCapabilities { EndpointTypes = [wire] };
+        }
+
+        return result;
     }
 }

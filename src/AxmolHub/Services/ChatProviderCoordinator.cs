@@ -1079,6 +1079,16 @@ internal sealed partial class ChatProviderCoordinator
         static bool Contains(IReadOnlyList<string> names, string name)
             => names.Any(candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase));
     }
+    /// <summary>
+    /// Merges what the manifest declared with what the endpoint just said, <b>field by field</b>.
+    ///
+    /// <para>Whole-record replacement was the earlier rule, and it quietly ate a declaration: a catalog that
+    /// reported a window for a model also wiped the wire a preset had named for that same model, because both
+    /// facts ride one record. The rule is now "an explicit value wins, silence does not overwrite" — the endpoint
+    /// is the authority on what it measured, the manifest on what it promised, and each keeps the fields the other
+    /// left empty. A gateway that publishes a window and says nothing about endpoints is the shape this exists
+    /// for.</para>
+    /// </summary>
     private static Dictionary<string, ModelCapabilities> MergeCapabilities(
         IReadOnlyDictionary<string, ModelCapabilities>? declared,
         IReadOnlyDictionary<string, ModelCapabilities>? fetched)
@@ -1090,7 +1100,24 @@ internal sealed partial class ChatProviderCoordinator
 
         if (fetched is not null)
             foreach (var (name, caps) in fetched)
-                if (!caps.IsEmpty) result[name] = caps;
+            {
+                if (caps.IsEmpty) continue;
+                result.TryGetValue(name, out var declaredCaps);
+                result[name] = new ModelCapabilities
+                {
+                    ContextTokens = caps.ContextTokens ?? declaredCaps?.ContextTokens,
+                    MaxOutputTokens = caps.MaxOutputTokens ?? declaredCaps?.MaxOutputTokens,
+                    InputModalities = caps.InputModalities.Count > 0 ? caps.InputModalities : declaredCaps?.InputModalities ?? Array.Empty<string>(),
+                    OutputModalities = caps.OutputModalities.Count > 0 ? caps.OutputModalities : declaredCaps?.OutputModalities ?? Array.Empty<string>(),
+                    EndpointTypes = caps.EndpointTypes.Count > 0 ? caps.EndpointTypes : declaredCaps?.EndpointTypes ?? Array.Empty<string>(),
+                    EffortLevels = caps.EffortLevels.Count > 0 ? caps.EffortLevels : declaredCaps?.EffortLevels ?? Array.Empty<string>(),
+                    ContextStrategies = caps.ContextStrategies.Count > 0 ? caps.ContextStrategies : declaredCaps?.ContextStrategies ?? Array.Empty<string>(),
+                    // Provenance follows whoever measured. A fetched record is here because it said something, and a
+                    // manifest value has no observation to attribute in the first place.
+                    Source = caps.Source,
+                    ObservedAt = caps.ObservedAt,
+                };
+            }
 
         return result;
     }

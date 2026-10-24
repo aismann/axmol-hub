@@ -682,10 +682,27 @@ internal static class AiProvidersChecks
         var wireStore = new ProviderStore(wireRoot);
         wireStore.Save([new ModelProvider { Id = "saved-wire", Name = "Saved wire", IsCustom = true, BaseUrl = "https://mirror.test/v1", Model = "m", Protocol = ModelProtocols.Messages, }]);
         Assert(wireStore.Load().Single().Protocol == ModelProtocols.Messages, "a declared wire survives providers.json, because only the person on the endpoint can say it");
-        // No preset claims a wire yet, and that is asserted rather than assumed: the field arriving in the manifest
-        // must not quietly re-route any of the shipped endpoints.
-        Assert(AiProviderManifest.Load().All(entry => entry.Protocol is null), "no shipped preset declares a wire, so every one of them still resolves to chat");
+        // A preset may name a wire for one model, never for the endpoint — and both halves of that are asserted
+        // rather than assumed. The provider-wide field is the one that must stay unclaimed: a shipped preset that
+        // set it would re-route every model behind that endpoint, which is the same unreadable 400 this feature
+        // exists to prevent, only now for the whole catalog instead of one model. A per-model claim is allowed
+        // because a gateway can be shown to serve its own models on different wires, and it is only allowed to name
+        // a wire this build actually speaks.
+        var shippedPresets = AiProviderManifest.Load();
+        Assert(shippedPresets.All(entry => entry.Protocol is null), "no shipped preset names a provider-wide wire, so no endpoint is re-routed wholesale");
+        Assert(shippedPresets.SelectMany(entry => entry.ModelProtocols.Values).All(ModelProtocols.IsKnown), "every per-model wire a preset names is one this build speaks, checked at the source rather than on the provider");
         Assert(AiProviderManifest.CreateBuiltIn("deepseek")!.Protocol is null, "a preset that says nothing arrives with no wire rather than a guessed one");
+        // The end of the chain: the value reaches the rung that decides which body to build, and it stops at the
+        // model it was written for. AgentRouter is the gateway this was built for — gpt-6.1-sol refuses chat.
+        var wiredPreset = AiProviderManifest.CreateBuiltIn("agentrouter")
+                          ?? throw new Exception("agentrouter is missing from ai-providers.json.");
+        Assert(ChatClientFactory.ProtocolFor(wiredPreset, "gpt-6.1-sol") == ModelProtocols.Responses
+               && ChatClientFactory.ProtocolFor(wiredPreset, "deepseek-v5") == ModelProtocols.Chat
+               && wiredPreset.Protocol is null,
+            "a preset's per-model wire reaches the resolution chain and leaves its other models on chat (gpt-6.1-sol="
+            + ChatClientFactory.ProtocolFor(wiredPreset, "gpt-6.1-sol")
+            + " deepseek-v5=" + ChatClientFactory.ProtocolFor(wiredPreset, "deepseek-v5")
+            + " provider-wide=" + (wiredPreset.Protocol ?? "none") + ")");
         // ── The declared static headers reach the requests the app builds itself ──
         // A gateway that filters clients answers a headerless request the way it answers a stranger. On the catalog
         // that reads as "unreachable" — a provider with no models and no explanation — and on the key probe as a

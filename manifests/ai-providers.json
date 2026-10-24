@@ -114,8 +114,8 @@
     {
       "id": "agentrouter",
       "name": "AgentRouter",
-      "description": "AgentRouter fronts OpenAI, Anthropic and DeepSeek models behind one endpoint and one key. It answers only clients whose User-Agent looks like an official one, so this preset sets one; its gpt models answer on /v1/responses and not on /v1/chat/completions, which the manifest cannot say yet — see the protocol note.",
-      "descriptionZh": "AgentRouter 是一个聚合网关，用一个端点、一把密钥调用 OpenAI、Anthropic、DeepSeek 等模型。它只放行官方客户端样式的 User-Agent，本预设已带上；它的 gpt 系列只在 /v1/responses 上作答，不支持 /v1/chat/completions —— 而这件事 manifest 目前还写不了，见 protocol 注释。",
+      "description": "AgentRouter fronts OpenAI, Anthropic and DeepSeek models behind one endpoint and one key. It answers only clients whose User-Agent looks like an official one, so this preset sets one; its gpt models answer on /v1/responses and not on /v1/chat/completions, which this preset states per model — see the protocol note.",
+      "descriptionZh": "AgentRouter 是一个聚合网关，用一个端点、一把密钥调用 OpenAI、Anthropic、DeepSeek 等模型。它只放行官方客户端样式的 User-Agent，本预设已带上；它的 gpt 系列只在 /v1/responses 上作答、不支持 /v1/chat/completions —— 本预设按模型声明了这一点，见 protocol 注释。",
       "baseUrl": "https://agentrouter.org/v1",
       "defaultEnabledModels": ["gpt-6.1-sol"],
       "_defaultEnabledModelsNote": "Enabled only if the live catalog reports it, which it now can: the catalog request carries extraHeaders (ProviderStaticHeaders), so a first run lands on a model instead of an empty picker.",
@@ -128,7 +128,10 @@
       },
       "_extraHeadersNote": "AgentRouter sits behind a filter that rejects any client whose User-Agent is not an official one: GET /v1/models answers {\"type\":\"unauthorized_client_error\"} without this header and reaches the token check with it, which is how the value above was measured. It lands on every request Hub makes for this provider — the probe and the catalog through ProviderStaticHeaders, inference through ProviderRequestPolicy — and both replace a header of that name rather than adding a second one, so the SDK's own User-Agent does not survive alongside it. This is not the vendor's published contract (none is published) and it may change; the description says so where a person will read it.",
       "_keyValidationNote": "Declared now that the probe carries extraHeaders too. It could not be declared before: CheckApiKeyAsync wrote only the bearer, this gateway answers a headerless request with 401 whatever the key is, and 401 is read as KeyCheckOutcome.Rejected — which blocks the auth dialog and makes the preset impossible to add at all. The probe and the catalog both go through ProviderStaticHeaders, so the header that makes the key check honest is the same one inference sends.",
-      "_protocolNote": "No wire is declared here, because a shipped preset may not name one (AiProvidersChecks pins that invariant, and a wire is otherwise a claim only the person on the endpoint can make). It is also the preset's one real gap: gpt-6.1-sol does not answer /v1/chat/completions at all — it returns 'this model does not support /v1/chat/completions, please use /v1/responses' — so the provider row needs \"protocol\": \"responses\" in data/ai/providers.json to work. The field is persisted and survives a reload (provider.Protocol ??= builtIn.Protocol), so a hand-written value wins over this file. Per-model wires, which is what this gateway actually needs (its Claude models want /v1/messages), are not expressible in a manifest yet."
+      "modelProtocols": {
+        "gpt-6.1-sol": "responses"
+      },
+      "_protocolNote": "This gateway is the case the per-model wire was added for: gpt-6.1-sol answers on /v1/responses and refuses /v1/chat/completions outright ('this model does not support /v1/chat/completions, please use /v1/responses'), while the deepseek models on the same key answer on chat only. So the claim is made per model and never for the endpoint — a provider-wide protocol field here would be false for half the catalog. Its claude models want /v1/messages, which this build has no client for: ChatClientFactory refuses that wire by name rather than posting an OpenAI body at it, so they stay unusable until such a transport exists. The value goes through ModelProtocols.IsKnown, and it survives a catalog refresh that publishes no endpoint list (ChatProviderCoordinator.MergeCapabilities merges field by field)."
     },
     {
       "id": "ollama",
