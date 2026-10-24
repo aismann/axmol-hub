@@ -134,12 +134,16 @@ internal sealed class DiffViewer : Grid
         _right.HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Visible;
         _left.VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Visible;
         _right.VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Visible;
+        _left.TextArea.TextView.BackgroundRenderers.Add(
+            new DiffBackgroundRenderer(leftKinds, rightSide: false));
+        _right.TextArea.TextView.BackgroundRenderers.Add(
+            new DiffBackgroundRenderer(rightKinds, rightSide: true));
         _left.TextArea.TextView.ScrollOffsetChanged += (_, _) => Sync(_left, _right);
         _right.TextArea.TextView.ScrollOffsetChanged += (_, _) => Sync(_right, _left);
 
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
-        header.Children.Add(Header(leftLabel, script.Exact));
-        var rightHeader = Header(rightLabel, script.Exact);
+        header.Children.Add(Header(WithSideLabel("Before", leftLabel), script.Exact));
+        var rightHeader = Header(WithSideLabel("After", rightLabel), script.Exact);
         Grid.SetColumn(rightHeader, 1);
         header.Children.Add(rightHeader);
         Grid.SetColumnSpan(header, 2);
@@ -350,6 +354,10 @@ internal sealed class DiffViewer : Grid
         return string.Join(",", ranges);
     }
 
+    private static string WithSideLabel(string side, string source)
+        => string.Equals(source, side, StringComparison.OrdinalIgnoreCase)
+            ? side : side + " · " + source;
+
     private static Control Header(string text, bool exact)
     {
         var label = new TextBlock { Text = exact ? text : text + " · alignment limited", Margin = new Thickness(10, 6), FontSize = 12 };
@@ -401,6 +409,35 @@ internal sealed class DiffViewer : Grid
         public void Dispose() => _highlighter.Dispose();
     }
 
+    private sealed class DiffBackgroundRenderer(IReadOnlyList<DiffRowKind> kinds, bool rightSide) : IBackgroundRenderer
+    {
+        private static readonly IBrush InsertBackground = new SolidColorBrush(Color.FromArgb(72, 35, 170, 95));
+        private static readonly IBrush DeleteBackground = new SolidColorBrush(Color.FromArgb(72, 220, 65, 65));
+
+        public KnownLayer Layer => KnownLayer.Background;
+
+        public void Draw(TextView textView, DrawingContext drawingContext)
+        {
+            if (!textView.VisualLinesValid) return;
+            foreach (var visual in textView.VisualLines)
+            {
+                var display = visual.FirstDocumentLine.LineNumber - 1;
+                if (display < 0 || display >= kinds.Count) continue;
+                var kind = kinds[display];
+                var brush = kind switch
+                {
+                    DiffRowKind.Insert when rightSide => InsertBackground,
+                    DiffRowKind.Delete when !rightSide => DeleteBackground,
+                    _ => null,
+                };
+                if (brush is null) continue;
+                var y = visual.VisualTop - textView.ScrollOffset.Y;
+                drawingContext.FillRectangle(brush,
+                    new Rect(0, y, textView.Bounds.Width, visual.Height));
+            }
+        }
+    }
+
     private sealed class DiffNumberMargin(TextEditor editor, IReadOnlyList<int?> sourceLines,
         IReadOnlyList<DiffRowKind> kinds, bool rightSide, bool inline = false) : AbstractMargin
     {
@@ -420,9 +457,9 @@ internal sealed class DiffViewer : Grid
                     ? kind == DiffRowKind.Insert ? "+" : kind == DiffRowKind.Delete ? "−" : " "
                     : rightSide ? kind == DiffRowKind.Insert ? "+" : " "
                     : kind == DiffRowKind.Delete ? "−" : " ";
-                var markerBrush = kind == DiffRowKind.Insert ? Brushes.SeaGreen
-                    : kind == DiffRowKind.Delete ? Brushes.IndianRed : Brushes.Gray;
-                var typeface = new Typeface(editor.FontFamily);
+                var markerBrush = kind == DiffRowKind.Insert ? Brushes.LimeGreen
+                    : kind == DiffRowKind.Delete ? Brushes.OrangeRed : Brushes.Gray;
+                var typeface = new Typeface(editor.FontFamily, weight: FontWeight.Bold);
                 var y = visual.VisualTop - view.ScrollOffset.Y;
                 var mark = new FormattedText(marker, System.Globalization.CultureInfo.CurrentCulture,
                     FlowDirection.LeftToRight, typeface, editor.FontSize, markerBrush);

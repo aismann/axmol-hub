@@ -992,18 +992,15 @@ public partial class ChatPanel : UserControl
     internal string SelectedReasoningForCheck => _chat.ActiveReasoningEffort;
     internal string ReasoningChipTextForCheck => SelectedReasoningLabel.Text ?? "";
 
-    /// <summary>The tier entries the model menu offers the selected model, read off the menu a click builds.
-    /// "This tier can be asked for" is a fact about that menu, not about the chip: the chip only speaks after a
-    /// tier was actually picked, so it says nothing about a model that never reported one.</summary>
+    /// <summary>The five levels displayed by the reasoning slider, mapped onto the selected model's effort ladder.</summary>
     internal string[] SelectedModelReasoningEffortsForCheck
     {
         get
         {
             var selected = _chat.SelectedChatModel;
-            if (selected is null)
-                return[];
-            var row = BuildModelMenu().Items.OfType<MenuItem>().FirstOrDefault(item => item.Tag is ChatWorkspace.ChatModelOption option && option.Provider.Id == selected.Provider.Id && string.Equals(option.ModelName, selected.ModelName, StringComparison.OrdinalIgnoreCase));
-            return row is null ? [] : row.Items.OfType<MenuItem>().Select(item => item.Tag as string ?? "").Where(effort => effort.Length > 0).ToArray();
+            return selected is null ? [] : Enumerable.Range(0, 5)
+                .Select(level => ModelCatalog.EffortForFiveLevel(selected.Provider, selected.ModelName, level) ?? "")
+                .ToArray();
         }
     }
 

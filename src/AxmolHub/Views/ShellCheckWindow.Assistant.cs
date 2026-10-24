@@ -77,20 +77,19 @@ internal sealed class ShellAssistantChecks
             "Shell check local", "http://localhost:11434/v1", checkModel, null, out _);
         Check(checkProvider is not null, "自检创建了免密本地模型 provider");
         panel.Reload();
+        shell.Chat.SelectReasoningEffort(ChatReasoningEfforts.Default);
         Check(panel.ModelChoiceCount == 1,
             "模型选择器排除未鉴权 provider，只列出可用模型（实际 " + panel.ModelChoiceCount + " 项）");
-        // The semantics flipped this round: previously "metadata absent" was taken as "this model cannot
-        // reason", so the reasoning picker could never open for the default gateway's 205 models — the tier
-        // menu needs evidence to appear at all, and the evidence only comes back from a sent request. Now an
-        // unknown model is still askable, but EffortsFor stays empty: being allowed to ask is not a license
-        // to invent a tier for it. "Askable" is read off the menu a click builds, because the chip itself only
-        // speaks after a tier was picked, and a session that picked none wears no tier at all.
+        // Models without declared capabilities still expose the five-position slider's conservative try ladder.
+        // That UI mapping is not persisted as model metadata; selecting a tier remains an explicit user action.
         Check(panel.SelectModelForCheck(checkProvider!.Id, checkModel)
               && panel.SelectedModelText.Contains(checkModel, StringComparison.Ordinal)
-              && panel.SelectedModelReasoningEffortsForCheck.Length > 0
+              && panel.SelectedModelReasoningEffortsForCheck.SequenceEqual(
+                  [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                   ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Ultra])
               && ModelCatalog.EffortsFor(checkProvider, checkModel).Count == 0
               && panel.ReasoningChipTextForCheck.Length == 0,
-            "未知模型的推理档位问得出去（菜单铺出整条阶梯），但没有任何一档是被臆测出来的，芯片也不替它写一个");
+            "未知模型显示五档可尝试滑块映射，但不伪造模型元数据或未选择档位");
         checkProvider.ReasoningModels[checkModel] = new AiModelReasoning
         {
             Efforts = [ChatReasoningEfforts.Low, ChatReasoningEfforts.High],
@@ -98,8 +97,11 @@ internal sealed class ShellAssistantChecks
         panel.Reload();
         Check(panel.SelectModelForCheck(checkProvider.Id, checkModel)
               && panel.SelectedModelReasoningEffortsForCheck
+                  .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.Low,
+                      ChatReasoningEfforts.High, ChatReasoningEfforts.High, ChatReasoningEfforts.High])
+              && panel.SelectedModelReasoningEffortsForCheck.Distinct(StringComparer.OrdinalIgnoreCase)
                   .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.High]),
-            "存在明确推理元数据的模型只在菜单里列出它报的那两档（实际 "
+            "五档滑块按顺序映射到明确声明的低/高档位（实际 "
             + string.Join("/", panel.SelectedModelReasoningEffortsForCheck) + "）");
         // 「自动」 now means Hub routing a request by task complexity, and the gateway has its own model id of
         // that name. A tier is something the person picked, so a session that never picked one prints nothing at

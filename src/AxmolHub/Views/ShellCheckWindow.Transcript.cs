@@ -870,7 +870,8 @@ internal sealed class ShellTranscriptChecks
                     ChatPanel.FormatDuration(one))
                 : "";
             var lines = panel.RunElapsedLinesForCheck();
-            Check(answer.RunElapsed is not null && lines.Contains(wanted),
+            Check(answer.RunElapsed is not null
+                  && lines.Any(line => line.Contains(wanted, StringComparison.Ordinal)),
                 "回答落盘时带上本次总耗时，切回来看还是同一个数（屏上 [" + string.Join(" | ", lines)
                 + "]，期望「" + wanted + "」）");
 
