@@ -16,9 +16,10 @@ internal sealed class DiffViewerWindow : Window
         Content = new HubDialogChrome(this, "CloseWindow", Close).Wrap(viewer);
     }
 
-    internal static void Show(Window? owner, string path, string leftLabel, string rightLabel, string before, string after)
+    internal static void Show(Window? owner, string path, string leftLabel, string rightLabel, string before, string after,
+        Action<string>? quote = null)
     {
-        var window = new DiffViewerWindow(path, new DiffViewer(path, leftLabel, rightLabel, before, after));
+        var window = new DiffViewerWindow(path, new DiffViewer(path, leftLabel, rightLabel, before, after, quote));
         if (owner is null) window.Show(); else window.Show(owner);
     }
 

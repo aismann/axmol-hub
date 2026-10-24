@@ -410,7 +410,12 @@ public partial class ChatPanel
                 HubStrings.Get("InspectorDiffViewBefore"),
                 HubStrings.Get("InspectorDiffViewAfter"),
                 snapshot.Before,
-                snapshot.After);
+                snapshot.After,
+                text =>
+                {
+                    if (_chat?.ActiveConversation?.Id == conversation?.Id) QuoteIntoComposer(text);
+                    else StatusMessage?.Invoke("The conversation changed; the selection was not inserted.");
+                });
             _inspector.OpenGitComparisonRequested += async (state, entry, range, commit) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
@@ -442,7 +447,12 @@ public partial class ChatPanel
                         comparison.OldPath is null ? comparison.Path : comparison.OldPath + " → " + comparison.Path,
                         leftLabel, rightLabel,
                         comparison.Old.Exists ? comparison.Old.Snapshot.Text ?? "" : "",
-                        comparison.New.Exists ? comparison.New.Snapshot.Text ?? "" : "");
+                        comparison.New.Exists ? comparison.New.Snapshot.Text ?? "" : "",
+                        text =>
+                        {
+                            if (_chat.ActiveConversation?.Id == conversationId) QuoteIntoComposer(text);
+                            else StatusMessage?.Invoke("The conversation changed; the selection was not inserted.");
+                        });
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
                 {

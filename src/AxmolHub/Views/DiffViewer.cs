@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Layout;
 using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using Avalonia.VisualTree;
@@ -18,12 +19,23 @@ internal sealed class DiffViewer : Grid
 {
     private readonly TextEditor _left;
     private readonly TextEditor _right;
+    private readonly TextEditor _inline;
     private readonly List<SourceColorizer> _colorizers = [];
+    private readonly int?[] _rightNumbers = [];
+    private readonly int?[] _inlineNumbers = [];
+    private readonly Action<string>? _quote;
+    private Button? _quoteButton;
+    private readonly string _path;
+    private readonly int[] _changedRows;
     private bool _syncing;
+    private bool _inlineMode;
 
-    internal DiffViewer(string path, string leftLabel, string rightLabel, string? before, string? after)
+    internal DiffViewer(string path, string leftLabel, string rightLabel, string? before, string? after,
+        Action<string>? quote = null)
     {
-        RowDefinitions = new RowDefinitions("Auto,*");
+        _path = path;
+        _quote = quote;
+        RowDefinitions = new RowDefinitions("Auto,Auto,*");
         ColumnDefinitions = new ColumnDefinitions("*,*");
         var script = FileDiff.Rows(before, after);
         var leftLines = new List<string>();
@@ -32,6 +44,12 @@ internal sealed class DiffViewer : Grid
         var rightNumbers = new List<int?>();
         var leftKinds = new List<DiffRowKind>();
         var rightKinds = new List<DiffRowKind>();
+        var inlineLines = new List<string>();
+        var inlineOldNumbers = new List<int?>();
+        var inlineNewNumbers = new List<int?>();
+        var inlineKinds = new List<DiffRowKind>();
+        _changedRows = script.Rows.Select((row, index) => (row, index))
+            .Where(pair => pair.row.Kind != DiffRowKind.Equal).Select(pair => pair.index).ToArray();
         foreach (var row in script.Rows)
         {
             leftLines.Add(row.OriginalLine is null ? "" : row.Text);
@@ -40,13 +58,30 @@ internal sealed class DiffViewer : Grid
             rightNumbers.Add(row.UpdatedLine);
             leftKinds.Add(row.Kind);
             rightKinds.Add(row.Kind);
+            var marker = row.Kind switch { DiffRowKind.Insert => "+ ", DiffRowKind.Delete => "− ", _ => "  " };
+            inlineLines.Add(marker + row.Text);
+            inlineOldNumbers.Add(row.Kind == DiffRowKind.Delete ? row.OriginalLine : null);
+            inlineNewNumbers.Add(row.Kind == DiffRowKind.Delete ? null : row.UpdatedLine);
+            inlineKinds.Add(row.Kind);
         }
+        _rightNumbers = rightNumbers.ToArray();
         _left = CodeSurface.ForFile(path, string.Join('\n', leftLines));
         _right = CodeSurface.ForFile(path, string.Join('\n', rightLines));
+        _inline = CodeSurface.ForFile(path, string.Join('\n', inlineLines));
+        _left.Tag = "DiffLeftSurface";
+        _right.Tag = "DiffRightSurface";
+        _inline.Tag = "DiffInlineSurface";
+        _inline.IsReadOnly = true;
+        _inline.ShowLineNumbers = false;
+        _inlineNumbers = inlineNewNumbers.Select((number, index) => number ?? inlineOldNumbers[index]).ToArray();
+        _inline.TextArea.LeftMargins.Add(new DiffNumberMargin(_inline, _inlineNumbers, inlineKinds, rightSide: true, inline: true));
         _left.ShowLineNumbers = false;
         _right.ShowLineNumbers = false;
         _left.TextArea.LeftMargins.Add(new DiffNumberMargin(_left, leftNumbers, leftKinds, rightSide: false));
         _right.TextArea.LeftMargins.Add(new DiffNumberMargin(_right, rightNumbers, rightKinds, rightSide: true));
+        _inline.HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Visible;
+        _inline.VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Visible;
+        _inline.IsVisible = false;
         var definition = DarkSyntax.ForBackdrop(CodeSyntax.ForFile(path));
         if (definition is not null)
         {
@@ -56,6 +91,12 @@ internal sealed class DiffViewer : Grid
             _colorizers.Add(rightColorizer);
             _left.TextArea.TextView.LineTransformers.Add(leftColorizer);
             _right.TextArea.TextView.LineTransformers.Add(rightColorizer);
+            var inlineOld = new SourceColorizer(new TextDocument(before ?? ""), inlineOldNumbers, definition, displayPrefix: 2);
+            var inlineNew = new SourceColorizer(new TextDocument(after ?? ""), inlineNewNumbers, definition, displayPrefix: 2);
+            _colorizers.Add(inlineOld);
+            _colorizers.Add(inlineNew);
+            _inline.TextArea.TextView.LineTransformers.Add(inlineOld);
+            _inline.TextArea.TextView.LineTransformers.Add(inlineNew);
         }
         DetachedFromVisualTree += (_, _) =>
         {
@@ -76,12 +117,111 @@ internal sealed class DiffViewer : Grid
         Grid.SetColumn(Header(rightLabel, script.Exact), 1);
         header.Children.Add(Header(rightLabel, script.Exact));
         Children.Add(header);
-        Grid.SetRow(_left, 1);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(8, 4) };
+        var inlineButton = new Button { Content = HubStrings.Get("DiffInlineMode"), Tag = "DiffInlineToggle", IsEnabled = script.Exact };
+        inlineButton.Click += (_, _) =>
+        {
+            _inlineMode = !_inlineMode;
+            _inline.IsVisible = _inlineMode;
+            if (_quoteButton is not null) _quoteButton.IsEnabled = !_inlineMode;
+            header.IsVisible = !_inlineMode;
+            _left.IsVisible = !_inlineMode;
+            _right.IsVisible = !_inlineMode;
+        };
+        actions.Children.Add(inlineButton);
+        var previous = new Button { Content = HubStrings.Get("DiffPreviousChange"), Tag = "DiffPreviousChange", IsEnabled = _changedRows.Length > 0 };
+        previous.Click += (_, _) => NavigateChange(-1);
+        actions.Children.Add(previous);
+        var next = new Button { Content = HubStrings.Get("DiffNextChange"), Tag = "DiffNextChange", IsEnabled = _changedRows.Length > 0 };
+        next.Click += (_, _) => NavigateChange(1);
+        actions.Children.Add(next);
+        if (_quote is not null)
+        {
+            _quoteButton = new Button { Content = HubStrings.Get("DiffQuoteSelection"), Tag = "DiffQuoteSelection" };
+            _quoteButton.Click += (_, _) => QuoteSelection();
+            actions.Children.Add(_quoteButton);
+        }
+        Grid.SetRow(actions, 1);
+        Grid.SetColumnSpan(actions, 2);
+        Children.Add(actions);
+        Grid.SetRow(_left, 2);
         Children.Add(_left);
-        Grid.SetRow(_right, 1);
+        Grid.SetRow(_right, 2);
         Grid.SetColumn(_right, 1);
         Children.Add(_right);
+        Grid.SetRow(_inline, 2);
+        Grid.SetColumnSpan(_inline, 2);
+        Children.Add(_inline);
         MinHeight = 240;
+    }
+
+    private int _currentChange = -1;
+
+    private void NavigateChange(int direction)
+    {
+        if (_changedRows.Length == 0) return;
+        var active = _inlineMode ? _inline : _right;
+        var currentLine = active.TextArea.Caret.Line - 1;
+        var nextIndex = direction > 0
+            ? Array.FindIndex(_changedRows, row => row > currentLine)
+            : Array.FindLastIndex(_changedRows, row => row < currentLine);
+        if (nextIndex < 0) nextIndex = direction > 0 ? 0 : _changedRows.Length - 1;
+        _currentChange = nextIndex;
+        if (!_inlineMode) SelectDisplayLine(_left, _changedRows[nextIndex]);
+        SelectDisplayLine(active, _changedRows[nextIndex]);
+    }
+
+    private static void SelectDisplayLine(TextEditor editor, int row)
+    {
+        var lineNumber = Math.Clamp(row + 1, 1, editor.Document.LineCount);
+        var line = editor.Document.GetLineByNumber(lineNumber);
+        editor.Select(line.Offset, line.Length);
+        editor.ScrollToLine(lineNumber);
+    }
+
+    private void QuoteSelection()
+    {
+        var editor = _inlineMode ? _inline : _right;
+        var map = _inlineMode ? _inlineNumbers : _rightNumbers;
+        if (_quote is null || editor.SelectionLength <= 0) return;
+        var startOffset = editor.SelectionStart;
+        var endOffset = startOffset + editor.SelectionLength;
+        var startLine = editor.Document.GetLineByOffset(startOffset).LineNumber;
+        var endLine = editor.Document.GetLineByOffset(Math.Max(startOffset, endOffset - 1)).LineNumber;
+        var sourceNumbers = new List<int>();
+        var selectedLines = new List<string>();
+        for (var displayLine = startLine; displayLine <= endLine && displayLine <= map.Length; displayLine++)
+        {
+            if (map[displayLine - 1] is not int sourceNumber) continue;
+            var documentLine = editor.Document.GetLineByNumber(displayLine);
+            var from = Math.Max(startOffset, documentLine.Offset) - documentLine.Offset;
+            var to = Math.Min(endOffset, documentLine.EndOffset) - documentLine.Offset;
+            from = Math.Max(from, _inlineMode ? 2 : 0);
+            if (to <= from) continue;
+            var sourceText = editor.Document.GetText(documentLine.Offset + from, to - from);
+            selectedLines.Add(sourceText);
+            sourceNumbers.Add(sourceNumber);
+        }
+        if (sourceNumbers.Count == 0) return;
+        var selected = string.Join('\n', selectedLines);
+        if (selected.Length == 0) return;
+        var suffix = FormatLineRanges(sourceNumbers);
+        _quote($"{_path}:{suffix}\n{selected}");
+    }
+
+    private static string FormatLineRanges(IReadOnlyList<int> lines)
+    {
+        var ranges = new List<string>();
+        for (var index = 0; index < lines.Count;)
+        {
+            var start = lines[index];
+            var end = start;
+            while (++index < lines.Count && lines[index] == end + 1) end = lines[index];
+            ranges.Add(start == end ? start.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : start.ToString(System.Globalization.CultureInfo.InvariantCulture) + "-"
+                  + end.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        return string.Join(",", ranges);
     }
 
     private static Control Header(string text, bool exact)
@@ -105,10 +245,13 @@ internal sealed class DiffViewer : Grid
         private readonly TextDocument _source;
         private readonly int?[] _sourceLines;
         private readonly DocumentHighlighter _highlighter;
+        private readonly int _displayPrefix;
 
-        internal SourceColorizer(TextDocument source, IReadOnlyList<int?> sourceLines, IHighlightingDefinition definition)
+        internal SourceColorizer(TextDocument source, IReadOnlyList<int?> sourceLines,
+            IHighlightingDefinition definition, int displayPrefix = 0)
         {
             _source = source;
+            _displayPrefix = displayPrefix;
             _sourceLines = sourceLines.ToArray();
             _highlighter = new DocumentHighlighter(source, definition);
         }
@@ -120,7 +263,7 @@ internal sealed class DiffViewer : Grid
             var sourceLine = _source.GetLineByNumber(sourceNumber);
             foreach (var section in _highlighter.HighlightLine(sourceNumber).Sections)
             {
-                var start = line.Offset + section.Offset - sourceLine.Offset;
+                var start = line.Offset + _displayPrefix + section.Offset - sourceLine.Offset;
                 ChangeLinePart(start, start + section.Length, element =>
                 {
                     if (section.Color.Foreground is { } foreground)
@@ -133,7 +276,7 @@ internal sealed class DiffViewer : Grid
     }
 
     private sealed class DiffNumberMargin(TextEditor editor, IReadOnlyList<int?> sourceLines,
-        IReadOnlyList<DiffRowKind> kinds, bool rightSide) : AbstractMargin
+        IReadOnlyList<DiffRowKind> kinds, bool rightSide, bool inline = false) : AbstractMargin
     {
         protected override Size MeasureOverride(Size availableSize) => new(68, 0);
 
@@ -147,8 +290,9 @@ internal sealed class DiffViewer : Grid
                 if (display < 0 || display >= sourceLines.Count) continue;
                 var number = sourceLines[display]?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
                 var kind = kinds[display];
-                var marker = rightSide
-                    ? kind == DiffRowKind.Insert ? "+" : " "
+                var marker = inline
+                    ? kind == DiffRowKind.Insert ? "+" : kind == DiffRowKind.Delete ? "−" : " "
+                    : rightSide ? kind == DiffRowKind.Insert ? "+" : " "
                     : kind == DiffRowKind.Delete ? "−" : " ";
                 var markerBrush = kind == DiffRowKind.Insert ? Brushes.SeaGreen
                     : kind == DiffRowKind.Delete ? Brushes.IndianRed : Brushes.Gray;
