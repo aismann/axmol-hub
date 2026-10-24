@@ -799,6 +799,13 @@ public sealed partial class ChatWorkspace : IDisposable
     internal Task<GitFileComparison> ReadGitFileAsync(string conversationId, string repositoryRoot,
         GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
         => _sessions.ReadGitFileAsync(conversationId, repositoryRoot, entry, range, cancellationToken);
+    internal Task<DiffHunkActionResult> ApplyAiHunkAsync(string conversationId, string relativePath,
+        string revisionId, int hunkIndex, DiffHunkAction action, CancellationToken cancellationToken = default)
+        => _sessions.ApplyAiHunkAsync(conversationId, relativePath, revisionId, hunkIndex, action, cancellationToken);
+    internal Task<DiffHunkActionResult> ApplyGitHunkAsync(string conversationId, string repositoryRoot,
+        GitStatusEntry entry, GitFileComparison displayed, int hunkIndex, DiffHunkAction action,
+        CancellationToken cancellationToken = default)
+        => _sessions.ApplyGitHunkAsync(conversationId, repositoryRoot, entry, displayed, hunkIndex, action, cancellationToken);
     internal Task<GitFileComparison> ReadGitCommitFileAsync(string conversationId, string repositoryRoot,
         string relativePath, string commit, CancellationToken cancellationToken = default)
         => _sessions.ReadGitCommitFileAsync(conversationId, repositoryRoot, relativePath, commit, cancellationToken);

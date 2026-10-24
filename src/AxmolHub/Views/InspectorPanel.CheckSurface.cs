@@ -135,6 +135,15 @@ internal sealed partial class InspectorPanel : UserControl
     internal bool RepoRowExpandedForCheck(int index) => RepositoryRows().ElementAtOrDefault(index)is { } row && row.GetLogicalDescendants().OfType<ContentControl>().FirstOrDefault(control => control != row)?.IsVisible == true;
     /// <summary>Presses a row's own header button, which is the path a person takes and the only way to prove the
     /// lazy per-file diff is wired to the click rather than painted up front.</summary>
+    internal void ClickGitCommitCompareForCheck(int index, string reference)
+    {
+        if (RepositoryRows().ElementAtOrDefault(index) is not { } row) return;
+        if (row.GetLogicalDescendants().OfType<TextBox>().FirstOrDefault(box => Equals(box.Tag, "InspectorGitCommitRef")) is { } input)
+            input.Text = reference;
+        if (row.GetLogicalDescendants().OfType<Button>().FirstOrDefault(button => Equals(button.Tag, "InspectorGitCommitCompare")) is { } compare)
+            compare.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
+
     internal void ClickRepoRowForCheck(int index)
     {
         if (RepositoryRows().ElementAtOrDefault(index)is not { } row)

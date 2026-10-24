@@ -122,6 +122,9 @@ internal sealed class ShellCodeWorkspaceChecks(Action<bool, string> check)
 
             var quoted = "";
             var viewer = new DiffViewer("probe.cpp", "Before", "After", "alpha\nremoved\nomega\n", "alpha\nadded\nomega\n", text => quoted = text);
+            check(viewer.Children.OfType<Button>().Any(button => Equals(button.Tag, "DiffInlineToggle"))
+                && viewer.Children.OfType<TextEditor>().Any(editor => Equals(editor.Tag, "DiffInlineSurface")),
+                "代码工作区：DiffViewer 暴露内联切换和独立投影面");
             window.Content = viewer;
             window.UpdateLayout();
             Dispatcher.UIThread.RunJobs();

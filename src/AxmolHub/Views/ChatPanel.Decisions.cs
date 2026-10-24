@@ -415,7 +415,22 @@ public partial class ChatPanel
                 {
                     if (_chat?.ActiveConversation?.Id == conversation?.Id) QuoteIntoComposer(text);
                     else StatusMessage?.Invoke("The conversation changed; the selection was not inserted.");
-                });
+                },
+                string.IsNullOrEmpty(change.SelectedRevisionId ?? change.ChangeId) ? null : async (hunkIndex, action) =>
+                {
+                    var revisionId = change.SelectedRevisionId ?? change.ChangeId!;
+                    if (_chat is null || _chat.ActiveConversation?.Id != conversation?.Id)
+                        return new DiffHunkActionResult(false, "The conversation changed; no AI revision action was performed.");
+                    if (action == DiffHunkAction.Reject
+                        && await HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window,
+                            "Reject AI hunk", "Reject only this AI hunk in the file? This records a new revision.",
+                            HubDialogButtons.OkCancel, danger: true) != HubDialogResult.Ok)
+                        return new DiffHunkActionResult(false, "AI hunk rejection cancelled.");
+                    var result = await _chat.ApplyAiHunkAsync(conversation!.Id, change.RelativePath, revisionId, hunkIndex, action);
+                    if (result.RefreshRequired) _ = _chat.RefreshRepositoryAsync(conversation.Id);
+                    return result;
+                },
+                string.IsNullOrEmpty(change.SelectedRevisionId ?? change.ChangeId) ? null : DiffHunkAction.Accept);
             _inspector.OpenGitComparisonRequested += async (state, entry, range, commit) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
@@ -441,8 +456,11 @@ public partial class ChatPanel
                     {
                         GitFileRange.WorkingTree => "Working tree",
                         GitFileRange.Index => "Index",
-                        _ => "Commit " + commit,
+                        _ => "Commit " + commit + (comparison.ComparisonNote is null ? "" : " · " + comparison.ComparisonNote),
                     };
+                    var canOperateHunks = !entry.Untracked && entry.OriginalPath is null
+                        && !entry.IndexState.Contains('U') && !entry.WorktreeState.Contains('U')
+                        && !entry.IndexState.Contains('T') && !entry.WorktreeState.Contains('T');
                     DiffViewerWindow.Show(TopLevel.GetTopLevel(this) as Window,
                         comparison.OldPath is null ? comparison.Path : comparison.OldPath + " → " + comparison.Path,
                         leftLabel, rightLabel,
@@ -452,6 +470,25 @@ public partial class ChatPanel
                         {
                             if (_chat.ActiveConversation?.Id == conversationId) QuoteIntoComposer(text);
                             else StatusMessage?.Invoke("The conversation changed; the selection was not inserted.");
+                        },
+                        range == GitFileRange.Commit || !canOperateHunks ? null : async (hunkIndex, action) =>
+                        {
+                            if (_chat.ActiveConversation?.Id != conversationId)
+                                return new DiffHunkActionResult(false, "The conversation changed; no repository action was performed.");
+                            if (action == DiffHunkAction.Revert
+                                && await HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window,
+                                    "Revert hunk", "Revert only this hunk in the working tree? This cannot be undone by Hub.",
+                                    HubDialogButtons.OkCancel, danger: true) != HubDialogResult.Ok)
+                                return new DiffHunkActionResult(false, "Revert cancelled.");
+                            var result = await _chat.ApplyGitHunkAsync(conversationId, state.Root!, entry, comparison, hunkIndex, action);
+                            if (result.RefreshRequired) _ = _chat.RefreshRepositoryAsync(conversationId);
+                            return result;
+                        },
+                        range switch
+                        {
+                            GitFileRange.WorkingTree when canOperateHunks => DiffHunkAction.Stage,
+                            GitFileRange.Index when canOperateHunks => DiffHunkAction.Unstage,
+                            _ => null,
                         });
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)

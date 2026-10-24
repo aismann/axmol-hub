@@ -45,6 +45,7 @@ public sealed class CodeFileWindow : Window
         var write = WorkspacePaths.ResolveWrite(initialScope.Sandbox, relativePath, initialScope.Guards);
         var writable = write.IsAllowed && WorkspacePaths.IsWritableText(Path.GetFileName(read.Full));
         CodeFileWindow? window = null;
+        var shell = owner as MainWindow;
         var editor = new CodeEditorView(read.Full, baseline, (snapshot, text) =>
         {
             using var lease = TextFile.AcquireWrite(read.Full);
@@ -61,12 +62,18 @@ public sealed class CodeFileWindow : Window
             return result;
         }, writable, () =>
         {
-            if (window is not null)
+            if (shell is not null) shell.CloseCodeWorkspace(discard: true);
+            else if (window is not null)
             {
                 window._discardClose = true;
                 window.Close();
             }
         }, owner);
+        if (shell is not null)
+        {
+            shell.ShowCodeWorkspace(relativePath, editor, () => editor.IsDirty);
+            return;
+        }
         window = new CodeFileWindow(relativePath, editor);
         window.Closing += (_, e) =>
         {
@@ -78,9 +85,12 @@ public sealed class CodeFileWindow : Window
     internal static async Task<bool> ConfirmCloseDirtyAsync(Window owner)
     {
         var dirty = OpenWindows.Where(window => window._editor?.IsDirty == true).ToArray();
-        if (dirty.Length == 0) return true;
+        var shell = owner as MainWindow;
+        var shellDirty = shell?.CodeWorkspaceIsDirty == true;
+        var count = dirty.Length + (shellDirty ? 1 : 0);
+        if (count == 0) return true;
         var answer = await HubDialog.ShowAsync(owner, "Unsaved code files",
-            $"{dirty.Length} code file buffer(s) have unsaved changes. Discard them and quit?",
+            $"{count} code file buffer(s) have unsaved changes. Discard them and quit?",
             HubDialogButtons.YesNo, danger: true);
         if (answer != HubDialogResult.Yes) return false;
         foreach (var window in dirty)
@@ -88,6 +98,7 @@ public sealed class CodeFileWindow : Window
             window._discardClose = true;
             window.Close();
         }
+        if (shellDirty) shell!.CloseCodeWorkspace(discard: true);
         return true;
     }
 
@@ -108,7 +119,13 @@ public sealed class CodeFileWindow : Window
             return;
         }
 
-        var window = new CodeFileWindow(relativePath, CodeSurface.ForFile(full, text));
+        var surface = CodeSurface.ForFile(full, text);
+        if (owner is MainWindow shell)
+        {
+            shell.ShowCodeWorkspace(relativePath, surface);
+            return;
+        }
+        var window = new CodeFileWindow(relativePath, surface);
         if (owner is null) window.Show(); else window.Show(owner);
     }
 }

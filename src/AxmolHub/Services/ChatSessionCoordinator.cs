@@ -822,6 +822,86 @@ internal sealed partial class ChatSessionCoordinator
             scope.SensitiveValues, cancellationToken).ConfigureAwait(false);
     }
 
+    internal async Task<DiffHunkActionResult> ApplyAiHunkAsync(string conversationId, string relativePath,
+        string revisionId, int hunkIndex, DiffHunkAction action, CancellationToken cancellationToken = default)
+    {
+        if (action is not (DiffHunkAction.Accept or DiffHunkAction.Reject))
+            return new(false, "This is not an AI revision action.");
+        var revision = ChatChangeStore.Read(_dataRoot, revisionId);
+        if (revision is null || revision.ConversationId != conversationId || revision.State != ChatChangeStore.Complete)
+            return new(false, "The selected AI revision is missing, pending or belongs to another conversation.");
+        if (string.IsNullOrWhiteSpace(relativePath))
+            return new(false, "The selected AI revision path is empty.");
+        var snapshot = ChatChangeStore.ReadSnapshot(_dataRoot, revisionId, out var snapshotState);
+        if (snapshot is null || snapshotState != UndoCopyState.Read)
+            return new(false, "The selected AI revision snapshot is unavailable.");
+        var initialScope = Execution.ScopeFor(conversationId).Workspace;
+        var initialRoot = WorkspacePaths.CanonicalRoot(initialScope.WorkspaceRoot);
+        var revisionRoot = WorkspacePaths.CanonicalRoot(revision.Root);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (initialRoot is null || revisionRoot is null || !string.Equals(initialRoot, revisionRoot, comparison))
+            return new(false, "The conversation workspace changed since this AI revision.");
+        var initialPath = WorkspacePaths.ResolveWrite(initialScope.Sandbox, relativePath, initialScope.Guards);
+        if (!initialPath.IsAllowed || !string.Equals(initialPath.Full, revision.Path, comparison))
+            return new(false, "Current write permission does not include this revision path.");
+
+        using var lease = TextFile.AcquireWrite(initialPath.Full);
+        var baseline = TextFile.Read(initialPath.Full, TextFile.MaxEditorBytes);
+        if (baseline.State != TextFileState.Text)
+            return new(false, baseline.Detail ?? "The current file is not supported text.");
+        if (!AiHunkOperations.TryApply(snapshot.Before, snapshot.After, baseline.Text!, hunkIndex,
+                action == DiffHunkAction.Accept ? AiHunkAction.Accept : AiHunkAction.Reject,
+                out var updated, out var detail)) return new(false, detail);
+        if (updated == TextEol.ToLf(baseline.Text!)) return new(true, detail);
+
+        ChatFileRevision pending;
+        try { pending = ChatChangeStore.Prepare(_dataRoot, conversationId, initialPath.Full, initialRoot, baseline.Text, updated); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { return new(false, "Could not record the new revision: " + ex.Message); }
+
+        var result = lease.Save(() =>
+        {
+            try
+            {
+                var currentScope = Execution.ScopeFor(conversationId).Workspace;
+                var currentRoot = WorkspacePaths.CanonicalRoot(currentScope.WorkspaceRoot);
+                if (currentRoot is null || !string.Equals(currentRoot, initialRoot, comparison))
+                    return WorkspacePath.Refuse(WorkspacePathVerdict.MissingWorkspace, relativePath);
+                var resolved = WorkspacePaths.ResolveWrite(currentScope.Sandbox, relativePath, currentScope.Guards);
+                return resolved.IsAllowed && string.Equals(resolved.Full, initialPath.Full, comparison)
+                    ? resolved : WorkspacePath.Refuse(resolved.IsAllowed ? WorkspacePathVerdict.ReparsePoint : resolved.Verdict, relativePath);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+                { return WorkspacePath.Refuse(WorkspacePathVerdict.MissingWorkspace, relativePath); }
+        }, baseline, updated);
+        if (result.Verdict == TextReplaceVerdict.Written)
+        {
+            try { ChatChangeStore.CompleteRevision(_dataRoot, pending); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { return new(false, "The file changed, but revision completion needs recovery: " + ex.Message, true); }
+            Execution.Changed?.Invoke();
+            return new(true, "The selected AI hunk was applied as a new revision.", true);
+        }
+        ChatChangeStore.Abandon(_dataRoot, pending);
+        return new(false, result.Detail ?? result.Verdict.ToString());
+    }
+
+    internal async Task<DiffHunkActionResult> ApplyGitHunkAsync(string conversationId, string repositoryRoot,
+        GitStatusEntry entry, GitFileComparison displayed, int hunkIndex, DiffHunkAction action,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = Execution.ScopeFor(conversationId).Workspace;
+        var expected = WorkspacePaths.CanonicalRoot(scope.WorkspaceRoot);
+        var actual = WorkspacePaths.CanonicalRoot(repositoryRoot);
+        if (expected is null || actual is null || !IsRepositoryForWorkspace(expected, actual))
+            return new(false, "Repository root is outside the current session workspace.");
+        var target = WorkspacePaths.ResolveWrite(scope.Sandbox, Path.Combine(actual, entry.RelativePath), scope.Guards);
+        if (!target.IsAllowed) return new(false, "Current session permission does not allow this Git hunk operation.");
+        var runner = new ProcessRunner(line => scope.Log?.Write(line));
+        return await GitHunkOperations.ApplyAsync(actual, entry, displayed, hunkIndex, action, runner,
+            scope.SensitiveValues, cancellationToken).ConfigureAwait(false);
+    }
+
     internal async Task<GitFileComparison> ReadGitFileAsync(string conversationId, string repositoryRoot,
         GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
     {

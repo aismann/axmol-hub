@@ -230,11 +230,15 @@ internal static class CodeWorkspaceChecks
             File.WriteAllBytes(Path.Combine(repo, "binary.bin"), [0, 1, 2, 3]);
             File.WriteAllText(Path.Combine(repo, "big.txt"), new string('x', 4096));
             File.WriteAllText(Path.Combine(repo, "from.txt"), "rename body\n");
+            const string HunkHead = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n";
+            File.WriteAllText(Path.Combine(repo, "hunks.txt"), HunkHead);
+            File.WriteAllText(Path.Combine(repo, "hunks.txt"), "one\ntwo\nthree\nfour\nfive\n");
             await AssertGit("add", ".");
             await AssertGit("commit", "-m", "chore: create fixture baseline");
             File.WriteAllText(Path.Combine(repo, "three-way.txt"), Index);
             await AssertGit("add", "three-way.txt");
             File.WriteAllText(Path.Combine(repo, "three-way.txt"), Worktree);
+            File.WriteAllText(Path.Combine(repo, "hunks.txt"), "ONE\ntwo\nthree\nfour\nFIVE\n");
             File.WriteAllText(Path.Combine(repo, "untracked.txt"), "new\n");
             File.Delete(Path.Combine(repo, "gone.txt"));
             await AssertGit("mv", "from.txt", "to.txt");
@@ -250,6 +254,45 @@ internal static class CodeWorkspaceChecks
                 var index = await GitRepository.ReadFileAsync(repoRoot, "three-way.txt", GitFileRange.Index, runner);
                 Require(index.IsReadable && index.Old.Snapshot.Text == Head && index.New.Snapshot.Text == Index,
                     $"index: {index.Detail ?? $"{index.Old.Snapshot.Text}|{index.New.Snapshot.Text}"}");
+            });
+            await Claim("Git hunk operations stage, unstage and revert one fixed hunk without touching its sibling", async () =>
+            {
+                var entry = new GitStatusEntry("hunks.txt", " ", "M", false);
+                var working = await GitRepository.ReadFileAsync(repoRoot, entry.RelativePath, GitFileRange.WorkingTree, runner);
+                var staged = await GitHunkOperations.ApplyAsync(repoRoot, entry, working, 0, DiffHunkAction.Stage, runner);
+                Require(staged.Applied, "stage first hunk: " + staged.Detail);
+                var stale = await GitHunkOperations.ApplyAsync(repoRoot, entry, working, 1, DiffHunkAction.Stage, runner);
+                Require(!stale.Applied && stale.Detail.Contains("changed since", StringComparison.Ordinal),
+                    "stale hunk comparison was not refused: " + stale.Detail);
+                var afterStage = await GitRepository.ReadFileAsync(repoRoot, entry.RelativePath, GitFileRange.WorkingTree, runner);
+                Require(afterStage.Old.Snapshot.Text == "ONE\ntwo\nthree\nfour\nfive\n"
+                    && afterStage.New.Snapshot.Text == "ONE\ntwo\nthree\nfour\nFIVE\n",
+                    "stage changed more than the selected hunk");
+                var index = await GitRepository.ReadFileAsync(repoRoot, entry.RelativePath, GitFileRange.Index, runner);
+                var unstaged = await GitHunkOperations.ApplyAsync(repoRoot, entry, index, 0, DiffHunkAction.Unstage, runner);
+                Require(unstaged.Applied, "unstage first hunk: " + unstaged.Detail);
+                var worktree = await GitRepository.ReadFileAsync(repoRoot, entry.RelativePath, GitFileRange.WorkingTree, runner);
+                var reverted = await GitHunkOperations.ApplyAsync(repoRoot, entry, worktree, 1, DiffHunkAction.Revert, runner);
+                Require(reverted.Applied, "revert second hunk: " + reverted.Detail);
+                Require(File.ReadAllText(Path.Combine(repoRoot, "hunks.txt")) == "ONE\ntwo\nthree\nfour\nfive\n",
+                    "revert changed a neighboring hunk or the index");
+                Require(!Directory.EnumerateFiles(Path.GetTempPath(), "axmol-hub-hunk-*.patch").Any(),
+                    "temporary native patch was not removed");
+            });
+            await Claim("Git hunk actions refuse untracked and binary inputs before mutation", async () =>
+            {
+                var untrackedEntry = new GitStatusEntry("untracked.txt", "?", "?", true);
+                var untracked = await GitRepository.ReadFileAsync(repoRoot, untrackedEntry.RelativePath, GitFileRange.WorkingTree, runner);
+                var untrackedBefore = File.ReadAllText(Path.Combine(repoRoot, "untracked.txt"));
+                var refusedUntracked = await GitHunkOperations.ApplyAsync(repoRoot, untrackedEntry, untracked, 0,
+                    DiffHunkAction.Stage, runner);
+                Require(!refusedUntracked.Applied && File.ReadAllText(Path.Combine(repoRoot, "untracked.txt")) == untrackedBefore,
+                    "untracked hunk was staged or changed: " + refusedUntracked.Detail);
+                var binaryEntry = new GitStatusEntry("binary.bin", " ", "M", false);
+                var binary = await GitRepository.ReadFileAsync(repoRoot, binaryEntry.RelativePath, GitFileRange.WorkingTree, runner);
+                var refusedBinary = await GitHunkOperations.ApplyAsync(repoRoot, binaryEntry, binary, 0,
+                    DiffHunkAction.Stage, runner);
+                Require(!refusedBinary.Applied, "binary hunk was exposed to git apply");
             });
             await Claim("raw blob bytes keep EOL and a missing final newline", async () =>
             {
@@ -354,6 +397,56 @@ internal static class CodeWorkspaceChecks
                     $"conflict: {comparison.Detail ?? comparison.New.Snapshot.Text}");
             });
         }
+        await Claim("AI hunk actions append a durable inverse revision without rewriting the source revision", () =>
+        {
+            var aiRoot = Path.Combine(folder, "ai-revisions");
+            var file = Path.Combine(folder, "ai-source.txt");
+            const string before = "one\ntwo\nthree\nfour\nfive\n";
+            const string after = "ONE\ntwo\nthree\nfour\nFIVE\n";
+            var original = ChatChangeStore.Prepare(aiRoot, "ai-conversation", file, folder, before, after);
+            ChatChangeStore.CompleteRevision(aiRoot, original);
+            var snapshot = ChatChangeStore.ReadSnapshot(aiRoot, original.Id, out var state);
+            Require(state == UndoCopyState.Read && snapshot is { Before: before, After: after }, "original revision did not persist");
+            Require(AiHunkOperations.TryApply(snapshot!.Before, snapshot.After, after, 1, AiHunkAction.Reject,
+                    out var rejected, out var detail), "AI reject hunk: " + detail);
+            var inverse = ChatChangeStore.Prepare(aiRoot, "ai-conversation", file, folder, after, rejected);
+            ChatChangeStore.CompleteRevision(aiRoot, inverse);
+            var history = ChatChangeStore.ForConversation(aiRoot, "ai-conversation");
+            var originalAgain = ChatChangeStore.ReadSnapshot(aiRoot, original.Id, out var originalState);
+            Require(history.Count == 2 && history[0].Id == original.Id && history[1].Id == inverse.Id
+                && originalState == UndoCopyState.Read && originalAgain is { Before: before, After: after },
+                "hunk action overwrote the source revision or did not append its inverse");
+            return Task.CompletedTask;
+        });
+        await Claim("AI accept/reject acts on one exact revision hunk and refuses later edits", () =>
+        {
+            const string before = "one\ntwo\nthree\nfour\nfive\n";
+            const string after = "ONE\ntwo\nthree\nfour\nFIVE\n";
+            Require(AiHunkOperations.TryApply(before, after, before, 0, AiHunkAction.Accept,
+                    out var accepted, out var acceptDetail)
+                && accepted == "ONE\ntwo\nthree\nfour\nfive\n", "accept hunk zero: " + acceptDetail);
+            Require(AiHunkOperations.TryApply(before, after, after, 1, AiHunkAction.Reject,
+                    out var rejected, out var rejectDetail)
+                && rejected == "ONE\ntwo\nthree\nfour\nfive\n", "reject hunk one: " + rejectDetail);
+            Require(!AiHunkOperations.TryApply(before, after, "one\nuser edit\nthree\nfour\nFIVE\n", 0,
+                    AiHunkAction.Accept, out _, out var stale)
+                && stale.Contains("context no longer matches", StringComparison.Ordinal), "stale AI revision was not refused");
+            const string splitBefore = "a\nold one\nb\nold two\nc\n";
+            const string splitAfter = "a\nnew one\nb\nnew two\nc\n";
+            var afterFirst = "";
+            var afterBoth = "";
+            var firstDetail = "";
+            var secondDetail = "";
+            Require(AiHunkOperations.TryApply(splitBefore, splitAfter, splitAfter, 0, AiHunkAction.Reject,
+                    out afterFirst, out firstDetail)
+                && AiHunkOperations.TryApply(splitBefore, splitAfter, afterFirst, 1, AiHunkAction.Reject,
+                    out afterBoth, out secondDetail)
+                && afterBoth == splitBefore, "sequential AI hunk rejection: " + firstDetail + " / " + secondDetail);
+            Require(!AiHunkOperations.TryApply("before", "after\n", "after\n", 0, AiHunkAction.Reject,
+                    out _, out var eofDetail)
+                && eofDetail.Contains("end-of-file newline", StringComparison.Ordinal), "EOF-only revision was not refused explicitly");
+            return Task.CompletedTask;
+        });
         await Claim("aligned rows carry each side's own line numbers and reconstruct both sides", () =>
         {
             const string before = "a\nb\nc\n";

@@ -27,17 +27,31 @@ internal sealed class DiffViewer : Grid
     private Button? _quoteButton;
     private readonly string _path;
     private readonly int[] _changedRows;
+    private readonly int[] _rowToHunk;
+    private readonly bool _exactAlignment;
+    private readonly Func<int, DiffHunkAction, Task<DiffHunkActionResult>>? _hunkAction;
+    private TextBlock? _actionStatus;
+    private Button? _stageButton;
+    private Button? _unstageButton;
+    private Button? _revertButton;
+    private Button? _acceptButton;
+    private Button? _rejectButton;
     private bool _syncing;
     private bool _inlineMode;
 
     internal DiffViewer(string path, string leftLabel, string rightLabel, string? before, string? after,
-        Action<string>? quote = null)
+        Action<string>? quote = null,
+        Func<int, DiffHunkAction, Task<DiffHunkActionResult>>? hunkAction = null,
+        DiffHunkAction? availableHunkAction = null)
     {
         _path = path;
         _quote = quote;
+        _hunkAction = hunkAction;
         RowDefinitions = new RowDefinitions("Auto,Auto,*");
         ColumnDefinitions = new ColumnDefinitions("*,*");
         var script = FileDiff.Rows(before, after);
+        _exactAlignment = script.Exact;
+        if (!script.Exact) _hunkAction = null;
         var leftLines = new List<string>();
         var rightLines = new List<string>();
         var leftNumbers = new List<int?>();
@@ -50,6 +64,15 @@ internal sealed class DiffViewer : Grid
         var inlineKinds = new List<DiffRowKind>();
         _changedRows = script.Rows.Select((row, index) => (row, index))
             .Where(pair => pair.row.Kind != DiffRowKind.Equal).Select(pair => pair.index).ToArray();
+        _rowToHunk = Enumerable.Repeat(-1, script.Rows.Count).ToArray();
+        var hunkNumber = -1;
+        var priorChangedRow = -2;
+        foreach (var changedRow in _changedRows)
+        {
+            if (changedRow != priorChangedRow + 1) hunkNumber++;
+            _rowToHunk[changedRow] = hunkNumber;
+            priorChangedRow = changedRow;
+        }
         foreach (var row in script.Rows)
         {
             leftLines.Add(row.OriginalLine is null ? "" : row.Text);
@@ -123,7 +146,6 @@ internal sealed class DiffViewer : Grid
         {
             _inlineMode = !_inlineMode;
             _inline.IsVisible = _inlineMode;
-            if (_quoteButton is not null) _quoteButton.IsEnabled = !_inlineMode;
             header.IsVisible = !_inlineMode;
             _left.IsVisible = !_inlineMode;
             _right.IsVisible = !_inlineMode;
@@ -135,11 +157,38 @@ internal sealed class DiffViewer : Grid
         var next = new Button { Content = HubStrings.Get("DiffNextChange"), Tag = "DiffNextChange", IsEnabled = _changedRows.Length > 0 };
         next.Click += (_, _) => NavigateChange(1);
         actions.Children.Add(next);
+        if (_hunkAction is not null && availableHunkAction is DiffHunkAction action)
+        {
+            if (action == DiffHunkAction.Stage)
+            {
+                _stageButton = ActionButton("DiffStageHunk", DiffHunkAction.Stage);
+                _revertButton = ActionButton("DiffRevertHunk", DiffHunkAction.Revert);
+                actions.Children.Add(_stageButton);
+                actions.Children.Add(_revertButton);
+            }
+            else if (action == DiffHunkAction.Unstage)
+            {
+                _unstageButton = ActionButton("DiffUnstageHunk", DiffHunkAction.Unstage);
+                actions.Children.Add(_unstageButton);
+            }
+            else if (action == DiffHunkAction.Accept)
+            {
+                _acceptButton = ActionButton("DiffAcceptAiHunk", DiffHunkAction.Accept);
+                _rejectButton = ActionButton("DiffRejectAiHunk", DiffHunkAction.Reject);
+                actions.Children.Add(_acceptButton);
+                actions.Children.Add(_rejectButton);
+            }
+        }
         if (_quote is not null)
         {
             _quoteButton = new Button { Content = HubStrings.Get("DiffQuoteSelection"), Tag = "DiffQuoteSelection" };
             _quoteButton.Click += (_, _) => QuoteSelection();
             actions.Children.Add(_quoteButton);
+        }
+        if (_hunkAction is not null)
+        {
+            _actionStatus = new TextBlock { VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+            actions.Children.Add(_actionStatus);
         }
         Grid.SetRow(actions, 1);
         Grid.SetColumnSpan(actions, 2);
@@ -157,6 +206,38 @@ internal sealed class DiffViewer : Grid
 
     private int _currentChange = -1;
 
+    private Button ActionButton(string key, DiffHunkAction action)
+    {
+        var button = new Button { Content = HubStrings.Get(key), Tag = key, IsEnabled = false };
+        button.Click += async (_, _) =>
+        {
+            if (_currentChange < 0 || _currentChange >= _changedRows.Length || _hunkAction is null) return;
+            var row = _changedRows[_currentChange];
+            var hunk = row < _rowToHunk.Length ? _rowToHunk[row] : -1;
+            if (hunk < 0) return;
+            button.IsEnabled = false;
+            if (_actionStatus is not null) _actionStatus.Text = "Applying selected hunk…";
+            try
+            {
+                var result = await _hunkAction(hunk, action);
+                if (_actionStatus is not null) _actionStatus.Text = result.Detail;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                if (_actionStatus is not null) _actionStatus.Text = "Hunk operation failed: " + ex.Message;
+            }
+            finally { button.IsEnabled = HasMappedCurrentHunk(); }
+        };
+        return button;
+    }
+
+    private bool HasMappedCurrentHunk()
+    {
+        if (!_exactAlignment || _currentChange < 0 || _currentChange >= _changedRows.Length) return false;
+        var row = _changedRows[_currentChange];
+        return row < _rowToHunk.Length && _rowToHunk[row] >= 0;
+    }
+
     private void NavigateChange(int direction)
     {
         if (_changedRows.Length == 0) return;
@@ -167,6 +248,12 @@ internal sealed class DiffViewer : Grid
             : Array.FindLastIndex(_changedRows, row => row < currentLine);
         if (nextIndex < 0) nextIndex = direction > 0 ? 0 : _changedRows.Length - 1;
         _currentChange = nextIndex;
+        var canApply = _hunkAction is not null && HasMappedCurrentHunk();
+        if (_stageButton is not null) _stageButton.IsEnabled = canApply;
+        if (_unstageButton is not null) _unstageButton.IsEnabled = canApply;
+        if (_revertButton is not null) _revertButton.IsEnabled = canApply;
+        if (_acceptButton is not null) _acceptButton.IsEnabled = canApply;
+        if (_rejectButton is not null) _rejectButton.IsEnabled = canApply;
         if (!_inlineMode) SelectDisplayLine(_left, _changedRows[nextIndex]);
         SelectDisplayLine(active, _changedRows[nextIndex]);
     }

@@ -969,6 +969,15 @@ internal sealed class ShellDecisionsChecks
         Check(restoredPane?.PlanNoticeForCheck == HubStrings.Get("InspectorPlanEmpty"),
             "这一会话没有计划时那一列说「还没有生成计划」，而不是什么都不说（实际「"
             + (restoredPane?.PlanNoticeForCheck ?? "(没有面板)") + "」）");
+        var workspaceContent = new TextBlock { Text = "source fixture" };
+        restored.ShowCodeWorkspace("src/main.cpp", workspaceContent);
+        restored.UpdateLayout();
+        Check(restored.CodeWorkspaceVisibleForCheck
+              && restored.CodeWorkspaceTitleForCheck == "src/main.cpp"
+              && ReferenceEquals(restored.CodeWorkspaceContentForCheck, workspaceContent),
+            "文件与 Diff 共用 shell 的代码工作区图层，而不是另开窗口");
+        restored.CloseCodeWorkspace(discard: true);
+        Check(!restored.CodeWorkspaceVisibleForCheck, "关闭代码工作区只收起该图层，不关闭 shell");
         restored.ClickInspectorToggleForCheck();
         restored.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -1272,6 +1281,9 @@ internal sealed class ShellDecisionsChecks
                 ["src/main.cpp"] = "diff --git a/src/main.cpp b/src/main.cpp\n@@ -1 +1 @@\n-old\n+new",
             }, false, null);
         var repoReads = 0;
+        (GitRepositoryState State, GitStatusEntry Entry, GitFileRange Range, string? Commit)? gitComparisonRequest = null;
+        inspector.OpenGitComparisonRequested += (state, entry, range, commit)
+            => gitComparisonRequest = (state, entry, range, commit);
         inspector.RepoRefreshRequested += () => repoReads++;
         inspector.Reload(null, changes, _ => ((string?)null, UndoCopyState.Read), repoState, "repo");
         Check(inspector.RepoTabVisibleForCheck && !inspector.ChangesTabVisibleForCheck
@@ -1299,6 +1311,10 @@ internal sealed class ShellDecisionsChecks
         Check(inspector.RepoRowExpandedForCheck(0)
               && inspector.RepoRowTextForCheck(0).Contains(" ~ + ~ new", StringComparison.Ordinal),
             "点开仓库行才取它的 diff，取到的是这个文件自己的那段（实际「" + inspector.RepoRowTextForCheck(0) + "」）");
+        inspector.ClickGitCommitCompareForCheck(0, "HEAD~1");
+        Check(gitComparisonRequest is { Range: GitFileRange.Commit, Commit: "HEAD~1" }
+              && gitComparisonRequest.Value.Entry.RelativePath == "src/main.cpp",
+            "仓库行的固定提交入口将引用和目标文件一起交给 Git 比较接线");
         inspector.ClickRepoRowForCheck(2);
         Check(inspector.RepoRowTextForCheck(2).Contains(HubStrings.Get("InspectorRepoNoDiff"), StringComparison.Ordinal),
             "读不到改动内容的行讲清读不到，而不是画一片空白（实际「" + inspector.RepoRowTextForCheck(2) + "」）");

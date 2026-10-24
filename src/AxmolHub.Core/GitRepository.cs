@@ -117,7 +117,7 @@ public sealed record GitFileVersion(bool Exists, TextFileSnapshot Snapshot, stri
 /// means the comparison is not trustworthy and says why — it is never an empty diff. Nothing here is persisted or
 /// given an atomic-snapshot claim: <see cref="GitRepository.ReadFileAsync"/> rechecks what it read.</summary>
 public sealed record GitFileComparison(string Path, string? OldPath, GitFileRange Range,
-    GitFileVersion Old, GitFileVersion New, string? Detail = null)
+    GitFileVersion Old, GitFileVersion New, string? Detail = null, string? ComparisonNote = null)
 {
     public bool IsReadable => Detail is null;
 
@@ -314,7 +314,8 @@ public static class GitRepository
                 : GitFileVersion.Absent();
             if (older.Snapshot.State == TextFileState.Failed || newer.Snapshot.State == TextFileState.Failed)
                 return Failed(older.Snapshot.Detail ?? newer.Snapshot.Detail ?? "Commit blob could not be read.");
-            return new GitFileComparison(path, null, GitFileRange.Commit, older, newer);
+            var note = fields.Length > 2 ? $"Merge commit; comparing with first parent {fields[1]}." : null;
+            return new GitFileComparison(path, null, GitFileRange.Commit, older, newer, ComparisonNote: note);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

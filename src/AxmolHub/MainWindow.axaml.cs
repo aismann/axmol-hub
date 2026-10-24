@@ -170,6 +170,7 @@ public partial class MainWindow : Window
         WireChatRuns();
 
         InitializeComponent();
+        InitializeCodeWorkspace();
         ConfigureLinuxWindowSurface();
         InitializeSidebar();
         InitializeTitleBar();
