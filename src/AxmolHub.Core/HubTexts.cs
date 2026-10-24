@@ -1070,6 +1070,8 @@ public static class HubTexts
         ["InspectorDiffRefusedLine"] = ("没有改动", "No change"),
         ["InspectorAddedFormat"] = ("+{0}", "+{0}"),
         ["InspectorRemovedFormat"] = ("−{0}", "−{0}"),
+        ["InspectorExpandFile"] = ("展开全部行", "Show all lines"),
+        ["InspectorCollapseFile"] = ("只显示改动", "Show changes only"),
         // ── The inspector's third tab: the repository itself ──
         // The pane already answers "what did this session do". This answers a different question — "what is
         // uncommitted here" — and the two must not be merged, because a person's week of own work would otherwise

@@ -117,6 +117,12 @@
        centre in its slot. -->
   <StreamGeometry x:Key="Hub.Icon.Refresh">M15.5 5.9A7 7 0 1 1 8.5 5.9M5.3 5.3L8.5 5.9L7.4 8.9</StreamGeometry>
 
+  <!-- Two chevrons pointing away from each other = unfold: show the whole file instead of the hunks. Stroked,
+       and mirrored by Hub.Icon.Fold pointing inward. The pair is the same 8 DIP wide and 15 tall, so the button
+       does not move the moment its meaning flips. -->
+  <StreamGeometry x:Key="Hub.Icon.Unfold">M8 8.5L12 4.5L16 8.5 M8 15.5L12 19.5L16 15.5</StreamGeometry>
+  <StreamGeometry x:Key="Hub.Icon.Fold">M8 4.5L12 8.5L16 4.5 M8 19.5L12 15.5L16 19.5</StreamGeometry>
+
   <!-- A 300° ring with a 60° gap at the top, no arrowhead = in progress. Unlike Hub.Icon.Refresh,
        it does not suggest the regenerate action. -->
   <StreamGeometry x:Key="Hub.Icon.InProgress">M15.5 5.9A7 7 0 1 1 8.5 5.9</StreamGeometry>

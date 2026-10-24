@@ -409,6 +409,22 @@ public partial class ChatPanel
             // The pane asks; this is where the ask turns into a git read, because the panel has no session, no
             // log and no thread to wait on — and a pane that did its own I/O could not be fed a fixture by a check.
             _inspector.RepoRefreshRequested += RequestRepositoryRead;
+            // A repository row's unfold button: the two sides of that file, read through the same comparison the
+            // viewer uses — this is the one diff the pane cannot resolve from memory, so it is asked for here and
+            // answered with the preview's caps lifted, which is what turns hunks into the whole file.
+            _inspector.WholeDiffRequested = async (state, entry) =>
+            {
+                var conversationId = _chat?.ActiveConversation?.Id;
+                if (_chat is null || string.IsNullOrEmpty(conversationId) || state.Root is null) return null;
+                var comparison = await _chat.ReadGitFileAsync(conversationId, state.Root, entry, GitFileRange.WorkingTree);
+                if (comparison.Old.Exists && !comparison.Old.IsText || comparison.New.Exists && !comparison.New.IsText)
+                    return null;
+                return FileDiff.Unified(
+                    comparison.Old.Exists ? comparison.Old.Snapshot.Text ?? "" : "",
+                    comparison.New.Exists ? comparison.New.Snapshot.Text ?? "" : "",
+                    entry.RelativePath,
+                    ChatChanges.InspectorLimits.Expanded());
+            };
             _inspector.OpenGitComparisonRequested += async (state, entry, range, commit) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
@@ -512,9 +528,9 @@ public partial class ChatPanel
         _inspector.Reload(
             planText,
             changes,
-            change => _chat is null
+            (change, wholeFile) => _chat is null
                 ? (null, UndoCopyState.Unreadable)
-                : (_chat.DiffForChange(change, conversationId, out var state), state),
+                : (_chat.DiffForChange(change, conversationId, out var state, wholeFile), state),
             repository?.State,
             tab,
             QuoteIntoComposer,

@@ -529,7 +529,7 @@ internal sealed partial class ChatExecutionCoordinator
         if (question.TryResolve(StalledProcessFate.Exited))
             RaiseOnUi(() => StallChanged?.Invoke(question.ConversationId));
     }
-    internal string? DiffForChange(ChangedFile file, string conversationId, out UndoCopyState state)
+    internal string? DiffForChange(ChangedFile file, string conversationId, out UndoCopyState state, bool wholeFile = false)
     {
         var session = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);
         var guards = new WorkspaceGuards(_dataRoot, EngineRootsProvider?.Invoke() ?? []);
@@ -543,7 +543,8 @@ internal sealed partial class ChatExecutionCoordinator
             SandboxOf(session, session?.WorkspaceRoot, guards),
             guards,
             ChatChanges.InspectorLimits,
-            out state);
+            out state,
+            wholeFile);
     }
 
     internal IReadOnlyList<ChangedFile> ChangesFor(Conversation? conversation)

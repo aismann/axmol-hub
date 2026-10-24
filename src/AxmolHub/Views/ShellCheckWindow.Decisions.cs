@@ -1051,7 +1051,7 @@ internal sealed class ShellDecisionsChecks
         iconPane?.Reload(
             "# Plan\n\n```cpp\nint main() {}\n```",
             [],
-            static _ => ("", default),
+            static (_, _) => ("", default),
             null,
             "plan",
             // The pane is fed the same 引用 target production feeds it, because what the pane's own right-click
@@ -1239,7 +1239,7 @@ internal sealed class ShellDecisionsChecks
             },
         };
         inspector.Reload("# 计划\n\n- 先看实现\n- 再动手", changes,
-            change => (change.SelectedRevisionId == "revision-1"
+            (change, _) => (change.SelectedRevisionId == "revision-1"
                 ? "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（旧版）"
                 : "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", UndoCopyState.Read), null, "changes");
         Check(inspector.ChangeRowCountForCheck == 1 && inspector.FirstChangePathForCheck == "note.txt"
@@ -1280,8 +1280,58 @@ internal sealed class ShellDecisionsChecks
         inspector.SelectHistoryRevisionForCheck(0);
         Check(inspector.SelectedRevisionForCheck("note.txt") == "revision-1",
             "切换历史修订会将详情切到选中的那次写入");
+
+        // ── the row's unfold button, borrowed from GitHub: one click, the file instead of its hunks ──
+        // The resolver is fed the flag and answers with two different strings, so what this proves is that the pane
+        // asked for the other reading — not merely that a button exists. The tip is read too: it names what the
+        // *next* click gives, and a tip that never changes is a button that can be unfolded but never folded.
+        var wholeAsks = 0;
+        // First the budget itself, read directly rather than through the button: the same comparison with the
+        // expanded caps is the whole file, and it is still a well-formed diff at 200 lines. That second half is the
+        // real assertion — "all the lines" expressed as int.MaxValue runs the hunk builder's index arithmetic over
+        // the top and yields ranges that are not there.
+        var longFile = string.Join("\n", Enumerable.Range(1, 200).Select(line => "line " + line));
+        var longEdited = longFile.Replace("line 100", "line 100 (edited)", StringComparison.Ordinal);
+        var longPreview = FileDiff.Unified(longFile, longEdited, "long.txt", ChatChanges.InspectorLimits);
+        var longWhole = FileDiff.Unified(longFile, longEdited, "long.txt", ChatChanges.InspectorLimits.Expanded());
+        Check(longPreview is not null && longWhole is not null
+              && longPreview.Split('\n').Length <= 20
+              && longWhole.Split('\n').Length >= 200
+              && longWhole.Contains("line 1\n", StringComparison.Ordinal)
+              && longWhole.Contains("line 200", StringComparison.Ordinal),
+            "展开预算给的是整份：同一个 200 行的文件，预览只给改动周围几行，展开后第一行到最后一行都在（实际 "
+            + longPreview!.Split('\n').Length + " 行 → " + longWhole!.Split('\n').Length + " 行）");
+        (string?, UndoCopyState) UnfoldDiff(ChangedFile change, bool whole)
+        {
+            if (!whole)
+                return ("@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", UndoCopyState.Read);
+            wholeAsks++;
+            return ("@@ -1,4 +1,4 @@\n 第一行\n-第二行\n+第二行（已改）\n 第三行\n 第四行", UndoCopyState.Read);
+        }
+        inspector.Reload("# 计划", changes, UnfoldDiff, null, "changes");
+        if (!inspector.ChangeRowExpandedForCheck(0))
+            inspector.ClickChangeRowForCheck(0);
+        Check(inspector.UnfoldTipForCheck(0) == HubStrings.Get("InspectorExpandFile")
+              && !inspector.ChangeRowTextForCheck(0).Contains("第四行", StringComparison.Ordinal)
+              && wholeAsks == 0,
+            "改动文件行带着 GitHub 那个「展开全部行」按钮：收起时提示是展开、详情还是那几行改动块（实际「"
+            + inspector.UnfoldTipForCheck(0) + "」）");
+        inspector.ClickUnfoldForCheck(0);
+        Check(wholeAsks == 1 && inspector.ChangeRowTextForCheck(0).Contains("第四行", StringComparison.Ordinal)
+              && inspector.UnfoldTipForCheck(0) == HubStrings.Get("InspectorCollapseFile"),
+            "点一次展开，同一行换成整份文件——只在整份里有的那几行上下文在了，提示翻成收起（实际「"
+            + inspector.UnfoldTipForCheck(0) + "」，整份求了 " + wholeAsks + " 次）");
+        inspector.Reload("# 计划", changes, UnfoldDiff, null, "changes");
+        Check(inspector.ChangeRowExpandedForCheck(0)
+              && inspector.ChangeRowTextForCheck(0).Contains("第四行", StringComparison.Ordinal),
+            "面板重画一次，刚才展开的文件还是展开的：跑动不该把读者刚摊开的文件折回改动块");
+        inspector.ClickUnfoldForCheck(0);
+        Check(!inspector.ChangeRowTextForCheck(0).Contains("第四行", StringComparison.Ordinal)
+              && inspector.ChangeRowExpandedForCheck(0)
+              && inspector.UnfoldTipForCheck(0) == HubStrings.Get("InspectorExpandFile"),
+            "再点一次收回改动块，而这一行仍然开着——收起的是展开，不是整个文件行");
         inspector.Reload("# 计划\n\n- 先看实现", changes,
-            _ => ((string?)null, UndoCopyState.Read), null, "plan");
+            (_, _) => ((string?)null, UndoCopyState.Read), null, "plan");
         Check(inspector.PlanTabVisibleForCheck && !inspector.ChangesTabVisibleForCheck
               && !inspector.RepoTabVisibleForCheck,
             "三页各显示各的，切到计划页不会把改动页或仓库页也带出来");
@@ -1304,7 +1354,7 @@ internal sealed class ShellDecisionsChecks
             }, false, null);
         var repoReads = 0;
         inspector.RepoRefreshRequested += () => repoReads++;
-        inspector.Reload(null, changes, _ => ((string?)null, UndoCopyState.Read), repoState, "repo");
+        inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), repoState, "repo");
         Check(inspector.RepoTabVisibleForCheck && !inspector.ChangesTabVisibleForCheck
               && !inspector.PlanTabVisibleForCheck
               && inspector.RepoRowCountForCheck == 3
@@ -1335,6 +1385,19 @@ internal sealed class ShellDecisionsChecks
         Check(inspector.RepoRowExpandedForCheck(0)
               && inspector.RepoRowTextForCheck(0).Contains(" ~ + ~ new", StringComparison.Ordinal),
             "点开仓库行才取它的 diff，取到的是这个文件自己的那段（实际「" + inspector.RepoRowTextForCheck(0) + "」）");
+        // A repository row is the one unfold the pane cannot answer from memory — its other side lives in git — so
+        // the shell is stubbed here and the answer is marked: a row that quietly kept its hunks would look
+        // expanded and fail, which is the point of asking at all.
+        inspector.WholeDiffRequested = (_, _) =>
+            Task.FromResult<string?>("@@ -1,2 +1,2 @@\n 第一行\n-旧\n+新\n 仓库整份的尾巴");
+        inspector.ClickRepoUnfoldForCheck(0);
+        Check(inspector.RepoRowTextForCheck(0).Contains("仓库整份的尾巴", StringComparison.Ordinal),
+            "仓库文件行也能展开成整份：那一行向 shell 要的另一半画了出来，而不是退回自己的 hunk（实际「"
+            + inspector.RepoRowTextForCheck(0) + "」）");
+        inspector.ClickRepoUnfoldForCheck(0);
+        Check(!inspector.RepoRowTextForCheck(0).Contains("仓库整份的尾巴", StringComparison.Ordinal)
+              && inspector.RepoRowExpandedForCheck(0),
+            "再点一次回到 hunk，行本身仍然开着");
         inspector.ClickRepoRowForCheck(2);
         Check(inspector.RepoRowTextForCheck(2).Contains(HubStrings.Get("InspectorRepoNoDiff"), StringComparison.Ordinal),
             "读不到改动内容的行讲清读不到，而不是画一片空白（实际「" + inspector.RepoRowTextForCheck(2) + "」）");
@@ -1355,7 +1418,7 @@ internal sealed class ShellDecisionsChecks
         var whyWrong = "";
         foreach (var (outcome, key) in whyKeys)
         {
-            inspector.Reload(null, [], _ => ((string?)null, UndoCopyState.Read),
+            inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read),
                 GitRepositoryState.Stopped(outcome, "probe"), "repo");
             var said = inspector.RepoNoticeForCheck;
             if (!said.Contains(HubStrings.Get(key), StringComparison.Ordinal) && whyWrong.Length == 0)
@@ -1365,7 +1428,7 @@ internal sealed class ShellDecisionsChecks
         Check(whyWrong.Length == 0 && whyTexts.Distinct(StringComparer.Ordinal).Count() == whyKeys.Length,
             "五种读不到仓库的原因各说各的一句话，而不是同一个空列表换了个标题（" + whyWrong + "）");
         // No snapshot at all is the reading state, and it is the only state that may ask for a git run.
-        inspector.Reload(null, [], _ => ((string?)null, UndoCopyState.Read), null, "repo");
+        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), null, "repo");
         Check(inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorRepoReading"), StringComparison.Ordinal),
             "还没读到仓库时面板说在读，而不是先说没有");
 
@@ -1383,21 +1446,21 @@ internal sealed class ShellDecisionsChecks
             new Dictionary<string, string>(StringComparer.Ordinal), false, null);
         var cleanTree = new GitRepositoryState(GitReadOutcome.Ok, @"D:\dev\probe", "master", 0, 0, [],
             new Dictionary<string, string>(StringComparer.Ordinal), false, null);
-        inspector.Reload(null, [], _ => ((string?)null, UndoCopyState.Read), dirtyThree, "changes");
+        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), dirtyThree, "changes");
         Check(inspector.ChangeRowCountForCheck == 0 && inspector.ChangeJumpPresentForCheck
               && inspector.ChangeJumpTextForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubStrings.Get("InspectorChangesJumpRepoFormat"), 3),
             "改动页空着而仓库有未提交时，那句空状态本身是个能点的跳转，报的正是读到的那个数（实际「"
             + inspector.ChangeJumpTextForCheck + "」）");
-        inspector.Reload(null, [], _ => ((string?)null, UndoCopyState.Read), null, "changes");
+        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), null, "changes");
         Check(!inspector.ChangeJumpPresentForCheck,
             "还没读到仓库时改动页不跳转：没验证过的事实不该写成一句邀请");
-        inspector.Reload(null, [], _ => ((string?)null, UndoCopyState.Read), cleanTree, "changes");
+        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), cleanTree, "changes");
         Check(!inspector.ChangeJumpPresentForCheck,
             "读到的是干净工作树时也不跳转：那边也没有可看的东西，跳过去只是多一次空手");
         // The other tab, the same rule. This is the screen right after the assistant ran `git commit`: nothing is
         // uncommitted any more, and the reader is looking at a list that can no longer answer what they came for.
-        inspector.Reload(null, changes, _ => ((string?)null, UndoCopyState.Read), cleanTree, "repo");
+        inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), cleanTree, "repo");
         Check(inspector.RepoRowCountForCheck == 0 && inspector.RepoJumpPresentForCheck
               && inspector.RepoJumpTextForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
                   HubStrings.Get("InspectorRepoJumpSessionFormat"), changes.Length)
@@ -1407,11 +1470,11 @@ internal sealed class ShellDecisionsChecks
         var jumpedWrong = "";
         foreach (var (outcome, _) in whyKeys)
         {
-            inspector.Reload(null, changes, _ => ((string?)null, UndoCopyState.Read),
+            inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read),
                 GitRepositoryState.Stopped(outcome, "probe"), "repo");
             if (inspector.RepoJumpPresentForCheck) jumpedWrong += (jumpedWrong.Length == 0 ? "" : "、") + outcome;
         }
-        inspector.Reload(null, changes, _ => ((string?)null, UndoCopyState.Read), null, "repo");
+        inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), null, "repo");
         if (inspector.RepoJumpPresentForCheck) jumpedWrong += "还没读";
         Check(jumpedWrong.Length == 0,
             "读不到仓库的每一种原因都不跳转，因为那种时候这一边自己就是答案（多余的跳转：" + jumpedWrong + "）");
@@ -1419,7 +1482,7 @@ internal sealed class ShellDecisionsChecks
         // can arrive while the column is shut, and only the shell knows the page it is on.
         var jumpedTo = "";
         inspector.ScopeJumpRequested += target => jumpedTo = target;
-        inspector.Reload(null, [], _ => ((string?)null, UndoCopyState.Read), dirtyThree, "changes");
+        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), dirtyThree, "changes");
         inspector.ClickChangeJumpForCheck();
         Check(jumpedTo == "repo" && inspector.ChangesTabVisibleForCheck && !inspector.RepoTabVisibleForCheck,
             "点跳转：面板只把「要去哪一页」递出去，自己不换页（实际请求「" + jumpedTo + "」，仍停在改动页 "

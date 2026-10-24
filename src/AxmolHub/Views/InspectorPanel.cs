@@ -78,6 +78,12 @@ internal sealed partial class InspectorPanel : UserControl
     private readonly HashSet<string> _openedChanges = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _selectedRevisions = new(StringComparer.Ordinal);
 
+    /// <summary>Paths whose row is showing the whole file rather than its hunks — the row's unfold button, in the
+    /// place GitHub puts the same control. It outlives a repaint for the reason <see cref="_openedChanges"/> does:
+    /// a run that keeps writing must not fold a file back to three lines of context under the reader, and folding
+    /// is a second click.</summary>
+    private readonly HashSet<string> _expandedFiles = new(StringComparer.Ordinal);
+
     public InspectorPanel()
     {
         ClipToBounds = true;
@@ -280,6 +286,55 @@ internal sealed partial class InspectorPanel : UserControl
         return button;
     }
 
+    /// <summary>One row's unfold button: GitHub's control of the same name, in the same place, doing the same
+    /// thing — the file's whole text instead of its hunks, and back. A sibling of the header rather than a child,
+    /// because the header itself opens and closes the row and a button buried in a button is a target the pointer
+    /// cannot aim at. The glyph and the tip flip together, so the button says which way the next click goes.</summary>
+    private Button UnfoldButton(string path, Action<bool> toggled)
+    {
+        var icon = new Path
+        {
+            Width = 13,
+            Height = 13,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.7,
+            StrokeLineCap = PenLineCap.Round,
+        };
+        var button = new Button
+        {
+            Content = icon,
+            Classes = { "inspector-file-menu" },
+            Tag = "InspectorUnfoldFile",
+            Width = 32,
+            Height = 32,
+            MinWidth = 32,
+            MinHeight = 32,
+            Padding = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var whole = _expandedFiles.Contains(path);
+        // The ink is bound once and the glyph swapped, rather than two paths and one hidden: a row repaints its
+        // diff on this click already, and a second icon would be a second control to keep in step.
+        icon.Bind(Shape.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        void Paint()
+        {
+            icon.Bind(Path.DataProperty, new DynamicResourceExtension(whole ? "Hub.Icon.Fold" : "Hub.Icon.Unfold"));
+            ToolTip.SetTip(button, HubStrings.Get(whole ? "InspectorCollapseFile" : "InspectorExpandFile"));
+        }
+        Paint();
+        button.Click += (_, _) =>
+        {
+            whole = !whole;
+            if (whole) _expandedFiles.Add(path);
+            else _expandedFiles.Remove(path);
+            Paint();
+            toggled(whole);
+        };
+        return button;
+    }
+
     private static MenuItem FileAction(string textKey, Action action)
     {
         var item = new MenuItem { Header = HubStrings.Get(textKey), Tag = textKey };
@@ -431,7 +486,7 @@ internal sealed partial class InspectorPanel : UserControl
     public void Reload(
         string? planMarkdown,
         IReadOnlyList<ChangedFile> changes,
-        Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
+        Func<ChangedFile, bool, (string? Diff, UndoCopyState State)> resolveDiff,
         GitRepositoryState? repository,
         string tab,
         Action<string>? quote = null,
@@ -634,30 +689,58 @@ internal sealed partial class InspectorPanel : UserControl
         header.Content = grid;
 
         var detail = new ContentControl { IsVisible = false, Margin = new Thickness(0, 4, 0, 6) };
-        void BuildRepoDetail()
+        void ShowDiff(string? diff)
         {
-            var diff = GitRepository.DiffFor(state, entry);
             var detailBody = new StackPanel { Spacing = 5 };
             detailBody.Children.Add(diff is { Length: > 0 } ? BuildDiffBlock(diff) : EmptyLine("InspectorRepoNoDiff"));
             detail.Content = detailBody;
+        }
+        void BuildRepoDetail(bool whole)
+        {
+            if (!whole || WholeDiffRequested is not { } ask)
+            {
+                ShowDiff(GitRepository.DiffFor(state, entry));
+                return;
+            }
+            // The unread side of a repository file is git's to read, so this is the one row that says what it is
+            // waiting on. A read that fails falls back to the hunks rather than to an empty row: they are still true.
+            detail.Content = EmptyLine("InspectorRepoReading");
+            _ = FillWholeRepoDiff(ask, state, entry, diff =>
+            {
+                // The row may have been redrawn, folded, or repainted while git was reading. Only the row that is
+                // still expanded and still showing this content gets the answer.
+                if (!_expandedFiles.Contains(entry.RelativePath) || detail.Content is null) return;
+                ShowDiff(diff);
+            });
         }
         // A layout change reaches this row too, but only once it has been opened: an unopened file has no diff on
         // screen to redraw, and reading one to keep it in step would be a git read nobody asked for.
         _diffRebuilds.Add(() =>
         {
-            if (detail.Content is not null) BuildRepoDetail();
+            if (detail.Content is not null) BuildRepoDetail(_expandedFiles.Contains(entry.RelativePath));
         });
         header.Click += (_, _) =>
         {
-            if (!detail.IsVisible && detail.Content is null) BuildRepoDetail();
+            if (!detail.IsVisible && detail.Content is null) BuildRepoDetail(_expandedFiles.Contains(entry.RelativePath));
             detail.IsVisible = !detail.IsVisible;
             header.Classes.Set("expanded", detail.IsVisible);
         };
 
-        var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         repositoryRow.Children.Add(header);
+        var repositoryUnfold = UnfoldButton(entry.RelativePath, whole =>
+        {
+            if (!detail.IsVisible)
+            {
+                detail.IsVisible = true;
+                header.Classes.Set("expanded", true);
+            }
+            BuildRepoDetail(whole);
+        });
+        Grid.SetColumn(repositoryUnfold, 1);
+        repositoryRow.Children.Add(repositoryUnfold);
         var repositoryFileActions = FileActions(entry.RelativePath);
-        Grid.SetColumn(repositoryFileActions, 1);
+        Grid.SetColumn(repositoryFileActions, 2);
         repositoryRow.Children.Add(repositoryFileActions);
         container.Children.Add(repositoryRow);
         if (!entry.Untracked && entry.IndexState != " " && entry.IndexState != "U")
@@ -668,6 +751,25 @@ internal sealed partial class InspectorPanel : UserControl
         }
         container.Children.Add(detail);
         return container;
+    }
+
+    /// <summary>Waits for the shell's whole-file answer and hands it back on the UI thread it was asked from. A
+    /// failure and an unanswered read are the same thing here — null — because the caller already has the hunks
+    /// to fall back to, and a click that produced an exception dialog over a file preview would be worse than one
+    /// that showed less.</summary>
+    private static async Task FillWholeRepoDiff(Func<GitRepositoryState, GitStatusEntry, Task<string?>> ask,
+        GitRepositoryState state, GitStatusEntry entry, Action<string?> done)
+    {
+        string? diff = null;
+        try
+        {
+            diff = await ask(state, entry).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            diff = null;
+        }
+        done(diff);
     }
 
     private Button GitRangeButton(string textKey, GitRepositoryState state, GitStatusEntry entry, GitFileRange range)
@@ -719,7 +821,13 @@ internal sealed partial class InspectorPanel : UserControl
     internal event Action<string>? OpenFileRequested;
     internal event Action<string>? ViewFileRequested;
 
-    private Control BuildChangeRow(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
+    /// <summary>The whole-file diff of one repository entry, asked for when a repository row is unfolded. Unlike
+    /// a session's change — whose two texts the transcript already holds as snapshots — a repository file's other
+    /// side lives in git, and this pane does no I/O of its own: the ask goes out exactly as the refresh and the
+    /// comparison asks do, and the shell answers with a diff or null.</summary>
+    internal Func<GitRepositoryState, GitStatusEntry, Task<string?>>? WholeDiffRequested { get; set; }
+
+    private Control BuildChangeRow(ChangedFile change, Func<ChangedFile, bool, (string? Diff, UndoCopyState State)> resolveDiff,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
     {
         var container = new StackPanel { Spacing = 0, Classes = { "inspector-change" } };
@@ -786,10 +894,24 @@ internal sealed partial class InspectorPanel : UserControl
             if (detail.Content is not null) detail.Content = BuildDiffDetail(change, resolveDiff, resolveSnapshot);
         });
 
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         row.Children.Add(header);
+        var unfoldButton = UnfoldButton(change.RelativePath, whole =>
+        {
+            // Unfolding a row that was still folded also opens it: the click asked to see more, and a row that
+            // answered by staying shut would read as a click that missed.
+            if (!detail.IsVisible)
+            {
+                detail.IsVisible = true;
+                header.Classes.Set("expanded", true);
+                _openedChanges.Add(change.RelativePath);
+            }
+            detail.Content = BuildDiffDetail(change, resolveDiff, resolveSnapshot);
+        });
+        Grid.SetColumn(unfoldButton, 1);
+        row.Children.Add(unfoldButton);
         var fileMenuButton = FileActions(change.RelativePath);
-        Grid.SetColumn(fileMenuButton, 1);
+        Grid.SetColumn(fileMenuButton, 2);
         row.Children.Add(fileMenuButton);
         container.Children.Add(row);
         container.Children.Add(detail);
@@ -803,7 +925,7 @@ internal sealed partial class InspectorPanel : UserControl
             ? (lines.Added, lines.Removed)
             : (0, 0);
 
-    private Control BuildDiffDetail(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
+    private Control BuildDiffDetail(ChangedFile change, Func<ChangedFile, bool, (string? Diff, UndoCopyState State)> resolveDiff,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
     {
         var body = new StackPanel { Spacing = 6 };
@@ -867,10 +989,10 @@ internal sealed partial class InspectorPanel : UserControl
     }
 
     private Control BuildSelectedDiff(ChangedFile change,
-        Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
+        Func<ChangedFile, bool, (string? Diff, UndoCopyState State)> resolveDiff,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
     {
-        var (diff, state) = resolveDiff(change);
+        var (diff, state) = resolveDiff(change, _expandedFiles.Contains(change.RelativePath));
         if (diff is null) return EmptyLine(DiffUnavailableKey(change, state));
 
         var body = new StackPanel { Spacing = 6 };

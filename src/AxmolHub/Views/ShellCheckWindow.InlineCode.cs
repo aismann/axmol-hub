@@ -25,7 +25,7 @@ internal sealed class ShellInlineCodeChecks
         const string markdown = "Before `Configured` after.\n\n[Link](https://axmol.dev/)";
         var chatViewer = MarkdownMessageRenderer.Render(markdown);
         var inspector = new InspectorPanel();
-        inspector.Reload(markdown, [], _ => default, null, "plan");
+        inspector.Reload(markdown, [], (_, _) => default, null, "plan");
         var content = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
         content.Children.Add(chatViewer);
         Grid.SetColumn(inspector, 1);

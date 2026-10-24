@@ -45,7 +45,7 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
                             DateTimeOffset.UnixEpoch.AddSeconds(1), "before-2", "after-2", ChatChangeStore.Complete),
                     ],
                 }],
-                _ => (diff, UndoCopyState.Read), null, "changes");
+                (_, _) => (diff, UndoCopyState.Read), null, "changes");
             pane.ClickChangeRowForCheck(0);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();

@@ -156,11 +156,16 @@ public static class ChatChanges
     /// than drawing nothing.</item>
     /// </list>
     /// </summary>
+    /// <param name="wholeFile">The row's unfold button: the same comparison, with every line as context and the
+    /// preview's length cap lifted, so the reader sees the file the edit sits in rather than three lines around
+    /// it. A frozen preview is already the text that was recorded and is returned as it stands.</param>
     public static string? DiffFor(ChangedFile file, string conversationId, string? dataRoot,
-        WorkspaceSandbox sandbox, WorkspaceGuards guards, DiffLimits? limits, out UndoCopyState state)
+        WorkspaceSandbox sandbox, WorkspaceGuards guards, DiffLimits? limits, out UndoCopyState state,
+        bool wholeFile = false)
     {
         state = UndoCopyState.EvictedOrSpent;
         var capped = limits ?? InspectorLimits;
+        if (wholeFile) capped = capped.Expanded();
 
         if (file.SelectedRevisionId is { Length: > 0 } || file.ChangeId is { Length: > 0 })
         {

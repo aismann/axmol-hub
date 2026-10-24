@@ -142,6 +142,26 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>Presses the jump the reader would press. The click leaves the panel as an event, so a fixture pane
     /// with no host can still prove *which* tab was asked for, and a live pane can prove the column opened.</summary>
     internal void ClickChangeJumpForCheck() => ClickJump(_changesList);
+    /// <summary>Presses one row's unfold button — the reader's "show me the file", reached the way a reader
+    /// reaches it. The claim a check can then make is about the click, not about a field somebody set.</summary>
+    internal void ClickUnfoldForCheck(int index)
+    {
+        if (ChangeRows().ElementAtOrDefault(index)is not { } row)
+            return;
+        row.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Tag as string == "InspectorUnfoldFile")
+            ?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
+
+    /// <summary>That button's tip, which is also its state: it names the reading the *next* click gives, so a tip
+    /// stuck on one value is a row whose meaning never flips.</summary>
+    internal string UnfoldTipForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row
+        ? row.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Tag as string == "InspectorUnfoldFile") is { } button
+                ? ToolTip.GetTip(button)?.ToString() ?? ""
+                : ""
+        : "";
+
     private List<Control> ChangeRows() => _changesList.Children.OfType<StackPanel>().Where(panel => panel.Classes.Contains("inspector-change")).Cast<Control>().ToList();
     // ── the repository scope, as a check reads it ──
     /// <summary>Every line in the body. The caveat and the head row are always there, so a list of N entries is
@@ -175,6 +195,18 @@ internal sealed partial class InspectorPanel : UserControl
         if (RepositoryRows().ElementAtOrDefault(index)is not { } row)
             return;
         row.GetLogicalDescendants().OfType<Button>().FirstOrDefault(button => button.Classes.Contains("inspector-change-header"))?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
+
+    /// <summary>Presses a repository row's unfold button. The row's whole-file side comes from git rather than from
+    /// memory, so this is also the click that proves the pane asked the shell for it instead of falling back to
+    /// the hunks it already had.</summary>
+    internal void ClickRepoUnfoldForCheck(int index)
+    {
+        if (RepositoryRows().ElementAtOrDefault(index)is not { } row)
+            return;
+        row.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => button.Tag as string == "InspectorUnfoldFile")
+            ?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
 
     /// <summary>Presses the ⟳ through its own button, so a check drives the event the panel raises rather than

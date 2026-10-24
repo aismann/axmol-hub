@@ -26,7 +26,7 @@ internal sealed class ShellCodeBlocksChecks
         column.Children.Add(MarkdownMessageRenderer.Render(single));
         column.Children.Add(MarkdownMessageRenderer.Render(multiple));
         var inspector = new InspectorPanel();
-        inspector.Reload(single + "\n\n" + multiple, [], _ => default, null, "plan");
+        inspector.Reload(single + "\n\n" + multiple, [], (_, _) => default, null, "plan");
         var surface = new Grid { ColumnDefinitions = new ColumnDefinitions("600,360") };
         surface.Children.Add(column);
         Grid.SetColumn(inspector, 1);

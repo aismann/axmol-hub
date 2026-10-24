@@ -12,7 +12,23 @@ public sealed record DiffLimits(
     int MaxEditScript = 2000,
     int MaxOutputLines = 60,
     int MaxOutputCharacters = 8000,
-    int MaxTotalCharacters = 4 * 1024 * 1024);
+    int MaxTotalCharacters = 4 * 1024 * 1024)
+{
+    /// <summary>The same caps with the preview's own output budget removed: every line of the file becomes
+    /// context and nothing is cut off the end. What stays is the budget that bounds the *comparison*
+    /// (<see cref="MaxLinesPerSide"/>, <see cref="MaxEditScript"/>), so a file too large to align still says so
+    /// instead of hanging or printing a wall of red. This is what a row's unfold button asks for: the reader said
+    /// "show me the file", and answering with the same sixty-line preview would be a button that does nothing.</summary>
+    public DiffLimits Expanded() => this with
+    {
+        // Not int.MaxValue: the hunk builder adds the context to a line index (`i + contextLines`), and a value
+        // that large turns that sum negative for every edit after the first. A megabyte of lines is already more
+        // than the comparison budget will ever emit, so this is "all of the file" without the overflow.
+        ContextLines = 1 << 20,
+        MaxOutputLines = int.MaxValue,
+        MaxOutputCharacters = int.MaxValue,
+    };
+}
 
 /// <summary>Which side of the edit a row's line belongs to. A deletion occupies no line on the right and an
 /// insertion none on the left, which is what the alignment's gap is made of.</summary>
