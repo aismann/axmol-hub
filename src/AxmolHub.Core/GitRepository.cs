@@ -30,8 +30,10 @@ public enum GitReadOutcome
 
 /// <summary>One line of <c>git status --porcelain</c>: the two state characters and the path they describe.
 /// Paths are repository-relative and use forward slashes, because that is what git emits and what a diff header
-/// uses — a Windows-separated path would not match the section it belongs to.</summary>
-public sealed record GitStatusEntry(string RelativePath, string IndexState, string WorktreeState, bool Untracked)
+/// uses — a Windows-separated path would not match the section it belongs to. A rename or copy keeps its origin
+/// path, because the two sides of a comparison then live under two different names.</summary>
+public sealed record GitStatusEntry(string RelativePath, string IndexState, string WorktreeState, bool Untracked,
+    string? OriginalPath = null)
 {
     /// <summary>The two characters as one string, for the row's leading column: <c>M␠</c>, <c>␠M</c>, <c>??</c>,
     /// <c>A␠</c>, <c>UU</c>. Kept as the pair rather than folded into an enum, because git's own letters are the
@@ -91,6 +93,37 @@ public sealed record GitRepositoryState(
 /// diff section; <c>-z</c> on the status and name lists because that is the only spelling where a path containing
 /// a space, a quote, or a newline survives intact.
 /// </summary>
+/// <summary>Which comparison a row opens. The same path can be open in both at once, so the range belongs to the
+/// comparison's identity and two ranges are never merged by path. Working Tree compares the index stage 0 to the
+/// bytes on disk (<c>git diff</c>); Index compares HEAD's tree to the index (<c>git diff --cached</c>).</summary>
+public enum GitFileRange
+{
+    WorkingTree,
+    Index,
+}
+
+/// <summary>One side of a comparison: whether it exists at all, the bounded snapshot of its bytes, and the version
+/// identity that was read (a blob OID, or nothing for the worktree, whose identity is in the snapshot's hash).</summary>
+public sealed record GitFileVersion(bool Exists, TextFileSnapshot Snapshot, string? Oid)
+{
+    /// <summary>Absence is its own answer: an empty file has a version, a file that is not there does not.</summary>
+    public static GitFileVersion Absent() => new(false, new TextFileSnapshot(TextFileState.Missing), null);
+
+    public bool IsText => Snapshot.State == TextFileState.Text;
+}
+
+/// <summary>Both sides of one file comparison, ready for <see cref="FileDiff"/>. A non-null <paramref name="Detail"/>
+/// means the comparison is not trustworthy and says why — it is never an empty diff. Nothing here is persisted or
+/// given an atomic-snapshot claim: <see cref="GitRepository.ReadFileAsync"/> rechecks what it read.</summary>
+public sealed record GitFileComparison(string Path, string? OldPath, GitFileRange Range,
+    GitFileVersion Old, GitFileVersion New, string? Detail = null)
+{
+    public bool IsReadable => Detail is null;
+
+    /// <summary>The side a hunk's old line numbers refer to, and the one beside it.</summary>
+    public (GitFileVersion Left, GitFileVersion Right) Sides => (Old, New);
+}
+
 public static class GitRepository
 {
     /// <summary>How many dirty paths one snapshot carries. Past it the pane says the list was cut rather than
@@ -249,6 +282,173 @@ public static class GitRepository
             return null;
         var text = WorkspaceTools.ReadAll(full);
         return text is null ? null : FileDiff.Unified("", text, entry.RelativePath, limits);
+    }
+
+    /// <summary>Read both sides of one file for one range, on demand: opening a row is the only thing that pays for
+    /// a blob. Blobs are addressed by the object id git itself reported, never by re-deriving them from a patch, and
+    /// their size is checked before the read so an oversized answer is refused rather than truncated into a lie.
+    /// The index and the worktree are rechecked afterwards: several git calls cannot make a filesystem snapshot
+    /// atomic, so a change during the read is reported as <see cref="GitFileComparison.Detail"/> and not smoothed
+    /// over.</summary>
+    public static async Task<GitFileComparison> ReadFileAsync(string repositoryRoot, string path, GitFileRange range,
+        ProcessRunner runner, string? oldPath = null, IReadOnlyList<string>? sensitiveValues = null,
+        CancellationToken cancellation = default, int maxBytes = TextFile.MaxDiffBytes)
+    {
+        GitFileComparison Failed(string detail) =>
+            new(path, oldPath, range, GitFileVersion.Absent(), GitFileVersion.Absent(), detail);
+        if (CommandShells.Resolve("git") is not { } git) return Failed("git is not installed.");
+        var root = Path.GetFullPath(repositoryRoot);
+        var full = FullPathInside(root, path);
+        if (full is null) return Failed("The path git reported resolves outside the repository.");
+
+        try
+        {
+            // A rename splits the two records: a staged one has the new name in the index and the old name in HEAD,
+            // an unstaged one still has the old name in the index and the new one on disk. Both are read from where
+            // each side actually is, so neither is reported as a file that was created from nothing.
+            var indexPath = path;
+            var index = await ReadIndexEntryAsync(git, runner, root, indexPath, sensitiveValues, cancellation);
+            if (index.Detail is { } indexDetail) return Failed(indexDetail);
+            if (!index.Exists && oldPath is { Length: > 0 } && oldPath != path)
+            {
+                var origin = await ReadIndexEntryAsync(git, runner, root, oldPath, sensitiveValues, cancellation);
+                if (origin.Detail is { } originDetail) return Failed(originDetail);
+                if (origin.Exists) { index = origin; indexPath = oldPath; }
+            }
+            if (index.Conflict) return Failed("The index has unmerged stages for this path; no side is stage 0.");
+
+            var indexVersion = index.Exists
+                ? await ReadBlobAsync(git, runner, root, index.Oid!, maxBytes, sensitiveValues, cancellation)
+                : GitFileVersion.Absent();
+            var worktree = TextFile.Read(full, maxBytes);
+            var worktreeVersion = new GitFileVersion(worktree.State != TextFileState.Missing, worktree, null);
+
+            GitFileVersion old;
+            GitFileVersion @new;
+            if (range == GitFileRange.WorkingTree)
+            {
+                old = indexVersion;
+                @new = worktreeVersion;
+            }
+            else
+            {
+                old = await ReadHeadVersionAsync(git, runner, root, indexPath, maxBytes, sensitiveValues, cancellation);
+                if (!old.Exists && oldPath is { Length: > 0 } && oldPath != indexPath)
+                    old = await ReadHeadVersionAsync(git, runner, root, oldPath, maxBytes, sensitiveValues, cancellation);
+                @new = indexVersion;
+            }
+            if (old.Snapshot.State == TextFileState.Failed) return Failed(old.Snapshot.Detail ?? "The older side could not be read.");
+            if (@new.Snapshot.State == TextFileState.Failed) return Failed(@new.Snapshot.Detail ?? "The newer side could not be read.");
+
+            // The two calls that answered above describe two different moments; this is what says so.
+            var again = await ReadIndexEntryAsync(git, runner, root, indexPath, sensitiveValues, cancellation);
+            var disk = TextFile.Read(full, maxBytes);
+            if (again.Oid != index.Oid || again.Exists != index.Exists || disk.Identity != worktree.Identity
+                || disk.State != worktree.State)
+                return new GitFileComparison(path, oldPath, range, old, @new,
+                    "The index or the file changed while this comparison was being read. Refresh to read it again.");
+            return new GitFileComparison(path, oldPath, range, old, @new);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (IdleTimeoutException stalled) { return Failed(Stalled(stalled)); }
+        catch (Exception ex) { return Failed(ex.Message); }
+    }
+
+    private sealed record IndexEntry(bool Exists, bool Conflict, string? Oid, string? Detail);
+
+    /// <summary>The stage 0 record for exactly this path. <c>--literal-pathspecs</c> keeps a path containing
+    /// <c>*</c>, <c>:</c> or a space a path rather than a range expression, and the NUL separation keeps a path with a
+    /// newline in it one field.</summary>
+    private static async Task<IndexEntry> ReadIndexEntryAsync(string git, ProcessRunner runner, string root,
+        string path, IReadOnlyList<string>? sensitiveValues, CancellationToken cancellation)
+    {
+        var result = await runner.RunAsync(git, IndexEntryArguments(path), root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation)
+            .ConfigureAwait(false);
+        if (result.ExitCode != 0)
+            return new IndexEntry(false, false, null, FirstText(result.Error, result.Output) ?? "git ls-files failed.");
+        var conflict = false;
+        foreach (var record in result.Output.Split('\0'))
+        {
+            var tab = record.IndexOf('\t');
+            if (tab < 0) continue;
+            if (record[(tab + 1)..] != path) continue;
+            var meta = record[..tab].Split(' ');
+            if (meta.Length < 3) continue;
+            if (meta[2] == "0") return new IndexEntry(true, false, meta[1], null);
+            conflict = true;
+        }
+        return new IndexEntry(false, conflict, null, null);
+    }
+
+    /// <summary>HEAD's version of the path, or absence. A repository with no commit yet answers absence rather than
+    /// failure: the left side of a first commit is genuinely empty, and that is not a broken repository.</summary>
+    private static async Task<GitFileVersion> ReadHeadVersionAsync(string git, ProcessRunner runner, string root,
+        string path, int maxBytes, IReadOnlyList<string>? sensitiveValues, CancellationToken cancellation)
+    {
+        var head = await runner.RunAsync(git, ["rev-parse", "--verify", "--quiet", "HEAD"], root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        if (head.ExitCode != 0) return GitFileVersion.Absent();
+        var oid = await runner.RunAsync(git, ["rev-parse", "--verify", "--quiet", $"HEAD:{path}"], root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        if (oid.ExitCode != 0) return GitFileVersion.Absent();
+        var id = oid.Output.Trim();
+        return id.Length == 40 || id.Length == 64
+            ? await ReadBlobAsync(git, runner, root, id, maxBytes, sensitiveValues, cancellation)
+            : new GitFileVersion(false, new TextFileSnapshot(TextFileState.Failed,
+                detail: "git did not answer with an object id."), null);
+    }
+
+    /// <summary>One blob read by the id that was just reported. Size first, then bytes with a cap: line-splitting a
+    /// blob would end it with the host's newline and write source text into the command log, so the raw channel is
+    /// the only road here.</summary>
+    private static async Task<GitFileVersion> ReadBlobAsync(string git, ProcessRunner runner, string root, string oid,
+        int maxBytes, IReadOnlyList<string>? sensitiveValues, CancellationToken cancellation)
+    {
+        GitFileVersion Failed(string detail) =>
+            new(true, new TextFileSnapshot(TextFileState.Failed, detail: detail), oid);
+        var size = await runner.RunAsync(git, CatFileArguments("-s", oid), root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        if (size.ExitCode != 0) return Failed(FirstText(size.Error, size.Output) ?? "git cat-file failed.");
+        if (!long.TryParse(size.Output.Trim(), out var length)) return Failed("git did not report a blob size.");
+        if (length > maxBytes) return new GitFileVersion(true, new TextFileSnapshot(TextFileState.TooLarge,
+            detail: $"The stored version is {length} bytes; this view reads at most {maxBytes}."), oid);
+        var capture = new RawStdoutCapture(maxBytes);
+        var blob = await runner.RunAsync(git, CatFileArguments("blob", oid), root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation,
+            rawStdout: capture).ConfigureAwait(false);
+        if (blob.ExitCode != 0) return Failed(FirstText(blob.Error) ?? "git cat-file failed.");
+        if (capture.Truncated) return new GitFileVersion(true, new TextFileSnapshot(TextFileState.TooLarge,
+            detail: $"The stored version grew past {maxBytes} bytes while it was being read."), oid);
+        return new GitFileVersion(true, TextFile.Decode(capture.Bytes()), oid);
+    }
+
+    /// <summary>A path git reported, joined to the repository root, or null when it does not stay inside it. Git
+    /// will report a path that escapes through a symlink; this is the guard that keeps the read inside the tree.</summary>
+    private static string? FullPathInside(string root, string path)
+    {
+        if (path.Length == 0 || Path.IsPathRooted(path)) return null;
+        var full = Path.GetFullPath(Path.Combine(root, path));
+        return full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal) ? full : null;
+    }
+
+    private static IEnumerable<string> IndexEntryArguments(string path)
+    {
+        foreach (var baseArgument in BaseArguments) yield return baseArgument;
+        yield return "--literal-pathspecs";
+        yield return "ls-files";
+        yield return "--stage";
+        yield return "-z";
+        yield return "--";
+        yield return path;
+    }
+
+    private static IEnumerable<string> CatFileArguments(string verb, string oid)
+    {
+        foreach (var baseArgument in BaseArguments) yield return baseArgument;
+        yield return "cat-file";
+        yield return verb;
+        yield return oid;
     }
 
     /// <summary>Porcelain paths are relative to the repository root, which is not the session's directory when
@@ -452,14 +652,15 @@ public static class GitRepository
             var indexState = field[0].ToString();
             var worktreeState = field[1].ToString();
             // A rename or a copy is the one record that owns a second field: the origin path, which git prints
-            // after the new one. Consumed rather than shown, because the row is about where the file is now and
-            // the patch section carries the rename's own header.
-            if (indexState == "R" || indexState == "C" || worktreeState == "R" || worktreeState == "C")
+            // after the new one. It is kept so the two sides of the comparison can be read from both names; the
+            // row itself still says where the file is now.
+            string? origin = null;
+            if (indexState is "R" or "C" || worktreeState is "R" or "C")
             {
-                if (index + 1 < fields.Count) index++;
+                if (index + 1 < fields.Count) origin = fields[++index].Replace('\\', '/');
             }
             entries.Add(new GitStatusEntry(path.Replace('\\', '/'), indexState, worktreeState,
-                field.StartsWith("??", StringComparison.Ordinal)));
+                field.StartsWith("??", StringComparison.Ordinal), origin));
         }
         return new GitStatusReading(header, entries, truncated);
     }

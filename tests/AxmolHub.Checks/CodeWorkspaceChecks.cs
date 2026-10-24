@@ -1,0 +1,399 @@
+using System.Text;
+using AxmolHub.Core;
+
+internal static class CodeWorkspaceChecks
+{
+    internal static async Task RunAsync(string root, string[] args)
+    {
+        var folder = Path.Combine(root, "code-workspace", Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(folder, "ws");
+        Directory.CreateDirectory(workspace);
+        var guards = new WorkspaceGuards(Path.Combine(folder, "data"), []);
+        var sandbox = WorkspaceSandbox.For(workspace);
+        var passed = 0;
+        var total = 0;
+        // Each claim has its own result: a format failure must not conceal a later authorization failure.
+        async Task Claim(string name, Func<Task> body)
+        {
+            total++;
+            try { await body(); passed++; Console.WriteLine("PASS: " + name); }
+            catch (Exception ex) { Console.WriteLine("FAIL: " + name + " — " + ex); }
+        }
+        void Require(bool condition, string observation)
+        {
+            if (!condition) throw new InvalidOperationException(observation);
+        }
+        TextReplaceResult Save(string path, TextFileSnapshot baseline, string text, Func<WorkspacePath>? resolve = null)
+        {
+            using var lease = TextFile.AcquireWrite(path);
+            return lease.Save(resolve ?? (() => WorkspacePaths.ResolveWrite(sandbox, path, guards)), baseline, text);
+        }
+
+        // Byte identity and formatting are not covered by file_write's UTF-8-only output contract.
+        await Claim("supported BOM/encoding survives changed saves; LF and EOF intent are explicit", () =>
+        {
+            foreach (var encoding in new Encoding[] { new UTF8Encoding(false, true), new UTF8Encoding(true, true),
+                         new UnicodeEncoding(false, true, true), new UnicodeEncoding(true, true, true),
+                         new UTF32Encoding(false, true, true), new UTF32Encoding(true, true, true) })
+            {
+                var path = Path.Combine(workspace, "format.txt");
+                var bytes = encoding.GetPreamble().Concat(encoding.GetBytes("中😀\r\nlast")).ToArray();
+                File.WriteAllBytes(path, bytes);
+                var baseline = TextFile.Read(path);
+                Require(baseline.State == TextFileState.Text && baseline.LineEndings == TextLineEndings.CrLf
+                    && !baseline.EndsInNewline, $"{encoding.WebName}: {baseline.State}/{baseline.LineEndings}");
+                var result = Save(path, baseline, baseline.Text + "!\r\n");
+                var expected = encoding.GetPreamble().Concat(encoding.GetBytes("中😀\nlast!\n")).ToArray();
+                Require(result.Verdict == TextReplaceVerdict.Written && File.ReadAllBytes(path).SequenceEqual(expected),
+                    $"{encoding.WebName} BOM={baseline.HasBom}: {result}");
+            }
+            return Task.CompletedTask;
+        });
+        await Claim("unchanged save preserves original bytes, BOM and timestamp", () =>
+        {
+            var path = Path.Combine(workspace, "noop.txt");
+            File.WriteAllBytes(path, new UTF8Encoding(true).GetPreamble().Concat(Encoding.UTF8.GetBytes("a\r\nb\r")).ToArray());
+            File.SetLastWriteTimeUtc(path, new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc));
+            var bytes = File.ReadAllBytes(path);
+            var stamp = File.GetLastWriteTimeUtc(path);
+            var baseline = TextFile.Read(path);
+            var result = Save(path, baseline, baseline.Text);
+            Require(result.Verdict == TextReplaceVerdict.Unchanged && File.GetLastWriteTimeUtc(path) == stamp
+                && File.ReadAllBytes(path).SequenceEqual(bytes), result.ToString());
+            return Task.CompletedTask;
+        });
+        await Claim("unsupported bytes, binary, empty, missing and input cap remain distinct", () =>
+        {
+            var path = Path.Combine(workspace, "bounds.txt");
+            Require(TextFile.Read(path).State == TextFileState.Missing, "missing became empty");
+            File.WriteAllBytes(path, []);
+            Require(TextFile.Read(path).State == TextFileState.Text, "empty became missing");
+            File.WriteAllBytes(path, [0xff, 0x80]);
+            Require(TextFile.Read(path).State == TextFileState.UnsupportedEncoding, "invalid UTF-8 guessed a code page");
+            File.WriteAllBytes(path, [0, 1, 2]);
+            Require(TextFile.Read(path).State == TextFileState.Binary, "binary became editable");
+            File.WriteAllBytes(path, new byte[17]);
+            Require(TextFile.Read(path, 16).State == TextFileState.TooLarge, "cap read the whole file");
+            return Task.CompletedTask;
+        });
+        await Claim("changed/deleted/created-on-disk conflict never overwrites the source", () =>
+        {
+            var path = Path.Combine(workspace, "conflict.txt");
+            foreach (var disk in new string?[] { "same\n", "external", null })
+            {
+                File.WriteAllText(path, "same\r\n");
+                var baseline = TextFile.Read(path);
+                if (disk is null) File.Delete(path); else File.WriteAllText(path, disk);
+                var result = Save(path, baseline, "buffer");
+                Require(result.Verdict == TextReplaceVerdict.ChangedSince &&
+                    (disk is null ? !File.Exists(path) : File.ReadAllText(path) == disk), $"{disk ?? "deleted"}: {result}");
+            }
+            var absent = TextFile.Read(path);
+            File.WriteAllText(path, "appeared");
+            Require(Save(path, absent, "buffer").Verdict == TextReplaceVerdict.ChangedSince
+                && File.ReadAllText(path) == "appeared", "new file overwrite");
+            return Task.CompletedTask;
+        });
+        await Claim("authorization and raw identity are rechecked after staging, with temp cleanup", () =>
+        {
+            var path = Path.Combine(workspace, "staging.txt");
+            foreach (var revoke in new[] { true, false })
+            {
+                File.WriteAllText(path, "original");
+                var baseline = TextFile.Read(path);
+                var calls = 0;
+                var result = Save(path, baseline, "buffer", () =>
+                {
+                    if (++calls == 2)
+                    {
+                        if (revoke) return WorkspacePath.Refuse(WorkspacePathVerdict.ReadOnlyRoot);
+                        File.WriteAllText(path, "racing external");
+                    }
+                    return WorkspacePaths.ResolveWrite(sandbox, path, guards);
+                });
+                Require(result.Verdict == (revoke ? TextReplaceVerdict.RefusedPath : TextReplaceVerdict.ChangedSince)
+                    && File.ReadAllText(path) == (revoke ? "original" : "racing external")
+                    && !Directory.EnumerateFiles(workspace, "staging.txt.*.tmp").Any(), $"revoke={revoke}: {result}; calls={calls}");
+            }
+            return Task.CompletedTask;
+        });
+        await Claim("readonly/exact-file/protected/link boundaries apply to manual saves", () =>
+        {
+            var path = Path.Combine(workspace, "permission.txt");
+            File.WriteAllText(path, "original");
+            var baseline = TextFile.Read(path);
+            var outside = WorkspaceSandbox.Empty with { Files = [path] };
+            var readonlySandbox = new WorkspaceSandbox(null, [], [workspace]);
+            Require(Save(path, baseline, "denied", () => WorkspacePaths.ResolveWrite(readonlySandbox, path, guards)).Verdict
+                == TextReplaceVerdict.RefusedPath, "readonly grant wrote");
+            Require(Save(path, baseline, "allowed", () => WorkspacePaths.ResolveWrite(outside, path, guards)).Verdict
+                == TextReplaceVerdict.Written, "exact writable file refused");
+            var neighbor = Path.Combine(workspace, "neighbor.txt");
+            Require(Save(neighbor, TextFile.Read(neighbor), "denied", () => WorkspacePaths.ResolveWrite(outside, neighbor, guards)).Verdict
+                == TextReplaceVerdict.RefusedPath, "file grant opened its neighbor");
+            var protectedGuards = new WorkspaceGuards(workspace, []);
+            Require(Save(path, TextFile.Read(path), "denied", () => WorkspacePaths.ResolveWrite(sandbox, path, protectedGuards)).Verdict
+                == TextReplaceVerdict.RefusedPath, "protected root wrote");
+            if (!OperatingSystem.IsWindows())
+            {
+                // A file link inside the workspace must not be a road to a file outside it: the resolver only
+                // stops at directory links, so what keeps the target safe here is that the replacement path
+                // never follows the link. Asserting the outside bytes is the claim; the verdict is an observation.
+                var outsideFolder = Path.Combine(folder, "outside");
+                Directory.CreateDirectory(outsideFolder);
+                var target = Path.Combine(outsideFolder, "target.txt");
+                File.WriteAllText(target, "outside-content");
+                var link = Path.Combine(workspace, "link.txt");
+                File.CreateSymbolicLink(link, target);
+                var linked = Save(link, TextFile.Read(link), "hub-text");
+                Require(File.ReadAllText(target) == "outside-content",
+                    $"a save through a file link wrote outside the workspace: {linked}");
+                Console.WriteLine($"  file link save verdict: {linked.Verdict}");
+            }
+            else Console.WriteLine("SKIP: symlink creation requires a Windows host privilege not assumed by this fixture.");
+            return Task.CompletedTask;
+        });
+        await Claim("Hub writers serialize; stale editor baseline loses to completed AI write without a new revision", async () =>
+        {
+            var path = Path.Combine(workspace, "concurrent.txt");
+            File.WriteAllText(path, "original");
+            var baseline = TextFile.Read(path);
+            var tools = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, guards.DataRoot, "code-check", [], null, null));
+            var holding = TextFile.AcquireWrite(path);
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var task = Task.Run(() => { started.SetResult(); return tools.FileWrite("concurrent.txt", "original", "AI"); });
+            try
+            {
+                await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Require(!task.IsCompleted && File.ReadAllText(path) == "original", "writer passed the held gate");
+            }
+            finally { holding.Dispose(); }
+            var result = await task.WaitAsync(TimeSpan.FromSeconds(10));
+            var id = ChatChangeStore.IdFromResult(result);
+            Require(id is not null, result);
+            Require(Save(path, baseline, "manual").Verdict == TextReplaceVerdict.ChangedSince
+                && File.ReadAllText(path) == "AI", "stale editor overwrote AI");
+            var fresh = TextFile.Read(path);
+            Require(Save(path, fresh, "manual").Verdict == TextReplaceVerdict.Written, "fresh manual save failed");
+            Require(ChatChangeStore.ForConversation(guards.DataRoot, "code-check").Count == 1, "manual save entered AI ledger");
+            var undo = ChatChangeStore.Restore(guards.DataRoot, "code-check", id!, sandbox, guards, out _, out _);
+            Require(undo == UndoVerdict.ChangedSince && File.ReadAllText(path) == "manual", "AI undo overwrote manual text: " + undo);
+        });
+        await Claim("Unix mode survives replacement; failed replacement leaves original and no temporary file", () =>
+        {
+            var path = Path.Combine(workspace, "mode.txt");
+            File.WriteAllText(path, "original");
+            if (!OperatingSystem.IsWindows())
+            {
+                var mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead;
+                File.SetUnixFileMode(path, mode);
+                Require(Save(path, TextFile.Read(path), "saved").Verdict == TextReplaceVerdict.Written
+                    && File.GetUnixFileMode(path) == mode, "Unix executable/read bits lost");
+            }
+            else Console.WriteLine("SKIP: Unix mode is not a Windows filesystem contract.");
+            var baseline = TextFile.Read(path);
+            var failingEncoding = new UTF8Encoding(false, true);
+            using var lease = TextFile.AcquireWrite(path);
+            var result = lease.Replace(() => WorkspacePaths.ResolveWrite(sandbox, path, guards), File.ReadAllBytes(path), "\ud800", failingEncoding);
+            Require(result.Verdict == TextReplaceVerdict.Failed && File.ReadAllText(path) == baseline.Text
+                && !Directory.EnumerateFiles(workspace, "mode.txt.*.tmp").Any(), result.ToString());
+            return Task.CompletedTask;
+        });
+        if (CommandShells.Resolve("git") is not { } git)
+        {
+            total++;
+            Console.WriteLine("FAIL: Git two-side reads — git is not installed on this host");
+        }
+        else
+        {
+            var log = new StringBuilder();
+            var runner = new ProcessRunner(line => log.Append('\n').Append(line));
+            var repo = Path.Combine(folder, "repo");
+            Directory.CreateDirectory(repo);
+            async Task<ProcessResult> RunGit(params string[] arguments) =>
+                await runner.RunAsync(git, arguments, repo);
+            async Task AssertGit(params string[] arguments)
+            {
+                var result = await RunGit(arguments);
+                Require(result.ExitCode == 0, $"git {string.Join(' ', arguments)}: {result.Error}");
+            }
+            await AssertGit("init", "-b", "main");
+            await AssertGit("config", "user.name", "Axmol Hub Check");
+            await AssertGit("config", "user.email", "hub-check@example.invalid");
+            const string Head = "HEAD-MARKER\n";
+            const string Index = "INDEX-MARKER\n";
+            const string Worktree = "WORKTREE-MARKER\n";
+            File.WriteAllText(Path.Combine(repo, "three-way.txt"), Head);
+            File.WriteAllText(Path.Combine(repo, "crlf.txt"), "one\r\ntwo");
+            File.WriteAllText(Path.Combine(repo, "gone.txt"), "gone soon\n");
+            File.WriteAllText(Path.Combine(repo, "with space:100%*x.txt"), "special\n");
+            File.WriteAllBytes(Path.Combine(repo, "binary.bin"), [0, 1, 2, 3]);
+            File.WriteAllText(Path.Combine(repo, "big.txt"), new string('x', 4096));
+            File.WriteAllText(Path.Combine(repo, "from.txt"), "rename body\n");
+            await AssertGit("add", ".");
+            await AssertGit("commit", "-m", "chore: create fixture baseline");
+            File.WriteAllText(Path.Combine(repo, "three-way.txt"), Index);
+            await AssertGit("add", "three-way.txt");
+            File.WriteAllText(Path.Combine(repo, "three-way.txt"), Worktree);
+            File.WriteAllText(Path.Combine(repo, "untracked.txt"), "new\n");
+            File.Delete(Path.Combine(repo, "gone.txt"));
+            await AssertGit("mv", "from.txt", "to.txt");
+            var repoRoot = repo;
+
+            // HEAD=A, index=B, worktree=C: each range has to read its own pair, or staging semantics leak.
+            await Claim("Work Tree reads index→disk and Index reads HEAD→index for one path", async () =>
+            {
+                var worktree = await GitRepository.ReadFileAsync(repoRoot, "three-way.txt", GitFileRange.WorkingTree, runner);
+                Require(worktree.IsReadable && worktree.Old.Snapshot.Text == Index
+                    && worktree.New.Snapshot.Text == Worktree && worktree.Old.Oid is { Length: 40 },
+                    $"working tree: {worktree.Detail ?? $"{worktree.Old.Snapshot.Text}|{worktree.New.Snapshot.Text}"}");
+                var index = await GitRepository.ReadFileAsync(repoRoot, "three-way.txt", GitFileRange.Index, runner);
+                Require(index.IsReadable && index.Old.Snapshot.Text == Head && index.New.Snapshot.Text == Index,
+                    $"index: {index.Detail ?? $"{index.Old.Snapshot.Text}|{index.New.Snapshot.Text}"}");
+            });
+            await Claim("raw blob bytes keep EOL and a missing final newline", async () =>
+            {
+                var comparison = await GitRepository.ReadFileAsync(repoRoot, "crlf.txt", GitFileRange.Index, runner);
+                var side = comparison.New.Snapshot;
+                Require(comparison.IsReadable && side.Text == "one\r\ntwo" && side.LineEndings == TextLineEndings.CrLf
+                    && !side.EndsInNewline && comparison.Old.Snapshot.Text == "one\r\ntwo",
+                    $"crlf: {comparison.Detail ?? side.Text.Replace("\r", "\\r").Replace("\n", "\\n")}");
+            });
+            await Claim("existence is separate: untracked, deleted and empty are not the same answer", async () =>
+            {
+                var untracked = await GitRepository.ReadFileAsync(repoRoot, "untracked.txt", GitFileRange.WorkingTree, runner);
+                Require(untracked.IsReadable && !untracked.Old.Exists && untracked.New.Exists
+                    && untracked.New.Snapshot.Text == "new\n", $"untracked: {untracked.Detail}");
+                var gone = await GitRepository.ReadFileAsync(repoRoot, "gone.txt", GitFileRange.WorkingTree, runner);
+                Require(gone.IsReadable && gone.Old.Exists && gone.Old.Snapshot.Text == "gone soon\n"
+                    && !gone.New.Exists && gone.New.Snapshot.State == TextFileState.Missing, $"deleted: {gone.Detail}");
+            });
+            await Claim("a literal pathspec reaches a name with spaces, a colon and a glob character", async () =>
+            {
+                var comparison = await GitRepository.ReadFileAsync(repoRoot, "with space:100%*x.txt", GitFileRange.Index, runner);
+                Require(comparison.IsReadable && comparison.New.Snapshot.Text == "special\n",
+                    $"special name: {comparison.Detail}");
+            });
+            await Claim("a rename reads both names instead of claiming a new file", async () =>
+            {
+                var comparison = await GitRepository.ReadFileAsync(repoRoot, "to.txt", GitFileRange.Index, runner, "from.txt");
+                Require(comparison.IsReadable && comparison.OldPath == "from.txt"
+                    && comparison.Old.Snapshot.Text == "rename body\n" && comparison.New.Snapshot.Text == "rename body\n",
+                    $"rename: {comparison.Detail ?? $"{comparison.Old.Exists}/{comparison.New.Exists}"}");
+            });
+            await Claim("binary and oversized versions are states, not replacement-character text", async () =>
+            {
+                var binary = await GitRepository.ReadFileAsync(repoRoot, "binary.bin", GitFileRange.WorkingTree, runner);
+                Require(binary.IsReadable && binary.New.Snapshot.State == TextFileState.Binary,
+                    $"binary: {binary.Detail ?? binary.New.Snapshot.State.ToString()}");
+                var big = await GitRepository.ReadFileAsync(repoRoot, "big.txt", GitFileRange.Index, runner, maxBytes: 64);
+                Require(big.IsReadable && big.New.Snapshot.State == TextFileState.TooLarge
+                    && big.New.Snapshot.Detail!.Contains("4096", StringComparison.Ordinal),
+                    $"oversized: {big.Detail ?? big.New.Snapshot.Detail}");
+            });
+            // The one thing the raw channel exists for: source text must not arrive in the command log.
+            await Claim("blob text never reaches the command log, which still records the argv and exit code", () =>
+            {
+                var text = log.ToString();
+                Require(!text.Contains("MARKER", StringComparison.Ordinal)
+                    && text.Contains("cat-file", StringComparison.Ordinal)
+                    && text.Contains("Exit code: 0", StringComparison.Ordinal),
+                    "the command log carried file content or lost its own diagnostics");
+                return Task.CompletedTask;
+            });
+
+            // A repository with no commit: the left side is genuinely empty, which is not a failure.
+            var fresh = Path.Combine(folder, "fresh");
+            Directory.CreateDirectory(fresh);
+            var freshRunner = new ProcessRunner(_ => { });
+            await freshRunner.RunAsync(git, ["init", "-b", "main"], fresh);
+            File.WriteAllText(Path.Combine(fresh, "first.txt"), "first\n");
+            await freshRunner.RunAsync(git, ["add", "first.txt"], fresh);
+            await Claim("an unborn HEAD gives an absent left side, not a failed repository", async () =>
+            {
+                var comparison = await GitRepository.ReadFileAsync(fresh, "first.txt", GitFileRange.Index, freshRunner);
+                Require(comparison.IsReadable && !comparison.Old.Exists && comparison.New.Exists
+                    && comparison.New.Snapshot.Text == "first\n", $"unborn HEAD: {comparison.Detail}");
+            });
+
+            // An unmerged index must not offer stage 1/2/3 as if one of them were stage 0.
+            var conflicted = Path.Combine(folder, "conflict");
+            Directory.CreateDirectory(conflicted);
+            var conflictRunner = new ProcessRunner(_ => { });
+            async Task InConflict(params string[] arguments) =>
+                await conflictRunner.RunAsync(git, arguments, conflicted);
+            await InConflict("init", "-b", "main");
+            await InConflict("config", "user.name", "Axmol Hub Check");
+            await InConflict("config", "user.email", "hub-check@example.invalid");
+            File.WriteAllText(Path.Combine(conflicted, "clash.txt"), "base\n");
+            await InConflict("add", "clash.txt");
+            await InConflict("commit", "-m", "chore: baseline");
+            await InConflict("checkout", "-b", "side");
+            File.WriteAllText(Path.Combine(conflicted, "clash.txt"), "side\n");
+            await InConflict("commit", "-am", "chore: side");
+            await InConflict("checkout", "main");
+            File.WriteAllText(Path.Combine(conflicted, "clash.txt"), "main\n");
+            await InConflict("commit", "-am", "chore: main");
+            await InConflict("merge", "side");
+            await Claim("an unmerged index is reported as a conflict, not as whichever stage sorted first", async () =>
+            {
+                var comparison = await GitRepository.ReadFileAsync(conflicted, "clash.txt", GitFileRange.Index, conflictRunner);
+                Require(!comparison.IsReadable && comparison.Detail!.Contains("unmerged", StringComparison.Ordinal),
+                    $"conflict: {comparison.Detail ?? comparison.New.Snapshot.Text}");
+            });
+        }
+        await Claim("aligned rows carry each side's own line numbers and reconstruct both sides", () =>
+        {
+            const string before = "a\nb\nc\n";
+            const string after = "a\nc\nd\n";
+            var script = FileDiff.Rows(before, after);
+            Require(script.Exact && script.Rows.Count == 4, $"shape: exact={script.Exact} rows={script.Rows.Count}");
+            var expected = new (DiffRowKind Kind, int? Original, int? Updated)[]
+            {
+                (DiffRowKind.Equal, 1, 1), (DiffRowKind.Delete, 2, null), (DiffRowKind.Equal, 3, 2), (DiffRowKind.Insert, null, 3)
+            };
+            for (var i = 0; i < expected.Length; i++)
+            {
+                var row = script.Rows[i];
+                Require((row.Kind, row.OriginalLine, row.UpdatedLine) == expected[i],
+                    $"row {i}: {row.Kind} {row.OriginalLine}/{row.UpdatedLine}");
+            }
+            var left = string.Join('\n', script.Rows.Where(row => row.OriginalLine is not null).Select(row => row.Text));
+            var right = string.Join('\n', script.Rows.Where(row => row.UpdatedLine is not null).Select(row => row.Text));
+            Require(left == "a\nb\nc" && right == "a\nc\nd", $"reconstruction: {left.Replace("\n", "|")} / {right.Replace("\n", "|")}");
+            // CRLF against LF is a formatting difference, not a whole-file change: the rows say so.
+            Require(FileDiff.Rows("a\r\nb\r\n", "a\nb\n").Rows.All(row => row.Kind == DiffRowKind.Equal),
+                "line-ending style became a change");
+            return Task.CompletedTask;
+        });
+        await Claim("the budget degrades to a marked-changed script and says the alignment is not exact", () =>
+        {
+            var large = string.Join('\n', Enumerable.Range(0, 5000).Select(i => "old " + i));
+            var other = string.Join('\n', Enumerable.Range(0, 5000).Select(i => "new " + i));
+            var script = FileDiff.Rows(large, other);
+            Require(!script.Exact && script.Rows.Count == 10000
+                && script.Rows.All(row => row.Kind != DiffRowKind.Equal),
+                $"past the size bound: exact={script.Exact} rows={script.Rows.Count}");
+            // The tally and the view share the bound, so neither can call a file too large to align "unchanged".
+            Require(FileDiff.CountChangedLines(large, other) == (5000, 5000), "tally disagreed with the degraded script");
+            var budgeted = FileDiff.Rows("x\ny\n", "x\nz\n", new DiffLimits(MaxTotalCharacters: 1));
+            Require(!budgeted.Exact && budgeted.Rows.Count == 4, "the character budget did not degrade the script");
+            return Task.CompletedTask;
+        });
+        await Claim("a one-line edit in a large file aligns quickly and exactly", () =>
+        {
+            var before = string.Join('\n', Enumerable.Range(0, 20000).Select(i => "line " + i));
+            var after = before.Replace("line 19999", "line 19999 changed");
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var script = FileDiff.Rows(before, after);
+            watch.Stop();
+            Console.WriteLine($"  rows: 20000-line pair aligned in {watch.Elapsed.TotalMilliseconds:F1} ms, "
+                + $"{script.Rows.Count} rows, exact={script.Exact}");
+            Require(script.Exact && script.Rows.Count(row => row.Kind != DiffRowKind.Equal) == 2,
+                $"large edit: exact={script.Exact} changed={script.Rows.Count(row => row.Kind != DiffRowKind.Equal)}");
+            return Task.CompletedTask;
+        });
+        Console.WriteLine($"RESULT: {passed}/{total} code workspace checks passed");
+        if (passed != total) Environment.ExitCode = 1;
+    }
+}

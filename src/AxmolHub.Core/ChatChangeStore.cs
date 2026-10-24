@@ -183,8 +183,14 @@ public static class ChatChangeStore
         var resolved = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
         if (!resolved.IsAllowed) return UndoVerdict.RefusedPath;
         path = resolved.Display;
-        if (!File.Exists(resolved.Full)) return UndoVerdict.TargetMissing;
-        if (WorkspaceTools.ReadAll(resolved.Full) is not { } current) return UndoVerdict.NotText;
+        using var write = TextFile.AcquireWrite(resolved.Full);
+        var permitted = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
+        if (!permitted.IsAllowed || permitted.Full != resolved.Full) return UndoVerdict.RefusedPath;
+        // Keep the existing whole-revision contract; the editor's smaller opening budget is not an undo limit.
+        var baseline = TextFile.Read(resolved.Full, int.MaxValue);
+        if (baseline.State == TextFileState.Missing) return UndoVerdict.TargetMissing;
+        if (baseline.State != TextFileState.Text) return UndoVerdict.NotText;
+        var current = baseline.Text;
         if (Hash(Encoding.UTF8.GetBytes(TextEol.ToLf(current))) != revision.AfterHash)
             return UndoVerdict.ChangedSince;
 
@@ -197,63 +203,25 @@ public static class ChatChangeStore
             return UndoVerdict.WriteFailed;
         }
 
-        string? temporary = null;
-        try
-        {
-            var latest = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
-            if (!latest.IsAllowed || latest.Full != resolved.Full || !File.Exists(resolved.Full)
-                || WorkspaceTools.ReadAll(resolved.Full) is not { } latestText
-                || Hash(Encoding.UTF8.GetBytes(TextEol.ToLf(latestText))) != revision.AfterHash)
-            {
-                Abandon(dataRoot, inverse);
-                return UndoVerdict.ChangedSince;
-            }
-
-            if (before is null)
-            {
-                File.Delete(resolved.Full);
-            }
-            else
-            {
-                temporary = resolved.Full + "." + Guid.NewGuid().ToString("N") + ".tmp";
-                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                           4096, FileOptions.WriteThrough))
-                {
-                    var bytes = new UTF8Encoding(false).GetBytes(TextEol.ToLf(before));
-                    stream.Write(bytes);
-                    stream.Flush(true);
-                }
-                var final = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
-                if (!final.IsAllowed || final.Full != resolved.Full || !File.Exists(resolved.Full)
-                    || WorkspaceTools.ReadAll(resolved.Full) is not { } finalText
-                    || Hash(Encoding.UTF8.GetBytes(TextEol.ToLf(finalText))) != revision.AfterHash)
-                {
-                    Abandon(dataRoot, inverse);
-                    return UndoVerdict.ChangedSince;
-                }
-                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, File.GetUnixFileMode(resolved.Full));
-                File.Replace(temporary, resolved.Full, null);
-                temporary = null;
-            }
-
-            CompleteRevision(dataRoot, inverse);
-            inverseId = inverse.Id;
-            return UndoVerdict.Reverted;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        var replaced = write.Replace(() => WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards),
+            baseline.Bytes, before);
+        if (replaced.Verdict != TextReplaceVerdict.Written)
         {
             Abandon(dataRoot, inverse);
-            return UndoVerdict.WriteFailed;
-        }
-        finally
-        {
-            if (temporary is not null)
+            return replaced.Verdict switch
             {
-                try { File.Delete(temporary); }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
-            }
+                TextReplaceVerdict.RefusedPath => UndoVerdict.RefusedPath,
+                TextReplaceVerdict.ChangedSince => UndoVerdict.ChangedSince,
+                _ => UndoVerdict.WriteFailed
+            };
         }
+
+        // A landed inverse must retain its pending journal even if completing the record fails. Read() can
+        // recover it from the durable after-image; abandoning it here would lose a successful source change.
+        try { CompleteRevision(dataRoot, inverse); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        inverseId = inverse.Id;
+        return UndoVerdict.Reverted;
     }
 
     /// <summary>Delete a session's unreferenced records, then content no remaining record uses. Any uncertainty

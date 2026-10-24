@@ -247,6 +247,12 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var resolved = WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards);
         if (!resolved.IsAllowed) return Refusal(resolved.Verdict, resolved.Display, path);
 
+        using var write = TextFile.AcquireWrite(resolved.Full);
+        // Resolve again after waiting: another Hub writer or a permission change may have intervened.
+        var permitted = WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards);
+        if (!permitted.IsAllowed || permitted.Full != resolved.Full)
+            return $"Refused: the permitted path changed before writing {resolved.Display}. Read it again.";
+
         string? original = null;
         byte[]? originalBytes = null;
         if (File.Exists(resolved.Full))
@@ -279,62 +285,17 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             return $"Refused: could not save complete before/after snapshots for {resolved.Display}: {ex.Message}";
         }
 
-        string? temporary = null;
-        try
-        {
-            var latest = WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards);
-            if (!latest.IsAllowed || !string.Equals(latest.Full, resolved.Full, StringComparison.Ordinal))
-            {
-                ChatChangeStore.Abandon(context.DataRoot, revision);
-                return $"Refused: the permitted path changed before writing {resolved.Display}. Read it again.";
-            }
-            var nowExists = File.Exists(resolved.Full);
-            var nowBytes = nowExists ? File.ReadAllBytes(resolved.Full) : null;
-            if (nowExists != (originalBytes is not null)
-                || (nowBytes is not null && !nowBytes.AsSpan().SequenceEqual(originalBytes)))
-            {
-                ChatChangeStore.Abandon(context.DataRoot, revision);
-                return $"No change: {resolved.Display} changed after it was read. Read it again before editing.";
-            }
-
-            Directory.CreateDirectory(Path.GetDirectoryName(resolved.Full)!);
-            temporary = resolved.Full + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                       4096, FileOptions.WriteThrough))
-            {
-                var bytes = new UTF8Encoding(false).GetBytes(TextEol.ToLf(edit.Updated));
-                stream.Write(bytes);
-                stream.Flush(true);
-            }
-            var finalPath = WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards);
-            var finalExists = File.Exists(resolved.Full);
-            var finalBytes = finalExists ? File.ReadAllBytes(resolved.Full) : null;
-            if (!finalPath.IsAllowed || !string.Equals(finalPath.Full, resolved.Full, StringComparison.Ordinal)
-                || finalExists != nowExists
-                || (finalBytes is not null && !finalBytes.AsSpan().SequenceEqual(originalBytes)))
-            {
-                ChatChangeStore.Abandon(context.DataRoot, revision);
-                return $"No change: {resolved.Display} changed while preparing the write. Read it again.";
-            }
-            if (nowExists && !OperatingSystem.IsWindows())
-                File.SetUnixFileMode(temporary, File.GetUnixFileMode(resolved.Full));
-            if (nowExists) File.Replace(temporary, resolved.Full, null);
-            else File.Move(temporary, resolved.Full);
-            temporary = null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        var replaced = write.Replace(() => WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards),
+            originalBytes, edit.Updated);
+        if (replaced.Verdict != TextReplaceVerdict.Written)
         {
             ChatChangeStore.Abandon(context.DataRoot, revision);
-            return $"Could not write {resolved.Display}: {ex.Message}";
-        }
-        finally
-        {
-            if (temporary is not null)
+            return replaced.Verdict switch
             {
-                try { File.Delete(temporary); }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
-            }
+                TextReplaceVerdict.RefusedPath => $"Refused: the permitted path changed before writing {resolved.Display}. Read it again.",
+                TextReplaceVerdict.ChangedSince => $"No change: {resolved.Display} changed after it was read. Read it again before editing.",
+                _ => $"Could not write {resolved.Display}: {replaced.Detail}"
+            };
         }
 
         string journalWarning = "";

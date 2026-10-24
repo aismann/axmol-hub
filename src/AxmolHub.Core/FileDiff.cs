@@ -11,7 +11,23 @@ public sealed record DiffLimits(
     int MaxLinesPerSide = 4000,
     int MaxEditScript = 2000,
     int MaxOutputLines = 60,
-    int MaxOutputCharacters = 8000);
+    int MaxOutputCharacters = 8000,
+    int MaxTotalCharacters = 4 * 1024 * 1024);
+
+/// <summary>Which side of the edit a row's line belongs to. A deletion occupies no line on the right and an
+/// insertion none on the left, which is what the alignment's gap is made of.</summary>
+public enum DiffRowKind { Equal, Delete, Insert }
+
+/// <summary>One aligned row of a full-file comparison: the line on each side, and null for the side the line is
+/// not on. The numbers are real line numbers in that side's own document, which is what a gutter shows and what a
+/// hunk header counts from — a row counter would drift the moment a deletion shares a row.</summary>
+public readonly record struct DiffRow(DiffRowKind Kind, int? OriginalLine, int? UpdatedLine, string Text);
+
+/// <summary>The full aligned comparison, plus whether the edit script inside it is exact. Past a budget the rows
+/// are the honest degraded answer — every line on each side, marked changed — rather than an alignment that was
+/// not computed; <see cref="Exact"/> is what tells the two apart, so a view can say "too large to align" instead of
+/// presenting a wall of red as a finding.</summary>
+public sealed record DiffScript(IReadOnlyList<DiffRow> Rows, bool Exact);
 
 /// <summary>
 /// Unified diff for the write tool's approval preview. Hand-rolled because Core takes no dependencies: Myers
@@ -28,7 +44,7 @@ public static class FileDiff
         if (original.SequenceEqual(updated, StringComparer.Ordinal)) return "";
 
         var capped = limits ?? new DiffLimits();
-        var edits = Diff(original, updated, capped);
+        var edits = Diff(original, updated, capped, out _);
 
         // Forward slashes in the header whatever the host: a unified diff is a text format with its own
         // convention, and `--- a/src\main.cpp` would not apply with patch(1) or read as a path anywhere else.
@@ -62,6 +78,46 @@ public static class FileDiff
         return output.ToString().TrimEnd('\n');
     }
 
+    /// <summary>The whole file aligned line by line, for a side-by-side view rather than a card preview. The same
+    /// budget decides it as decides the counts, so a view and a tally cannot disagree; what is new here is that the
+    /// caller is told whether the alignment is exact instead of having to infer it from the output.</summary>
+    public static DiffScript Rows(string? originalText, string? updatedText, DiffLimits? limits = null)
+    {
+        var original = SplitLines(originalText ?? "");
+        var updated = SplitLines(updatedText ?? "");
+        var capped = limits ?? new DiffLimits();
+        var exact = true;
+        List<Edit> edits;
+        if (original.SequenceEqual(updated, StringComparer.Ordinal)) edits = [];
+        else if ((long)(originalText?.Length ?? 0) + (updatedText?.Length ?? 0) > capped.MaxTotalCharacters)
+        {
+            // Reading the bytes was already capped; this cap is about the cost of comparing what was read.
+            edits = ReplaceAll(original, updated);
+            exact = false;
+        }
+        else edits = Diff(original, updated, capped, out exact);
+
+        var rows = new List<DiffRow>(edits.Count);
+        var originalLine = 1;
+        var updatedLine = 1;
+        foreach (var edit in edits)
+        {
+            switch (edit.Kind)
+            {
+                case Kind.Equal:
+                    rows.Add(new DiffRow(DiffRowKind.Equal, originalLine++, updatedLine++, edit.Line));
+                    break;
+                case Kind.Delete:
+                    rows.Add(new DiffRow(DiffRowKind.Delete, originalLine++, null, edit.Line));
+                    break;
+                default:
+                    rows.Add(new DiffRow(DiffRowKind.Insert, null, updatedLine++, edit.Line));
+                    break;
+            }
+        }
+        return new DiffScript(rows, exact);
+    }
+
     /// <summary>How many lines an edit adds and removes, counted off the edit script rather than off the rendered
     /// diff. <see cref="Unified"/> is capped by <see cref="DiffLimits.MaxOutputLines"/> because an approval card
     /// has to fit on screen, and a tally that inherited that cap would report a 200-line rewrite as 60 — which is
@@ -76,7 +132,7 @@ public static class FileDiff
         var original = SplitLines(beforeText ?? "");
         var updated = SplitLines(afterText ?? "");
         if (original.SequenceEqual(updated, StringComparer.Ordinal)) return (0, 0);
-        var edits = Diff(original, updated, new DiffLimits());
+        var edits = Diff(original, updated, new DiffLimits(), out _);
         var added = 0;
         var removed = 0;
         foreach (var edit in edits)
@@ -105,8 +161,9 @@ public static class FileDiff
     private static List<Edit> ReplaceAll(string[] original, string[] updated)
         => [.. original.Select(line => new Edit(Kind.Delete, line)), .. updated.Select(line => new Edit(Kind.Insert, line))];
 
-    private static List<Edit> Diff(string[] original, string[] updated, DiffLimits limits)
+    private static List<Edit> Diff(string[] original, string[] updated, DiffLimits limits, out bool exact)
     {
+        exact = true;
         // The common prefix and suffix are not part of the edit script; trimming them is what keeps D small.
         var start = 0;
         while (start < original.Length && start < updated.Length
@@ -124,9 +181,18 @@ public static class FileDiff
         var middleUpdated = updated[start..endUpdated];
         // The size bound applies to the trimmed middle: a large file with a small edit is exactly the common
         // case, and refusing to diff it would show "whole file rewritten" for a one-line change.
-        var middle = middleOriginal.Length > limits.MaxLinesPerSide || middleUpdated.Length > limits.MaxLinesPerSide
-            ? ReplaceAll(middleOriginal, middleUpdated)
-            : Myers(middleOriginal, middleUpdated, limits.MaxEditScript) ?? ReplaceAll(middleOriginal, middleUpdated);
+        List<Edit> middle;
+        if (middleOriginal.Length > limits.MaxLinesPerSide || middleUpdated.Length > limits.MaxLinesPerSide)
+        {
+            middle = ReplaceAll(middleOriginal, middleUpdated);
+            exact = false;
+        }
+        else if (Myers(middleOriginal, middleUpdated, limits.MaxEditScript) is { } scripted) middle = scripted;
+        else
+        {
+            middle = ReplaceAll(middleOriginal, middleUpdated);
+            exact = false;
+        }
         return
         [
             .. original[..start].Select(line => new Edit(Kind.Equal, line)),

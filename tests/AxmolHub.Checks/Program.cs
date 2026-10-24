@@ -78,6 +78,12 @@ internal static class Program
             return;
         }
 
+        if (args.Contains("--check-code-workspace"))
+        {
+            await CodeWorkspaceChecks.RunAsync(root, args);
+            return;
+        }
+
         if (args.Contains("--check-ai-tools"))
         {
             await AiToolsChecks.RunAsync(root, args);

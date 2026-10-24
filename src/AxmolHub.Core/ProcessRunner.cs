@@ -196,6 +196,25 @@ public enum StalledProcessFate
     Exited,
 }
 
+/// <summary>Raw stdout for a read that must see bytes: a source file cannot go through the line reader, which
+/// would append the host's newline, lose a missing final one, and write every line into the command log. Nothing
+/// captured here is logged or redacted, and the cap is enforced while draining, so an oversized answer is never
+/// held whole in memory.</summary>
+public sealed class RawStdoutCapture(int maxBytes)
+{
+    private readonly MemoryStream _buffer = new();
+    public bool Truncated { get; private set; }
+
+    internal void Append(ReadOnlySpan<byte> chunk)
+    {
+        var room = maxBytes - (int)_buffer.Length;
+        if (chunk.Length > room) { Truncated = true; if (room > 0) _buffer.Write(chunk[..room]); return; }
+        _buffer.Write(chunk);
+    }
+
+    public byte[] Bytes() => _buffer.ToArray();
+}
+
 public sealed class ProcessRunner(Action<string> log)
 {
     /// <summary>When passed as the <c>timeout</c> to <see cref="RunAsync"/>, means "no timeout at all".
@@ -235,7 +254,7 @@ public sealed class ProcessRunner(Action<string> log)
         string workingDirectory, IReadOnlyDictionary<string, string>? environment = null,
         CancellationToken cancellation = default, TimeSpan? timeout = null, IReadOnlyList<string>? sensitiveValues = null,
         IReadOnlyDictionary<string, string>? overrides = null, bool firstLineOnly = false,
-        Action<string>? onLine = null)
+        Action<string>? onLine = null, RawStdoutCapture? rawStdout = null)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -289,7 +308,9 @@ public sealed class ProcessRunner(Action<string> log)
             var outputSink = new StringBuilder();
             var errorSink = new StringBuilder();
 
-            var output = ReadAsync(process.StandardOutput, false, Redact, MarkOutput, outputSink, firstLineOnly, onLine);
+            var output = rawStdout is null
+                ? ReadAsync(process.StandardOutput, false, Redact, MarkOutput, outputSink, firstLineOnly, onLine)
+                : ReadBytesAsync(process.StandardOutput, rawStdout, MarkOutput);
             var error = ReadAsync(process.StandardError, true, Redact, MarkOutput, errorSink, firstLineOnly, onLine);
 
             if (idleTimeout == Infinite)
@@ -438,6 +459,28 @@ public sealed class ProcessRunner(Action<string> log)
             // failure to — the run already returned with the text it had.
         }
         lock (sink) return sink.ToString();
+    }
+
+    /// <summary>The byte pump behind <see cref="RawStdoutCapture"/>. It reports activity like the line reader so a
+    /// slow blob read is not mistaken for a stall, and returns empty text so nothing content-shaped travels the
+    /// usual output road.</summary>
+    private static async Task<string> ReadBytesAsync(StreamReader reader, RawStdoutCapture capture, Action? onOutput)
+    {
+        var buffer = new byte[8192];
+        try
+        {
+            int count;
+            while ((count = await reader.BaseStream.ReadAsync(buffer).ConfigureAwait(false)) > 0)
+            {
+                onOutput?.Invoke();
+                capture.Append(buffer.AsSpan(0, count));
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or ObjectDisposedException)
+        {
+            // Same rule as the line reader: only an abandoned process closes its pipes under us.
+        }
+        return "";
     }
 
     public void Open(string executable, IEnumerable<string>? arguments = null)
