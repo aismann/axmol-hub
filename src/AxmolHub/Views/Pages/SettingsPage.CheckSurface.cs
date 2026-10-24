@@ -145,6 +145,41 @@ public partial class SettingsPage : UserControl
     }
 
     internal bool ProviderWebToolControlsHiddenForCheck(string providerId) => GroupCards.FirstOrDefault(card => card.Tag as string == providerId)?.Child is StackPanel content && !content.Children.OfType<CheckBox>().Any(toggle => toggle.Tag as string == "provider-hosted-search") && !content.Children.OfType<ComboBox>().Any(combo => combo.Tag as string == "provider-web-tools-backend");
+
+    /// <summary>
+    /// The wire row as rendered: the chosen item's value (<c>""</c> is auto) and the sentence beside it, which is
+    /// the only place the resolved answer is visible — the preset's per-model wire and the catalog both feed it.
+    ///
+    /// <para>Logical descendants rather than direct children: the row lives inside the model section, and the
+    /// visual walk returns an empty collection for a group that is not attached to a visual root yet, which would
+    /// turn "the check found nothing" into "the check passed".</para>
+    /// </summary>
+    internal (string Selection, string Effective) ProviderProtocolForCheck(string providerId)
+    {
+        var group = GroupCards.FirstOrDefault(card => card.Tag as string == providerId);
+        var combo = group?.GetLogicalDescendants().OfType<ComboBox>()
+            .FirstOrDefault(candidate => candidate.Tag as string == SectionTags.ProviderProtocolChoice);
+        var effective = group?.GetLogicalDescendants().OfType<TextBlock>()
+            .FirstOrDefault(candidate => candidate.Tag as string == SectionTags.ProviderProtocolEffective);
+        return (combo?.SelectedItem is ComboBoxItem { Tag: string wire } ? wire : "?", effective?.Text ?? "");
+    }
+
+    /// <summary>
+    /// Chooses a wire the way a person would — through the combo, so the handler and the rebuild it triggers are
+    /// part of what is asserted instead of being bypassed by a call straight into the workspace.
+    /// </summary>
+    internal bool ChooseProviderProtocolForCheck(string providerId, string wire)
+    {
+        var combo = GroupCards.FirstOrDefault(card => card.Tag as string == providerId)?
+            .GetLogicalDescendants().OfType<ComboBox>()
+            .FirstOrDefault(candidate => candidate.Tag as string == SectionTags.ProviderProtocolChoice);
+        var item = combo?.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(candidate => candidate.Tag as string == wire);
+        if (combo is null || item is null) return false;
+        combo.SelectedItem = item;
+        Dispatcher.UIThread.RunJobs();
+        return true;
+    }
     internal bool SetModelListExpandedForCheck(string providerId, bool expanded)
     {
         var toggle = GroupCards.FirstOrDefault(group => group.Tag as string == providerId)?.GetLogicalDescendants().OfType<ToggleButton>().FirstOrDefault(button => button.Tag as string == SectionTags.ToggleModelList);

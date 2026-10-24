@@ -352,6 +352,12 @@ public sealed partial class ChatWorkspace : IDisposable
     /// property. Do not "restore the missing UI" without fixing the rebuild-while-typing first.</para>
     /// </summary>
     public bool SetModelContextTokens(string providerId, string name, int? tokens) => _providers.SetModelContextTokens(providerId, name, tokens);
+    /// <summary>
+    /// States which wire this provider answers on, or <c>null</c> to follow the preset and the catalog — the one
+    /// wire fact a person can settle for an endpoint Hub does not ship. Persisted, so it survives a reload and
+    /// outlives any manifest correction it disagrees with.
+    /// </summary>
+    public bool SetProviderProtocol(string providerId, string? protocol) => _providers.SetProviderProtocol(providerId, protocol);
     /// <summary>What Hub believes one model's window is, and where that came from — read by the settings row so
     /// it can show the number it is about to let a person override.</summary>
     public (int Tokens, int OutputReserve, CapabilitySource Source) ContextWindowFor(string providerId, string name) => _providers.ContextWindowFor(providerId, name);

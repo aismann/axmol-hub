@@ -1428,6 +1428,17 @@ public static class HubTexts
         ["CapabilitySourceOverride"] = ("手动设置", "yours"),
         ["CapabilitySourceLearned"] = ("从拒绝学到", "learned"),
         ["CapabilitySourceFallback"] = ("无人报过，按默认", "assumed"),
+        // Which request shape a provider's models are called with. Auto is the default and the only value a preset
+        // ever arrives with; the other two are the wires this build can actually send (there is no Anthropic
+        // transport here, so "messages" is not offered — a choice that can only ever fail is not a choice).
+        ["ProviderProtocolLabel"] = ("接口", "wire"),
+        ["ProviderProtocolAuto"] = ("自动（跟随目录与预设）", "auto (catalog and preset)"),
+        ["ProviderProtocolChatOption"] = ("chat/completions", "chat/completions"),
+        ["ProviderProtocolResponsesOption"] = ("responses", "responses"),
+        ["ProviderProtocolHint"] = ("这个 provider 用哪种请求形状，先看它的目录，再看预设的声明；两边都没说时是 chat。在这里指定会覆盖它们，因为这个部署只有你看得见。",
+            "Which request shape this provider answers on comes from its catalog first, then from what the preset declared, and chat when neither says anything. Setting it here overrules both, because only you can see this deployment."),
+        ["ProviderProtocolEffectiveFormat"] = ("当前 {0} · {1}", "now {0} · {1}"),
+        ["ProviderProtocolUnset"] = ("当前：还没有模型，无从判断", "now: no model yet, so nothing to resolve"),
         ["ModelRemove"] = ("移除该模型", "Remove this model"),
         ["ModelRemoveConfirm"] = ("将从本机列表移除该模型，提供商与密钥不受影响。", "Removes this model from the local list. The provider and its keys are unaffected."),
         ["ModelsRemoveAll"] = ("移除全部模型", "Remove all models"),

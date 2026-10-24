@@ -340,6 +340,36 @@ internal sealed class ShellProvidersChecks
         Check(shell.Chat.RemoveProvider(custom.Id), "自定义 provider 可以移除");
         Check(shell.Chat.Providers.All(provider => !provider.IsCustom), "移除后列表里不再有自定义 provider");
 
+        // ── The wire a provider answers on: stated on the page, persisted, and read back after a reload ──
+        //
+        // Driven through the combo rather than through ChatWorkspace.SetProviderProtocol, so the handler and the
+        // rebuild it triggers are part of what is asserted. AgentRouter is the gateway this row exists for: its
+        // catalog names endpoint *families* and never a wire, so the preset's per-model claim and this override are
+        // the only two things that can be right about it — and the row has to show which one is in force.
+        Check(shell.Chat.AddPreset("agentrouter") is not null
+              && shell.Chat.AddModel("agentrouter", "gpt-6.1-sol") is not null,
+            "为接口行临时添加 provider 与一个模型");
+        settings.RefreshProviderGroupsForCheck();
+        var wireAuto = settings.ProviderProtocolForCheck("agentrouter");
+        Check(wireAuto.Selection.Length == 0 && wireAuto.Effective.Contains("responses", StringComparison.Ordinal),
+            "自动时接口行读出预设按模型声明的 wire（选中「" + wireAuto.Selection + "」实际「" + wireAuto.Effective + "」）");
+        Check(settings.ChooseProviderProtocolForCheck("agentrouter", ModelProtocols.Chat), "接口行可以改成 chat");
+        var wireChat = settings.ProviderProtocolForCheck("agentrouter");
+        Check(wireChat.Selection == ModelProtocols.Chat && wireChat.Effective.Contains("chat", StringComparison.Ordinal),
+            "改完之后接口行立刻读出 chat（选中「" + wireChat.Selection + "」实际「" + wireChat.Effective + "」）");
+        // Persisted and winning over the preset: a second workspace on the same root sees the person's claim, not
+        // the manifest's per-model one. That is what provider.Protocol ??= builtIn.Protocol exists for.
+        using (var wireReloaded = new ChatWorkspace(scratchRoot))
+        {
+            var reloadedWire = wireReloaded.Providers.First(provider => provider.Id == "agentrouter");
+            Check(reloadedWire.Protocol == ModelProtocols.Chat
+                  && AxmolHub.Agent.ChatClientFactory.ProtocolFor(reloadedWire, "gpt-6.1-sol") == ModelProtocols.Chat,
+                "接口选择落盘并压过预设的按模型声明（实际「" + (reloadedWire.Protocol ?? "未声明") + "」）");
+        }
+        Check(settings.ChooseProviderProtocolForCheck("agentrouter", ""), "接口行可以改回自动");
+        Check(shell.Chat.RemoveProvider("agentrouter"), "移除为接口行临时添加的 provider");
+        settings.RefreshProviderGroupsForCheck();
+
         // ── Sign-in methods and accounts ──
         // The block is driven through the page's real selection path (SelectProviderForCheck → the same
         // UpdateProviderDetail a click triggers), so what is asserted is the object graph the user would see.

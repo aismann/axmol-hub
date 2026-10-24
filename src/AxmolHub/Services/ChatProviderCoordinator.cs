@@ -531,6 +531,32 @@ internal sealed partial class ChatProviderCoordinator
         return true;
     }
 
+    /// <summary>
+    /// Sets the wire this provider answers on, or <c>null</c> to follow the preset and the catalog.
+    ///
+    /// <para><b>Persisted</b>, unlike <see cref="ModelProvider.ExtraHeaders"/> and for the reason the field's own
+    /// note gives: this is the one wire fact a person standing on an endpoint Hub does not ship can state, and
+    /// <c>provider.Protocol ??= builtIn.Protocol</c> in <see cref="LoadProviders"/> is what lets that statement
+    /// outlive the manifest entry it disagrees with.</para>
+    ///
+    /// <para>A name this build cannot speak is stored as "nothing declared" rather than kept —
+    /// <see cref="ModelProtocols.IsSpoken"/> excludes the Anthropic wire, which has no client here — so a
+    /// hand-edited file and this setter agree instead of disagreeing quietly.</para>
+    /// </summary>
+    internal bool SetProviderProtocol(string providerId, string? protocol)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        if (provider is null) return false;
+
+        var wire = ModelProtocols.IsSpoken(protocol) ? protocol : null;
+        if (provider.Protocol == wire) return true;
+
+        provider.Protocol = wire;
+        SaveProviders();
+        Execution.Changed?.Invoke();
+        return true;
+    }
+
     internal (int Tokens, int OutputReserve, CapabilitySource Source) ContextWindowFor(string providerId, string name)
     {
         var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
