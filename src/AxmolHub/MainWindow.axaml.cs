@@ -6,6 +6,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
+using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -652,6 +653,13 @@ public partial class MainWindow : Window
     /// makes this element safe to subscribe to <see cref="ChatWorkspace.Changed"/>: it reads one slot and formats
     /// one string, and the ban on hanging work off that event is a ban on <em>reads</em>, not on repainting.
     /// </summary>
+    private void OpenRepositoryChangesFromStatusBar(object? sender, RoutedEventArgs e)
+    {
+        if (_currentKey != "Assistant") NavigateTo("Assistant");
+        OpenInspector("repo", -1);
+        RefreshInspector();
+    }
+
     private void UpdateRepoIndicator()
     {
         // Reached from the same event as <see cref="SyncApprovalBadge"/>, and that one's comment says why the hop
@@ -668,6 +676,10 @@ public partial class MainWindow : Window
             _chat.RepositoryFor(_chat.ActiveConversation?.WorkspaceRoot)?.State);
         RepoIndicator.IsVisible = visible;
         RepoIndicatorText.Text = visible ? text : "";
+        RepoIndicator.Tag = visible ? "RepoChangesEntry" : null;
+        RepoIndicator.Cursor = visible ? new Cursor(StandardCursorType.Hand) : Cursor.Default;
+        RepoIndicator.Click -= OpenRepositoryChangesFromStatusBar;
+        if (visible) RepoIndicator.Click += OpenRepositoryChangesFromStatusBar;
         ToolTip.SetTip(RepoIndicator, HubStrings.Get("StatusRepoOpenHint"));
     }
 

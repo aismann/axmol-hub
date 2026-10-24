@@ -78,11 +78,7 @@ public partial class MainWindow
         _inspectorOpen = _preferences.InspectorOpen;
         SetInspectorColumnVisible();
 
-        // The strip's repository slot is a way *into* the tab, not a second copy of it. Pressing it goes to the
-        // page that owns the column first, because a column opened while another page is up is a column that
-        // opened invisibly — and it opens on the repository tab without asking git anything, since the only way
-        // this button is reachable at all is a read that already landed.
-        RepoIndicator.Click += (_, _) => OnRepoIndicatorClicked();
+        // The status strip is the entry to repository-scoped changes; the inspector owns rendering both sources.
         UpdateRepoIndicator();
 
         // The title bar's two right-hand buttons. The drawer is the column's way in and out that does not depend on
@@ -128,15 +124,6 @@ public partial class MainWindow
         OpenInspector(_inspectorTab, _inspectorTurn);
     }
 
-    /// <summary>What the strip's repository slot does when pressed. The navigation comes first and is not
-    /// decoration: <see cref="SetInspectorColumnVisible"/> gates the column on the assistant page, so opening it
-    /// from Projects would set the flag, persist it, and show a person nothing at all.</summary>
-    private void OnRepoIndicatorClicked()
-    {
-        if (_currentKey != "Assistant") NavigateTo("Assistant");
-        OpenInspector("repo", -1);
-    }
-
     /// <summary>The pane's two possible homes: the column, and the overlay it is lifted into. Exactly one may
     /// hold it — a control with a live visual parent cannot be adopted by a second <c>ContentControl</c>, which
     /// is an exception rather than a quiet failure — so every move clears both first, and nothing else in this
@@ -161,7 +148,7 @@ public partial class MainWindow
         _inspectorTab = tab;
         _inspectorTurn = turnIndex;
         _inspectorOpen = true;
-        SetInspectorPane(_chatPanel?.BuildInspectorContent(tab, turnIndex));
+        SetInspectorPane(_chatPanel?.BuildInspectorContent(_inspectorTab, turnIndex));
         SetInspectorColumnVisible();
         if (_preferences.InspectorOpen != true)
         {

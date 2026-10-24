@@ -1243,9 +1243,13 @@ internal sealed class ShellDecisionsChecks
                 ? "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（旧版）"
                 : "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", UndoCopyState.Read), null, "changes");
         Check(inspector.ChangeRowCountForCheck == 1 && inspector.FirstChangePathForCheck == "note.txt"
-              && inspector.ChangesTabVisibleForCheck && !inspector.PlanTabVisibleForCheck,
+              && inspector.ChangesTabVisibleForCheck && !inspector.PlanTabVisibleForCheck
+              && inspector.ChangeScopeLabelForCheck == HubStrings.Get("InspectorScopeSession"),
             "改动页把这次会话动过的文件列出来，并停在被点开的哪一页（实际 "
             + inspector.ChangeRowCountForCheck + " 行，首行「" + inspector.FirstChangePathForCheck + "」）");
+        Check(inspector.ChangeFileMenuItemsForCheck.SequenceEqual([
+                HubStrings.Get("InspectorViewFile"), HubStrings.Get("InspectorEditFile")]),
+            "会话改动文件行提供明确的 View file / Edit file 菜单入口");
         inspector.ClickChangeRowForCheck(0);
         Check(inspector.DurableDiffControlsForCheck,
             "改动详情提供可切换的历史修订和可滚动的差异文本区域");
@@ -1281,9 +1285,6 @@ internal sealed class ShellDecisionsChecks
                 ["src/main.cpp"] = "diff --git a/src/main.cpp b/src/main.cpp\n@@ -1 +1 @@\n-old\n+new",
             }, false, null);
         var repoReads = 0;
-        (GitRepositoryState State, GitStatusEntry Entry, GitFileRange Range, string? Commit)? gitComparisonRequest = null;
-        inspector.OpenGitComparisonRequested += (state, entry, range, commit)
-            => gitComparisonRequest = (state, entry, range, commit);
         inspector.RepoRefreshRequested += () => repoReads++;
         inspector.Reload(null, changes, _ => ((string?)null, UndoCopyState.Read), repoState, "repo");
         Check(inspector.RepoTabVisibleForCheck && !inspector.ChangesTabVisibleForCheck
@@ -1294,6 +1295,11 @@ internal sealed class ShellDecisionsChecks
                   .Replace("{0}", "2").Replace("{1}", "1"), StringComparison.Ordinal),
             "仓库页停在被点开的那一页，列出仓库相对 HEAD 的三个脏路径，并把分支与领先落后写在同一行（实际「"
             + inspector.RepoHeadlineForCheck + "」）");
+        Check(inspector.RepoFileMenuItemsForCheck(0).SequenceEqual([
+                HubStrings.Get("InspectorViewFile"), HubStrings.Get("InspectorEditFile")]),
+            "仓库文件行同样提供明确的 View file / Edit file 菜单入口");
+        Check(inspector.RepoCommitComparisonControlsAbsentForCheck,
+            "仓库文件行不再显示按提交引用比较的输入框或按钮");
         Check(inspector.RepoCaveatForCheck == HubStrings.Get("InspectorRepoCaveat"),
             "仓库页第一句就讲清这是仓库的全部改动，不只是本会话做的（实际「" + inspector.RepoCaveatForCheck + "」）");
         // The shared-path mark is the one place the two lists are allowed to speak to each other: note.txt is in
@@ -1311,10 +1317,6 @@ internal sealed class ShellDecisionsChecks
         Check(inspector.RepoRowExpandedForCheck(0)
               && inspector.RepoRowTextForCheck(0).Contains(" ~ + ~ new", StringComparison.Ordinal),
             "点开仓库行才取它的 diff，取到的是这个文件自己的那段（实际「" + inspector.RepoRowTextForCheck(0) + "」）");
-        inspector.ClickGitCommitCompareForCheck(0, "HEAD~1");
-        Check(gitComparisonRequest is { Range: GitFileRange.Commit, Commit: "HEAD~1" }
-              && gitComparisonRequest.Value.Entry.RelativePath == "src/main.cpp",
-            "仓库行的固定提交入口将引用和目标文件一起交给 Git 比较接线");
         inspector.ClickRepoRowForCheck(2);
         Check(inspector.RepoRowTextForCheck(2).Contains(HubStrings.Get("InspectorRepoNoDiff"), StringComparison.Ordinal),
             "读不到改动内容的行讲清读不到，而不是画一片空白（实际「" + inspector.RepoRowTextForCheck(2) + "」）");

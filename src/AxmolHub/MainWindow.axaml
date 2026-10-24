@@ -428,6 +428,17 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.Accent}" />
     </Style>
+    <Style Selector="Button.inspector-change-scope">
+      <Setter Property="Padding" Value="8,3" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="MinHeight" Value="26" />
+    </Style>
+    <Style Selector="Button.inspector-file-menu">
+      <Setter Property="Padding" Value="6,0" />
+      <Setter Property="MinWidth" Value="30" />
+      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="FontSize" Value="18" />
+    </Style>
     <Style Selector="TextBlock.inspector-empty">
       <Setter Property="FontSize" Value="12" />
     </Style>
@@ -472,6 +483,21 @@
       <Setter Property="MinHeight" Value="28" />
       <Setter Property="Padding" Value="8,3" />
       <Setter Property="FontSize" Value="11.5" />
+    </Style>
+    <Style Selector="Button.inspector-file-menu">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.inspector-file-menu:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    </Style>
+    <Style Selector="Button.inspector-file-menu:pressed">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
     </Style>
     <Style Selector="Button.inspector-change-header">
       <Setter Property="Background" Value="Transparent" />

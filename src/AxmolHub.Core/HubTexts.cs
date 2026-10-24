@@ -1034,6 +1034,8 @@ public static class HubTexts
         // ── The right-hand inspector ──
         ["InspectorTabPlan"] = ("计划", "Plan"),
         ["InspectorTabChanges"] = ("改动", "Changes"),
+        ["InspectorViewFile"] = ("查看文件", "View file"),
+        ["InspectorEditFile"] = ("编辑文件", "Edit file"),
         ["InspectorChangesEmpty"] = ("这个会话还没改动任何文件", "This session has not touched any file yet"),
         ["InspectorPlanEmpty"] = ("还没有生成计划", "No plan yet"),
         // The plan exists and its document does not. "No plan yet" would be the wrong sentence to show somebody
@@ -1047,16 +1049,15 @@ public static class HubTexts
         ["InspectorDiffViewUnified"] = ("差异", "Diff"),
         ["InspectorDiffViewBefore"] = ("改动前", "Before"),
         ["InspectorDiffViewAfter"] = ("改动后", "After"),
-        ["InspectorDiffCompareSideBySide"] = ("并排比较", "Compare side by side"),
+        ["InspectorDiffCompareSideBySide"] = ("查看差异", "View diff"),
         ["InspectorGitWorkingTree"] = ("比较工作区更改", "Compare working-tree changes"),
         ["InspectorGitIndex"] = ("比较暂存更改", "Compare staged changes"),
-        ["InspectorGitCommitLabel"] = ("与指定提交比较", "Compare with a commit"),
-        ["InspectorGitCommit"] = ("比较", "Compare"),
-        ["InspectorGitCommitHint"] = ("提交哈希或引用", "Commit hash or ref"),
         ["DiffQuoteSelection"] = ("引用所选行", "Quote selected lines"),
         ["DiffPreviousChange"] = ("上一个改动", "Previous change"),
         ["DiffNextChange"] = ("下一个改动", "Next change"),
-        ["DiffInlineMode"] = ("切换内联视图", "Toggle inline view"),
+        ["DiffInlineMode"] = ("统一视图", "Unified view"),
+        ["DiffSplitMode"] = ("并排视图", "Split view"),
+        ["DiffViewSettings"] = ("差异视图设置", "Diff view settings"),
         ["DiffStageHunk"] = ("暂存所选块", "Stage selected hunk"),
         ["DiffUnstageHunk"] = ("取消暂存所选块", "Unstage selected hunk"),
         ["DiffRevertHunk"] = ("还原所选块", "Revert selected hunk"),
@@ -1073,7 +1074,10 @@ public static class HubTexts
         // uncommitted here" — and the two must not be merged, because a person's week of own work would otherwise
         // read as the assistant's. Every state below is a sentence the tab can end on: each names why it stopped
         // rather than drawing an empty list, which is the same rule the four diff states above follow.
-        ["InspectorTabRepo"] = ("仓库", "Repository"),
+        ["InspectorScopeSession"] = ("会话改动 ▾", "Session changes ▾"),
+        ["InspectorScopeRepository"] = ("仓库改动 ▾", "Repository changes ▾"),
+        ["InspectorScopeSessionMenu"] = ("会话改动", "Session changes"),
+        ["InspectorScopeRepositoryMenu"] = ("仓库改动", "Repository changes"),
         // The top bar's drawer button. Icon-only like the sidebar's, so the tooltip is the only place it has a
         // name — and it names both directions, because one glyph that opens and closes cannot say which it is
         // about to do without a second control that would repeat the column itself.

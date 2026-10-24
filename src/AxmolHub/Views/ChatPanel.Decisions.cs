@@ -409,33 +409,6 @@ public partial class ChatPanel
             // The pane asks; this is where the ask turns into a git read, because the panel has no session, no
             // log and no thread to wait on — and a pane that did its own I/O could not be fed a fixture by a check.
             _inspector.RepoRefreshRequested += RequestRepositoryRead;
-            _inspector.OpenAiComparisonRequested += (change, snapshot) => DiffViewerWindow.Show(
-                TopLevel.GetTopLevel(this) as Window,
-                change.RelativePath,
-                HubStrings.Get("InspectorDiffViewBefore"),
-                HubStrings.Get("InspectorDiffViewAfter"),
-                snapshot.Before,
-                snapshot.After,
-                text =>
-                {
-                    if (_chat?.ActiveConversation?.Id == conversation?.Id) QuoteIntoComposer(text);
-                    else StatusMessage?.Invoke("The conversation changed; the selection was not inserted.");
-                },
-                string.IsNullOrEmpty(change.SelectedRevisionId ?? change.ChangeId) ? null : async (hunkIndex, action) =>
-                {
-                    var revisionId = change.SelectedRevisionId ?? change.ChangeId!;
-                    if (_chat is null || _chat.ActiveConversation?.Id != conversation?.Id)
-                        return new DiffHunkActionResult(false, "The conversation changed; no AI revision action was performed.");
-                    if (action == DiffHunkAction.Reject
-                        && await HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window,
-                            "Reject AI hunk", "Reject only this AI hunk in the file? This records a new revision.",
-                            HubDialogButtons.OkCancel, danger: true) != HubDialogResult.Ok)
-                        return new DiffHunkActionResult(false, "AI hunk rejection cancelled.");
-                    var result = await _chat.ApplyAiHunkAsync(conversation!.Id, change.RelativePath, revisionId, hunkIndex, action);
-                    if (result.RefreshRequired) _ = _chat.RefreshRepositoryAsync(conversation.Id);
-                    return result;
-                },
-                string.IsNullOrEmpty(change.SelectedRevisionId ?? change.ChangeId) ? null : DiffHunkAction.Accept);
             _inspector.OpenGitComparisonRequested += async (state, entry, range, commit) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
@@ -509,6 +482,14 @@ public partial class ChatPanel
             _inspector.TabSelected += tab => InspectorTabFollowed?.Invoke(tab);
             // A change row clicked twice asks for the file, and the directory to read it from is the conversation's
             // own — asked of the chat at click time, because the pane outlives the conversation it was built for.
+            _inspector.ViewFileRequested += relativePath =>
+            {
+                var activeId = _chat?.ActiveConversation?.Id;
+                if (string.IsNullOrEmpty(activeId) || _chat is null) return;
+                var scope = _chat.WorkspaceScopeFor(activeId);
+                CodeFileWindow.Show(TopLevel.GetTopLevel(this) as Window,
+                    scope?.WorkspaceRoot ?? "", relativePath);
+            };
             _inspector.OpenFileRequested += relativePath =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
@@ -520,8 +501,8 @@ public partial class ChatPanel
         }
 
         var planText = PlanTextFor(conversation, turnIndex);
-        var changes = _chat?.ChangesFor(conversation) ?? ChatChanges.Of(conversation);
         var conversationId = conversation?.Id ?? "";
+        var changes = _chat?.ChangesFor(conversation) ?? ChatChanges.Of(conversation);
         var repository = _chat?.RepositoryFor(conversation?.WorkspaceRoot);
         // Entering the tab with nothing read for this directory is the moment to read it. Not before, and not on
         // a repaint: a session that never goes looking for repository state never pays for a git run, and the

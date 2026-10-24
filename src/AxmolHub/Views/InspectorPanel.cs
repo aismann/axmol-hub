@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
+using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.MarkupExtensions;
@@ -30,7 +31,6 @@ internal sealed partial class InspectorPanel : UserControl
     /// cannot drive from a fixture.</summary>
     public event Action? RepoRefreshRequested;
     internal event Action<GitRepositoryState, GitStatusEntry, GitFileRange, string?>? OpenGitComparisonRequested;
-    internal event Action<ChangedFile, ChatFileSnapshot>? OpenAiComparisonRequested;
 
     /// <summary>Raised by one of the empty-scope jumps: "this list is empty, the other one is not — the reader
     /// could want that one instead". The panel names the tab it wants and never switches itself, because landing
@@ -46,7 +46,7 @@ internal sealed partial class InspectorPanel : UserControl
 
     private readonly Button _planTab;
     private readonly Button _changesTab;
-    private readonly Button _repoTab;
+    private readonly Button _scopeButton;
     private readonly Grid _header;
     private readonly ContentControl _planHost;
     private readonly ScrollViewer _planScroll;
@@ -82,23 +82,40 @@ internal sealed partial class InspectorPanel : UserControl
         _header = header;
         _planTab = TabButton("InspectorTabPlan");
         _changesTab = TabButton("InspectorTabChanges");
-        _repoTab = TabButton("InspectorTabRepo");
+        _scopeButton = new Button
+        {
+            Classes = { "inspector-change-scope" },
+            Name = "InspectorChangeScope",
+            Tag = "InspectorChangeScope",
+            Margin = new Thickness(10, 0, 0, 0),
+            IsVisible = false,
+        };
         _planTab.Click += (_, _) => SelectTab("plan");
         _changesTab.Click += (_, _) => SelectTab("changes");
-        // Asking for a read is the panel's business; doing one is not. The caller owns git, the session and the
-        // thread this lands on, so the tab only says that the person wanted the repository looked at again.
-        _repoTab.Click += (_, _) =>
-        {
-            SelectTab("repo");
-            RepoRefreshRequested?.Invoke();
-        };
         header.Children.Add(_planTab);
         Grid.SetColumn(_changesTab, 1);
         _changesTab.Margin = new Thickness(6, 0, 0, 0);
         header.Children.Add(_changesTab);
-        Grid.SetColumn(_repoTab, 2);
-        _repoTab.Margin = new Thickness(6, 0, 0, 0);
-        header.Children.Add(_repoTab);
+        Grid.SetColumn(_scopeButton, 2);
+        header.Children.Add(_scopeButton);
+        var scopeMenu = new ContextMenu
+        {
+            ItemsSource = new[]
+            {
+                ScopeMenuItem("InspectorScopeSessionMenu", () => SelectTab("changes")),
+                ScopeMenuItem("InspectorScopeRepositoryMenu", () =>
+                {
+                    SelectTab("repo");
+                    RepoRefreshRequested?.Invoke();
+                }),
+            },
+        };
+        _scopeButton.ContextMenu = scopeMenu;
+        _scopeButton.Click += (_, _) =>
+        {
+            scopeMenu.PlacementTarget = _scopeButton;
+            scopeMenu.Open();
+        };
         root.Children.Add(header);
 
         // ── Body: the three tab surfaces stacked, only one visible. All live in the tree so switching tabs does
@@ -179,8 +196,70 @@ internal sealed partial class InspectorPanel : UserControl
 
     private static Button TabButton(string textKey)
     {
-        var button = new Button { Classes = { "inspector-tab" }, Content = HubStrings.Get(textKey), Tag = textKey };
+        var button = new Button { Classes = { "inspector-tab" }, Content = HubStrings.Get(textKey), Tag = textKey, Name = textKey };
         return button;
+    }
+
+    private Control FileActions(string path)
+    {
+        var dots = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 3,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+            Children =
+            {
+                new Ellipse { Width = 3, Height = 3 },
+                new Ellipse { Width = 3, Height = 3 },
+                new Ellipse { Width = 3, Height = 3 },
+            },
+        };
+        foreach (var dot in dots.Children.OfType<Ellipse>())
+            dot.Bind(Shape.FillProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        var button = new Button
+        {
+            Content = dots,
+            Classes = { "inspector-file-menu" },
+            Tag = "InspectorFileActions",
+            Width = 32,
+            Height = 32,
+            MinWidth = 32,
+            MinHeight = 32,
+            Padding = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var menu = new ContextMenu
+        {
+            ItemsSource = new[]
+            {
+                FileAction("InspectorViewFile", () => ViewFileRequested?.Invoke(path)),
+                FileAction("InspectorEditFile", () => OpenFileRequested?.Invoke(path)),
+            },
+        };
+        button.ContextMenu = menu;
+        button.Click += (_, _) =>
+        {
+            menu.PlacementTarget = button;
+            menu.Open();
+        };
+        return button;
+    }
+
+    private static MenuItem FileAction(string textKey, Action action)
+    {
+        var item = new MenuItem { Header = HubStrings.Get(textKey), Tag = textKey };
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    private static MenuItem ScopeMenuItem(string textKey, Action action)
+    {
+        var item = new MenuItem { Header = HubStrings.Get(textKey), Tag = textKey };
+        item.Click += (_, _) => action();
+        return item;
     }
 
     /// <summary>Told by the shell which of its two homes the pane is in, because the two are not the same
@@ -235,16 +314,26 @@ internal sealed partial class InspectorPanel : UserControl
     /// is not one of the two action tabs lands on the plan, which is the pane's rest state. The shell is told
     /// every time, including when it was the one that named the tab: one route, so a header click and a repaint
     /// cannot disagree about where the reader is standing.</summary>
+    internal void SetChangesScope(string scope)
+    {
+        var repository = scope == "repo";
+        SelectTab(repository ? "repo" : "changes");
+        if (repository) RepoRefreshRequested?.Invoke();
+    }
+
     private void SelectTab(string tab)
     {
-        var changes = string.Equals(tab, "changes", StringComparison.Ordinal);
+        var sessionChanges = string.Equals(tab, "changes", StringComparison.Ordinal);
         var repo = string.Equals(tab, "repo", StringComparison.Ordinal);
-        var plan = !changes && !repo;
+        var changes = sessionChanges || repo;
+        var plan = !changes;
         _planTab.Classes.Set("selected", plan);
         _changesTab.Classes.Set("selected", changes);
-        _repoTab.Classes.Set("selected", repo);
+        _scopeButton.Content = HubStrings.Get(repo ? "InspectorScopeRepository" : "InspectorScopeSession");
+        _scopeButton.Tag = repo ? "repo" : "changes";
+        _scopeButton.IsVisible = changes || repo;
         _planScroll.IsVisible = plan;
-        _changesScroll.IsVisible = changes;
+        _changesScroll.IsVisible = sessionChanges;
         _repoScroll.IsVisible = repo;
         _planCopyButton.IsVisible = plan && _planHost.Content is MarkdownScrollViewer;
         TabSelected?.Invoke(tab);
@@ -463,22 +552,6 @@ internal sealed partial class InspectorPanel : UserControl
             {
                 var diff = GitRepository.DiffFor(state, entry);
                 var detailBody = new StackPanel { Spacing = 5 };
-                detailBody.Children.Add(Themed(new TextBlock
-                {
-                    Text = HubStrings.Get("InspectorGitCommitLabel"),
-                    Classes = { "inspector-note" },
-                }, "Hub.TextSecondary"));
-                var commitRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
-                var commit = new TextBox { Width = 220, PlaceholderText = HubStrings.Get("InspectorGitCommitHint"), Tag = "InspectorGitCommitRef" };
-                var compareCommit = new Button { Content = HubStrings.Get("InspectorGitCommit"), Classes = { "inspector-git-action" }, Tag = "InspectorGitCommitCompare" };
-                compareCommit.Click += (_, _) =>
-                {
-                    var reference = commit.Text?.Trim();
-                    if (!string.IsNullOrEmpty(reference)) OpenGitComparisonRequested?.Invoke(state, entry, GitFileRange.Commit, reference);
-                };
-                commitRow.Children.Add(commit);
-                commitRow.Children.Add(compareCommit);
-                detailBody.Children.Add(commitRow);
                 detailBody.Children.Add(diff is { Length: > 0 } ? BuildDiffBlock(diff) : EmptyLine("InspectorRepoNoDiff"));
                 detail.Content = detailBody;
             }
@@ -486,13 +559,18 @@ internal sealed partial class InspectorPanel : UserControl
             header.Classes.Set("expanded", detail.IsVisible);
         };
 
-        container.Children.Add(header);
-        var ranges = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(6, 0, 0, 4) };
-        if (entry.Untracked || entry.WorktreeState != " " && entry.WorktreeState != "U")
-            ranges.Children.Add(GitRangeButton("InspectorGitWorkingTree", state, entry, GitFileRange.WorkingTree));
+        var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        repositoryRow.Children.Add(header);
+        var repositoryFileActions = FileActions(entry.RelativePath);
+        Grid.SetColumn(repositoryFileActions, 1);
+        repositoryRow.Children.Add(repositoryFileActions);
+        container.Children.Add(repositoryRow);
         if (!entry.Untracked && entry.IndexState != " " && entry.IndexState != "U")
+        {
+            var ranges = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(6, 0, 0, 4) };
             ranges.Children.Add(GitRangeButton("InspectorGitIndex", state, entry, GitFileRange.Index));
-        if (ranges.Children.Count > 0) container.Children.Add(ranges);
+            container.Children.Add(ranges);
+        }
         container.Children.Add(detail);
         return container;
     }
@@ -544,6 +622,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>A change row opened for reading rather than for its diff. The panel names files but has no session
     /// and does no I/O of its own, so the path goes out exactly as the repository refresh ask does.</summary>
     internal event Action<string>? OpenFileRequested;
+    internal event Action<string>? ViewFileRequested;
 
     private Control BuildChangeRow(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
@@ -553,13 +632,6 @@ internal sealed partial class InspectorPanel : UserControl
         var (added, removed) = PreviewCounts(change);
 
         var header = new Button { Classes = { "inspector-change-header" }, Tag = change.RelativePath };
-        // The row's first click opens its diff; the second asks for the file. A button swallows the gesture in
-        // between, so the handler marks it handled rather than letting the click behind it toggle the row shut.
-        header.DoubleTapped += (_, e) =>
-        {
-            e.Handled = true;
-            OpenFileRequested?.Invoke(change.RelativePath);
-        };
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
 
         var verdict = new TextBlock
@@ -615,7 +687,12 @@ internal sealed partial class InspectorPanel : UserControl
             else _openedChanges.Remove(change.RelativePath);
         };
 
-        container.Children.Add(header);
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        row.Children.Add(header);
+        var fileMenuButton = FileActions(change.RelativePath);
+        Grid.SetColumn(fileMenuButton, 1);
+        row.Children.Add(fileMenuButton);
+        container.Children.Add(row);
         container.Children.Add(detail);
         return container;
     }
@@ -698,23 +775,6 @@ internal sealed partial class InspectorPanel : UserControl
         if (diff is null) return EmptyLine(DiffUnavailableKey(change, state));
 
         var body = new StackPanel { Spacing = 6 };
-        var snapshotResult = resolveSnapshot?.Invoke(change);
-        var snapshot = snapshotResult?.Snapshot;
-        if (snapshot is not null)
-        {
-            var compare = new Button
-            {
-                Content = HubStrings.Get("InspectorDiffCompareSideBySide"),
-                Classes = { "inspector-jump" },
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Tag = "InspectorDiffCompareSideBySide",
-            };
-            compare.Click += (_, _) =>
-            {
-                OpenAiComparisonRequested?.Invoke(change, snapshot);
-            };
-            body.Children.Add(compare);
-        }
         body.Children.Add(BuildDiffBlock(diff));
         return body;
     }

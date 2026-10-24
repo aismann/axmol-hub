@@ -148,56 +148,100 @@ internal sealed class DiffViewer : Grid
         header.Children.Add(rightHeader);
         Grid.SetColumnSpan(header, 2);
         Children.Add(header);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(8, 4) };
-        var inlineButton = new Button { Content = HubStrings.Get("DiffInlineMode"), Tag = "DiffInlineToggle", IsEnabled = script.Exact };
-        inlineButton.Click += (_, _) =>
+        var actions = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(8, 4) };
+        var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var settingsIcon = new Avalonia.Controls.Shapes.Path
         {
-            _inlineMode = !_inlineMode;
-            _inline.IsVisible = _inlineMode;
-            header.IsVisible = !_inlineMode;
-            _left.IsVisible = !_inlineMode;
-            _right.IsVisible = !_inlineMode;
+            Width = 14,
+            Height = 14,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.7,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
         };
-        actions.Children.Add(inlineButton);
+        settingsIcon.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Settings"));
+        settingsIcon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        var viewSettings = new Button { Content = settingsIcon, Tag = "DiffViewSettings", Classes = { "viewer-action" } };
+        ToolTip.SetTip(viewSettings, HubStrings.Get("DiffViewSettings"));
+        MenuItem splitMode = null!;
+        MenuItem inlineMode = null!;
+        splitMode = ViewModeItem("DiffSplitMode", false);
+        inlineMode = ViewModeItem("DiffInlineMode", true);
+        splitMode.ToggleType = MenuItemToggleType.Radio;
+        inlineMode.ToggleType = MenuItemToggleType.Radio;
+        splitMode.IsChecked = true;
+        var viewMenu = new ContextMenu { ItemsSource = new[] { splitMode, inlineMode } };
+        viewSettings.ContextMenu = viewMenu;
+        viewSettings.Click += (_, _) =>
+        {
+            viewMenu.PlacementTarget = viewSettings;
+            viewMenu.Open();
+        };
+
+        MenuItem ViewModeItem(string key, bool inline)
+        {
+            var item = new MenuItem
+            {
+                Header = HubStrings.Get(key),
+                Tag = inline ? "inline" : "split",
+                IsEnabled = !inline || script.Exact,
+                ToggleType = MenuItemToggleType.Radio,
+            };
+            item.Click += (_, _) =>
+            {
+                _inlineMode = inline;
+                splitMode.IsChecked = !inline;
+                inlineMode.IsChecked = inline;
+                _inline.IsVisible = inline;
+                header.IsVisible = !inline;
+                _left.IsVisible = !inline;
+                _right.IsVisible = !inline;
+            };
+            return item;
+        }
         var previous = new Button { Content = HubStrings.Get("DiffPreviousChange"), Tag = "DiffPreviousChange", IsEnabled = _changedRows.Length > 0 };
         previous.Click += (_, _) => NavigateChange(-1);
-        actions.Children.Add(previous);
+        toolbar.Children.Add(previous);
         var next = new Button { Content = HubStrings.Get("DiffNextChange"), Tag = "DiffNextChange", IsEnabled = _changedRows.Length > 0 };
         next.Click += (_, _) => NavigateChange(1);
-        actions.Children.Add(next);
+        toolbar.Children.Add(next);
         if (_hunkAction is not null && availableHunkAction is DiffHunkAction action)
         {
             if (action == DiffHunkAction.Stage)
             {
                 _stageButton = ActionButton("DiffStageHunk", DiffHunkAction.Stage);
                 _revertButton = ActionButton("DiffRevertHunk", DiffHunkAction.Revert);
-                actions.Children.Add(_stageButton);
-                actions.Children.Add(_revertButton);
+                toolbar.Children.Add(_stageButton);
+                toolbar.Children.Add(_revertButton);
             }
             else if (action == DiffHunkAction.Unstage)
             {
                 _unstageButton = ActionButton("DiffUnstageHunk", DiffHunkAction.Unstage);
-                actions.Children.Add(_unstageButton);
+                toolbar.Children.Add(_unstageButton);
             }
             else if (action == DiffHunkAction.Accept)
             {
                 _acceptButton = ActionButton("DiffAcceptAiHunk", DiffHunkAction.Accept);
                 _rejectButton = ActionButton("DiffRejectAiHunk", DiffHunkAction.Reject);
-                actions.Children.Add(_acceptButton);
-                actions.Children.Add(_rejectButton);
+                toolbar.Children.Add(_acceptButton);
+                toolbar.Children.Add(_rejectButton);
             }
         }
         if (_quote is not null)
         {
             _quoteButton = new Button { Content = HubStrings.Get("DiffQuoteSelection"), Tag = "DiffQuoteSelection" };
             _quoteButton.Click += (_, _) => QuoteSelection();
-            actions.Children.Add(_quoteButton);
+            toolbar.Children.Add(_quoteButton);
         }
         if (_hunkAction is not null)
         {
             _actionStatus = new TextBlock { VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
-            actions.Children.Add(_actionStatus);
+            toolbar.Children.Add(_actionStatus);
         }
+        actions.Children.Add(toolbar);
+        Grid.SetColumn(viewSettings, 1);
+        actions.Children.Add(viewSettings);
         Grid.SetRow(actions, 1);
         Grid.SetColumnSpan(actions, 2);
         Children.Add(actions);
@@ -218,7 +262,7 @@ internal sealed class DiffViewer : Grid
                 FontSize = 11,
                 Opacity = .75,
             };
-            actions.Children.Add(shortcutHint);
+            toolbar.Children.Add(shortcutHint);
         }
         AddHandler(InputElement.KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         MinHeight = 240;

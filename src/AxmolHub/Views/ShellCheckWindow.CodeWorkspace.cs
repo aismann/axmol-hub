@@ -122,17 +122,21 @@ internal sealed class ShellCodeWorkspaceChecks(Action<bool, string> check)
 
             var quoted = "";
             var viewer = new DiffViewer("probe.cpp", "Before", "After", "alpha\nremoved\nomega\n", "alpha\nadded\nomega\n", text => quoted = text);
-            check(viewer.Children.OfType<Button>().Any(button => Equals(button.Tag, "DiffInlineToggle"))
+            check(viewer.GetVisualDescendants().OfType<Button>().Any(button => Equals(button.Tag, "DiffViewSettings"))
                 && viewer.Children.OfType<TextEditor>().Any(editor => Equals(editor.Tag, "DiffInlineSurface")),
-                "代码工作区：DiffViewer 暴露内联切换和独立投影面");
+                "代码工作区：DiffViewer 通过设置菜单提供视图模式和统一投影面");
             window.Content = viewer;
             window.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             await Task.Delay(80);
-            var inlineToggle = viewer.GetVisualDescendants().OfType<Button>().FirstOrDefault(button => Equals(button.Tag, "DiffInlineToggle"));
+            var settings = viewer.GetVisualDescendants().OfType<Button>().FirstOrDefault(button => Equals(button.Tag, "DiffViewSettings"));
             var inlineSurface = viewer.GetVisualDescendants().OfType<TextEditor>().FirstOrDefault(editor => Equals(editor.Tag, "DiffInlineSurface"));
             var rightSurface = viewer.GetVisualDescendants().OfType<TextEditor>().FirstOrDefault(editor => Equals(editor.Tag, "DiffRightSurface"));
-            if (inlineToggle is not null) inlineToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            settings?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            check(settings?.ContextMenu is { IsOpen: true } && settings.ContextMenu.Items.OfType<MenuItem>().Count() == 2,
+                "代码工作区：齿轮按钮会实际弹出统一与并排视图菜单");
+            var inlineMode = settings?.ContextMenu?.Items.OfType<MenuItem>().FirstOrDefault(item => Equals(item.Tag, "inline"));
+            inlineMode?.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             window.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             check(inlineSurface is { IsVisible: true } && rightSurface is { IsVisible: false },

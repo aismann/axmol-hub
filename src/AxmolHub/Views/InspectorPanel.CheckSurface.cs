@@ -10,17 +10,18 @@ internal sealed partial class InspectorPanel : UserControl
     // ── check accessors ──
     internal bool PlanTabVisibleForCheck => _planScroll.IsVisible;
     internal bool ChangesTabVisibleForCheck => _changesScroll.IsVisible;
+    internal bool RepoTabVisibleForCheck => _repoScroll.IsVisible;
     /// <summary>Which tab button carries the underline. The three visibility booleans say what is on screen; this
     /// says what the header claims is on screen, and a pane that showed one page while marking another is caught
     /// by nothing else.</summary>
-    internal string SelectedTabKeyForCheck => _planTab.Classes.Contains("selected") ? "plan" : _changesTab.Classes.Contains("selected") ? "changes" : _repoTab.Classes.Contains("selected") ? "repo" : "";
+    internal string SelectedTabKeyForCheck => _planTab.Classes.Contains("selected") ? "plan" : _repoScroll.IsVisible ? "repo" : _changesTab.Classes.Contains("selected") ? "changes" : "";
 
     /// <summary>Presses a header tab. Every repository test used to enter through the shell's own
     /// <c>OpenInspector</c> — which is exactly how a pane that only <em>looked</em> like it had moved to 仓库
     /// stayed green, because the shell already knew the tab it had just been asked for.</summary>
     internal void ClickPlanTabForCheck() => ClickTab(_planTab);
     internal void ClickChangesTabForCheck() => ClickTab(_changesTab);
-    internal void ClickRepoTabForCheck() => ClickTab(_repoTab);
+    internal void ClickRepoTabForCheck() => SetChangesScope("repo");
     private static void ClickTab(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     /// <summary>The markdown the plan tab is holding, read off the rendered viewer's own <c>Tag</c>. A check can
     /// therefore prove *which* plan a card click landed on, not merely that some plan is on screen.</summary>
@@ -64,7 +65,11 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>The file rows, not the children of the list. An empty scope now ends on a sentence and sometimes
     /// a jump, and a count that grew because a helper line was drawn would stop meaning "how many files".</summary>
     internal int ChangeRowCountForCheck => ChangeRows().Count;
-    internal string FirstChangePathForCheck => _changesList.Children.Count > 0 && _changesList.Children[0] is StackPanel { Children.Count: > 0 } panel && panel.Children[0] is Button { Content: Grid grid } && grid.Children.Count > 1 && grid.Children[1] is TextBlock name ? name.Text ?? "" : "";
+    internal string ChangeScopeLabelForCheck => _scopeButton.Content?.ToString() ?? "";
+    internal string[] ChangeFileMenuItemsForCheck => ChangeRows().FirstOrDefault()?.GetLogicalDescendants().OfType<Button>()
+        .FirstOrDefault(button => button.Tag as string == "InspectorFileActions")?.ContextMenu?.Items
+        .OfType<MenuItem>().Select(item => item.Header?.ToString() ?? "").ToArray() ?? [];
+    internal string FirstChangePathForCheck => ChangeRows().FirstOrDefault()?.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("inspector-path"))?.Text ?? "";
     /// <summary>Which file rows the reader had opened, as the panel keeps them across repaints. A check drives
     /// this by clicking a row rather than by setting the field, so what it asserts is the wiring.</summary>
     internal int OpenChangeCountForCheck => _openedChanges.Count;
@@ -111,8 +116,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// with no host can still prove *which* tab was asked for, and a live pane can prove the column opened.</summary>
     internal void ClickChangeJumpForCheck() => ClickJump(_changesList);
     private List<Control> ChangeRows() => _changesList.Children.OfType<StackPanel>().Where(panel => panel.Classes.Contains("inspector-change")).Cast<Control>().ToList();
-    // ── the repository tab, as a check reads it ──
-    internal bool RepoTabVisibleForCheck => IsRepositoryTabVisible;
+    // ── the repository scope, as a check reads it ──
     /// <summary>Every line in the body. The caveat and the head row are always there, so a list of N entries is
     /// N+2 — plus one more when the read said it was cut, and one more again when it said why it could not read.</summary>
     internal int RepoBodyCountForCheck => _repoBody.Children.Count;
@@ -125,25 +129,20 @@ internal sealed partial class InspectorPanel : UserControl
     /// this is how that is proven rather than inferred from a row count.</summary>
     internal string RepoNoticeForCheck => string.Join(" ~ ", _repoBody.GetLogicalDescendants().OfType<TextBlock>().Where(block => block.Classes.Contains("inspector-empty")).Select(block => block.Text ?? ""));
     internal string RepoFirstPathForCheck => _repoBody.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("inspector-path"))?.Text ?? "";
+    internal string[] RepoFileMenuItemsForCheck(int index) => _repoBody.GetLogicalDescendants().OfType<Button>()
+        .Where(button => button.Tag as string == "InspectorFileActions").ElementAtOrDefault(index)?.ContextMenu?.Items
+        .OfType<MenuItem>().Select(item => item.Header?.ToString() ?? "").ToArray() ?? [];
 
     /// <summary>Every string in one row, joined: the two status letters, the path, and the mark when this
     /// conversation also wrote it. Read as text because that is what the reader sees, and a fixture state makes
     /// the whole tab assertable without a repository behind it.</summary>
     internal string RepoRowTextForCheck(int index) => RepositoryRows().ElementAtOrDefault(index)is { } row ? string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? "")) : "";
     internal int RepoRowCountForCheck => RepositoryRows().Count;
+    internal bool RepoCommitComparisonControlsAbsentForCheck => RepositoryRows().SelectMany(row => row.GetLogicalDescendants())
+        .All(control => control is not TextBox
+            && (control is not Button button || button.Tag as string is not ("InspectorGitCommitRef" or "InspectorGitCommitCompare")));
 
     internal bool RepoRowExpandedForCheck(int index) => RepositoryRows().ElementAtOrDefault(index)is { } row && row.GetLogicalDescendants().OfType<ContentControl>().FirstOrDefault(control => control != row)?.IsVisible == true;
-    /// <summary>Presses a row's own header button, which is the path a person takes and the only way to prove the
-    /// lazy per-file diff is wired to the click rather than painted up front.</summary>
-    internal void ClickGitCommitCompareForCheck(int index, string reference)
-    {
-        if (RepositoryRows().ElementAtOrDefault(index) is not { } row) return;
-        if (row.GetLogicalDescendants().OfType<TextBox>().FirstOrDefault(box => Equals(box.Tag, "InspectorGitCommitRef")) is { } input)
-            input.Text = reference;
-        if (row.GetLogicalDescendants().OfType<Button>().FirstOrDefault(button => Equals(button.Tag, "InspectorGitCommitCompare")) is { } compare)
-            compare.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-    }
-
     internal void ClickRepoRowForCheck(int index)
     {
         if (RepositoryRows().ElementAtOrDefault(index)is not { } row)

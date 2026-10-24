@@ -18,7 +18,8 @@ namespace AxmolHub;
 /// <code>{ "out": "tmp/drive", "steps": [ {"do":"navigate","page":"Assistant"}, {"do":"click","text":"Settings"},
 /// {"do":"type","name":"Composer","value":"hi"}, {"do":"wait","ms":300}, {"do":"resize","w":1100,"h":700},
 /// {"do":"language","value":"en-US"}, {"do":"screenshot","file":"a.png"} ] }</code>
-/// <c>click</c>/<c>type</c> (value to enter) locate a control by <c>name</c> (Control.Name) or <c>text</c> (visible text), and
+/// <c>click</c>/<c>type</c> (value to enter) locate a control by <c>name</c> (Control.Name) or <c>text</c> (visible text);
+/// <c>menu</c> chooses an item by its stable <c>Tag</c> from a named control's context menu, and
 /// <c>wait</c> also accepts <c>until</c> (a name or text) with an optional <c>ms</c> timeout. The run exits 0 when
 /// every step succeeded and no shot is blank, and leaves <c>drive.evidence.txt</c> in <c>out</c>. It uses the user's
 /// real data root; settings are protected by the copy made in <see cref="HubHostOptions.Parse"/>.
@@ -145,6 +146,18 @@ internal static class DriveRunner
                 }
 
                 await Task.Delay(ms);
+                await Settle();
+                return null;
+            }
+            case "menu":
+            {
+                var owner = Find(window, Opt(step, "name"), null);
+                if (owner?.ContextMenu is not { } menu) return "context menu not found for: " + step;
+                var key = Str(step, "item");
+                var item = menu.Items.OfType<MenuItem>().FirstOrDefault(candidate =>
+                    string.Equals(candidate.Tag as string, key, StringComparison.Ordinal));
+                if (item is null) return "menu item not found: " + key;
+                item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 await Settle();
                 return null;
             }
