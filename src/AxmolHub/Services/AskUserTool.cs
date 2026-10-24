@@ -68,7 +68,7 @@ internal sealed class AskUserTool : AIFunction
                   },
                   "detail": {
                     "type": "string",
-                    "description": "What picking this costs or implies. Say something the label cannot carry, or leave it out — do not restate the label."
+                    "description": "What picking this costs or implies, in one short sentence. Say something the label cannot carry, or leave it out — do not restate the label."
                   }
                 },
                 "required": [ "label" ],

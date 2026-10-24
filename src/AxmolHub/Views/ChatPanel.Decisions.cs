@@ -1111,6 +1111,8 @@ public partial class ChatPanel
         Grid.SetRow(title, 0);
         card.Children.Add(title);
 
+        // Both halves of the list wrap, so both halves need a column: see FitQuestionRowContent for why a row inside
+        // a Button is handed none by the template and would otherwise draw one long line for the card to clip.
         var options = new StackPanel { Name = "QuestionOptions", Spacing = 2, Margin = new Thickness(0, 8, 0, 0) };
         foreach (var choice in choices) options.Children.Add(BuildQuestionOptionRow(conversationId, callId, choice));
         // The free-text line belongs to the list and not beside it: it is the fifth answer, and putting it outside
@@ -1198,6 +1200,7 @@ public partial class ChatPanel
         grid.Children.Add(text);
 
         row.Content = grid;
+        FitQuestionRowContent(row, grid);
         row.Click += (_, _) => ChooseQuestionOption(choice.Letter);
         return row;
     }
@@ -1256,8 +1259,37 @@ public partial class ChatPanel
         grid.Children.Add(box);
 
         row.Content = grid;
+        FitQuestionRowContent(row, grid);
         row.Click += (_, _) => ChooseQuestionOption(free: true, focusBox: box);
         return row;
+    }
+
+    /// <summary>
+    /// Gives a row's content the column the row itself was given.
+    ///
+    /// <para>Hub's Button template wraps its content in a horizontal <see cref="StackPanel"/>
+    /// (Theme/HubControls.axaml), and a horizontal panel measures its children with no width at all — that is how it
+    /// learns how wide a row of labels wants to be. A wrapping <see cref="TextBlock"/> inside such a button is
+    /// therefore measured against nothing, lays its sentence out as one line, and every row here draws that line
+    /// clipped by the card's <c>ClipToBounds</c>: it reads as a short sentence with no ellipsis and no tip, which is
+    /// the whole bug this exists for. The row itself is stretched to the list's width, so its own bounds are the
+    /// column the text should have; the padding comes off because the template's border already spent it.</para>
+    ///
+    /// <para>The same shape as <c>UpdateMessageColumnWidth</c>: an explicit width where a container measures against
+    /// nothing. It is applied per row rather than to the list because the infinite measure happens inside the
+    /// button, not above it — the rows were already the right width and the text inside them was not.</para>
+    /// </summary>
+    private static void FitQuestionRowContent(Button row, Control content)
+    {
+        void Fit(double rowWidth)
+        {
+            var width = rowWidth - row.Padding.Left - row.Padding.Right;
+            if (width <= 0) return;
+            // The same width is not a change, and re-assigning it would re-measure every row on every resize tick.
+            if (double.IsNaN(content.Width) || Math.Abs(content.Width - width) > 0.1) content.Width = width;
+        }
+
+        row.SizeChanged += (_, args) => Fit(args.NewSize.Width);
     }
 
     /// <summary>Arms one answer. Every door — the pointer, the letter key, the caret landing in the free line —

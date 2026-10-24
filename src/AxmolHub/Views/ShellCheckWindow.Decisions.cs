@@ -2437,6 +2437,11 @@ internal sealed class ShellDecisionsChecks
         // leaves a tip with nothing to show, and a cut with no tip presents a truncated sentence as the sentence.
         var longQuestion = new string('问', AskUserQuestion.QuestionLimit + 20);
         var longLabel = new string('长', AskUserQuestion.LabelLimit + 30);
+        // The two halves of the detail's bargain. `longDetail` is under the limit, so the row owes the whole of it
+        // on screen — wrapping onto a second line is the only way it fits, and a row that drew one line would be
+        // clipping it. `overlongDetail` is past the limit, where the row draws the head and the tip carries the rest.
+        var longDetail = new string('描', 120);
+        var overlongDetail = new string('细', AskUserQuestion.DetailLimit + 20);
         var longClient = new ApprovalChatClient
         {
             ToolName = AskUserTool.ToolName,
@@ -2445,8 +2450,8 @@ internal sealed class ShellDecisionsChecks
                 ["question"] = longQuestion,
                 ["options"] = new object?[]
                 {
-                    new Dictionary<string, object?> { ["label"] = longLabel },
-                    new Dictionary<string, object?> { ["label"] = "短的那一项" },
+                    new Dictionary<string, object?> { ["label"] = longLabel, ["detail"] = longDetail },
+                    new Dictionary<string, object?> { ["label"] = "短的那一项", ["detail"] = overlongDetail },
                 },
             },
         };
@@ -2606,6 +2611,11 @@ internal sealed class ShellDecisionsChecks
             // layout was built on, and the whole of each is one hover away — the row is the head, the tip is the
             // sentence. The short label is the negative half: a tip that repeated the line under the pointer would
             // be chrome, and it is what proves the tip is a fallback rather than something every row wears.
+            // The detail is where the two halves meet the paint: below the limit nothing may be thrown away, so A's
+            // detail has to be the whole string *and* arrive on more than one line, while B's past-the-limit one
+            // draws the head and hands the rest to its tip. Read as geometry as well as text, because a row that was
+            // never given a width draws one line and lets the card clip it — which reads as a short sentence on
+            // screen and as a green assertion everywhere that only looks at the string.
             chat.OpenConversation(longSession.Id);
             chat.TryEnqueueSend(longSession.Id, "问个长的", null, out _);
             await WaitForIdleAsync(chat);
@@ -2617,10 +2627,29 @@ internal sealed class ShellDecisionsChecks
                   && panel.QuestionLabelTipForCheck("A") == longLabel
                   && panel.QuestionLabelTipForCheck("B").Length == 0
                   && panel.QuestionTitleForCheck.EndsWith('…')
-                  && panel.QuestionTitleTipForCheck == longQuestion,
-                "长的问题与选项画得下多少画多少、画不下的整段放进提示，短的那一项不挂提示（卡上 "
+                  && panel.QuestionTitleTipForCheck == longQuestion
+                  && panel.QuestionDetailForCheck("A") == longDetail
+                  && panel.QuestionDetailLinesForCheck("A") > 1
+                  && panel.QuestionDetailTipForCheck("A").Length == 0
+                  && panel.QuestionDetailTipForCheck("B") == overlongDetail
+                  && panel.QuestionDetailLinesForCheck("B") > 1
+                  && panel.QuestionRowsInsideCardForCheck,
+                "长的问题与选项画得下多少画多少、画不下的整段放进提示，短的那一项不挂提示，预算以内的描述整段换行画出来（卡上 "
                 + panel.QuestionLabelForCheck("A").Length + " 字，提示 "
-                + panel.QuestionLabelTipForCheck("A").Length + " 字）");
+                + panel.QuestionLabelTipForCheck("A").Length + " 字；描述 "
+                + panel.QuestionDetailForCheck("A").Length + " 字，"
+                + panel.QuestionDetailLayoutForCheck("A") + "；" + panel.QuestionRowsGeometryForCheck + "）");
+            // The card may grow to fit the wrapped rows — the list is the row that gives way at the host's ceiling —
+            // but it may not grow past it: the footer is the only way out of a parked run, so its bounds are read
+            // again here, at the far end of the range, and not only on the four short options above.
+            Check(panel.QuestionCardHeightForCheck > 0 && panel.QuestionContinueInsideHostForCheck,
+                "长提问换行撑高之后卡片仍收在宿主的上限里，「继续」没有被裁到卡外（卡高 "
+                + panel.QuestionCardHeightForCheck + "）");
+            // The frame itself, for whoever reads the report: the numbers above say the detail wrapped, and this is
+            // the picture of the row growing instead of the card cutting the sentence. No assertion rides on it —
+            // it is the same artifact the code-block and diff groups leave in tmp/.
+            if (panel.QuestionCardForCheck is { } longCard)
+                SmokeCapture.Capture(longCard, System.IO.Path.Combine(ScratchDirectory.Resolve("ask-user-card"), "long-detail.png"));
             panel.ClickQuestionChoiceForCheck("B");
             panel.ClickQuestionContinueForCheck();
             await WaitForIdleAsync(chat);

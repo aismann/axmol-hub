@@ -723,6 +723,53 @@ public partial class ChatPanel : UserControl
 
     /// <summary>The whole label of one option row, on the same terms as the title's.</summary>
     internal string QuestionLabelTipForCheck(string letter) => QuestionCard?.GetLogicalDescendants().OfType<Button>().FirstOrDefault(row => row.Tag as string == letter)?.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault(text => text.Classes.Contains("question-label"))is { } label ? TipTextOf(label) : "";
+
+    private TextBlock? QuestionDetailBlock(string letter) => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+        .FirstOrDefault(row => row.Tag as string == letter)?.GetLogicalDescendants().OfType<TextBlock>()
+        .FirstOrDefault(text => text.Classes.Contains("question-detail"));
+    /// <summary>What one option row draws under its label. Nothing is thrown away below
+    /// <see cref="AskUserQuestion.DetailLimit"/>, so this order of reading is what proves the row received the whole
+    /// detail rather than a cut one.</summary>
+    internal string QuestionDetailForCheck(string letter) => QuestionDetailBlock(letter)?.Text ?? "";
+    /// <summary>The whole detail of one option row, when the row had to leave part of it out. Empty otherwise, for
+    /// the same reason the label's is: a tip that repeats the line under the pointer is chrome.</summary>
+    internal string QuestionDetailTipForCheck(string letter) => QuestionDetailBlock(letter) is { } detail ? TipTextOf(detail) : "";
+    /// <summary>How many lines the row actually painted of its detail. A <see cref="TextBlock"/> told to wrap wraps
+    /// against the width it was measured with, and a row handed no width lays its detail out on one line — so this
+    /// count, and not the string, is what tells "the sentence is short" from "the sentence is clipped".</summary>
+    internal int QuestionDetailLinesForCheck(string letter) => QuestionDetailBlock(letter)?.TextLayout.TextLines.Count ?? 0;
+    /// <summary>How many lines the row painted of its detail, and where they ended up. Read on the red line, because
+    /// the clipped case looks exactly like a short sentence in a screenshot and only the numbers tell them apart.</summary>
+    internal string QuestionDetailLayoutForCheck(string letter) => QuestionDetailBlock(letter) is { } detail
+        ? detail.TextLayout.TextLines.Count + " 行，行宽 " + detail.TextLayout.Width.ToString("0.#")
+          + "，块宽 " + detail.Bounds.Width.ToString("0.#")
+          + "，块高 " + detail.Bounds.Height.ToString("0.#")
+        : "没有描述行";
+    private ScrollViewer? QuestionListStrip => QuestionCard?.GetLogicalDescendants().OfType<ScrollViewer>()
+        .FirstOrDefault(scroll => scroll.Name == "QuestionListScroll");
+    private Button[] QuestionOptionRows => QuestionCard?.GetLogicalDescendants().OfType<Button>()
+        .Where(button => button.Classes.Contains("question-option")).ToArray() ?? [];
+    /// <summary>The right edge of every piece of ink on an option row, in the list's own coordinates. The row's own
+    /// bounds can look innocent while the sentence inside it is wider than the card — Hub's Button template measures
+    /// its content with no width at all — so the text blocks, not the rows, are what get read.</summary>
+    private double[] QuestionOptionInkRightEdges => QuestionListStrip is not { } strip
+        ? []
+        : QuestionOptionRows
+            .SelectMany(row => new Control[] { row }.Concat(row.GetLogicalDescendants().OfType<TextBlock>()))
+            .Select(control => control.TranslatePoint(new Point(control.Bounds.Width, 0), strip)?.X ?? double.NaN)
+            .ToArray();
+    /// <summary>Whether every option row and the text in it is painted inside the strip it is drawn in. A row measured
+    /// against no width keeps its whole line's width and the card clips the overhang, which is why the rest of the
+    /// sentence disappears without an ellipsis and without a tip — the string was never short.</summary>
+    internal bool QuestionRowsInsideCardForCheck => QuestionListStrip is { } strip
+        && strip.Bounds.Width > 0
+        && QuestionOptionInkRightEdges is { Length: > 0 } edges
+        && edges.All(edge => edge <= strip.Bounds.Width + 0.5);
+    /// <summary>The widest ink on the list against the strip it is drawn in, for the red line.</summary>
+    internal string QuestionRowsGeometryForCheck => QuestionListStrip is { } strip
+        ? "最右文字 " + QuestionOptionInkRightEdges.DefaultIfEmpty(double.NaN).Max().ToString("0.#")
+          + "，条右 " + strip.Bounds.Width.ToString("0.#")
+        : "没有列表";
     /// <summary>A tip read back as text, whichever shape it was installed in: the plain string most controls carry,
     /// or the wrapping holder <c>TipContent</c> builds for a sentence.</summary>
     private static string TipTextOf(Control control) => ToolTip.GetTip(control) switch
@@ -774,6 +821,8 @@ public partial class ChatPanel : UserControl
     internal string[] TranscriptWaitingLinesForCheck => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>().Where(border => border.Classes.Contains("approval-pending-line")).SelectMany(border => border.GetLogicalDescendants().OfType<TextBlock>()).Select(text => text.Text ?? "").ToArray();
     /// <summary>The card as a visual, for the frames a check photographs.</summary>
     internal Border? PlanReviewCardForCheck => PlanApprovalCards.FirstOrDefault();
+    /// <summary>The question card as a visual, on the same terms.</summary>
+    internal Border? QuestionCardForCheck => QuestionCard;
     /// <summary>Drives the decision host's actual routed keyboard handler.</summary>
     internal bool PressPlanCardKeyForCheck(Key key)
     {
