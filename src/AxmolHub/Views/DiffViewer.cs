@@ -139,8 +139,10 @@ internal sealed class DiffViewer : Grid
 
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
         header.Children.Add(Header(leftLabel, script.Exact));
-        Grid.SetColumn(Header(rightLabel, script.Exact), 1);
-        header.Children.Add(Header(rightLabel, script.Exact));
+        var rightHeader = Header(rightLabel, script.Exact);
+        Grid.SetColumn(rightHeader, 1);
+        header.Children.Add(rightHeader);
+        Grid.SetColumnSpan(header, 2);
         Children.Add(header);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(8, 4) };
         var inlineButton = new Button { Content = HubStrings.Get("DiffInlineMode"), Tag = "DiffInlineToggle", IsEnabled = script.Exact };
