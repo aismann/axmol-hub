@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     private readonly PreferencesStore _preferencesStore;
     private readonly HubPreferences _preferences;
     private readonly SystemAttentionService _attention = new();
+    private TaskbarInProgress? _taskbarProgress;
     private readonly Dictionary<string, Control> _pages = [];
     private bool? _attentionDiagnosticBadge;
     private string? _attentionDiagnosticConversationId;
@@ -221,6 +222,8 @@ public partial class MainWindow : Window
         Opened += (_, _) =>
         {
             _windowIsOpen = true;
+            if (!App.Options.IsAutomation) _taskbarProgress ??= TaskbarInProgress.ForWindow(this);
+            UpdateChatRunsStatus();
             SyncApprovalBadge();
             // Microsoft's contract is that no ITaskbarList3 call may precede the shell's TaskbarButtonCreated
             // message, which explorer posts asynchronously after the HWND appears. Honouring that literally needs
@@ -639,8 +642,17 @@ public partial class MainWindow : Window
         }, TimeSpan.FromSeconds(30));
     }
 
+    internal void StopTaskbarProgress() => _taskbarProgress?.Dispose();
+
     private void UpdateChatRunsStatus()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(UpdateChatRunsStatus);
+            return;
+        }
+        _taskbarProgress?.SetInProgress(_chat.HasExecutingRuns);
+        if (ChatRuns is null) return;
         var running = _chat.RunningCount;
         ChatRuns.IsVisible = running > 0;
         ChatRuns.Text = running > 0 ? string.Format(HubStrings.Get("RunningSessionsFormat"), running) : "";
@@ -1379,6 +1391,7 @@ public partial class MainWindow : Window
         _chat = new ChatWorkspace(next.Store.Root);
         WireChatSeams();
         WireChatRuns();
+        UpdateChatRunsStatus();
         // A new workspace has read nothing yet, so the strip's repository slot has nothing true to say. Left
         // standing, it would report the previous root's dirty count against a directory nobody is looking at.
         InvalidateRepoIndicator();
@@ -1951,6 +1964,7 @@ public partial class MainWindow : Window
             _ = ConfirmQuitAsync();
         };
 
+        Closed += (_, _) => StopTaskbarProgress();
         Closed += (_, _) => _workspace.Dispose();
         Closed += (_, _) => _chat.Dispose();
         Closed += (_, _) => _attention.Dispose();

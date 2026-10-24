@@ -677,6 +677,7 @@ public sealed partial class ChatWorkspace : IDisposable
     }
 
     public int RunningCount { get => _execution.RunningCount; }
+    internal bool HasExecutingRuns => _execution.HasExecutingRuns;
     /// <summary>
     /// The session the panel is painting. It is no longer the session that is allowed to send — telling those
     /// two apart is what running several sessions at once means.

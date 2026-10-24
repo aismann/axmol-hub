@@ -432,6 +432,7 @@ internal sealed class SystemAttentionService : IDisposable
         /// literal.</summary>
         private const int HrInitSlot = 3;
         private const int SetOverlayIconSlot = 18;
+        private const int SetProgressStateSlot = 10;
 
         /// <summary><c>CLSCTX_INPROC_SERVER</c>: the taskbar object is <c>explorerframe.dll</c> in this process.</summary>
         private const uint ClsCtxInprocServer = 1;
@@ -533,6 +534,31 @@ internal sealed class SystemAttentionService : IDisposable
             Marshal.Release(taskbar);
             return true;
         }
+
+        internal static bool TrySetProgress(IntPtr window, bool active, out int hr, out string? failure)
+        {
+            hr = 0;
+            failure = null;
+            if (window == IntPtr.Zero)
+            {
+                failure = "the window has no platform handle.";
+                return false;
+            }
+            if (!TryCreate(out var taskbar, out hr, out failure)) return false;
+            try
+            {
+                var set = Marshal.GetDelegateForFunctionPointer<SetProgressStateDelegate>(
+                    Marshal.ReadIntPtr(Marshal.ReadIntPtr(taskbar), SetProgressStateSlot * IntPtr.Size));
+                // TBPF_INDETERMINATE / TBPF_NOPROGRESS; independent of the approval overlay icon.
+                hr = set(taskbar, window, active ? 1u : 0u);
+                if (hr != 0) failure = $"ITaskbarList3::SetProgressState returned {Code(hr)}.";
+                return hr == 0;
+            }
+            finally { Marshal.Release(taskbar); }
+        }
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int SetProgressStateDelegate(IntPtr self, IntPtr window, uint flags);
 
         internal static string Code(int value) => $"0x{value:x8}";
 

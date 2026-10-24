@@ -1184,6 +1184,8 @@ internal sealed partial class ChatExecutionCoordinator
         => (Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId))?.Messages
             .Any(turn => turn.PlanApprovalState == PlanApprovalStates.Pending) == true;
     internal int RunningCount => _runs.Count;
+    // Parked approvals hold a concurrency slot, but no request is executing until they resume.
+    internal bool HasExecutingRuns => _runs.Values.Any(run => run.IsStreaming);
     internal bool TryEnqueueSend(string conversationId, string text, string? attachedContext,
         IReadOnlyList<byte[]>? pictures, out string? refusalKey)
         => TryEnqueueSend(conversationId, text, attachedContext, pictures, false, out refusalKey);
@@ -2116,7 +2118,11 @@ internal sealed partial class ChatExecutionCoordinator
             return;
         }
 
-        run.RearmAfterApproval();
+        await ApplyOnUiAsync(() =>
+        {
+            run.RearmAfterApproval();
+            RunsChanged?.Invoke(run.ConversationId);
+        }).ConfigureAwait(false);
         // Capped with the same bracket the loop and the approval path both use, so a result reads identically
         // whichever door it came through — and the free-text line is the one answer that has no length of its own.
         var budget = await ReadOnUiAsync(() =>
@@ -2186,7 +2192,11 @@ internal sealed partial class ChatExecutionCoordinator
             return;
         }
 
-        run.RearmAfterApproval();
+        await ApplyOnUiAsync(() =>
+        {
+            run.RearmAfterApproval();
+            RunsChanged?.Invoke(run.ConversationId);
+        }).ConfigureAwait(false);
         var budget = await ReadOnUiAsync(() =>
         {
             var selected = Providers.ModelFor(run.ConversationId);

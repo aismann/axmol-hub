@@ -334,6 +334,7 @@ public partial class App : Application
         var window = new MainWindow(Options.ResolveDataRoot(preferences), preferencesStore, preferences);
         UpdateService.Instance.WriteLog = window.WriteLog;
         desktop.MainWindow = window;
+        desktop.Exit += (_, _) => window.StopTaskbarProgress();
 
         if (OperatingSystem.IsWindows() && !Options.IsAutomation)
         {

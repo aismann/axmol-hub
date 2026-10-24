@@ -79,6 +79,12 @@ internal sealed class ShellCheckSuite
 
     internal async Task RunAsync(string scratchRoot)
     {
+        var taskbarProgress = new ShellTaskbarProgressChecks(Check);
+        if (Environment.GetEnvironmentVariable("AXMOL_TASKBAR_PROGRESS_CHECK_ONLY") == "1")
+        {
+            await taskbarProgress.VerifyAsync(scratchRoot);
+            return;
+        }
         if (Environment.GetEnvironmentVariable("AXMOL_CODE_WORKSPACE_CHECK_ONLY") == "1")
         {
             await new ShellCodeWorkspaceChecks(Check).VerifyAsync();
@@ -100,6 +106,7 @@ internal sealed class ShellCheckSuite
         Platform.CheckStringDefinition();
         await Providers.VerifyDeepSeekWebApiTransportAsync();
         Platform.CheckWindowsTaskbarBadge();
+        await taskbarProgress.VerifyAsync(scratchRoot);
         Platform.CheckWindowsToastInterop();
         Platform.CheckMacNotificationInterop();
         await Platform.CheckCjkFontNoticeAsync();
