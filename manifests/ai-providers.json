@@ -92,7 +92,7 @@
       "capabilitySource": "github-copilot-models",
       "requestSemantics": "copilot",
       "extraHeaders": {
-        "user-agent": "AxmolHub",
+        "user-agent": "Axmol Hub",
         "x-github-api-version": "2026-06-01",
         "openai-intent": "conversation-panel",
         "x-initiator": "user"
