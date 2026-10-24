@@ -160,7 +160,7 @@ public sealed class OrcaRouterOAuthFlow
 
         using var listener = new HttpListener();
         var port = FreeLoopbackPort();
-        var callbackUrl = $"http://127.0.0.1:{port}/callback";
+        var callbackUrl = $"http://127.0.0.1:{port}/";
         listener.Prefixes.Add($"http://127.0.0.1:{port}/");
         listener.Start();
 

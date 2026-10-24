@@ -19,6 +19,7 @@
     <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="AxmolHub.Checks" />
     <ProjectReference Include="../AxmolHub.Core/AxmolHub.Core.csproj" />
     <!-- AI capability-layer dependencies go into Agent only: Core / Cli stay dependency-free and can cold-build offline. -->
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.10.0" />

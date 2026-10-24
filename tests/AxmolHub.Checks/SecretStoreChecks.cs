@@ -152,10 +152,19 @@ internal static class SecretStoreChecks
             Assert(((ISecretStore)new BareSecretStore()).Descriptor.Kind == SecretStoreKind.None, "a store that does not declare a backend is reported as no backend, not as a secure one");
             // ── the OAuth callback, both routes through one parser ──
             const string expectedState = "test-state-value";
+            Assert(OrcaRouterOAuthFlow.BuildAuthorizationUrl("https://www.orcarouter.ai/auth", new AiProviderOAuth
+            {
+                AppName = "Axmol Hub",
+                AppId = "app-test",
+                ReferralCode = "ref-test",
+                Scope = "api",
+            }, "http://127.0.0.1:56450/", "challenge", expectedState)
+                .Contains("callback_url=http%3A%2F%2F127.0.0.1%3A56450%2F", StringComparison.Ordinal),
+                "OrcaRouter authorization uses the registered loopback root callback");
             Assert(OrcaRouterOAuthFlow.ReadCallback($"?code=abc123&state={expectedState}", expectedState)is { State: CallbackState.Accepted, Code: "abc123" }, "a matching callback yields its code");
-            Assert(OrcaRouterOAuthFlow.ReadCallback("http://127.0.0.1:9/callback?code=abc123&state=" + expectedState, expectedState).State == CallbackState.Accepted, "a whole URL pasted off a browser bar goes through the same check");
+            Assert(OrcaRouterOAuthFlow.ReadCallback("http://127.0.0.1:9/?code=abc123&state=" + expectedState, expectedState).State == CallbackState.Accepted, "the registered loopback root callback goes through the same state check");
             Assert(OrcaRouterOAuthFlow.ReadCallback($"code=abc123&state={expectedState}", expectedState).State == CallbackState.Accepted, "with or without the leading question mark");
-            Assert(OrcaRouterOAuthFlow.ReadCallback("http://127.0.0.1:9/callback?code=ab%20c&state=" + expectedState, expectedState).Code == "ab c", "percent escapes are decoded, so a code copied from a browser bar matches one from the listener");
+            Assert(OrcaRouterOAuthFlow.ReadCallback("http://127.0.0.1:9/?code=ab%20c&state=" + expectedState, expectedState).Code == "ab c", "percent escapes are decoded, so a code copied from a browser bar matches one from the listener");
             Assert(OrcaRouterOAuthFlow.ReadCallback("?code=abc&state=other", expectedState).State == CallbackState.StateMismatch, "a state that does not match is refused");
             Assert(OrcaRouterOAuthFlow.ReadCallback("?code=abc", expectedState).State == CallbackState.StateMismatch, "and so is a callback with no state at all — the check runs before the code is even looked at");
             Assert(OrcaRouterOAuthFlow.ReadCallback($"?error=access_denied&state={expectedState}", expectedState)is { State: CallbackState.Declined, Error: "access_denied" }, "a declined consent is its own outcome, not a missing code");
