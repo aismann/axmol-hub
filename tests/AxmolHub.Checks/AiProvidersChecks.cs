@@ -753,6 +753,39 @@ internal static class AiProvidersChecks
                 + " authorization=" + (sent?["authorization"] ?? "absent") + ")");
         }
 
+        // ── A plain API key on the responses wire posts to {baseUrl}/responses, exactly once ──
+        // Nothing else in the suite pins this. The offline web-search check hands the SDK an endpoint that already
+        // ends in "/responses" and routes on a substring, so a doubled segment would pass it, and the live-shaped
+        // request-stability check reaches the responses wire through the OAuth transport, which rewrites the endpoint
+        // to the Codex host. A provider configured with baseUrl ".../v1" is the case a person actually has, and
+        // AgentRouter is the first one that will run it for real.
+        var pathProvider = new ModelProvider
+        {
+            Id = "custom-responses-path",
+            Name = "Responses path",
+            IsCustom = true,
+            BaseUrl = "https://gateway.test/v1",
+            Model = "gpt-6.1-sol",
+            Protocol = ModelProtocols.Responses,
+        };
+        var pathRecorder = new RequestRecorder(System.Text.Encoding.UTF8.GetBytes("{}"));
+        using (var pathClient = ChatClientFactory.Create(pathProvider, null, null, transport: pathRecorder))
+        {
+            try
+            {
+                await foreach (var _ in pathClient.GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "hi")])) { }
+            }
+            catch (Exception)
+            {
+                // The canned body is not a responses stream, so the call cannot finish. What is under test is the
+                // request it made on the way in, which the transport has already recorded.
+            }
+        }
+
+        var responsesPath = pathRecorder.Requests.FirstOrDefault()?.Path;
+        Assert(responsesPath == "/v1/responses",
+            "a provider on the responses wire posts to its own base URL plus /responses, once (path="
+            + (responsesPath ?? "none") + " requests=" + pathRecorder.Requests.Count + ")");
         return;
     }
 }
