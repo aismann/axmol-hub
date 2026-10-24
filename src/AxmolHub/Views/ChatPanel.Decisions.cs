@@ -50,7 +50,12 @@ public partial class ChatPanel
     private void RefreshPlanTasksHost()
     {
         var conversation = _chat?.ActiveConversation;
-        var planTurn = conversation?.Messages.LastOrDefault(turn => turn.Plan?.Tasks is { Count: > 0 });
+        var planTurn = conversation?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
+            && turn.PlanApprovalState == PlanApprovalStates.Pending && turn.Plan?.Tasks is { Count: > 0 });
+        planTurn ??= ViewedRun is not null
+            ? conversation?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
+                && turn.PlanApprovalState == PlanApprovalStates.Approved && turn.Plan?.Tasks is { Count: > 0 })
+            : null;
         var plan = planTurn?.Plan;
         var tasks = plan?.Tasks;
         var identity = plan is null || conversation is null
