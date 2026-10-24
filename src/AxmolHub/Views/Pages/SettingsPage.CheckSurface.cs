@@ -423,7 +423,9 @@ public partial class SettingsPage : UserControl
     // A missing group would otherwise pass a "provider exists in the model" check while the page showed
     // nothing at all.
     /// <summary>One rendered provider group, with the parts the self-check inspects.</summary>
-    internal sealed record ProviderGroupView(string Name, bool HasRemoveButton, bool ShowsNoCredentialNote, bool HasAffiliateBox, bool IsLinked, string LinkedStatusText, bool StatusLabelIsPainted, bool StatusMarkIsPainted,
+    internal sealed record ProviderGroupView(string Name,
+    /// <summary>The rendered wire line: which path this provider's model is sent to ("请求线路 /v1/responses").</summary>
+    string WireText, bool HasRemoveButton, bool ShowsNoCredentialNote, bool HasAffiliateBox, bool IsLinked, string LinkedStatusText, bool StatusLabelIsPainted, bool StatusMarkIsPainted,
     /// <summary>The label on the single auth control; it is the state, so it is asserted, not just counted.</summary>
     string AuthButtonText,
     /// <summary>No credential input is rendered anywhere in the group. The whole point of the revision.</summary>
@@ -490,12 +492,17 @@ public partial class SettingsPage : UserControl
     private ProviderGroupView ReadGroup(Border group)
     {
         var content = (StackPanel)group.Child!;
-        // The header is a two-column Grid: name pills on the left, the status mark and available actions on the
-        // right. Both columns are StackPanels, so the two are told apart by column rather than by shape — a
-        // positional read would swap them the moment the title gained a pill.
+        // The header is a two-column Grid: the left column stacks the name pills over the wire line, the right
+        // column carries the status mark and the available actions. Both columns are StackPanels, so the two are
+        // told apart by column rather than by shape — a positional read would swap them the moment the title
+        // gained a pill.
         var header = (Grid)content.Children[0];
-        var title = (StackPanel)header.Children[0];
+        var heading = (StackPanel)header.Children[0];
+        var title = heading.Children.OfType<StackPanel>().First();
         var name = title.Children.OfType<TextBlock>().First().Text ?? "";
+        // The wire line is tagged rather than positional: it is the only thing in this row that is not the name,
+        // and a check that reads "the first TextBlock" would silently start reading the path instead.
+        var wireText = heading.Children.OfType<TextBlock>().FirstOrDefault(text => text.Tag as string == SectionTags.Wire)?.Text ?? "";
         // The actions column packs [status stack] + [auth, catalog and remove actions as applicable]. The mark's
         // label is the source of truth for "linked": matching on the drawn tick would make the assertion pass
         // on any provider that happens to render a check-shaped Path, and the label is what the user reads.
@@ -573,7 +580,7 @@ public partial class SettingsPage : UserControl
         var summary = content.Children.OfType<TextBlock>().FirstOrDefault(text => text.Tag as string == SectionTags.Summary)?.Text ?? "";
         var showsNoCredential = content.Children.OfType<TextBlock>().Any(text => text.Tag as string == SectionTags.NoCredential);
         var hasAffiliate = content.Children.OfType<Border>().Any(border => border.Tag as string == SectionTags.Affiliate);
-        return new ProviderGroupView(name, hasRemove, showsNoCredential, hasAffiliate, isLinked, statusText, statusLabelIsPainted, statusMarkIsPainted, authButtonText, hasCredentialField, summary, modelNames.ToArray(), modelEnabled.ToArray(), activeModel, hasModelListToggle, modelList?.IsVisible == true, hasUseModelButton, hasModelCatalogButton && !hasHeaderCatalogButton, hasAddModelButton, modelCatalogPrecedesAdd, hasRemoveAllModelsButton, removeAllFollowsAdd, hasProviderOutline, hasProviderSurface, hasModelRowsOutline, hasModelRowSurface, hasProviderHeaderDivider, showsModelSection && !modelsHidden, showsModelEmptyState, emptyStateButtonCount, hasChangeAuthMethodButton, hasRefresh, modelDividers);
+        return new ProviderGroupView(name, wireText, hasRemove, showsNoCredential, hasAffiliate, isLinked, statusText, statusLabelIsPainted, statusMarkIsPainted, authButtonText, hasCredentialField, summary, modelNames.ToArray(), modelEnabled.ToArray(), activeModel, hasModelListToggle, modelList?.IsVisible == true, hasUseModelButton, hasModelCatalogButton && !hasHeaderCatalogButton, hasAddModelButton, modelCatalogPrecedesAdd, hasRemoveAllModelsButton, removeAllFollowsAdd, hasProviderOutline, hasProviderSurface, hasModelRowsOutline, hasModelRowSurface, hasProviderHeaderDivider, showsModelSection && !modelsHidden, showsModelEmptyState, emptyStateButtonCount, hasChangeAuthMethodButton, hasRefresh, modelDividers);
     }
 
     /// <summary>

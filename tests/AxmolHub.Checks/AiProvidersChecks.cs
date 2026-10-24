@@ -682,27 +682,64 @@ internal static class AiProvidersChecks
         var wireStore = new ProviderStore(wireRoot);
         wireStore.Save([new ModelProvider { Id = "saved-wire", Name = "Saved wire", IsCustom = true, BaseUrl = "https://mirror.test/v1", Model = "m", Protocol = ModelProtocols.Messages, }]);
         Assert(wireStore.Load().Single().Protocol == ModelProtocols.Messages, "a declared wire survives providers.json, because only the person on the endpoint can say it");
-        // A preset may name a wire for one model, never for the endpoint — and both halves of that are asserted
-        // rather than assumed. The provider-wide field is the one that must stay unclaimed: a shipped preset that
-        // set it would re-route every model behind that endpoint, which is the same unreadable 400 this feature
-        // exists to prevent, only now for the whole catalog instead of one model. A per-model claim is allowed
-        // because a gateway can be shown to serve its own models on different wires, and it is only allowed to name
-        // a wire this build actually speaks.
+        // ── The claim is made for the endpoint; a per-model entry is the exception, and the specific one wins ──
+        // This reverses the rule this file asserted until AgentRouter's catalog proved it wrong. That rule said a
+        // shipped preset may never claim the endpoint, only individual models, because a provider-wide claim is the
+        // shape an aggregating gateway makes false. The gateway then added a model the table had not named: the chain
+        // fell through to the catalog, and the catalog routed a working /v1/responses endpoint back onto chat. Naming
+        // ids needs a release every time a provider renames one; naming the endpoint needs none.
         var shippedPresets = AiProviderManifest.Load();
-        Assert(shippedPresets.All(entry => entry.Protocol is null), "no shipped preset names a provider-wide wire, so no endpoint is re-routed wholesale");
+        Assert(shippedPresets.All(entry => entry.Protocol is null || ModelProtocols.IsKnown(entry.Protocol)), "every wire a preset declares for an endpoint is one this build speaks, checked at the source rather than on the provider");
         Assert(shippedPresets.SelectMany(entry => entry.ModelProtocols.Values).All(ModelProtocols.IsKnown), "every per-model wire a preset names is one this build speaks, checked at the source rather than on the provider");
         Assert(AiProviderManifest.CreateBuiltIn("deepseek")!.Protocol is null, "a preset that says nothing arrives with no wire rather than a guessed one");
-        // The end of the chain: the value reaches the rung that decides which body to build, and it stops at the
-        // model it was written for. AgentRouter is the gateway this was built for — gpt-6.1-sol refuses chat.
+
+        // The regression that forced the change: a model nobody named inherits the endpoint's wire. AgentRouter's
+        // catalog answered gpt-5.6-sol while the manifest named only gpt-6.1-sol, so the model arrived on chat and was
+        // refused with "this model does not support /v1/chat/completions, please use /v1/responses".
         var wiredPreset = AiProviderManifest.CreateBuiltIn("agentrouter")
                           ?? throw new Exception("agentrouter is missing from ai-providers.json.");
-        Assert(ChatClientFactory.ProtocolFor(wiredPreset, "gpt-6.1-sol") == ModelProtocols.Responses
-               && ChatClientFactory.ProtocolFor(wiredPreset, "deepseek-v5") == ModelProtocols.Chat
-               && wiredPreset.Protocol is null,
-            "a preset's per-model wire reaches the resolution chain and leaves its other models on chat (gpt-6.1-sol="
-            + ChatClientFactory.ProtocolFor(wiredPreset, "gpt-6.1-sol")
-            + " deepseek-v5=" + ChatClientFactory.ProtocolFor(wiredPreset, "deepseek-v5")
-            + " provider-wide=" + (wiredPreset.Protocol ?? "none") + ")");
+        Assert(wiredPreset.Protocol == ModelProtocols.Responses && wiredPreset.DeclaredProtocols.Count == 0,
+            "AgentRouter declares its wire for the endpoint and names no model ids, because ids are what went stale (wire="
+            + (wiredPreset.Protocol ?? "none") + " per-model=" + wiredPreset.DeclaredProtocols.Count + ")");
+        Assert(new[] { "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-sol-2026-02-01" }
+                   .All(model => ChatClientFactory.ProtocolFor(wiredPreset, model) == ModelProtocols.Responses),
+            "a model the manifest never named is sent on the endpoint's wire, dated suffix and all (gpt-5.6-sol="
+            + ChatClientFactory.ProtocolFor(wiredPreset, "gpt-5.6-sol") + ")");
+
+        // A per-model line still outranks the endpoint: it is the more specific claim and the escape hatch a chat-only
+        // model needs. Three edges ride along — the id matches without case, an entry naming a model the provider has
+        // retired answers for nothing else, and a value Hub does not know is dropped instead of becoming a fourth wire.
+        var wiredMixed = new ModelProvider
+        {
+            Id = "custom-wired-mixed",
+            Name = "Mixed",
+            IsCustom = true,
+            BaseUrl = "https://mirror.test/v1",
+            Model = "gpt-6.1-sol",
+            Protocol = ModelProtocols.Responses,
+        };
+        wiredMixed.DeclaredProtocols["legacy-chat"] = ModelProtocols.Chat;
+        wiredMixed.DeclaredProtocols["retired-model"] = ModelProtocols.Messages;
+        wiredMixed.DeclaredProtocols["another-retired"] = "anthropic";
+        Assert(ChatClientFactory.ProtocolFor(wiredMixed, "legacy-chat") == ModelProtocols.Chat
+               && ChatClientFactory.ProtocolFor(wiredMixed, "LEGACY-CHAT") == ModelProtocols.Chat
+               && ChatClientFactory.ProtocolFor(wiredMixed, "retired-model") == ModelProtocols.Messages
+               && ChatClientFactory.ProtocolFor(wiredMixed, "gpt-6.1-sol") == ModelProtocols.Responses
+               && ChatClientFactory.ProtocolFor(wiredMixed, "another-retired") == ModelProtocols.Responses,
+            "a per-model entry outranks the endpoint, an unknown wire name is dropped, and a stale entry only ever answers for its own id (legacy-chat="
+            + ChatClientFactory.ProtocolFor(wiredMixed, "legacy-chat")
+            + " gpt-6.1-sol=" + ChatClientFactory.ProtocolFor(wiredMixed, "gpt-6.1-sol")
+            + " another-retired=" + ChatClientFactory.ProtocolFor(wiredMixed, "another-retired") + ")");
+
+        // The browser-signed provider is the one place nothing may override: the OAuth bundle only ever goes to the
+        // responses wire, so a manifest line or a per-model entry naming something else must not move it.
+        var oauthWired = AiProviderManifest.CreateBuiltIn("openai")
+                         ?? throw new Exception("openai is missing from ai-providers.json.");
+        oauthWired.Credential = new ProviderCredential { Id = "wire-oauth", ProviderId = "openai", AuthKind = "openaiOAuth", Secret = "bundle" };
+        oauthWired.DeclaredProtocols["gpt-anything"] = ModelProtocols.Chat;
+        Assert(oauthWired.IsOpenAiOAuth && ChatClientFactory.ProtocolFor(oauthWired, "gpt-anything") == ModelProtocols.Responses,
+            "a browser-signed provider stays on the responses wire whatever a manifest or a model entry says (wire="
+            + ChatClientFactory.ProtocolFor(oauthWired, "gpt-anything") + ")");
         // ── The declared static headers reach the requests the app builds itself ──
         // A gateway that filters clients answers a headerless request the way it answers a stranger. On the catalog
         // that reads as "unreachable" — a provider with no models and no explanation — and on the key probe as a

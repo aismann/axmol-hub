@@ -106,9 +106,14 @@ public sealed class ModelCapabilities
     }
 
     /// <summary>
-    /// Which wire to call this model on, read from whatever the catalog said about protocols. This is the
-    /// <b>second</b> rung: a wire declared on the provider itself outranks it, and the order is owned by one
-    /// function (<c>ChatClientFactory.ProtocolFor</c>) rather than repeated here.
+    /// Which wire to call this model on, read from whatever the catalog said about protocols — the last rung that
+    /// can speak, below both the preset's claim about this model and its claim about the endpoint. The order across
+    /// all of them is owned by one function (<c>ChatClientFactory.ProtocolFor</c>) rather than repeated here.
+    ///
+    /// <para><b>An observation, not a promise.</b> The catalog's field names vendor <i>families</i> as often as
+    /// wires — <c>supported_endpoint_types: ["openai"]</c> is the shape that put a working responses gateway back
+    /// onto chat — so a preset's wire never rides this record any more: a promise lives on
+    /// <see cref="ModelProvider.DeclaredProtocols"/>, and this record keeps only what was reported or measured.</para>
     ///
     /// <para><b>Chat wins every tie, and the arms are written in that order on purpose.</b> A model that names
     /// chat is called on chat even when it also names responses or messages, because chat is the path whose

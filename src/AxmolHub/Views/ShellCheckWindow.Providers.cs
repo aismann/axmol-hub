@@ -170,6 +170,16 @@ internal sealed class ShellProvidersChecks
         // The group is titled with the display name, not the type name — the failure a naive binding makes.
         Check(settings.ProviderGroupForId("orcarouter") is not null,
             "分组标题用的是 provider 名称（实际 [" + string.Join(",", settings.ProviderGroups.Select(g => g.Name)) + "]）");
+        // The header's wire line: which path this provider's model is actually posted to. It is the one place a
+        // wrong claim about an endpoint becomes visible before a 400 has to explain it — the 400 names a path
+        // ("please use /v1/responses"), not a setting — so it is asserted as a line that is there and shaped like a
+        // path, on every group, rather than as "some text got added to the header".
+        var wireLabel = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ProviderWireFormat"), "");
+        var wireLines = settings.ProviderGroups.Select(group => group.WireText).ToArray();
+        Check(wireLines.Length > 0
+              && wireLines.All(text => text.StartsWith(wireLabel, StringComparison.Ordinal)
+                                       && text[wireLabel.Length..].StartsWith("/v1/", StringComparison.Ordinal)),
+            "每个 provider 分组都写明请求线路，且写的是路径（实际 [" + string.Join(",", wireLines) + "]）");
         Check(settings.ProviderButtonsVisible, "设置页显示了「添加提供商」入口");
         Check(settings.AffiliateDisclosureVisible
               && settings.AffiliateDisclosureText.Contains(orca?.Name ?? "\u0000", StringComparison.Ordinal),
@@ -1176,15 +1186,17 @@ internal sealed class ShellProvidersChecks
                 "密钥探测带上 provider 声明的静态头（outcome=" + probeOutcome + " user-agent=「"
                     + (probeUserAgent ?? "无") + "」）");
         }
-        // ── A catalog refresh must not erase a wire the preset declared for one model ──
+        // ── A catalog refresh must not move a declared endpoint off its wire ──
         //
-        // Measured here because the merge lives in this assembly: the declared wire and the fetched window arrive on
-        // the same per-model record, and whole-record replacement used to let a catalog wipe the wire the moment the
-        // model appeared in its list. A gateway that publishes a window and no endpoint list is that shape exactly.
-        var wireMergeRoot = Path.Combine(scratchRoot, "per-model-wire-" + Guid.NewGuid().ToString("N"));
+        // This is the regression that made the wire an endpoint-wide claim. The catalog publishes endpoint *families*
+        // ("openai", "anthropic") beside the occasional real wire name, and reading those as wires put a working
+        // /v1/responses gateway back onto chat — the 400 that earns says "please use /v1/responses", which reads as a
+        // model problem rather than as Hub's routing. Asserted here rather than in --check-ai-providers because the
+        // refresh path and the provider it produces live in this assembly.
+        var wireMergeRoot = Path.Combine(scratchRoot, "endpoint-wire-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(wireMergeRoot);
         var wireMergeHandler = new ModelListProbeHandler(
-            """{"object":"list","data":[{"id":"gpt-6.1-sol","context_length":400000}]}""");
+            """{"object":"list","data":[{"id":"gpt-6.1-sol","context_length":400000,"supported_endpoint_types":["openai"]},{"id":"gpt-5.6-sol","supported_endpoint_types":["chat"]}]}""");
         using (var wireMergeHttp = new System.Net.Http.HttpClient(wireMergeHandler))
         using (var wireMergeWorkspace = new ChatWorkspace(wireMergeRoot))
         {
@@ -1193,10 +1205,12 @@ internal sealed class ShellProvidersChecks
             wireMergeWorkspace.ModelListHttp = wireMergeHttp;
             await wireMergeWorkspace.RefreshModelsAsync("agentrouter");
             var mergedProvider = wireMergeWorkspace.Providers.First(provider => provider.Id == "agentrouter");
-            var mergedWire = AxmolHub.Agent.ChatClientFactory.ProtocolFor(mergedProvider, "gpt-6.1-sol");
+            var namedWire = AxmolHub.Agent.ChatClientFactory.ProtocolFor(mergedProvider, "gpt-6.1-sol");
+            var addedWire = AxmolHub.Agent.ChatClientFactory.ProtocolFor(mergedProvider, "gpt-5.6-sol");
             var mergedWindow = ContextBudget.CapabilitiesOf(mergedProvider, "gpt-6.1-sol")?.ContextTokens;
-            Check(mergedWire == ModelProtocols.Responses && mergedWindow == 400000,
-                "目录刷新保留预设按模型声明的 wire，同时收下目录给的窗口（wire=" + mergedWire
+            Check(namedWire == ModelProtocols.Responses && addedWire == ModelProtocols.Responses && mergedWindow == 400000,
+                "目录发布端点家族名与窗口后，提供商声明的请求线路不变，目录新加的模型也走同一条（gpt-6.1-sol="
+                    + namedWire + " gpt-5.6-sol=" + addedWire
                     + " window=" + (mergedWindow?.ToString(CultureInfo.InvariantCulture) ?? "无") + "）");
         }
         // ── What a fresh provider looks like before anything is fetched ──

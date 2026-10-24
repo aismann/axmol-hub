@@ -182,6 +182,12 @@ internal sealed partial class ChatProviderCoordinator
                 // reaches an install that never said anything. An unknown value never gets here — the manifest
                 // filters it through ModelProtocols.IsKnown when it projects the entry.
                 provider.Protocol ??= builtIn.Protocol;
+                // = and not ??=, the other way round from ServerTools above: this is what the shipped preset says
+                // about the models it lists, not a claim about this person's deployment, so a correction in the
+                // manifest has to reach an install that already stored a provider row. Nothing personal lives here
+                // for it to overwrite — a person overrules a preset through provider.Protocol, or by naming one
+                // model's wire in the manifest's modelProtocols table.
+                provider.DeclaredProtocols = builtIn.DeclaredProtocols;
                 // ??= and not = : a persisted number is now a deliberate human setting — except where nothing was
                 // ever stored, which is what made an install run every model against 8192 while its own gateway
                 // published 128000 for the preset and the saved row said null.
@@ -192,9 +198,7 @@ internal sealed partial class ChatProviderCoordinator
             provider.ReasoningModels = MergeReasoningModels(
                 builtIn?.ReasoningModels,
                 modelCache?.ReasoningModels);
-            provider.ModelCapabilities = MergeCapabilities(
-                builtIn?.ModelCapabilities,
-                modelCache?.Capabilities);
+            provider.ModelCapabilities = ReportedCapabilities(modelCache?.Capabilities);
         }
 
         // First run (nothing saved yet): adopt the single default preset so the conversation page has a
@@ -363,7 +367,7 @@ internal sealed partial class ChatProviderCoordinator
             }
             var preset = AiProviderManifest.CreateBuiltIn(provider.Id);
             provider.ReasoningModels = MergeReasoningModels(preset?.ReasoningModels, cached?.ReasoningModels);
-            provider.ModelCapabilities = MergeCapabilities(preset?.ModelCapabilities, cached?.Capabilities);
+            provider.ModelCapabilities = ReportedCapabilities(cached?.Capabilities);
         }
         provider.OpenAiTokenProvider = provider.IsOpenAiOAuth && provider.Credential is { } credential && _secrets is not null
             ? new OpenAiTokenSession(provider, credential, _secrets, _oauthHttp ?? OpenAiRefreshHttp).GetAsync : null;
@@ -802,7 +806,7 @@ internal sealed partial class ChatProviderCoordinator
         provider.Normalize();
         var declared = AiProviderManifest.CreateBuiltIn(providerId);
         provider.ReasoningModels = MergeReasoningModels(declared?.ReasoningModels, result.ReasoningModels);
-        provider.ModelCapabilities = MergeCapabilities(declared?.ModelCapabilities, result.Capabilities);
+        provider.ModelCapabilities = ReportedCapabilities(result.Capabilities);
         _modelLists.Save(ModelCacheId(providerId), result.Models, result.ReasoningModels, result.Capabilities);
         SaveProviders();
         return result;
@@ -1072,8 +1076,7 @@ internal sealed partial class ChatProviderCoordinator
             capabilities[choice.ModelName] = known.WithContext(tokens, source);
 
             _modelLists.Save(ModelCacheId(provider.Id), cache?.Models ?? [], cache?.ReasoningModels, capabilities);
-            provider.ModelCapabilities = MergeCapabilities(
-                AiProviderManifest.CreateBuiltIn(provider.Id)?.ModelCapabilities, capabilities);
+            provider.ModelCapabilities = ReportedCapabilities(capabilities);
         }).ConfigureAwait(false);
     }
 
@@ -1104,44 +1107,22 @@ internal sealed partial class ChatProviderCoordinator
             => names.Any(candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase));
     }
     /// <summary>
-    /// Merges what the manifest declared with what the endpoint just said, <b>field by field</b>.
+    /// Indexes what the endpoint said about its models, dropping the records that say nothing — "the endpoint told
+    /// us" has to stay readable as a set of facts, and 205 empty records would not.
     ///
-    /// <para>Whole-record replacement was the earlier rule, and it quietly ate a declaration: a catalog that
-    /// reported a window for a model also wiped the wire a preset had named for that same model, because both
-    /// facts ride one record. The rule is now "an explicit value wins, silence does not overwrite" — the endpoint
-    /// is the authority on what it measured, the manifest on what it promised, and each keeps the fields the other
-    /// left empty. A gateway that publishes a window and says nothing about endpoints is the shape this exists
-    /// for.</para>
+    /// <para>This used to merge a declared record with a fetched one field by field, because the manifest's per-model
+    /// wire rode <see cref="ModelCapabilities.EndpointTypes"/> and whole-record replacement ate it. The wire has its
+    /// own home now (<see cref="ModelProvider.DeclaredProtocols"/>), so nothing of the manifest's is left in this
+    /// table: what remains is an observation, and the precedence question moved to
+    /// <c>ChatClientFactory.ProtocolFor</c>, where one function owns it.</para>
     /// </summary>
-    private static Dictionary<string, ModelCapabilities> MergeCapabilities(
-        IReadOnlyDictionary<string, ModelCapabilities>? declared,
+    private static Dictionary<string, ModelCapabilities> ReportedCapabilities(
         IReadOnlyDictionary<string, ModelCapabilities>? fetched)
     {
         var result = new Dictionary<string, ModelCapabilities>(StringComparer.OrdinalIgnoreCase);
-        if (declared is not null)
-            foreach (var (name, caps) in declared)
-                if (!caps.IsEmpty) result[name] = caps;
-
-        if (fetched is not null)
-            foreach (var (name, caps) in fetched)
-            {
-                if (caps.IsEmpty) continue;
-                result.TryGetValue(name, out var declaredCaps);
-                result[name] = new ModelCapabilities
-                {
-                    ContextTokens = caps.ContextTokens ?? declaredCaps?.ContextTokens,
-                    MaxOutputTokens = caps.MaxOutputTokens ?? declaredCaps?.MaxOutputTokens,
-                    InputModalities = caps.InputModalities.Count > 0 ? caps.InputModalities : declaredCaps?.InputModalities ?? Array.Empty<string>(),
-                    OutputModalities = caps.OutputModalities.Count > 0 ? caps.OutputModalities : declaredCaps?.OutputModalities ?? Array.Empty<string>(),
-                    EndpointTypes = caps.EndpointTypes.Count > 0 ? caps.EndpointTypes : declaredCaps?.EndpointTypes ?? Array.Empty<string>(),
-                    EffortLevels = caps.EffortLevels.Count > 0 ? caps.EffortLevels : declaredCaps?.EffortLevels ?? Array.Empty<string>(),
-                    ContextStrategies = caps.ContextStrategies.Count > 0 ? caps.ContextStrategies : declaredCaps?.ContextStrategies ?? Array.Empty<string>(),
-                    // Provenance follows whoever measured. A fetched record is here because it said something, and a
-                    // manifest value has no observation to attribute in the first place.
-                    Source = caps.Source,
-                    ObservedAt = caps.ObservedAt,
-                };
-            }
+        if (fetched is null) return result;
+        foreach (var (name, caps) in fetched)
+            if (!caps.IsEmpty) result[name] = caps;
 
         return result;
     }

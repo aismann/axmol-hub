@@ -51,23 +51,63 @@ public static class ChatClientFactory
     /// <summary>
     /// Which wire this model answers on.
     ///
-    /// <para><b>Two rungs, in this order.</b> A wire declared on the provider wins over what the catalog said.
-    /// The catalog answers "which endpoints does this model appear on", which is the right source for one provider
-    /// choosing between two OpenAI bodies; it is the wrong source for switching a whole provider onto a different
-    /// authentication scheme, because a catalog cannot know whether the credential in the file was minted by a
-    /// bearer flow or pasted as <c>sk-ant-…</c>. That question belongs to whoever configured the endpoint, and
-    /// their answer is <see cref="Core.ModelProvider.Protocol"/>.</para>
+    /// <para><b>The order, and why.</b> A browser-signed provider is fixed: the OAuth bundle only ever goes to the
+    /// responses wire. Then the preset's claim about <b>this one model</b>
+    /// (<see cref="Core.ModelProvider.DeclaredProtocols"/>) — the most specific thing anyone has said, and therefore
+    /// asked first. Then the endpoint-wide claim (<see cref="Core.ModelProvider.Protocol"/>), which is the right
+    /// shape for a gateway with one routing table and the field a person edits for their own mirror. Then what the
+    /// catalog reported, but only when it named an actual wire. Otherwise chat: every provider except Copilot and a
+    /// few relays publishes nothing about protocols, and silence must not change what already works.</para>
+    ///
+    /// <para><b>The catalog sits last on purpose.</b> It answers "which endpoints does this model appear on" — a
+    /// vendor family label as often as a wire name — and it is the source that once flipped a working
+    /// <c>/v1/responses</c> gateway back onto chat by publishing <c>supported_endpoint_types: ["openai"]</c>. That
+    /// is a fact about the endpoint's inventory, not about how the credential in the file authenticates.</para>
+    ///
+    /// <para><b>No prefixes and no probing.</b> A glob ("<c>gpt-*</c> answers on responses") looks like the cheap way
+    /// to cover a family, but the wire is a property of the endpoint rather than of the name — api.openai.com
+    /// answers both wires for the same gpt id — and <c>gpt-oss</c> is a chat-only model whose name starts with
+    /// <c>gpt-</c>. A pattern would re-route models nobody tested, and do it silently. An exact id is auditable and
+    /// degrades to the endpoint's answer when the provider renames the model.</para>
     ///
     /// <para>Public because the settings page has to be able to say what will happen when a model is picked, and
-    /// a second copy of the rule over there is the drift this repository keeps having to undo. A model nobody
-    /// described is chat: every provider except Copilot publishes nothing about protocols, and silence must not
-    /// change what already works.</para>
+    /// a second copy of the rule over there is the drift this repository keeps having to undo.</para>
     /// </summary>
     public static string ProtocolFor(Core.ModelProvider provider, string? model)
-        => provider.IsOpenAiOAuth ? Core.ModelProtocols.Responses
-            : Core.ModelProtocols.IsKnown(provider.Protocol)
-            ? provider.Protocol!
-            : Core.ContextBudget.CapabilitiesOf(provider, model)?.Protocol ?? Core.ModelProtocols.Chat;
+    {
+        if (provider.IsOpenAiOAuth) return Core.ModelProtocols.Responses;
+        if (Declared(provider, model) is { } declared) return declared;
+        if (Core.ModelProtocols.IsKnown(provider.Protocol)) return provider.Protocol!;
+        return Core.ContextBudget.CapabilitiesOf(provider, model) is { } capabilities
+               && capabilities.EndpointTypes.Any(Core.ModelProtocols.IsKnown)
+            ? capabilities.Protocol
+            : Core.ModelProtocols.Chat;
+    }
+
+    /// <summary>
+    /// The preset's claim about this one model, or <c>null</c> when it made none. The wire name is re-checked here
+    /// rather than trusted from the file: the manifest drops an unknown value on load, but a provider assembled by a
+    /// check or by a future import can still arrive carrying one, and "a fourth protocol nobody builds a body for"
+    /// is the one outcome this ladder exists to prevent.
+    /// </summary>
+    private static string? Declared(Core.ModelProvider provider, string? model)
+        => model is { Length: > 0 } name
+           && provider.DeclaredProtocols.TryGetValue(name, out var declared)
+           && Core.ModelProtocols.IsKnown(declared)
+            ? declared
+            : null;
+
+    /// <summary>
+    /// The path a wire is called on, for the one place that shows a person which wire their provider is about to
+    /// use (settings → providers). It lives beside <see cref="ProtocolFor"/> because the ladder and the names it can
+    /// return are one fact, and a wire this switch does not recognise is chat — the same answer the ladder gives.
+    /// </summary>
+    public static string PathOf(string protocol) => protocol switch
+    {
+        Core.ModelProtocols.Responses => "/v1/responses",
+        Core.ModelProtocols.Messages => "/v1/messages",
+        _ => "/v1/chat/completions",
+    };
 
     /// <summary>
     /// <paramref name="reasoning"/> is what makes a thinking model's chain of thought go back out on the wire.

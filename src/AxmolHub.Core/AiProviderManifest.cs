@@ -269,12 +269,14 @@ public sealed class AiProviderEntry
     /// Which request wire this endpoint answers on — one of <see cref="AxmolHub.Core.ModelProtocols"/>, absent
     /// means "not declared" and therefore chat.
     ///
-    /// <para>The field exists because the two OpenAI wires are decided by the <b>model</b> (one provider serves
-    /// some models on <c>/responses</c> and others on <c>/chat/completions</c>) while Anthropic's
-    /// <c>/v1/messages</c> is a property of the <b>endpoint</b>: it wants a different credential header, a
-    /// different body shape and a different event vocabulary for every model behind it, and the domestic gateways
-    /// that mount it publish no catalog at all to infer the fact from. So a person who points Hub at one has to
-    /// be able to say so, and a preset author has to be able to ship that saying.</para>
+    /// <para>The field exists because the wire is a property of the <b>endpoint</b> in the ordinary case:
+    /// Anthropic's <c>/v1/messages</c> wants a different credential header, a different body shape and a different
+    /// event vocabulary for every model behind it, and the domestic gateways that mount it publish no catalog at
+    /// all to infer the fact from. An aggregating gateway belongs to the same shape from the other side: it can
+    /// route every model its catalog lists to <c>/v1/responses</c> and answer 400 on <c>/v1/chat/completions</c>,
+    /// which is AgentRouter. So a person who points Hub at one has to be able to say so, and a preset author has to
+    /// be able to ship that saying. The rarer shape — one endpoint, one key, models split across wires — is
+    /// <see cref="ModelProtocols"/> below.</para>
     ///
     /// <para>Declared, never guessed from the host name: <c>"anthropic"</c> appearing in a URL is what a Claude
     /// Code user pastes and what a Copilot-compatible relay also serves, and only the first wants the messages
@@ -284,15 +286,21 @@ public sealed class AiProviderEntry
     public string? Protocol { get; set; }
 
     /// <summary>
-    /// The wire one of this preset's <b>own</b> models answers on, keyed by model id — for a gateway that serves
-    /// different models on different wires behind one endpoint and one key. AgentRouter is the case that forced it:
-    /// its gpt models answer on <c>/v1/responses</c> and refuse <c>/v1/chat/completions</c> outright, while the
-    /// chat models on the same key answer on chat only.
+    /// The wire one of this preset's <b>own</b> models answers on, keyed by model id — the escape hatch for a
+    /// gateway that serves different models on different wires behind one endpoint and one key, and the one place a
+    /// preset author can be more specific than <see cref="Protocol"/> above.
     ///
-    /// <para><b>Asked only when <see cref="Protocol"/> is silent</b>, and deliberately unable to say anything
-    /// provider-wide: a preset may name a wire for a model it can prove and never for the endpoint, because a
-    /// provider-wide claim is exactly the one an aggregating gateway makes false. The order stays owned by
-    /// <c>ChatClientFactory.ProtocolFor</c> — provider, then model, then chat.</para>
+    /// <para><b>The specific claim, so it is asked first.</b> An endpoint-wide claim is the right default —
+    /// a gateway with one routing table has one answer, and naming its models needs a release every time it
+    /// renames one — but it is also the shape that goes wrong the day a chat-only model shows up behind a
+    /// responses-only endpoint. When that happens, name <i>that</i> model here and leave
+    /// <see cref="Protocol"/> for the rest. The order stays owned by <c>ChatClientFactory.ProtocolFor</c>:
+    /// this table, then the endpoint, then what the catalog reported, then chat.</para>
+    ///
+    /// <para><b>No patterns.</b> A glob such as <c>gpt-* → responses</c> was considered and refused: the wire is a
+    /// property of the endpoint, not of the model name (api.openai.com answers both wires for the same gpt id), and
+    /// <c>gpt-oss</c> is a chat-only model whose name starts with <c>gpt-</c>, so a pattern would silently re-route
+    /// models nobody tested. Only exact ids.</para>
     ///
     /// <para>Values go through <c>ModelProtocols.IsKnown</c> for the same reason <see cref="Protocol"/> does: a
     /// family label such as <c>openai</c> is not a wire. An unknown value is dropped rather than raised, because
@@ -547,12 +555,11 @@ public static class AiProviderManifest
                 // protocol nothing builds a body for. Unknown is "nothing declared", which is chat — the same
                 // answer a manifest written before this field existed gets.
                 Protocol = ModelProtocols.IsKnown(entry.Protocol) ? entry.Protocol : null,
-                // Landed on the record the resolution chain already reads, rather than on a field of its own:
-                // ModelCapabilities.Protocol is the second rung of ChatClientFactory.ProtocolFor, so a preset that
-                // names one model's wire needs no new branch anywhere. The build does not overwrite what a catalog
-                // later says — see ChatProviderCoordinator.MergeCapabilities, which keeps this value when the
-                // endpoint publishes nothing about endpoints.
-                ModelCapabilities = PerModelWires(entry.ModelProtocols),
+                // Its own field rather than a corner of ModelCapabilities: a per-model claim is what the preset
+                // says, and the capabilities record holds what the endpoint reported. Sharing one field made a
+                // catalog that publishes supported_endpoint_types: ["openai"] overwrite the promise with a family
+                // label — that is the bug this split fixes. See ModelProvider.DeclaredProtocols.
+                DeclaredProtocols = DeclaredWires(entry.ModelProtocols),
                 // Copied into its own dictionary for the same reason as OAuth below: a provider that outlives this
                 // call must not hold a reference into a document that gets re-read.
                 ExtraHeaders = new Dictionary<string, string>(entry.ExtraHeaders, StringComparer.OrdinalIgnoreCase),
@@ -587,18 +594,18 @@ public static class AiProviderManifest
     }
 
     /// <summary>
-    /// Translates <see cref="AiProviderEntry.ModelProtocols"/> into the per-model record the resolution chain
-    /// reads. Model id in, wire out — and the two ways a hand-written line can be wrong (an unknown wire name, an
-    /// empty id) are both "skip this line" rather than a throw, for the same reason the field is filtered at all.
+    /// Translates <see cref="AiProviderEntry.ModelProtocols"/> into the per-model claim the resolution chain reads.
+    /// Model id in, wire out — and the two ways a hand-written line can be wrong (an unknown wire name, an empty
+    /// id) are both "skip this line" rather than a throw, for the same reason the field is filtered at all: a typo
+    /// in a JSON file must not stop the app from starting.
     /// </summary>
-    private static Dictionary<string, ModelCapabilities> PerModelWires(
-        IReadOnlyDictionary<string, string> declared)
+    private static Dictionary<string, string> DeclaredWires(IReadOnlyDictionary<string, string> declared)
     {
-        var result = new Dictionary<string, ModelCapabilities>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (model, wire) in declared)
         {
-            if (model.Length == 0 || !ModelProtocols.IsKnown(wire)) continue;
-            result[model] = new ModelCapabilities { EndpointTypes = [wire] };
+            if (model.Trim().Length == 0 || !ModelProtocols.IsKnown(wire)) continue;
+            result[model.Trim()] = wire;
         }
 
         return result;

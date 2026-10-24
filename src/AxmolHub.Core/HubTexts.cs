@@ -1395,6 +1395,12 @@ public static class HubTexts
         ["Save"] = ("保存", "Save"),
         // The grouped list (each configured provider its own group, all expanded) and the model sub-list inside it.
         ["ProviderInUse"] = ("当前", "Current"),
+        // The wire line on a provider's header: which URL this provider's model will actually be sent to. It is
+        // shown rather than left to be inferred because the one failure this line catches — the endpoint answers
+        // only /v1/responses while Hub posts to /v1/chat/completions — arrives as a 400 that names a path, not a
+        // setting. Chinese and English both say "wire" rather than "protocol": what a person is looking for is
+        // where the request goes.
+        ["ProviderWireFormat"] = ("请求线路 {0}", "Wire {0}"),
         ["ProviderBuiltInTag"] = ("内置", "Built-in"),
         ["ProviderCustomTag"] = ("自定义", "Custom"),
         ["ProviderNoCredential"] = ("此提供商无需密钥，可直接使用。", "This provider needs no key and works as-is."),

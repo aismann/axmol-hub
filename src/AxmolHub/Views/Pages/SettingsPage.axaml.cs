@@ -1573,13 +1573,38 @@ public partial class SettingsPage : UserControl
 
         actions.Children.Add(reveal);
 
+        // The wire this provider's model is sent on, under the name: the one place a claim about the endpoint
+        // becomes visible before a 400 has to explain it. The value comes from ChatClientFactory, not from a copy
+        // of the rule here — a settings row that promises a wire the request will not use is worse than none.
+        var heading = new StackPanel { Spacing = 2 };
+        heading.Children.Add(title);
+        heading.Children.Add(new TextBlock
+        {
+            Text = string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ProviderWireFormat"),
+                AgentWirePath(provider)),
+            Classes = { "muted" },
+            FontSize = 11,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Tag = SectionTags.Wire,
+        });
+
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Classes = { "provider-row" } };
-        Grid.SetColumn(title, 0);
+        Grid.SetColumn(heading, 0);
         Grid.SetColumn(actions, 1);
-        grid.Children.Add(title);
+        grid.Children.Add(heading);
         grid.Children.Add(actions);
         return grid;
     }
+
+    /// <summary>
+    /// The path this provider's selected model will be posted to, resolved by the same function the client factory
+    /// uses at send time (<c>ChatClientFactory.ProtocolFor</c>) and then turned into the path it is called on.
+    /// </summary>
+    private static string AgentWirePath(ModelProvider provider)
+        => AxmolHub.Agent.ChatClientFactory.PathOf(
+            AxmolHub.Agent.ChatClientFactory.ProtocolFor(provider, provider.Model));
 
     /// <summary>The brush key for a provider's status dot: green when callable, tertiary otherwise.</summary>
     private static string ProviderStatusBrushKey(ModelProvider provider)
@@ -3085,6 +3110,9 @@ public partial class SettingsPage : UserControl
 
         /// <summary>The collapsed header's status dot (colour compresses the three link states).</summary>
         internal const string StatusDot = "provider-status-dot";
+
+        /// <summary>The header's wire line: which path this provider's model is actually sent to.</summary>
+        internal const string Wire = "provider-wire";
 
         /// <summary>The edit draft's form container, distinct from the collapsed header.</summary>
         internal const string ProviderDraft = "provider-draft";

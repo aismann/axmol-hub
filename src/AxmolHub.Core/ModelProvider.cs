@@ -160,6 +160,24 @@ public sealed class ModelProvider
     public string? Protocol { get; set; }
 
     /// <summary>
+    /// The wires the preset names for individual models of this provider, keyed by model id — the manifest's
+    /// <c>modelProtocols</c> table (<see cref="AiProviderEntry.ModelProtocols"/>), which is the escape hatch for a
+    /// gateway whose catalog mixes wires. A manifest fact, so the same rule as <see cref="ExtraHeaders"/>:
+    /// refreshed every load, never persisted. A per-model entry outranks <see cref="Protocol"/> above, because it
+    /// is the more specific claim; a person who needs to overrule it speaks through <see cref="Protocol"/> for the
+    /// whole endpoint.
+    ///
+    /// <para><b>Not part of <see cref="ModelCapabilities"/>.</b> Both facts once rode
+    /// <see cref="ModelCapabilities.EndpointTypes"/>, and a catalog that publishes its own endpoint list
+    /// (<c>supported_endpoint_types: ["openai"]</c>) then overwrote a promise with a label: that field names vendor
+    /// <i>families</i> as often as it names wires. The promise now has its own home here, the observation keeps
+    /// <see cref="ModelCapabilities"/>, and the order between them is still owned by one function
+    /// (<c>ChatClientFactory.ProtocolFor</c>).</para>
+    /// </summary>
+    [JsonIgnore]
+    public Dictionary<string, string> DeclaredProtocols { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// The two models Hub may switch between when a session is routed automatically, both of them named by the
     /// user. unset (or only half set) means auto routing changes the reasoning tier and never the model: which
     /// of a provider's tiers is "the cheap one" is a decision about someone's bill and their taste, and Hub
