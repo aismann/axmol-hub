@@ -2729,7 +2729,8 @@ public partial class ChatPanel : UserControl
         // card's title back as though it were the plan.
         var copyText = isPlanTurn ? _chat.PlanBody(turn, out _) ?? "" : turn.Text;
         var goalCard = fromUser && turn.IsGoal ? BuildGoalMessageCard(conversationId, turn) : null;
-        var row = BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At, goalCard);
+        var row = BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At, goalCard,
+            isGoal: fromUser && turn.IsGoal);
         target.Children.Add(row);
 
         // User text is plain by nature, and a tool payload is now a quiet line rather than a bubble; only the
@@ -4056,7 +4057,7 @@ public partial class ChatPanel : UserControl
     /// </summary>
     private Control BuildMessageRow(
         bool fromUser, StackPanel body, int? index, string role, string text, bool isLast, DateTimeOffset? at = null,
-        Control? goalCard = null)
+        Control? goalCard = null, bool isGoal = false)
     {
         var column = new StackPanel { Spacing = goalCard is null ? 6 : 3 };
 
@@ -4077,7 +4078,7 @@ public partial class ChatPanel : UserControl
 
         if (index is { } messageIndex)
         {
-            var actions = BuildActionBar(messageIndex, role, text, isLast, at, body);
+            var actions = BuildActionBar(messageIndex, role, text, isLast, at, body, isGoal);
             actions.HorizontalAlignment = fromUser ? HorizontalAlignment.Right : HorizontalAlignment.Left;
             column.Children.Add(actions);
         }
@@ -4092,7 +4093,8 @@ public partial class ChatPanel : UserControl
         return row;
     }
 
-    private Control BuildActionBar(int index, string role, string text, bool isLast, DateTimeOffset? at, StackPanel body)
+    private Control BuildActionBar(int index, string role, string text, bool isLast, DateTimeOffset? at, StackPanel body,
+        bool isGoal = false)
     {
         var actionSession = _chat.ViewedConversationId;
         var actionKey = _projection!.KeyAt(index);
@@ -4136,6 +4138,14 @@ public partial class ChatPanel : UserControl
         if (role == ChatRoles.User)
         {
             bar.Children.Add(CopyMessageActionButton(CopyCurrentAsync));
+            if (isGoal)
+                bar.Children.Add(new TextBlock
+                {
+                    Classes = { "message-timestamp", "goal-sent-marker" },
+                    Text = HubStrings.Get("ChatGoalSentAsGoal"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(4, 0, 0, 0),
+                });
             bar.Children.Add(IconActionButton("EditMessage", "Hub.Icon.Edit", () => { if (CurrentIndex() is var current && current >= 0) BeginInlineEdit(current, body, bar); }));
             // A question that never got an answer is otherwise stuck: the notice that explained the failure is
             // not written to the transcript, and resubmitting the same text is refused as an unchanged edit. The

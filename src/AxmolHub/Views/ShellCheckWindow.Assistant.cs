@@ -346,13 +346,14 @@ internal sealed class ShellAssistantChecks
         Check(panel.GoalMessageCardCountForCheck == 1
               && panel.GoalCapsuleForCheck
               && panel.GoalMessageCardPrecedesUserPillForCheck
+              && panel.GoalMessageMetaForCheck
               && panel.GoalMessageCardTitleForCheck == "完成目标并依据证据核验"
               && panel.GoalMessageCardStatusForCheck.StartsWith(HubStrings.Get("ChatGoalActive"), StringComparison.Ordinal)
               && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalPause"))
               && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalClear"))
               && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalCollapse"))
               && shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Goal == "完成目标并依据证据核验",
-            "显式目标会持久化，卡片贴在目标消息上方并提供暂停、清除和折叠操作");
+            "显式目标会持久化，卡片与操作保留，消息下方显示时间、复制和目标发送标记");
         shell.Chat.PauseGoal(markerPeer.Id);
         Dispatcher.UIThread.RunJobs();
         Check(shell.Chat.StoredCopyForCheck(markerPeer.Id)?.GoalState == ChatGoalStates.Paused

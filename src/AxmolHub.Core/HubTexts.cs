@@ -596,6 +596,7 @@ public static class HubTexts
         ["ChatModeGoal"] = ("目标", "Goal"),
         ["ChatModeResetHint"] = ("点击恢复默认 Agent 模式", "Click to return to the default Agent mode"),
         ["ChatGoalDraftResetHint"] = ("取消这条消息的目标标记", "Remove the goal marker from this message"),
+        ["ChatGoalSentAsGoal"] = ("作为目标发送", "Sent as goal"),
         ["ChatGoalCardHeading"] = ("进行中的目标", "Active goal"),
         ["ChatGoalActive"] = ("进行中的目标", "Active goal"),
         ["ChatGoalPaused"] = ("已暂停的目标", "Paused goal"),
