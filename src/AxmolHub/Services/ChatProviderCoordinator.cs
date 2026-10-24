@@ -831,18 +831,22 @@ internal sealed partial class ChatProviderCoordinator
     private HttpClient? _oauthHttp;
     /// <summary>
     /// Adds a custom endpoint. <paramref name = "problem"/> carries the text key of whatever stopped it, and is
-    /// <c>null</c> on success: the caller shows it verbatim instead of guessing, which is how a missing model
-    /// used to be reported as a rejected URL.
+    /// <c>null</c> on success: the caller shows it verbatim instead of guessing, which is how an empty model box
+    /// once got reported as a rejected URL. The model may be empty — the endpoint's own catalog fills it in
+    /// later, and a gateway that lists nothing can stay model-less without blocking the provider.
     /// </summary>
     internal ModelProvider? AddProvider(string name, string baseUrl, string model, string? apiKey, out string? problem)
     {
+        var trimmedModel = model.Trim();
         var provider = new ModelProvider
         {
             Id = "custom-" + Guid.NewGuid().ToString("N")[..12],
             Name = name.Trim(),
             IsCustom = true,
             BaseUrl = baseUrl.Trim(),
-            Models = [new ProviderModel { Name = model.Trim(), InUse = true }],
+            // No model, no row: a blank ProviderModel would render as an empty row in the list and read as a
+            // model whose name is "".
+            Models = trimmedModel.Length == 0 ? [] : [new ProviderModel { Name = trimmedModel, InUse = true }],
             // Whether the user's own endpoint demands a key is unknowable, so a custom provider is never
             // gated on one — declaring the key method says only that a key can be pasted here, which is what
             // keeps the 「鉴权」 entrance while leaving the provider usable keyless (a local server). Browser
@@ -1175,27 +1179,28 @@ internal sealed partial class ChatProviderCoordinator
     /// feedback, through <see cref = "ValidateDraft"/>) and by
     /// <see cref = "AddProvider"/>/<see cref = "UpdateProvider"/> (the real gate) so the two cannot drift — the UI
     /// must not be the only thing standing between a half-filled provider and a saved file.
+    ///
+    /// <para>No model check: a provider with no models is a legal state. The models are fetched from the
+    /// endpoint itself after it exists, and a gateway that serves nothing it lists is still worth saving.</para>
     /// </summary>
     /// <returns><c>null</c> when valid; otherwise the text key of the problem to show.</returns>
     internal static string? Validate(ModelProvider provider)
     {
         if (provider.Name.Trim().Length == 0) return "ProviderNameRequired";
         if (!IsHttpUrl(provider.BaseUrl)) return "ProviderBaseUrlInvalid";
-        if (provider.Model.Trim().Length == 0) return "ProviderModelRequired";
         return null;
     }
 
     /// <summary>
-    /// The same rule as <see cref = "Validate"/>, applied to the three fields the draft has collected so far —
+    /// The same rule as <see cref = "Validate"/>, applied to the two fields the draft has collected so far —
     /// before there is a provider object to hand it. What it returns is what greys out 保存 and what the draft
     /// says out loud, so the field at fault is named while the person is still typing it.
     /// </summary>
-    internal static string? ValidateDraft(string name, string baseUrl, string model)
+    internal static string? ValidateDraft(string name, string baseUrl)
         => Validate(new ModelProvider
         {
             Name = name.Trim(),
             BaseUrl = baseUrl.Trim(),
-            Models = [new ProviderModel { Name = model.Trim(), InUse = true }],
         });
 
 

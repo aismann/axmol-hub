@@ -142,13 +142,13 @@ public partial class SettingsPage : UserControl
     }
 
     /// <summary>
-    /// Where the add draft's three boxes ended up, and whether 保存 is live — read AFTER a layout pass.
+    /// Where the add draft's two boxes ended up, and whether 保存 is live — read AFTER a layout pass.
     ///
     /// <para>Bounds rather than "the control exists", because of how this form broke: its grid declared one row
-    /// while the model field asked for row 1, so the model box was laid out on top of the name box. Both labels
+    /// while a second field asked for row 1, so that field was laid out on top of its neighbour. Both labels
     /// read 模型名称, so the form looked like a doubled label and every control was present and enabled.</para>
     /// </summary>
-    internal (bool Present, Rect Name, Rect BaseUrl, Rect Model, bool SaveEnabled) AddProviderDraftLayoutForCheck()
+    internal (bool Present, Rect Name, Rect BaseUrl, bool SaveEnabled) AddProviderDraftLayoutForCheck()
     {
         var draft = AddDraftChild();
         Rect Where(string tag)
@@ -159,19 +159,17 @@ public partial class SettingsPage : UserControl
         return (draft is not null,
             Where(SectionTags.AddDraftName),
             Where(SectionTags.AddDraftBaseUrl),
-            Where(SectionTags.AddDraftModel),
             AddDraftChild<Button>(draft, SectionTags.AddDraftSave)?.IsEnabled == true);
     }
 
     /// <summary>Types into the draft's boxes, so the TextChanged wiring that greys out 保存 actually runs.</summary>
-    internal bool FillAddProviderDraftForCheck(string name, string baseUrl, string model)
+    internal bool FillAddProviderDraftForCheck(string name, string baseUrl)
     {
         var draft = AddDraftChild();
         if (draft is null)
             return false;
         if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftName) is { } nameBox) nameBox.Text = name;
         if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftBaseUrl) is { } urlBox) urlBox.Text = baseUrl;
-        if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftModel) is { } modelBox) modelBox.Text = model;
         UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         return true;

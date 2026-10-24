@@ -303,14 +303,19 @@ internal sealed class ShellProvidersChecks
 
         var providerCountBefore = shell.Chat.Providers.Count;
 
-        // Validation: a custom provider without a name, without a usable URL, or without a model is refused.
+        // Validation: a custom provider without a name or without a usable URL is refused. A model is NOT part of
+        // the rule — the model list is fetched from the endpoint after it exists, so a model-less provider has to
+        // be saveable; what it must not do is pretend to have a model, so the list stays empty rather than
+        // holding one blank row.
         Check(shell.Chat.AddProvider("本地模型", "http://localhost:11434/v1", "llama3", null, out _) is not null,
             "添加合法的自定义 provider 成功");
         Check(shell.Chat.Providers.Count == providerCountBefore + 1, "新 provider 进入列表（实际 " + shell.Chat.Providers.Count + " 个）");
         Check(shell.Chat.AddProvider("", "http://localhost:11434/v1", "llama3", null, out _) is null, "缺名称的自定义 provider 被拒绝");
         Check(shell.Chat.AddProvider("坏地址", "localhost:11434/v1", "llama3", null, out _) is null,
             "非绝对 http(s) 地址被拒绝（裸 host 会到第一次发消息才炸）");
-        Check(shell.Chat.AddProvider("缺模型", "http://localhost:11434/v1", "   ", null, out _) is null, "缺模型的自定义 provider 被拒绝");
+        var modelLess = shell.Chat.AddProvider("缺模型", "http://localhost:11434/v1", "   ", null, out _);
+        Check(modelLess is { } blank && blank.Models.Count == 0 && shell.Chat.RemoveProvider(blank.Id),
+            "没有模型的自定义 provider 也能保存，模型列表留空而不是留一行空名字");
 
         // The new provider persists and reloads with its custom flag intact — a custom provider must not be
         // re-derived from the manifest (there is no manifest entry for it) on the next load.
@@ -346,28 +351,35 @@ internal sealed class ShellProvidersChecks
         // control was present, enabled and correct in isolation, and nothing in this suite opened the form.
         settings.OpenAddProviderDraftForCheck();
         var boxes = settings.AddProviderDraftLayoutForCheck();
-        Check(boxes.Present && boxes.Name.Height > 0 && boxes.BaseUrl.Height > 0 && boxes.Model.Height > 0
-              && !boxes.Name.Intersects(boxes.Model) && boxes.Model.Y > boxes.Name.Y,
-            "自定义 provider 草稿的三个输入框各占一行、互不重叠（实际 " + (boxes.Present ? "" : "草稿未出现，")
-            + "name=" + boxes.Name + ", url=" + boxes.BaseUrl + ", model=" + boxes.Model + "）");
+        Check(boxes.Present && boxes.Name.Height > 0 && boxes.BaseUrl.Height > 0 && boxes.Name.Width > 0
+              && boxes.BaseUrl.Width > 0 && !boxes.Name.Intersects(boxes.BaseUrl) && boxes.BaseUrl.X > boxes.Name.X,
+            "自定义 provider 草稿的名称与地址并排各占一栏、互不重叠（实际 " + (boxes.Present ? "" : "草稿未出现，")
+            + "name=" + boxes.Name + ", url=" + boxes.BaseUrl + "）");
 
-        // The complaint this guards: with the model box hidden, the model was always empty, and the page
-        // reported every refusal as "接口地址无效" — so a valid URL looked rejected.
+        // What the message must still say, and what it must stop saying. An unusable address greys out 保存 and
+        // names the address — that sentence has to stay true, since it is the one that was being borrowed for
+        // every other kind of refusal.
+        var badUrlTyped = settings.FillAddProviderDraftForCheck("AgentRouterCustom", "agentrouter.org/v1");
+        var badUrlProblem = settings.StatusLineText;
+        Check(badUrlTyped && !settings.AddProviderDraftLayoutForCheck().SaveEnabled
+              && badUrlProblem == HubStrings.Get("ProviderBaseUrlInvalid"),
+            "地址不完整时保存被灰掉，状态行点名地址（实际「" + badUrlProblem + "」）");
+
+        // A good address is not asked for a model: the list comes from the endpoint's own /models afterwards.
         var countBeforeDraft = shell.Chat.Providers.Count;
-        var typed = settings.FillAddProviderDraftForCheck("AgentRouterCustom", "https://agentrouter.org/v1", "");
+        var typed = settings.FillAddProviderDraftForCheck("AgentRouterCustom", "https://agentrouter.org/v1");
         var liveProblem = settings.StatusLineText;
-        Check(typed && !settings.AddProviderDraftLayoutForCheck().SaveEnabled
-              && liveProblem == HubStrings.Get("ProviderModelRequired")
+        Check(typed && settings.AddProviderDraftLayoutForCheck().SaveEnabled && string.IsNullOrEmpty(liveProblem)
               && shell.Chat.Providers.Count == countBeforeDraft,
-            "草稿缺模型时保存被灰掉，状态行点名缺模型而不是地址无效（实际「" + liveProblem + "」）");
+            "只填名称与地址就能保存，模型不再拦路（状态行「" + liveProblem + "」）");
 
-        var committed = settings.FillAddProviderDraftForCheck("AgentRouterCustom", "https://agentrouter.org/v1", "gpt-6.1-sol")
-            && settings.AddProviderDraftLayoutForCheck().SaveEnabled
-            && settings.ClickAddProviderDraftSaveForCheck();
+        var committed = settings.ClickAddProviderDraftSaveForCheck();
         var drafted = shell.Chat.Providers.FirstOrDefault(provider => provider.IsCustom);
         Check(committed && !settings.AddProviderDraftLayoutForCheck().Present
-              && drafted is not null && drafted.BaseUrl == "https://agentrouter.org/v1" && drafted.Model == "gpt-6.1-sol",
-            "补齐模型后保存成功：provider 落地、草稿收起（实际 " + (drafted is null ? "未添加" : "「" + drafted.Name + "」" + drafted.BaseUrl) + "）");
+              && drafted is not null && drafted.BaseUrl == "https://agentrouter.org/v1" && drafted.Models.Count == 0
+              && shell.Chat.Providers.Count == countBeforeDraft + 1,
+            "保存后 provider 落地、草稿收起，模型列表留空等目录刷新（实际 "
+            + (drafted is null ? "未添加" : "「" + drafted.Name + "」" + drafted.BaseUrl + "，模型 " + drafted.Models.Count + " 个") + "）");
 
         // Leave the list as the accounts block expects to find it: it asserts on the providers that are configured.
         if (drafted is not null && shell.Chat.RemoveProvider(drafted.Id)) settings.RefreshProviderGroupsForCheck();

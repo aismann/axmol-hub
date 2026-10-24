@@ -442,7 +442,7 @@ public sealed partial class ChatWorkspace : IDisposable
     public static string? Validate(ModelProvider provider) => ChatProviderCoordinator.Validate(provider);
     public static bool IsHttpUrl(string url) => ChatProviderCoordinator.IsHttpUrl(url);
     /// <summary>The live "can I save yet" rule for the add/edit draft, on the fields collected so far.</summary>
-    public static string? ValidateDraft(string name, string baseUrl, string model) => ChatProviderCoordinator.ValidateDraft(name, baseUrl, model);
+    public static string? ValidateDraft(string name, string baseUrl) => ChatProviderCoordinator.ValidateDraft(name, baseUrl);
     /// <summary>
     /// Adds a custom provider (a user-supplied OpenAI-compatible endpoint — the path to a local model) and
     /// returns it, or <c>null</c> when it was refused. The new provider becomes active: adding one is

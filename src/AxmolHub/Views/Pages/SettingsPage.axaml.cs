@@ -1725,19 +1725,19 @@ public partial class SettingsPage : UserControl
             FontWeight = FontWeight.SemiBold,
         });
 
-        // Identity only. The key is not asked here: the list page never hosts a credential box. Saving this
-        // draft creates the provider, then the auth dialog takes the key — the same one-job split as the
-        // preset path.
+        // Identity only. The key is not asked here: the list page never hosts a credential box — the row's 鉴权
+        // button takes it afterwards. No model is asked for either: the model list is fetched from the
+        // endpoint's own /models once the provider exists, and ＋ on the row adds one by hand for a gateway that
+        // lists nothing.
         //
-        // Two rows, declared: a field placed in a row the grid never declared lands back on row 0 and paints
-        // itself on top of the field already there — which is exactly how the model box came to hide under the
-        // name box, both labels reading 模型名称 because they are the same word drawn twice.
+        // One declared row, two columns. A field put in a row the grid never declared lands back on row 0 and
+        // paints itself on top of its neighbour — this form once did exactly that, with a model box nobody could
+        // see, its label drawn twice.
         var fields = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("1*,1*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto"),
+            RowDefinitions = new RowDefinitions("Auto"),
             ColumnSpacing = 12,
-            RowSpacing = 6,
         };
 
         var name = new TextBox { Tag = SectionTags.AddDraftName };
@@ -1749,11 +1749,6 @@ public partial class SettingsPage : UserControl
         fields.Children.Add(BuildField(HubStrings.Get("ProviderBaseUrl"), baseUrl, HubStrings.Get("ProviderBaseUrlHint")));
         Grid.SetColumn(fields.Children[^1], 1);
         Grid.SetRow(fields.Children[^1], 0);
-
-        var model = new TextBox { Tag = SectionTags.AddDraftModel };
-        fields.Children.Add(BuildField(HubStrings.Get("ProviderModel"), model));
-        Grid.SetColumn(fields.Children[^1], 0);
-        Grid.SetRow(fields.Children[^1], 1);
 
         stack.Children.Add(fields);
 
@@ -1772,7 +1767,7 @@ public partial class SettingsPage : UserControl
             IsDefault = true,
             Tag = SectionTags.AddDraftSave,
         };
-        save.Click += async (_, _) => await CommitAddProviderDraft(name, baseUrl, model);
+        save.Click += async (_, _) => await CommitAddProviderDraft(name, baseUrl);
         buttons.Children.Add(cancel);
         buttons.Children.Add(save);
         stack.Children.Add(buttons);
@@ -1783,11 +1778,9 @@ public partial class SettingsPage : UserControl
         // not an error, it is a form nobody has filled in yet.
         void RefreshDraft()
         {
-            var problem = ChatWorkspace.ValidateDraft(name.Text ?? "", baseUrl.Text ?? "", model.Text ?? "");
+            var problem = ChatWorkspace.ValidateDraft(name.Text ?? "", baseUrl.Text ?? "");
             save.IsEnabled = problem is null;
-            var entered = (name.Text ?? "").Trim().Length > 0
-                || (baseUrl.Text ?? "").Trim().Length > 0
-                || (model.Text ?? "").Trim().Length > 0;
+            var entered = (name.Text ?? "").Trim().Length > 0 || (baseUrl.Text ?? "").Trim().Length > 0;
             if (problem is not null && entered)
                 SetProviderStatus(true, HubStrings.Get(problem));
             else
@@ -1796,17 +1789,16 @@ public partial class SettingsPage : UserControl
 
         name.TextChanged += (_, _) => RefreshDraft();
         baseUrl.TextChanged += (_, _) => RefreshDraft();
-        model.TextChanged += (_, _) => RefreshDraft();
         RefreshDraft();
 
         return stack;
     }
 
-    private async Task CommitAddProviderDraft(TextBox name, TextBox baseUrl, TextBox model)
+    private async Task CommitAddProviderDraft(TextBox name, TextBox baseUrl)
     {
         if (_chat is null) return;
 
-        var created = _chat.AddProvider(name.Text ?? "", baseUrl.Text ?? "", model.Text ?? "", null, out var problem);
+        var created = _chat.AddProvider(name.Text ?? "", baseUrl.Text ?? "", "", null, out var problem);
         if (created is null)
         {
             // Whatever refused it says which field, in its own words. Reporting a fixed "invalid URL" here is
@@ -3103,13 +3095,11 @@ public partial class SettingsPage : UserControl
         /// <summary>The draft form inserted at the top of the provider list by "add custom endpoint".</summary>
         internal const string AddProviderDraft = "provider-add-draft";
 
-        // The add draft's three boxes and its save button. Tagged because this form shipped with the model box
-        // painted on top of the name box (its grid declared one row and the field asked for row 1) and nothing
-        // could tell: an assertion has to be able to ask where each box actually is, and whether save is still
-        // greyed out.
+        // The add draft's two boxes and its save button. Tagged because this form shipped with a field painted on
+        // top of another (its grid declared one row while a second field asked for row 1) and nothing could tell:
+        // an assertion has to be able to ask where each box actually is, and whether save is still greyed out.
         internal const string AddDraftName = "provider-add-name";
         internal const string AddDraftBaseUrl = "provider-add-base-url";
-        internal const string AddDraftModel = "provider-add-model";
         internal const string AddDraftSave = "provider-add-save";
     }
 private string SelectedToolApprovalMode=> ToolApprovalPicker.SelectedItem is ComboBoxItem { Tag: string tag } && IsToolApprovalMode(tag) ? tag : ToolApprovalModes.Ask;
