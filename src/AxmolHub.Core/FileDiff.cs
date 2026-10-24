@@ -88,7 +88,8 @@ public static class FileDiff
         var capped = limits ?? new DiffLimits();
         var exact = true;
         List<Edit> edits;
-        if (original.SequenceEqual(updated, StringComparer.Ordinal)) edits = [];
+        if (original.SequenceEqual(updated, StringComparer.Ordinal))
+            edits = original.Select(line => new Edit(Kind.Equal, line)).ToList();
         else if ((long)(originalText?.Length ?? 0) + (updatedText?.Length ?? 0) > capped.MaxTotalCharacters)
         {
             // Reading the bytes was already capped; this cap is about the cost of comparing what was read.

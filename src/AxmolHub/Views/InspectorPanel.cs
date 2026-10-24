@@ -29,6 +29,8 @@ internal sealed partial class InspectorPanel : UserControl
     /// it has no session, no log and no thread to wait on, and a pane that goes and does I/O is a pane a check
     /// cannot drive from a fixture.</summary>
     public event Action? RepoRefreshRequested;
+    internal event Action<GitRepositoryState, GitStatusEntry, GitFileRange>? OpenGitComparisonRequested;
+    internal event Action<ChangedFile, ChatFileSnapshot>? OpenAiComparisonRequested;
 
     /// <summary>Raised by one of the empty-scope jumps: "this list is empty, the other one is not — the reader
     /// could want that one instead". The panel names the tab it wants and never switches itself, because landing
@@ -469,8 +471,21 @@ internal sealed partial class InspectorPanel : UserControl
         };
 
         container.Children.Add(header);
+        var ranges = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(6, 0, 0, 4) };
+        if (entry.Untracked || entry.WorktreeState != " " && entry.WorktreeState != "U")
+            ranges.Children.Add(GitRangeButton("InspectorGitWorkingTree", state, entry, GitFileRange.WorkingTree));
+        if (!entry.Untracked && entry.IndexState != " " && entry.IndexState != "U")
+            ranges.Children.Add(GitRangeButton("InspectorGitIndex", state, entry, GitFileRange.Index));
+        if (ranges.Children.Count > 0) container.Children.Add(ranges);
         container.Children.Add(detail);
         return container;
+    }
+
+    private Button GitRangeButton(string textKey, GitRepositoryState state, GitStatusEntry entry, GitFileRange range)
+    {
+        var button = new Button { Content = HubStrings.Get(textKey), Classes = { "viewer-action" }, Tag = "InspectorGitRange" };
+        button.Click += (_, _) => OpenGitComparisonRequested?.Invoke(state, entry, range);
+        return button;
     }
 
     /// <summary>A muted line of prose in the body. Used twice (the caveat and the shared-path mark), so it is one
@@ -664,9 +679,28 @@ internal sealed partial class InspectorPanel : UserControl
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
     {
         var (diff, state) = resolveDiff(change);
-        return diff is null
-            ? EmptyLine(DiffUnavailableKey(change, state))
-            : BuildDiffBlock(diff);
+        if (diff is null) return EmptyLine(DiffUnavailableKey(change, state));
+
+        var body = new StackPanel { Spacing = 6 };
+        var snapshotResult = resolveSnapshot?.Invoke(change);
+        var snapshot = snapshotResult?.Snapshot;
+        if (snapshot is not null)
+        {
+            var compare = new Button
+            {
+                Content = HubStrings.Get("InspectorDiffCompareSideBySide"),
+                Classes = { "inspector-jump" },
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Tag = "InspectorDiffCompareSideBySide",
+            };
+            compare.Click += (_, _) =>
+            {
+                OpenAiComparisonRequested?.Invoke(change, snapshot);
+            };
+            body.Children.Add(compare);
+        }
+        body.Children.Add(BuildDiffBlock(diff));
+        return body;
     }
 
     private static string DiffUnavailableKey(ChangedFile change, UndoCopyState state) => state switch

@@ -291,6 +291,18 @@ internal static class CodeWorkspaceChecks
                     && big.New.Snapshot.Detail!.Contains("4096", StringComparison.Ordinal),
                     $"oversized: {big.Detail ?? big.New.Snapshot.Detail}");
             });
+            var headCommit = (await runner.RunAsync(git, ["rev-parse", "HEAD"], repoRoot)).Output.Trim();
+            await Claim("a selected commit compares against its first parent using bounded raw blobs", async () =>
+            {
+                var commitComparison = await GitRepository.ReadCommitFileAsync(repoRoot, "three-way.txt", headCommit, runner);
+                Require(commitComparison.IsReadable && commitComparison.Range == GitFileRange.Commit
+                    && !commitComparison.Old.Exists && commitComparison.New.Snapshot.Text == Head,
+                    $"initial commit comparison: {commitComparison.Detail ?? $"{commitComparison.Old.Exists}|{commitComparison.New.Snapshot.Text}"}");
+                var ordinary = await GitRepository.ReadCommitFileAsync(repoRoot, "crlf.txt", headCommit, runner);
+                Require(ordinary.IsReadable && !ordinary.Old.Exists && ordinary.New.Exists,
+                    $"initial commit parent should be empty: {ordinary.Detail}");
+            });
+
             // The one thing the raw channel exists for: source text must not arrive in the command log.
             await Claim("blob text never reaches the command log, which still records the argv and exit code", () =>
             {
@@ -364,6 +376,16 @@ internal static class CodeWorkspaceChecks
             // CRLF against LF is a formatting difference, not a whole-file change: the rows say so.
             Require(FileDiff.Rows("a\r\nb\r\n", "a\nb\n").Rows.All(row => row.Kind == DiffRowKind.Equal),
                 "line-ending style became a change");
+            return Task.CompletedTask;
+        });
+        await Claim("identical and insertion-only diffs remain fully aligned", () =>
+        {
+            var identical = FileDiff.Rows("same\n", "same\n");
+            Require(identical.Exact && identical.Rows.Count == 1
+                && identical.Rows[0] is { Kind: DiffRowKind.Equal, OriginalLine: 1, UpdatedLine: 1 }, "identical diff lost its line");
+            var inserted = FileDiff.Rows("base\n", "base\nnew\n");
+            Require(inserted.Exact && inserted.Rows.Any(r => r.Kind == DiffRowKind.Insert
+                && r.OriginalLine is null && r.UpdatedLine == 2), "inserted line numbering was not independent");
             return Task.CompletedTask;
         });
         await Claim("the budget degrades to a marked-changed script and says the alignment is not exact", () =>

@@ -25,6 +25,16 @@ internal sealed class ShellCodeWorkspaceChecks(Action<bool, string> check)
         var watch = Stopwatch.StartNew();
         var source = "/* comment\nstill comment */\nint value = 42;\n" +
             string.Join('\n', Enumerable.Range(4, 180).Select(n => $"int row{n} = {n};"));
+        var identical = AxmolHub.Core.FileDiff.Rows("same\n", "same\n");
+        check(identical.Exact && identical.Rows.Count == 1
+            && identical.Rows[0] is { Kind: AxmolHub.Core.DiffRowKind.Equal, OriginalLine: 1, UpdatedLine: 1 },
+            "代码工作区：相同文件仍映射为一对真实行");
+        var deletion = AxmolHub.Core.FileDiff.Rows("one\ntwo\nthree\n", "one\nthree\n");
+        check(deletion.Rows.Any(row => row.Kind == AxmolHub.Core.DiffRowKind.Delete
+            && row.OriginalLine == 2 && row.UpdatedLine is null)
+            && deletion.Rows.Any(row => row.Kind == AxmolHub.Core.DiffRowKind.Equal
+            && row.OriginalLine == 3 && row.UpdatedLine == 2),
+            "代码工作区：删除行与后续行保留独立行号");
         var sourceCount = new TextDocument(source).LineCount;
         var leftMap = Enumerable.Range(1, sourceCount).ToList();
         leftMap.InsertRange(1, new int[3]);

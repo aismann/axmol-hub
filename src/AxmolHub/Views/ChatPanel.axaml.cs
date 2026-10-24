@@ -272,6 +272,7 @@ public partial class ChatPanel : UserControl
         // A repository read lands whenever git finishes, which is nowhere on the token stream. The pane decides
         // whether it still wants the answer; nothing here polls, and nothing here runs a git.
         _chat.RepositoryChanged += OnRepositoryChanged;
+
         // Tool activity already arrives on the UI thread, and it carries the session it happened in: a reply
         // running out of sight must not rewrite the status line of the one on screen.
         _chat.ToolActivityChanged += (conversationId, name, completed) =>

@@ -404,6 +404,39 @@ public partial class ChatPanel
             // The pane asks; this is where the ask turns into a git read, because the panel has no session, no
             // log and no thread to wait on — and a pane that did its own I/O could not be fed a fixture by a check.
             _inspector.RepoRefreshRequested += RequestRepositoryRead;
+            _inspector.OpenAiComparisonRequested += (change, snapshot) => DiffViewerWindow.Show(
+                TopLevel.GetTopLevel(this) as Window,
+                change.RelativePath,
+                HubStrings.Get("InspectorDiffViewBefore"),
+                HubStrings.Get("InspectorDiffViewAfter"),
+                snapshot.Before,
+                snapshot.After);
+            _inspector.OpenGitComparisonRequested += async (state, entry, range) =>
+            {
+                var conversationId = _chat?.ActiveConversation?.Id;
+                if (_chat is null || string.IsNullOrEmpty(conversationId) || state.Root is null) return;
+                try
+                {
+                    var comparison = await _chat.ReadGitFileAsync(conversationId, state.Root, entry, range);
+                    if (!comparison.IsReadable || comparison.Old.Exists && !comparison.Old.IsText
+                        || comparison.New.Exists && !comparison.New.IsText)
+                    {
+                        StatusMessage?.Invoke(comparison.Detail ?? "This Git version is not supported text.");
+                        return;
+                    }
+                    var leftLabel = range == GitFileRange.WorkingTree ? "Index" : "HEAD";
+                    var rightLabel = range == GitFileRange.WorkingTree ? "Working tree" : "Index";
+                    DiffViewerWindow.Show(TopLevel.GetTopLevel(this) as Window,
+                        comparison.OldPath is null ? comparison.Path : comparison.OldPath + " → " + comparison.Path,
+                        leftLabel, rightLabel,
+                        comparison.Old.Exists ? comparison.Old.Snapshot.Text ?? "" : "",
+                        comparison.New.Exists ? comparison.New.Snapshot.Text ?? "" : "");
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                {
+                    StatusMessage?.Invoke("Git comparison failed: " + ex.Message);
+                }
+            };
             // An empty scope pointing at the one that is not goes out through the same door a run's chip uses:
             // landing on a tab can mean opening a column that is shut, and only the shell knows the page it is on.
             _inspector.ScopeJumpRequested += target => OpenInspector?.Invoke(target, -1);
@@ -412,8 +445,14 @@ public partial class ChatPanel
             _inspector.TabSelected += tab => InspectorTabFollowed?.Invoke(tab);
             // A change row clicked twice asks for the file, and the directory to read it from is the conversation's
             // own — asked of the chat at click time, because the pane outlives the conversation it was built for.
-            _inspector.OpenFileRequested += relativePath => CodeFileWindow.Show(
-                TopLevel.GetTopLevel(this) as Window, _chat?.ActiveConversation?.WorkspaceRoot, relativePath);
+            _inspector.OpenFileRequested += relativePath =>
+            {
+                var conversationId = _chat?.ActiveConversation?.Id;
+                if (string.IsNullOrEmpty(conversationId) || _chat is null) return;
+                CodeFileWindow.ShowEditor(TopLevel.GetTopLevel(this) as Window, conversationId, relativePath,
+                    _chat.WorkspaceScopeFor,
+                    () => _ = _chat.RefreshRepositoryAsync(conversationId));
+            };
         }
 
         var planText = PlanTextFor(conversation, turnIndex);

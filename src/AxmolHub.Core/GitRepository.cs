@@ -100,6 +100,7 @@ public enum GitFileRange
 {
     WorkingTree,
     Index,
+    Commit,
 }
 
 /// <summary>One side of a comparison: whether it exists at all, the bounded snapshot of its bytes, and the version
@@ -282,6 +283,60 @@ public static class GitRepository
             return null;
         var text = WorkspaceTools.ReadAll(full);
         return text is null ? null : FileDiff.Unified("", text, entry.RelativePath, limits);
+    }
+
+    /// <summary>Compare a fixed commit with its first parent. Initial commits use the empty tree; merge commits
+    /// explicitly identify the first parent so the UI never implies an unspecified merge-base comparison.</summary>
+    public static async Task<GitFileComparison> ReadCommitFileAsync(string repositoryRoot, string path, string commit,
+        ProcessRunner runner, IReadOnlyList<string>? sensitiveValues = null,
+        CancellationToken cancellation = default, int maxBytes = TextFile.MaxDiffBytes)
+    {
+        GitFileComparison Failed(string detail) => new(path, null, GitFileRange.Commit,
+            GitFileVersion.Absent(), GitFileVersion.Absent(), detail);
+        if (CommandShells.Resolve("git") is not { } git) return Failed("git is not installed.");
+        try
+        {
+            var root = Path.GetFullPath(repositoryRoot);
+            var full = FullPathInside(root, path);
+            if (full is null) return Failed("The path must be repository-relative.");
+            var resolved = await runner.RunAsync(git, ["rev-parse", "--verify", "--quiet", commit + "^{commit}"], root,
+                timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+            var oid = resolved.Output.Trim();
+            if (resolved.ExitCode != 0 || oid.Length is not (40 or 64)) return Failed("The selected commit is unavailable.");
+            var parents = await runner.RunAsync(git, ["rev-list", "--parents", "-n", "1", oid], root,
+                timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+            if (parents.ExitCode != 0) return Failed(FirstText(parents.Error, parents.Output) ?? "Could not read commit parents.");
+            var fields = parents.Output.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (fields.Length == 0 || fields[0] != oid) return Failed("Git returned an invalid commit record.");
+            var newer = await ReadTreeVersionAsync(git, runner, root, oid, path, maxBytes, sensitiveValues, cancellation);
+            var older = fields.Length > 1
+                ? await ReadTreeVersionAsync(git, runner, root, fields[1], path, maxBytes, sensitiveValues, cancellation)
+                : GitFileVersion.Absent();
+            if (older.Snapshot.State == TextFileState.Failed || newer.Snapshot.State == TextFileState.Failed)
+                return Failed(older.Snapshot.Detail ?? newer.Snapshot.Detail ?? "Commit blob could not be read.");
+            return new GitFileComparison(path, null, GitFileRange.Commit, older, newer);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return Failed(ex is IdleTimeoutException stalled ? Stalled(stalled) : ex.Message);
+        }
+    }
+
+    private static async Task<GitFileVersion> ReadTreeVersionAsync(string git, ProcessRunner runner, string root,
+        string treeish, string path, int maxBytes, IReadOnlyList<string>? sensitiveValues, CancellationToken cancellation)
+    {
+        var result = await runner.RunAsync(git, ["--literal-pathspecs", "ls-tree", "-z", treeish, "--", path], root,
+            timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        if (result.ExitCode != 0) return new(false, new TextFileSnapshot(TextFileState.Failed,
+            detail: FirstText(result.Error, result.Output) ?? "git ls-tree failed."), null);
+        var record = result.Output.Split('\0').FirstOrDefault(value => value.Length > 0);
+        if (record is null) return GitFileVersion.Absent();
+        var tab = record.IndexOf('\t');
+        if (tab < 0 || record[(tab + 1)..] != path) return GitFileVersion.Absent();
+        var metadata = record[..tab].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (metadata.Length != 3 || metadata[1] != "blob")
+            return new(true, new TextFileSnapshot(TextFileState.Failed, detail: "The selected version is not a regular text blob."), null);
+        return await ReadBlobAsync(git, runner, root, metadata[2], maxBytes, sensitiveValues, cancellation).ConfigureAwait(false);
     }
 
     /// <summary>Read both sides of one file for one range, on demand: opening a row is the only thing that pays for

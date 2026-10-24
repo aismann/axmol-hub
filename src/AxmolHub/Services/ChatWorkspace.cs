@@ -182,6 +182,10 @@ public sealed partial class ChatWorkspace : IDisposable
     /// nothing was on screen. Unlike the permission mode there is no app-wide default to fall back on — a
     /// sandbox is a fact about one job, not a preference.</summary>
     public string? ActiveWorkspaceRoot { get => _sessions.ActiveWorkspaceRoot; }
+
+    /// <summary>Build the current capability scope for one existing conversation. Editor saves call this again
+    /// rather than retaining permissions from the moment a file was opened.</summary>
+    internal WorkspaceToolScope WorkspaceScopeFor(string conversationId) => _execution.ScopeFor(conversationId).Workspace;
     /// <summary>
     /// The directories the user has designated as workspaces, oldest first — the list the sidebar hangs a group on.
     /// It is kept apart from the sessions that work in those directories on purpose: a group is a place somebody
@@ -792,6 +796,9 @@ public sealed partial class ChatWorkspace : IDisposable
     /// Concurrent asks share one read, because two clicks must not start two gits.
     /// </summary>
     public Task<RepositorySnapshot> RefreshRepositoryAsync(string conversationId) => _sessions.RefreshRepositoryAsync(conversationId);
+    internal Task<GitFileComparison> ReadGitFileAsync(string conversationId, string repositoryRoot,
+        GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
+        => _sessions.ReadGitFileAsync(conversationId, repositoryRoot, entry, range, cancellationToken);
 
     /// <summary>Where an approval decision is recorded. Set by the shell to Hub's activity log: a decision that
     /// outlives the window (a parked call answered after a restart) has to leave a trace behind, or the audit

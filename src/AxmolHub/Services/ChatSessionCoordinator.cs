@@ -800,6 +800,20 @@ internal sealed partial class ChatSessionCoordinator
     private string? _repositoryReadingRoot;
     /// <summary>Raised when a read lands, so an open pane repaints. Nothing raises it on a timer.</summary>
     internal Action? RepositoryChanged;
+    internal async Task<GitFileComparison> ReadGitFileAsync(string conversationId, string repositoryRoot,
+        GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
+    {
+        var scope = Execution.ScopeFor(conversationId).Workspace;
+        var expected = WorkspacePaths.CanonicalRoot(scope.WorkspaceRoot);
+        var actual = WorkspacePaths.CanonicalRoot(repositoryRoot);
+        if (expected is null || actual is null || !string.Equals(expected, actual, StringComparison.Ordinal))
+            return new GitFileComparison(entry.RelativePath, entry.OriginalPath, range,
+                GitFileVersion.Absent(), GitFileVersion.Absent(), "Repository root is outside the current session workspace.");
+        var runner = new ProcessRunner(line => scope.Log?.Write(line));
+        return await GitRepository.ReadFileAsync(actual, entry.RelativePath, range, runner,
+            entry.OriginalPath, scope.SensitiveValues, cancellationToken).ConfigureAwait(false);
+    }
+
     internal RepositorySnapshot? RepositoryFor(string? workspaceRoot)
         => _repository is { } snapshot
            && string.Equals(RepositoryKey(snapshot.WorkspaceRoot), RepositoryKey(workspaceRoot), StringComparison.Ordinal)
