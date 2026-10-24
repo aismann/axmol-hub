@@ -1,0 +1,62 @@
+<SyntaxDefinition name="CMake" extensions=".cmake"
+                  xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+  <Color name="Comment" foreground="#7F8799" />
+  <Color name="Command" foreground="#F7768E" fontWeight="bold" />
+  <Color name="Variable" foreground="#BB9AF7" />
+  <Color name="String" foreground="#7DCFFF" />
+  <Color name="Number" foreground="#BB9AF7" />
+  <RuleSet>
+    <Span color="Comment" begin="#" />
+    <Span color="String" begin="&quot;" end="&quot;" />
+    <Rule color="Variable">\$\{[^}]*\}</Rule>
+    <Rule color="Number">\b\d+(\.\d+)?\b</Rule>
+    <Keywords color="Command">
+      <Word>add_custom_command</Word>
+      <Word>add_custom_target</Word>
+      <Word>add_definitions</Word>
+      <Word>add_executable</Word>
+      <Word>add_library</Word>
+      <Word>add_subdirectory</Word>
+      <Word>aux_source_directory</Word>
+      <Word>break</Word>
+      <Word>cmake_minimum_required</Word>
+      <Word>configure_file</Word>
+      <Word>continue</Word>
+      <Word>else</Word>
+      <Word>elseif</Word>
+      <Word>endforeach</Word>
+      <Word>endfunction</Word>
+      <Word>endif</Word>
+      <Word>endmacro</Word>
+      <Word>endwhile</Word>
+      <Word>file</Word>
+      <Word>find_library</Word>
+      <Word>find_package</Word>
+      <Word>find_program</Word>
+      <Word>foreach</Word>
+      <Word>function</Word>
+      <Word>get_target_property</Word>
+      <Word>if</Word>
+      <Word>include</Word>
+      <Word>include_directories</Word>
+      <Word>install</Word>
+      <Word>link_directories</Word>
+      <Word>list</Word>
+      <Word>macro</Word>
+      <Word>message</Word>
+      <Word>option</Word>
+      <Word>project</Word>
+      <Word>return</Word>
+      <Word>set</Word>
+      <Word>set_property</Word>
+      <Word>set_target_properties</Word>
+      <Word>string</Word>
+      <Word>target_compile_definitions</Word>
+      <Word>target_compile_options</Word>
+      <Word>target_include_directories</Word>
+      <Word>target_link_libraries</Word>
+      <Word>unset</Word>
+      <Word>while</Word>
+    </Keywords>
+  </RuleSet>
+</SyntaxDefinition>

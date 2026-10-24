@@ -510,6 +510,10 @@ internal sealed partial class InspectorPanel : UserControl
         return button;
     }
 
+    /// <summary>A change row opened for reading rather than for its diff. The panel names files but has no session
+    /// and does no I/O of its own, so the path goes out exactly as the repository refresh ask does.</summary>
+    internal event Action<string>? OpenFileRequested;
+
     private Control BuildChangeRow(ChangedFile change, Func<ChangedFile, (string? Diff, UndoCopyState State)> resolveDiff,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
     {
@@ -518,6 +522,13 @@ internal sealed partial class InspectorPanel : UserControl
         var (added, removed) = PreviewCounts(change);
 
         var header = new Button { Classes = { "inspector-change-header" }, Tag = change.RelativePath };
+        // The row's first click opens its diff; the second asks for the file. A button swallows the gesture in
+        // between, so the handler marks it handled rather than letting the click behind it toggle the row shut.
+        header.DoubleTapped += (_, e) =>
+        {
+            e.Handled = true;
+            OpenFileRequested?.Invoke(change.RelativePath);
+        };
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
 
         var verdict = new TextBlock

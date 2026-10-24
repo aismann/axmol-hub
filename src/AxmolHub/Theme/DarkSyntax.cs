@@ -15,8 +15,8 @@ namespace AxmolHub;
 /// <para>AvalonEdit ships twenty-one built-in syntax definitions and all of them are painted for a white page:
 /// the file behind an <c>xml</c> or <c>html</c> fence uses <c>Blue</c> for a tag's value and <c>DarkMagenta</c>
 /// for the tag itself, which measure 1.9:1 and 1.9:1 against <c>Hub.SurfaceSunken</c>. Markdown.Avalonia hands
-/// those out for every language it knows, so each block that was not C++ — the one language Hub ships its own
-/// definition for — arrived with colours nobody could read.</para>
+/// those out for every language it knows, so each block that was not one of Hub's own three — C++, Lua and CMake —
+/// arrived with colours nobody could read.</para>
 ///
 /// <para>Rather than keep twenty-one hand-written files, the shipped XML is rewritten: a foreground that cannot
 /// be read on the well keeps its hue and its saturation and is lifted until it can, and a background is dropped,
@@ -32,10 +32,11 @@ internal static class DarkSyntax
 
     private const string ResourcePrefix = "AvaloniaEdit.Highlighting.Resources.";
 
-    /// <summary>The definition Hub paints itself (<c>Assets/Cpp.xshd</c>, a dark palette by construction). It is
-    /// named <c>C++</c> exactly like the built-in it replaced, so the name cannot tell the two apart and the
-    /// built-in must never be allowed to answer for it.</summary>
-    private static readonly string[] OwnedElsewhere = ["C++"];
+    /// <summary>A definition Hub ships itself is a dark palette by construction, and its name is not enough to
+    /// tell it from the library file of the same name — the built-in is <c>C++</c> exactly like the one in
+    /// <c>CodeSyntax</c> — so ownership is asked of the table that loaded it, never of the name.</summary>
+    private static bool IsShippedByHub(IHighlightingDefinition definition)
+        => CodeSyntax.OwnedNames.Contains(definition.Name);
 
     /// <summary>Adapted definitions, keyed by the name the resolver hands back and by the well they were fitted
     /// to — a probe theme with a different sunken surface must not inherit the product's numbers.</summary>
@@ -50,7 +51,7 @@ internal static class DarkSyntax
     /// language with no built-in file is already rendered as plain text, which reads fine.</summary>
     internal static IHighlightingDefinition? ForBackdrop(IHighlightingDefinition? definition)
     {
-        if (definition is null || OwnedElsewhere.Contains(definition.Name)) return definition;
+        if (definition is null || IsShippedByHub(definition)) return definition;
         var well = Well();
         if (!IsDark(well)) return definition;
 

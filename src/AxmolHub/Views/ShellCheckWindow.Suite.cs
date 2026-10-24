@@ -79,6 +79,11 @@ internal sealed class ShellCheckSuite
 
     internal async Task RunAsync(string scratchRoot)
     {
+        if (Environment.GetEnvironmentVariable("AXMOL_CODE_WORKSPACE_CHECK_ONLY") == "1")
+        {
+            await new ShellCodeWorkspaceChecks(Check).VerifyAsync();
+            return;
+        }
         var gitWorkflow = new ShellGitWorkflowChecks(_report, Check);
         if (Environment.GetEnvironmentVariable("AXMOL_GIT_WORKFLOW_CHECK_ONLY") == "1")
         {

@@ -509,6 +509,25 @@ internal sealed class ShellAssistantChecks
         panel.ApplyMarkdownSyntaxHighlightingForCheck();
         Check(panel.HasSyntaxHighlightedCode("cpp"),
             "C++ fenced code block 使用可用的语法定义高亮");
+        // A fence tag and a file name are one question asked twice, and two tables would answer it differently a
+        // release apart. Hub's own three definitions are the ones a check can name outright; for the library's own
+        // languages it is enough that the same table still reaches them.
+        Check(new[] { ("cpp", "C++"), ("c++", "C++"), ("lua", "Lua"), ("cmake", "CMake") }
+                .All(pair => CodeSyntax.ForLanguage(pair.Item1)?.Name == pair.Item2)
+              && CodeSyntax.ForLanguage("python") is not null,
+            "围栏标签查的是 Hub 的共享语法表（cpp/c++/lua/cmake，python 落到库里的定义）");
+        Check(CodeSyntax.ForFile("Source/AppDelegate.cpp")?.Name == "C++"
+              && CodeSyntax.ForFile("src/main.lua")?.Name == "Lua"
+              && CodeSyntax.ForFile("build/CMakeLists.txt")?.Name == "CMake"
+              && CodeSyntax.ForFile("main.py") is not null
+              && CodeSyntax.ForFile("LICENSE") is null,
+            "文件名也落到同一张表上（.cpp/.lua/CMakeLists.txt/.py，无扩展名的不猜）");
+        // The second consumer of that table, built without a window: the file a change row opens is read-only and
+        // highlighted by the name it has, so the check can hold both halves without a render.
+        var surface = CodeSurface.ForFile("Source/AppDelegate.cpp", "int main() { return 0; }");
+        Check(surface.IsReadOnly && surface.SyntaxHighlighting?.Name == "C++",
+            "按文件名打开的只读视图用的是同一张表的定义（只读=" + surface.IsReadOnly + "，定义="
+            + (surface.SyntaxHighlighting?.Name ?? "无") + "）");
 
         // The built-in palettes are painted for a white page, so on a light shell this failure cannot appear at
         // all — and the suite starts in whatever the operating system uses. Ask for the dark one, read the

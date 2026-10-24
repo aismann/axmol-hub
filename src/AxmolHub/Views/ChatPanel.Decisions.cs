@@ -410,6 +410,10 @@ public partial class ChatPanel
             // And whichever tab the pane ends up showing, the shell is told, because the next repaint asks for a
             // tab by name. Without this the reader's own click is undone by the next streamed token.
             _inspector.TabSelected += tab => InspectorTabFollowed?.Invoke(tab);
+            // A change row clicked twice asks for the file, and the directory to read it from is the conversation's
+            // own — asked of the chat at click time, because the pane outlives the conversation it was built for.
+            _inspector.OpenFileRequested += relativePath => CodeFileWindow.Show(
+                TopLevel.GetTopLevel(this) as Window, _chat?.ActiveConversation?.WorkspaceRoot, relativePath);
         }
 
         var planText = PlanTextFor(conversation, turnIndex);

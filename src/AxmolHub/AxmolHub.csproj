@@ -109,6 +109,8 @@
     <Content Include="../../manifests/*.json" Link="manifests/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../manifests/*.xml" Link="manifests/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <AvaloniaResource Include="Assets/Cpp.xshd" />
+    <AvaloniaResource Include="Assets/Lua.xshd" />
+    <AvaloniaResource Include="Assets/CMake.xshd" />
     <!-- Each icon travels its own channel: .ico is compiled into the Windows exe by the ApplicationIcon
          above; .icns is the macOS bundle icon; hub-icon-512.png is vpk's icon argument (it becomes the
          .DirIcon and the hicolor icon inside AppDir). The 256 and 512 sizes are also read once more by

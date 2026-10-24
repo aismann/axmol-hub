@@ -34,7 +34,10 @@ internal static partial class MarkdownMessageRenderer
     private static readonly Regex BoldRunPattern = new(@"\*\*(?=\S)([^*\r\n]+?[^\s*])\*\*", RegexOptions.Compiled);
     private static readonly Regex ChipSplitPattern = new("(\u0001\\d+\u0002)", RegexOptions.Compiled);
     private static readonly Regex ChipTokenPattern = new("\u0001(\\d+)\u0002", RegexOptions.Compiled);
-    private static readonly Lazy<(SyntaxHighlight Plugin, SyntaxHighlightProvider Provider)> Syntax = new(CreateSyntax);
+    // What makes a fenced block an editor at all, rather than a choice of colours: the definition comes from
+    // CodeSyntax, which is the same table the code editor reads. Aliases registered here would be that second
+    // table returning.
+    private static readonly Lazy<SyntaxHighlight> Syntax = new(() => new SyntaxHighlight());
 
     /// <summary>Renders a Markdown document.
     ///
@@ -68,7 +71,7 @@ internal static partial class MarkdownMessageRenderer
         var syntax = Syntax.Value;
         if (measurement is not null) measurement.SyntaxMs += measurement.ElapsedMs - syntaxStarted;
         var plugins = new MdAvPlugins();
-        plugins.Plugins.Add(syntax.Plugin);
+        plugins.Plugins.Add(syntax);
         viewer.Plugins = plugins;
         EventHandler? layoutUpdated = null;
         layoutUpdated = (_, _) =>
@@ -275,11 +278,11 @@ internal static partial class MarkdownMessageRenderer
         {
             foundEditor = true;
             editor.Classes.Add("markdown-code-editor");
-            if (editor.SyntaxHighlighting is null && editor.Tag is string language)
-                editor.SyntaxHighlighting = Syntax.Value.Provider.Solve(language);
-            // The plugin answers for the languages Hub ships a definition of its own; everything else falls to
-            // the library's built-ins, and every one of those was painted for a white page. The well this block
-            // actually sits in is what says whether the palette it got can be read.
+            if (editor.Tag is string language)
+                editor.SyntaxHighlighting = CodeSyntax.ForLanguage(language);
+            // The table answers for Hub's own three languages first and falls to the library for the rest, and
+            // every library definition was painted for a white page. The well this block actually sits in is
+            // what says whether the palette it got can be read — the plugin's own pick is replaced, not kept.
             editor.SyntaxHighlighting = DarkSyntax.ForBackdrop(editor.SyntaxHighlighting);
 
             InstallCodeBlockToolbar(editor);
@@ -387,18 +390,6 @@ internal static partial class MarkdownMessageRenderer
         content.Children.Add(editor);
         codeBlock.Classes.Add("hub-code-block-layout");
         codeBlock.Child = content;
-    }
-
-    private static (SyntaxHighlight Plugin, SyntaxHighlightProvider Provider) CreateSyntax()
-    {
-        var plugin = new SyntaxHighlight();
-        var xshd = new Uri("avares://AxmolHub/Assets/Cpp.xshd");
-        foreach (var alias in new[] { "c", "h", "cc", "cpp", "cxx", "hpp" })
-        {
-            plugin.Aliases.Add(new Alias { Name = alias, XSHD = xshd });
-        }
-
-        return (plugin, new SyntaxHighlightProvider(plugin.Aliases));
     }
 
     private sealed class CopyFeedbackState(Geometry originalIcon)
