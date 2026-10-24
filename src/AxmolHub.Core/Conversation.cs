@@ -185,6 +185,12 @@ public sealed record ContextBurn(long Input, long Output, long Reasoning, long C
 /// </summary>
 public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
 {
+    /// <summary>Stable identity for references between turns. Older session files receive an identity on load.</summary>
+    public string Id { get; init; } = Guid.NewGuid().ToString("N");
+
+    /// <summary>Stable id of the user or assistant message this turn replies to, if any.</summary>
+    public string? ReplyToId { get; init; }
+
     public string? ToolName { get; init; }
     public string? ToolCallId { get; init; }
     public string? ToolArguments { get; init; }

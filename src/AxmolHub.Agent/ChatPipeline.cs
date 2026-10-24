@@ -178,7 +178,7 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
         var wireTools = tools is { Count: > 0 } ? tools : declaredTools;
         var schemaTokens = ToolSchemaTokens(wireTools);
         var budget = Math.Max(MinimumConversationBudgetTokens, window.ConversationRoom - schemaTokens);
-        var trimmed = ContextTrimmer.Trim(history, budget, systemPrompt);
+        var trimmed = ContextTrimmer.Trim(ResolveReplies(history), budget, systemPrompt);
         var messages = ToChatMessages(trimmed, images);
         // Hub's own reading of the request it is about to send. Kept next to the request rather than recomputed
         // later, because the only comparison that means anything is this transcript against this estimate —
@@ -660,9 +660,25 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
     /// <paramref name="images"/> resolves one stored attachment to the bytes behind it. It is supplied by the
     /// caller that owns the data root, because this layer has no business knowing where the pictures live — the
     /// same reason the tool scope is handed in per request rather than reached for.</summary>
+    private static IReadOnlyList<ChatTurn> ResolveReplies(IReadOnlyList<ChatTurn> turns)
+    {
+        var byId = turns.Where(turn => turn.Id.Length > 0)
+            .GroupBy(turn => turn.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+        return turns.Select(turn => turn.Role == ChatRoles.User && turn.ReplyToId is { Length: > 0 } id
+                && byId.TryGetValue(id, out var target) && target.Role is ChatRoles.User or ChatRoles.Assistant
+            ? turn with
+            {
+                Text = $"[Replying to {(target.Role == ChatRoles.User ? "user" : "assistant")} message]\n> {target.Text.Replace("\n", "\n> ", StringComparison.Ordinal)}\n[/Reply]\n\n{turn.Text}",
+                ReplyToId = null,
+            }
+            : turn).ToArray();
+    }
+
     public static List<ChatMessage> ToChatMessages(IReadOnlyList<ChatTurn> turns,
         Func<ChatImage, BinaryData?>? images = null)
     {
+        turns = ResolveReplies(turns);
         var messages = new List<ChatMessage>(turns.Count);
         foreach (var turn in turns)
         {

@@ -37,6 +37,16 @@ internal static class AiContextChecks
         var big = string.Join('\n', Enumerable.Range(1, 2000).Select(index => $"row{index}")) + "\n";
         if (!FileDiff.Unified(big, big.Replace("row1000\n", "ROW1000\n"), "src/big.cpp").Contains("@@ -997,7 +997,7 @@"))
             throw new Exception("A one-line edit in a 2000-line file lost its hunk.");
+        var citedUser = ChatTurn.User("请解释") with { Id = "user-target" };
+        var citedAssistant = ChatTurn.Assistant("这是答案") with { Id = "assistant-target" };
+        var reply = ChatTurn.User("继续说明") with { ReplyToId = "assistant-target" };
+        var wireReply = ChatPipeline.ToChatMessages([citedUser, citedAssistant, reply]).Last();
+        if (!wireReply.Contents.OfType<TextContent>().Any(content => content.Text.Contains("Replying to assistant message")
+                && content.Text.Contains("这是答案") && content.Text.Contains("继续说明")))
+            throw new Exception("A reply reference did not resolve to the cited assistant text for the model request.");
+        var missingReply = ChatPipeline.ToChatMessages([ChatTurn.User("独立回复") with { ReplyToId = "missing" }]).Last();
+        if (missingReply.Contents.OfType<TextContent>().Any(content => content.Text.Contains("Replying to")))
+            throw new Exception("A missing reply target added fabricated context.");
         Console.WriteLine("PASS: the unified diff names its hunks correctly and stays inside the preview cap.");
         // An independent recount is the oracle: CutPoint and SplitsToolCall must agree with a second, dumb
         // implementation at every boundary, or one of them is reasoning about a shape the other does not handle.

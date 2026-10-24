@@ -1389,9 +1389,10 @@ internal sealed class ShellAssistantChecks
         Check(panel.BubbleActionBarOpacity(0) == 0,
             "用户消息操作栏未悬停时保持隐藏");
         Check(panel.BubbleHasIconAction(1, "CopyMessage") && panel.BubbleHasIconAction(1, "RegenerateMessage")
-              && panel.BubbleHasIconAction(1, "BranchFromHere") && panel.BubbleIconActionCount(1) == 3
+              && panel.BubbleHasIconAction(1, "BranchFromHere") && panel.BubbleHasIconAction(1, "ReplyToMessage")
+              && panel.BubbleIconActionCount(1) == 4
               && !panel.BubbleHasIconAction(1, "ContinueReply") && !panel.BubbleHasIconAction(1, "DeleteMessage"),
-            "最后一条助手消息只有复制 / 重新生成 / 分叉三个图标，继续与删除已退出操作条（实际 "
+            "最后一条助手消息提供复制 / 重新生成 / 分叉 / 回复四个图标，继续与删除已退出操作条（实际 "
             + panel.BubbleIconActionCount(1) + " 个）");
         Check(HubTexts.Get("BranchFromHere", HubTexts.ChineseLanguage) == "从此处创建分支任务"
               && HubTexts.Get("BranchFromHere", HubTexts.EnglishLanguage) == "Branch a new task from here",

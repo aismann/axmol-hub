@@ -1184,7 +1184,7 @@ internal sealed partial class ChatExecutionCoordinator
         => TryEnqueueSend(conversationId, text, attachedContext, pictures, false, out refusalKey);
     internal bool TryEnqueueSend(string conversationId, string text, string? attachedContext,
         IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey, string? expectedPlanToken = null,
-        bool isGitOperationFallback = false)
+        bool isGitOperationFallback = false, string? replyToId = null)
     {
         refusalKey = null;
         if (_compressingConversations.Contains(conversationId))
@@ -1266,6 +1266,7 @@ internal sealed partial class ChatExecutionCoordinator
                 {
                     Plan = pending?.Plan,
                     IsGitOperationFallback = isGitOperationFallback,
+                    ReplyToId = replyToId,
                 };
                 opened.ProviderId = choice.Provider.Id;
                 opened.ModelName = choice.ModelName;

@@ -51,6 +51,7 @@ public partial class ChatPanel : UserControl
     private const double StickEpsilon = 6;
     private readonly ChatWorkspace _chat;
     private readonly List<ContextAttachment> _contextAttachments = [];
+    private string? _replyToId;
 
     /// <summary>
     /// The pictures this composer is holding, in the order they were added, still in memory. A draft that is
@@ -562,6 +563,7 @@ public partial class ChatPanel : UserControl
     {
         if (_chat is null) return;
         var viewed = _chat.ViewedConversationId;
+        if (viewed != _renderedConversationId && _replyToId is not null) ClearReplyTarget();
         if (_goalDraftSelected && !_startingGoalConversationForSend
             && _goalDraftConversationId != viewed)
             ClearGoalDraftSelection();
@@ -2630,6 +2632,26 @@ public partial class ChatPanel : UserControl
     {
         var fromUser = turn.Role == ChatRoles.User;
         var body = new StackPanel { Spacing = 8 };
+        if (turn.ReplyToId is { Length: > 0 } replyId
+            && _chat.ActiveConversation is { } activeConversation
+            && activeConversation.Id == conversationId
+            && activeConversation.Messages.FirstOrDefault(candidate => candidate.Id == replyId) is { } cited)
+        {
+            var speaker = cited.Role == ChatRoles.User ? HubStrings.Get("ReplyUser") : HubStrings.Get("ReplyAssistant");
+            body.Children.Add(new Border
+            {
+                Classes = { "reply-quote" },
+                Child = new StackPanel
+                {
+                    Spacing = 2,
+                    Children =
+                    {
+                        new TextBlock { Classes = { "reply-speaker" }, Text = speaker },
+                        new TextBlock { Text = cited.Text, TextWrapping = TextWrapping.Wrap, MaxHeight = 54 },
+                    },
+                },
+            });
+        }
 
         // Whose words these are is not optional information: a peer session's message would otherwise read as
         // something the user typed. The stored turn carries the source's id, so the title is looked up here — and
@@ -2894,6 +2916,35 @@ public partial class ChatPanel : UserControl
         ToolTip.SetTip(button, HubStrings.Get(tooltipKey));
         button.Click += (_, _) => action();
         return button;
+    }
+
+    private void SetReplyTarget(int index)
+    {
+        if (_chat.ActiveConversation is not { } conversation || index < 0 || index >= conversation.Messages.Count) return;
+        var target = conversation.Messages[index];
+        if (target.Role is not (ChatRoles.User or ChatRoles.Assistant) || target.Text.Length == 0
+            || target.ToolCallId is not null || target.PlanApprovalState is not null) return;
+        _replyToId = target.Id;
+        var speaker = target.Role == ChatRoles.User ? HubStrings.Get("ReplyUser") : HubStrings.Get("ReplyAssistant");
+        var preview = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        preview.Children.Add(new TextBlock
+        {
+            Text = $"{speaker}: {target.Text}",
+            TextTrimming = Avalonia.Media.TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = 680,
+        });
+        preview.Children.Add(IconActionButton("CancelReply", "Hub.Icon.Close", ClearReplyTarget));
+        ReplyPreview.Child = preview;
+        ReplyPreview.IsVisible = true;
+        InputBox.Focus();
+    }
+
+    private void ClearReplyTarget()
+    {
+        _replyToId = null;
+        ReplyPreview.Child = null;
+        ReplyPreview.IsVisible = false;
     }
 
     /// <summary>Puts a quoted block in the composer — where the right-click menu's 引用 hands a selection.
@@ -4072,6 +4123,16 @@ public partial class ChatPanel : UserControl
         if (role == ChatRoles.User && at is { } timestamp)
             bar.Children.Add(BuildMessageTimestamp(timestamp));
 
+        if (_chat.ActiveConversation is { } replyConversation && replyConversation.Id == actionSession
+            && index < replyConversation.Messages.Count
+            && replyConversation.Messages[index] is { Text.Length: > 0, ToolCallId: null, PlanApprovalState: null } replyTurn
+            && replyTurn.Role is ChatRoles.User or ChatRoles.Assistant)
+            bar.Children.Add(IconActionButton("ReplyToMessage", "Hub.Icon.Reply", () =>
+            {
+                var current = CurrentIndex();
+                if (current >= 0) SetReplyTarget(current);
+            }));
+
         if (role == ChatRoles.User)
         {
             bar.Children.Add(CopyMessageActionButton(CopyCurrentAsync));
@@ -4594,7 +4655,8 @@ public partial class ChatPanel : UserControl
             ReportPlanDraftChanged();
             return;
         }
-        if (!SendTextAsync(text, context, pictures, expectedPlanToken)) return;
+        if (!SendTextAsync(text, context, pictures, expectedPlanToken, _replyToId)) return;
+        ClearReplyTarget();
         _contextAttachments.Clear();
         _pendingPictures.Clear();
         RenderContextAttachments();
@@ -4605,7 +4667,7 @@ public partial class ChatPanel : UserControl
     /// the transcript like any other row, so there is no second copy of it here to keep in step. Reports whether
     /// the message got in, because the caller owns the draft and must not empty the box on a refusal.</summary>
     private bool SendTextAsync(string text, string? attachedContext = null, IReadOnlyList<byte[]>? pictures = null,
-        string? expectedPlanToken = null)
+        string? expectedPlanToken = null, string? replyToId = null)
     {
         if (text.Length == 0 && pictures is not { Count: > 0 }) return false;
         var isGoal = GoalDraftSelectedForActiveConversation;
@@ -4618,7 +4680,7 @@ public partial class ChatPanel : UserControl
         }
         if (_chat.ActiveConversation is not { } conversation) return false;
 
-        if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, isGoal, out var refusalKey, expectedPlanToken))
+        if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, isGoal, out var refusalKey, expectedPlanToken, replyToId))
         {
             if (refusalKey == "ChatPlanChanged") ReportPlanDraftChanged();
             else AppendNotice(NoticeFor(refusalKey, conversation.Id), danger: true);

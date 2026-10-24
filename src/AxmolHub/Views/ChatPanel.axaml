@@ -22,6 +22,26 @@
       <Setter Property="MaxWidth" Value="560" />
     </Style>
 
+    <Style Selector="Border.reply-preview, Border.reply-quote">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="Padding" Value="8,5" />
+    </Style>
+    <Style Selector="Border.reply-preview">
+      <Setter Property="Margin" Value="0,0,0,8" />
+      <Setter Property="MaxWidth" Value="780" />
+    </Style>
+    <Style Selector="Border.reply-quote">
+      <Setter Property="MaxWidth" Value="560" />
+      <Setter Property="BorderThickness" Value="2,0,0,0" />
+    </Style>
+    <Style Selector="TextBlock.reply-speaker">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+    </Style>
     <Style Selector="Border.goal-message-card">
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
@@ -1443,16 +1463,17 @@
               Background="{DynamicResource Hub.Surface}" CornerRadius="14"
               HorizontalAlignment="Stretch" MaxWidth="820" ClipToBounds="True"
               Margin="0,6,0,0" Padding="14,12,12,10">
-        <Grid x:Name="ComposerContent" RowDefinitions="Auto,Auto,Auto">
-          <TextBox x:Name="InputBox" Grid.Row="0" AcceptsReturn="True" MinHeight="48" MaxHeight="160"
+        <Grid x:Name="ComposerContent" RowDefinitions="Auto,Auto,Auto,Auto">
+          <Border x:Name="ReplyPreview" Grid.Row="0" Classes="reply-preview" IsVisible="False" />
+          <TextBox x:Name="InputBox" Grid.Row="1" AcceptsReturn="True" MinHeight="48" MaxHeight="160"
                    TextWrapping="Wrap" PlaceholderText="{DynamicResource InputPlaceholder}"
                    PlaceholderForeground="{DynamicResource Hub.TextTertiary}"
                    VerticalContentAlignment="Top"
                    Background="Transparent" BorderThickness="0" CornerRadius="0"
                    Padding="2,0" Margin="0" />
-          <WrapPanel x:Name="ContextAttachmentPanel" Grid.Row="1" Classes="context-attachments"
+          <WrapPanel x:Name="ContextAttachmentPanel" Grid.Row="2" Classes="context-attachments"
                      IsVisible="False" />
-          <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+          <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
             <WrapPanel x:Name="ComposerChoices" Grid.Column="0" VerticalAlignment="Center">
               <Button x:Name="AddContextButton" Classes="composer-plus"
                       HorizontalAlignment="Left" VerticalAlignment="Center"
