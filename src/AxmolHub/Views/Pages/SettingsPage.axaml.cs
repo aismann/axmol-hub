@@ -2008,10 +2008,6 @@ public partial class SettingsPage : UserControl
         heading.Children.Add(actions);
         section.Children.Add(heading);
 
-        // Present even when the list is empty: it is a provider-level fact, and a person pointing Hub at a gateway
-        // they know answers on /responses should be able to state that before the catalog has produced a model.
-        section.Children.Add(BuildProtocolRow(provider));
-
         // The model draft belongs only to its provider — without the id gate every group would render a copy.
         // Add drafts lead the list; an edit draft replaces its model row in place. _modelDraftProviderId answers
         // "whose model draft is this"; it is not _editingProviderId, which owns the provider edit form.
@@ -2248,94 +2244,6 @@ public partial class SettingsPage : UserControl
         ToolTip.SetTip(line, string.Format(System.Globalization.CultureInfo.CurrentCulture,
             HubStrings.Get("ModelContextSourceHint"), HubStrings.Get(ContextBudget.SourceLabelKey(source))));
         return line;
-    }
-
-    /// <summary>
-    /// Which wire this provider's models are called with: follow the catalog and the preset, or say it here.
-    ///
-    /// <para>It sits in the model band rather than the identity band because it is a fact about the models below
-    /// it, not about who the provider is. Only the two wires this build speaks are offered — there is no Anthropic
-    /// transport here — because a combo that can be set to a guaranteed refusal is a trap, not a choice.</para>
-    ///
-    /// <para>The muted line beside it states what the choice resolves to <b>now</b>, for the first model in the
-    /// list. That answer comes from rungs the combo cannot show — the preset's per-model wire, then the endpoint's
-    /// catalog — so without it someone sets "auto" and has no way to see what auto means.</para>
-    /// </summary>
-    private Control BuildProtocolRow(ModelProvider provider)
-    {
-        var row = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            Tag = SectionTags.ProviderProtocol,
-        };
-
-        row.Children.Add(new TextBlock
-        {
-            Text = HubStrings.Get("ProviderProtocolLabel"),
-            Classes = { "muted" },
-            FontSize = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-
-        var combo = new ComboBox
-        {
-            FontSize = 11,
-            MinHeight = 26,
-            VerticalAlignment = VerticalAlignment.Center,
-            Tag = SectionTags.ProviderProtocolChoice,
-        };
-        // The item's Tag is the stored value — "" for auto — so the selection can be written back without a
-        // second lookup table that would drift from this one.
-        foreach (var (wire, key) in new[]
-                 {
-                     ("", "ProviderProtocolAuto"),
-                     (ModelProtocols.Chat, "ProviderProtocolChatOption"),
-                     (ModelProtocols.Responses, "ProviderProtocolResponsesOption"),
-                 })
-        {
-            var item = new ComboBoxItem { Content = HubStrings.Get(key), Tag = wire };
-            combo.Items.Add(item);
-            if (string.Equals(provider.Protocol ?? "", wire, StringComparison.Ordinal)) combo.SelectedItem = item;
-        }
-
-        ToolTip.SetTip(combo, HubStrings.Get("ProviderProtocolHint"));
-        // Attached after the initial selection on purpose: an open selection is not a person choosing.
-        combo.SelectionChanged += (_, _) =>
-        {
-            if (combo.SelectedItem is ComboBoxItem { Tag: string wire })
-            {
-                SetProviderProtocol(provider, wire.Length == 0 ? null : wire);
-            }
-        };
-        row.Children.Add(combo);
-
-        var sample = provider.Models.FirstOrDefault(model => model.Enabled) ?? provider.Models.FirstOrDefault();
-        row.Children.Add(new TextBlock
-        {
-            Text = sample is null
-                ? HubStrings.Get("ProviderProtocolUnset")
-                : string.Format(
-                    System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("ProviderProtocolEffectiveFormat"),
-                    AxmolHub.Agent.ChatClientFactory.ProtocolFor(provider, sample.Name),
-                    sample.Name),
-            Classes = { "muted" },
-            FontSize = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Tag = SectionTags.ProviderProtocolEffective,
-        });
-
-        return row;
-    }
-
-    private void SetProviderProtocol(ModelProvider provider, string? wire)
-    {
-        if (_chat?.SetProviderProtocol(provider.Id, wire) == true)
-        {
-            RebuildProviderGroups();
-        }
     }
 
     private Control BuildModelRow(ModelProvider provider, ProviderModel model)
@@ -3107,11 +3015,6 @@ public partial class SettingsPage : UserControl
         internal const string ModelRow = "provider-model-row";
         internal const string ModelEnabled = "provider-model-enabled";
         internal const string ModelContext = "provider-model-context";
-
-        /// <summary>The wire row: the label, the choice, and the muted line stating what the choice resolves to.</summary>
-        internal const string ProviderProtocol = "provider-protocol";
-        internal const string ProviderProtocolChoice = "provider-protocol-choice";
-        internal const string ProviderProtocolEffective = "provider-protocol-effective";
         internal const string ModelCatalog = "provider-model-catalog";
         internal const string AddModelButton = "provider-add-model";
         internal const string RemoveAllModels = "provider-remove-all-models";

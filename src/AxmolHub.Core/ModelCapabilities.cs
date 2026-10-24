@@ -165,18 +165,6 @@ public static class ModelProtocols
     /// </summary>
     public static bool IsKnown(string? protocol)
         => protocol is Chat or Responses or Messages;
-
-    /// <summary>
-    /// Whether this build has a client for the wire, which is every known name except
-    /// <see cref="Messages"/>: there is no Anthropic transport here, so <c>ChatClientFactory</c> refuses that wire
-    /// by name rather than posting an OpenAI body at it.
-    ///
-    /// <para>Separate from <see cref="IsKnown"/> because the two answer different questions — "is this a wire
-    /// name" for anything that <i>reads</i> a declaration, "can anything be sent on it" for anything that
-    /// <i>offers</i> one. The settings combo offers only these, so a choice made there cannot become a
-    /// configuration that is guaranteed to fail.</para>
-    /// </summary>
-    public static bool IsSpoken(string? protocol) => protocol is Chat or Responses;
 }
 
 /// <summary>One provider's answer to "which models do you serve, and what can each of them do?".</summary>
