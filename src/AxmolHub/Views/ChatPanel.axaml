@@ -1073,6 +1073,32 @@
       <Setter Property="VerticalAlignment" Value="Center" />
       <Setter Property="TextTrimming" Value="CharacterEllipsis" />
     </Style>
+    <Style Selector="Border.model-settings-popover">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceAlt}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Padding" Value="16" />
+      <Setter Property="Width" Value="340" />
+    </Style>
+    <Style Selector="TextBlock.model-settings-title">
+      <Setter Property="FontSize" Value="15" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
+    <Style Selector="TextBlock.model-level-caption">
+      <Setter Property="FontSize" Value="10" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
+    </Style>
+    <Style Selector="Button.model-menu-button">
+      <Setter Property="MinHeight" Value="38" />
+      <Setter Property="Padding" Value="10,6" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+    </Style>
     <Style Selector="Border.context-popover">
       <Setter Property="Background" Value="{DynamicResource Hub.SurfaceAlt}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
@@ -1515,6 +1541,32 @@
         </Button>
       </Grid>
     </Grid>
+    <Popup x:Name="ModelSettingsPopup" IsLightDismissEnabled="True">
+      <Border Classes="model-settings-popover">
+        <StackPanel Spacing="12">
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBlock Text="{DynamicResource ChatAutoReasoning}" Classes="model-settings-title" VerticalAlignment="Center" />
+            <ToggleSwitch x:Name="AutoReasoningSwitch" Grid.Column="1" />
+          </Grid>
+          <TextBlock x:Name="ReasoningLevelLabel" Classes="context-popover-detail" />
+          <Slider x:Name="ReasoningLevelSlider" Minimum="0" Maximum="4" TickFrequency="1"
+                  IsSnapToTickEnabled="True" />
+          <Grid ColumnDefinitions="*,*,*,*,*">
+            <TextBlock Text="{DynamicResource ChatReasoningLevel1}" HorizontalAlignment="Left" Classes="model-level-caption" />
+            <TextBlock Grid.Column="1" Text="{DynamicResource ChatReasoningLevel2}" HorizontalAlignment="Center" Classes="model-level-caption" />
+            <TextBlock Grid.Column="2" Text="{DynamicResource ChatReasoningLevel3}" HorizontalAlignment="Center" Classes="model-level-caption" />
+            <TextBlock Grid.Column="3" Text="{DynamicResource ChatReasoningLevel4}" HorizontalAlignment="Center" Classes="model-level-caption" />
+            <TextBlock Grid.Column="4" Text="{DynamicResource ChatReasoningLevel5}" HorizontalAlignment="Right" Classes="model-level-caption" />
+          </Grid>
+          <Button x:Name="OpenModelMenuButton" Classes="model-menu-button" HorizontalContentAlignment="Stretch">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock x:Name="ModelSettingsSelectedModel" TextTrimming="CharacterEllipsis" />
+              <TextBlock Grid.Column="1" Text="›" Margin="10,0,0,0" />
+            </Grid>
+          </Button>
+        </StackPanel>
+      </Border>
+    </Popup>
     <Popup x:Name="ContextPopup" IsLightDismissEnabled="True">
     <Border Classes="context-popover">
       <StackPanel Spacing="10">

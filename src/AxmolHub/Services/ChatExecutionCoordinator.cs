@@ -2893,9 +2893,8 @@ internal sealed partial class ChatExecutionCoordinator
                 history.LastOrDefault(turn => turn.Role == ChatRoles.User)?.Images.Count ?? 0,
                 history.LastOrDefault(turn => turn.Role == ChatRoles.User)?.Text.Length ?? 0,
                 PreferencesProvider?.Invoke().MaxAutoEffort,
-                choice.Provider.AutoRouting?.FastModel,
-                choice.Provider.AutoRouting?.StrongModel));
-            modelName = decision.ModelName ?? modelName;
+                null,
+                null));
             reasoning = ReachableTier(choice.Provider, modelName, decision.ReasoningEffort);
             // One line per decision, in the audit the user can open. A tier nobody can read back is a bill with
             // no itemisation, and this is the half of routing that makes it reviewable.
@@ -3733,8 +3732,11 @@ internal sealed partial class ChatExecutionCoordinator
 
     private static string? ReachableTier(ModelProvider provider, string model, string effort)
     {
+        var hasEvidence = ModelCatalog.EffortsFor(provider, model).Count > 0;
         for (var candidate = effort; candidate is { Length: > 0 }; candidate = ModelRouting.StepDown(candidate))
-            if (ModelCatalog.SupportsReasoningEffort(provider, model, candidate)) return candidate;
+            if (ModelCatalog.SupportsReasoningEffort(provider, model, candidate)
+                || (!hasEvidence && ModelCatalog.MayTryUnreportedEfforts(provider, model)
+                    && ModelCatalog.MaySendEffort(provider, model, candidate))) return candidate;
         return null;
     }
     private static int StampRunElapsed(Conversation opened, TimeSpan elapsed)

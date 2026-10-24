@@ -614,12 +614,21 @@ public static class HubTexts
         ["ChatReasoningXHigh"] = ("推理：超高", "Reasoning: Extra high"),
         ["ChatReasoningMax"] = ("推理：最大", "Reasoning: Max"),
         ["ChatReasoningUltra"] = ("推理：极致", "Reasoning: Ultra"),
+        ["ChatAutoReasoning"] = ("自动推理", "Auto reasoning"),
+        ["ChatReasoningLevel1"] = ("低", "Low"),
+        ["ChatReasoningLevel2"] = ("中", "Medium"),
+        ["ChatReasoningLevel3"] = ("高", "High"),
+        ["ChatReasoningLevel4"] = ("超高", "Very high"),
+        ["ChatReasoningLevel5"] = ("最大", "Max"),
+        ["ChatReasoningLevelFormat"] = ("推理：{0}", "Reasoning: {0}"),
+        ["ChatReasoningMappedFormat"] = ("映射为模型档位：{0}", "Mapped to model effort: {0}"),
+        ["ChatReasoningUnavailable"] = ("此模型不支持推理档位", "This model does not support reasoning effort"),
         // Who picks the tier for this request. The wording deliberately avoids a bare "Auto": in this app that word can also be the
         // gateway's model id orcarouter/auto, while "Auto routing" on the chip has to carry exactly one meaning.
         ["ChatRoutingMenu"] = ("档位由谁决定", "Who picks the tier"),
         ["ChatRoutingManual"] = ("我手动选", "I pick manually"),
         ["ChatRoutingAuto"] = ("自动（按任务强度）", "Auto (by task strength)"),
-        ["ChatRoutingAutoChip"] = ("自动路由", "Auto routing"),
+        ["ChatRoutingAutoChip"] = ("自动推理", "Auto reasoning"),
         ["ChatContextEstimateFormat"] = ("预计上下文：{0} / {1} tokens（{2}%），仅为本地估算", "Estimated context: {0} / {1} tokens ({2}%), local estimate only"),
         // The other reading of the same ring: the model itself said what the last request cost, so the number is
         // no longer a guess. Two keys because two different claims, and "Estimated" over a measured figure is a lie.

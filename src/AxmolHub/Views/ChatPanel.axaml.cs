@@ -351,7 +351,29 @@ public partial class ChatPanel : UserControl
             if (_chat.ActiveConversation?.Id == conversationId
                 && _inspector is { } pane && pane.IsRepositoryTabVisible) RequestRepositoryRead();
         };
-        ModelPicker.Click += (_, _) => ShowModelMenu();
+        ModelPicker.Click += (_, _) => ShowModelSettings();
+        ModelSettingsPopup.PlacementTarget = ModelPicker;
+        ModelSettingsPopup.Placement = PlacementMode.TopEdgeAlignedRight;
+        AutoReasoningSwitch.IsCheckedChanged += (_, _) =>
+        {
+            _chat.SetRouting(_chat.ActiveConversation?.Id ?? "", AutoReasoningSwitch.IsChecked == true
+                ? ChatRouting.Auto : ChatRouting.Manual);
+            RefreshModelPicker();
+            UpdateModelSettingsPopup();
+        };
+        ReasoningLevelSlider.ValueChanged += (_, _) =>
+        {
+            if (AutoReasoningSwitch.IsChecked == true) return;
+            var level = (int)Math.Round(ReasoningLevelSlider.Value);
+            _chat.SelectReasoningLevel(level);
+            UpdateModelSettingsPopup();
+            RefreshModelPicker();
+        };
+        OpenModelMenuButton.Click += (_, _) =>
+        {
+            ModelSettingsPopup.IsOpen = false;
+            ShowModelMenu();
+        };
         ForkNotice.Click += (_, _) =>
         {
             if (ForkNotice.Tag is string sourceId) _chat.OpenConversation(sourceId);
@@ -709,6 +731,44 @@ public partial class ChatPanel : UserControl
         ToolTip.SetTip(ModelPicker, selected is null
             ? HubStrings.Get("NoAvailableChatModels")
             : selected.Provider.Name + " · " + selected.ModelName);
+        UpdateModelSettingsPopup();
+    }
+
+    private void ShowModelSettings()
+    {
+        UpdateModelSettingsPopup();
+        ModelSettingsPopup.IsOpen = true;
+    }
+
+    private void UpdateModelSettingsPopup()
+    {
+        var selected = _chat.SelectedChatModel;
+        var hasModel = selected is not null;
+        var supportsReasoning = hasModel && ModelCatalog.SupportsReasoningEffort(
+            selected!.Provider, selected.ModelName);
+        AutoReasoningSwitch.IsEnabled = supportsReasoning;
+        AutoReasoningSwitch.IsChecked = _chat.ActiveRouting == ChatRouting.Auto;
+        ReasoningLevelSlider.IsEnabled = supportsReasoning && AutoReasoningSwitch.IsChecked != true;
+        if (supportsReasoning)
+        {
+            var level = _chat.ActiveReasoningLevel;
+            ReasoningLevelSlider.Value = level;
+            var actual = ModelCatalog.EffortForFiveLevel(selected!.Provider, selected.ModelName, level);
+            ReasoningLevelLabel.Text = HubStrings.Get("ChatReasoningLevelFormat").Replace("{0}",
+                HubStrings.Get($"ChatReasoningLevel{level + 1}"));
+            if (actual is not null)
+                ToolTip.SetTip(ReasoningLevelSlider, HubStrings.Get("ChatReasoningMappedFormat")
+                    .Replace("{0}", actual));
+        }
+        else
+        {
+            ReasoningLevelLabel.Text = HubStrings.Get("ChatReasoningUnavailable");
+            ToolTip.SetTip(ReasoningLevelSlider, null);
+        }
+        ModelSettingsSelectedModel.Text = selected is null
+            ? HubStrings.Get("NoAvailableChatModels")
+            : selected.Provider.Name + " · " + selected.ModelName;
+        OpenModelMenuButton.IsEnabled = hasModel || _chat.AvailableChatModels.Count > 0;
     }
 
     private bool GoalDraftSelectedForActiveConversation
@@ -1673,70 +1733,10 @@ public partial class ChatPanel : UserControl
             };
             item.Click += (_, _) => _chat.SelectChatModel(choice.Provider.Id, choice.ModelName);
 
-            var knownEfforts = ModelCatalog.EffortsFor(choice.Provider, choice.ModelName);
-            if (knownEfforts.Count > 0 || ModelCatalog.MayTryUnreportedEfforts(choice.Provider, choice.ModelName))
-            {
-                // A model that never reported a tier is offered the whole ladder — the first refusal trims it,
-                // and the first thinking reply confirms it. Unknown must not read as impossible, or the only way
-                // to find out is to ship a manifest entry for every model someone might connect to.
-                var currentEffort = isSelected ? _chat.ActiveReasoningEffort : ChatReasoningEfforts.Default;
-                foreach (var (effort, labelKey) in ReasoningChoices.Where(candidate =>
-                             knownEfforts.Count == 0
-                             || knownEfforts.Contains(candidate.Value, StringComparer.OrdinalIgnoreCase)))
-                {
-                    var effortItem = new MenuItem
-                    {
-                        Header = HubStrings.Get(labelKey),
-                        ToggleType = MenuItemToggleType.Radio,
-                        IsChecked = currentEffort == effort,
-                        Tag = effort,
-                    };
-                    effortItem.Click += (_, _) =>
-                    {
-                        if (!isSelected) _chat.SelectChatModel(choice.Provider.Id, choice.ModelName);
-                        _chat.SelectReasoningEffort(effort);
-                    };
-                    item.Items.Add(effortItem);
-                }
-            }
-
             menu.Items.Add(item);
         }
 
-        menu.Items.Add(BuildRoutingMenuItem());
         return menu;
-    }
-
-    /// <summary>
-    /// Who picks the model and the tier for this session. It is a switch under the model list rather than another
-    /// row in it, because "自动" as a menu entry would read exactly like the gateway's model id
-    /// <c>orcarouter/auto</c> — the same word, three meanings, and this is the one that changes what gets spent.
-    /// </summary>
-    private MenuItem BuildRoutingMenuItem()
-    {
-        var conversationId = _chat.ActiveConversation?.Id ?? "";
-        var auto = conversationId.Length > 0 && _chat.RoutingFor(conversationId) == ChatRouting.Auto;
-        var item = new MenuItem { Header = HubStrings.Get("ChatRoutingMenu") };
-        foreach (var (value, labelKey, isAuto) in new (string, string, bool)[]
-                 {
-                     (ChatRouting.Manual, "ChatRoutingManual", false),
-                     (ChatRouting.Auto, "ChatRoutingAuto", true),
-                 })
-        {
-            var choice = new MenuItem
-            {
-                Header = HubStrings.Get(labelKey),
-                ToggleType = MenuItemToggleType.Radio,
-                IsChecked = auto == isAuto,
-            };
-            choice.Click += (_, _) =>
-            {
-                if (conversationId.Length > 0) _chat.SetRouting(conversationId, value);
-                RefreshComposerChoices();
-            };
-            item.Items.Add(choice);
-        }
-        return item;
     }
 
     private static readonly (string Value, string LabelKey)[] ReasoningChoices =

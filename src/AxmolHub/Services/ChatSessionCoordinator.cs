@@ -30,6 +30,7 @@ internal sealed partial class ChatSessionCoordinator
     private string _selectedMode = ChatModes.Ask;
     private bool _selectedModeExplicit;
     private string _selectedReasoningEffort = ChatReasoningEfforts.Default;
+    private string _selectedRouting = ChatRouting.Manual;
     private string? _selectedApprovalMode;
     private string? _selectedWorkspaceRoot;
     internal Conversation? ActiveConversation => _active;
@@ -65,6 +66,27 @@ internal sealed partial class ChatSessionCoordinator
         return true;
     }
 
+    internal int ActiveReasoningLevel
+    {
+        get
+        {
+            var choice = Providers.SelectedChatModel;
+            if (choice is null) return 2;
+            var current = ActiveReasoningEffort;
+            var exact = Enumerable.Range(0, 5).FirstOrDefault(level =>
+                string.Equals(ModelCatalog.EffortForFiveLevel(choice.Provider, choice.ModelName, level), current,
+                    StringComparison.OrdinalIgnoreCase), -1);
+            return exact >= 0 ? exact : 2;
+        }
+    }
+
+    internal bool SelectReasoningLevel(int level)
+    {
+        var choice = Providers.SelectedChatModel;
+        var effort = choice is null ? null : ModelCatalog.EffortForFiveLevel(choice.Provider, choice.ModelName, level);
+        return effort is not null && SelectReasoningEffort(effort);
+    }
+
     internal bool SelectReasoningEffort(string effort)
     {
         if (effort is not (ChatReasoningEfforts.Default or ChatReasoningEfforts.Low
@@ -79,9 +101,10 @@ internal sealed partial class ChatSessionCoordinator
         if (_active is not null) _sessions.TryUpdate(_active.Id, conversation =>
         {
             conversation.ReasoningEffort = effort;
-            // Same rule as picking a model by hand: the moment someone names a tier, that session is theirs again.
+            // Selecting a tier explicitly opts this session out of automatic effort selection.
             conversation.Routing = ChatRouting.Manual;
         });
+        _selectedRouting = ChatRouting.Manual;
         Execution.Changed?.Invoke();
         return true;
     }
@@ -92,10 +115,15 @@ internal sealed partial class ChatSessionCoordinator
     internal bool SetRouting(string conversationId, string routing)
     {
         var normalized = ChatRouting.Normalize(routing);
+        if (conversationId.Length == 0)
+        {
+            _selectedRouting = normalized;
+            Execution.Changed?.Invoke();
+            return true;
+        }
         if (!_sessions.TryUpdate(conversationId, conversation => conversation.Routing = normalized))
             return false;
-        // Turning routing off retires the route it last took. Leaving it would let a surface read a tier this
-        // session no longer uses as if it were the current one.
+        _selectedRouting = normalized;
         if (normalized == ChatRouting.Manual)
             Execution.ClearRoute(conversationId);
         Execution.Changed?.Invoke();
@@ -104,7 +132,7 @@ internal sealed partial class ChatSessionCoordinator
 
     internal string RoutingFor(string conversationId)
         => ChatRouting.Normalize((_sessions.Peek(conversationId) ?? _sessions.Load(conversationId))?.Routing);
-    internal string ActiveRouting => ChatRouting.Normalize(_active?.Routing);
+    internal string ActiveRouting => ChatRouting.Normalize(_active?.Routing ?? _selectedRouting);
 
     internal string? WorkspaceRootFor(string conversationId)
         => (_sessions.Peek(conversationId) ?? _sessions.Load(conversationId))?.WorkspaceRoot;
@@ -345,6 +373,7 @@ internal sealed partial class ChatSessionCoordinator
             _selectedMode = ChatModes.Ask;
             _selectedModeExplicit = false;
             _selectedReasoningEffort = ChatReasoningEfforts.Default;
+            _selectedRouting = ChatRouting.Manual;
         }
         var mode = _selectedModeExplicit
             ? _selectedMode
@@ -366,6 +395,7 @@ internal sealed partial class ChatSessionCoordinator
                                        && ModelCatalog.MaySendEffort(selectedProvider, modelName, _selectedReasoningEffort)
             ? _selectedReasoningEffort
             : defaultEffort;
+        conversation.Routing = ChatRouting.Normalize(_selectedRouting);
         _selectedReasoningEffort = conversation.ReasoningEffort;
         conversation.ApprovalMode = approvalMode;
         conversation.WorkspaceRoot = workspaceRoot;
@@ -392,6 +422,7 @@ internal sealed partial class ChatSessionCoordinator
         _active = conversation;
         _selectedMode = NormalizeMode(conversation.Mode);
         _selectedReasoningEffort = ChatReasoningEfforts.Normalize(conversation.ReasoningEffort);
+        _selectedRouting = ChatRouting.Normalize(conversation.Routing);
         Execution.Changed?.Invoke();
         return conversation;
     }
@@ -449,6 +480,7 @@ internal sealed partial class ChatSessionCoordinator
         _selectedMode = _active is null ? ChatModes.Ask : NormalizeMode(_active.Mode);
         _selectedModeExplicit = false;
         _selectedReasoningEffort = ChatReasoningEfforts.Normalize(_active?.ReasoningEffort);
+        _selectedRouting = ChatRouting.Normalize(_active?.Routing);
         if (_active is { } opened)
         {
             // Asked before writing, because the write is not free: it replaces the whole session file, and for a
@@ -731,6 +763,7 @@ internal sealed partial class ChatSessionCoordinator
         _active = branch;
         _selectedMode = NormalizeMode(branch.Mode);
         _selectedReasoningEffort = ChatReasoningEfforts.Normalize(branch.ReasoningEffort);
+        _selectedRouting = ChatRouting.Normalize(branch.Routing);
         Execution.Changed?.Invoke();
         return branch;
     }

@@ -129,6 +129,8 @@ public sealed partial class ChatWorkspace : IDisposable
     /// <summary>Updates the app-wide preference controlling whether the assistant may ask a choice question.</summary>
     public bool SelectAskUserEnabled(bool enabled) => _sessions.SelectAskUserEnabled(enabled);
     public bool SelectReasoningEffort(string effort) => _sessions.SelectReasoningEffort(effort);
+    public bool SelectReasoningLevel(int level) => _sessions.SelectReasoningLevel(level);
+    public int ActiveReasoningLevel { get => _sessions.ActiveReasoningLevel; }
     /// <summary>Whether the session's tier is picked by hand or by Hub, per session and never globally: routing
     /// decides how much to spend on <i>this</i> work, so the session that is going somewhere careful is exactly
     /// the one a person has to be able to opt out of.</summary>

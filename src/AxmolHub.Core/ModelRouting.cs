@@ -157,15 +157,7 @@ public static class ModelRouting
         return (ChatReasoningEfforts.Low, "a question answered from what is already in the window");
     }
 
-    /// <summary>Which slot, if any. Anything but an unambiguous answer is "leave the model alone".</summary>
+    /// <summary>Automatic reasoning never changes the model. Model selection is an explicit user choice.</summary>
     private static (string? Model, string Note) Slot(ModelRoutingSignal signal, string effort)
-    {
-        if (signal.AttachmentCount > 0)
-            return (null, " · the model stays as picked, because Hub does not track which slot reads pictures");
-        if (signal.FastModel is not { Length: > 0 } fast || signal.StrongModel is not { Length: > 0 } strong)
-            return (null, "");
-        return Rank(effort) >= Rank(ChatReasoningEfforts.High)
-            ? (strong, $" · switched to the strong slot ({strong})")
-            : (fast, $" · switched to the fast slot ({fast})");
-    }
+        => (null, "");
 }

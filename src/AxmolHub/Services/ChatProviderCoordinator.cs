@@ -116,9 +116,6 @@ internal sealed partial class ChatProviderCoordinator
                                    StringComparison.OrdinalIgnoreCase);
                 conversation.ProviderId = choice.Provider.Id;
                 conversation.ModelName = choice.ModelName;
-                // A hand pick is the end of routing for this session, not an input to it: a router that quietly
-                // overrode the model someone just chose would make the picker a decoration.
-                conversation.Routing = ChatRouting.Manual;
                 if (switched)
                     conversation.Append(ChatTurn.Notice(string.Format(
                         System.Globalization.CultureInfo.CurrentCulture,

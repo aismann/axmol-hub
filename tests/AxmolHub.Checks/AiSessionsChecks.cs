@@ -308,6 +308,13 @@ internal static class AiSessionsChecks
         };
         if (!ModelCatalog.SupportsReasoningEffort(deepSeekProvider, "deepseek-flash", ChatReasoningEfforts.Max) || ModelCatalog.SupportsReasoningEffort(deepSeekProvider, "deepseek-flash", ChatReasoningEfforts.Medium))
             throw new Exception("DeepSeek effort choices should match the live /models metadata.");
+        if (ModelCatalog.EffortForFiveLevel(deepSeekProvider, "deepseek-flash", 0) != "low"
+            || ModelCatalog.EffortForFiveLevel(deepSeekProvider, "deepseek-flash", 2) != "high"
+            || ModelCatalog.EffortForFiveLevel(deepSeekProvider, "deepseek-flash", 4) != "max"
+            || ModelCatalog.EffortForFiveLevel(deepSeekProvider, "deepseek-flash", 5) is not null)
+            throw new Exception("Five UI positions did not map monotonically across the model's declared effort ladder.");
+        if (ModelCatalog.EffortForFiveLevel(openAiProvider, "unknown-model", 2) != ChatReasoningEfforts.High)
+            throw new Exception("An unreported model did not retain the conservative five-position trial ladder.");
         Console.WriteLine("PASS: reasoning efforts come from explicit model metadata, including DeepSeek /models.");
         // What a model was seen to do outranks what a file said, and what it refused closes only that one tier.
         static ModelProvider ProviderWith(string model, AiModelReasoning profile)

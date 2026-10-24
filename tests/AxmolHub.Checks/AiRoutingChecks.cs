@@ -41,11 +41,10 @@ internal static class AiRoutingChecks
         Expect("the long-draft floor still obeys the ceiling", Pick("ask", draft: 4000, ceiling: "low"), "low", null);
         Expect("the ceiling clips the top rung", Pick(failures: 5, ceiling: "high"), "high", null);
         Expect("escalation is xhigh however high the ceiling goes", Pick(failures: 5, ceiling: "ultra"), "xhigh", null);
-        Expect("a high tier takes the strong slot", Pick(written: true, fast: "mini", strong: "big"), "high", "big");
-        Expect("a low tier takes the fast slot", Pick("ask", fast: "mini", strong: "big"), "low", "mini");
-        Expect("one slot alone switches nothing", Pick(written: true, strong: "big"), "high", null);
+        Expect("automatic reasoning preserves the selected model even when model slots are configured", Pick(written: true, fast: "mini", strong: "big"), "high", null);
+        Expect("automatic reasoning preserves the selected model for low tiers too", Pick("ask", fast: "mini", strong: "big"), "low", null);
         Expect("a picture keeps the model that was picked", Pick(written: true, images: 1, fast: "mini", strong: "big"), "high", null);
-        Expect("the clipped tier picks its own slot", Pick(failures: 4, fast: "mini", strong: "big", ceiling: "medium"), "medium", "mini");
+        Expect("ceiling-clamped reasoning still preserves the selected model", Pick(failures: 4, fast: "mini", strong: "big", ceiling: "medium"), "medium", null);
         var capped = ModelRouting.Decide(new ModelRoutingSignal("agent", 4, false, 0, false, 0, 12, "high", null, null));
         if (capped.ReasoningEffort != "high" || !capped.Reason.Contains("capped at high", StringComparison.Ordinal))
             throw new Exception($"A clamped decision does not say it was clamped: {capped.Reason}");
@@ -101,7 +100,7 @@ internal static class AiRoutingChecks
         if (sessions.Load(routed.Id)is not { Routing: "auto" })
             throw new Exception("A session's routing choice did not survive one save.");
         // The forward-compatibility rule every optional field follows: a session file written before routing existed
-        // has no such property, and loading it must not turn silent model switching on for someone who never asked.
+        // has no such property, and loading it must not turn automatic effort selection on for someone who never asked.
         File.WriteAllText(Path.Combine(routingRoot, "ai", "sessions", "legacy-no-routing.json"), """{"Id":"legacy-no-routing","Title":"legacy","ProviderId":"orcarouter","Mode":"agent","Messages":[{"Role":"user","Text":"早于路由功能"}]}""");
         if (sessions.Load("legacy-no-routing")is not { } legacyRouting || legacyRouting.Routing != ChatRouting.Manual)
             throw new Exception("A session file predating routing no longer loads, or loads as auto.");

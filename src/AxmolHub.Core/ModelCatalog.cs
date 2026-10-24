@@ -116,6 +116,27 @@ public static class ModelCatalog
                    .Contains(effort, StringComparer.OrdinalIgnoreCase) != true;
     }
 
+    /// <summary>Maps one of five stable UI positions onto this model's known or still-tryable effort ladder.</summary>
+    public static string? EffortForFiveLevel(ModelProvider? provider, string? modelName, int level)
+    {
+        if (level is < 0 or > 4 || !SupportsReasoningEffort(provider, modelName)) return null;
+        var reported = EffortsFor(provider, modelName)
+            .Where(ChatReasoningEfforts.IsTier)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(effort => ModelRouting.Rank(effort))
+            .ToList();
+        var ladder = reported.Count > 0
+            ? reported
+            : new[]
+            {
+                ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Ultra,
+            }.Where(effort => MaySendEffort(provider, modelName, effort)).ToList();
+        if (ladder.Count == 0) return null;
+        var index = (int)Math.Round(level * (ladder.Count - 1) / 4d, MidpointRounding.AwayFromZero);
+        return ladder[index];
+    }
+
     /// <summary>The tier a refusal named, or null when the message is not about reasoning. Both halves have to
     /// be there: "invalid api key" must never read as a model declining a tier, or one bad credential would
     /// quietly delete a model's whole tier menu.</summary>
