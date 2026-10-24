@@ -2743,16 +2743,27 @@ public partial class ChatPanel : UserControl
             && BuildThoughtRowForTurn(conversationId, index, turn, inGroup) is { } reasoning)
             body.Children.Insert(0, reasoning);
 
-        // The run's total, said once on the answer it belongs to. Always visible rather than hover-revealed: the
-        // reader watched this number climb while the reply arrived, and making it hard to reach the moment it
-        // stops would be exactly backwards. A plan's turn gets it too — the plan finishing IS the run finishing.
+        // Run metadata belongs to the final assistant output, after its body and before any ancillary sources.
         if (!fromUser && turn.Role != ChatRoles.Tool && turn.RunElapsed is { } took)
+        {
+            var details = new List<string>();
+            if (!string.IsNullOrWhiteSpace(turn.RunModel)) details.Add(turn.RunModel);
+            if (!string.IsNullOrWhiteSpace(turn.RunReasoningEffort))
+            {
+                var effort = turn.RunReasoningEffort == ChatReasoningEfforts.Default
+                    ? HubStrings.Get("ChatReasoningDefault")
+                    : turn.RunReasoningEffort;
+                details.Add(string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    HubStrings.Get("ChatRunEffortFormat"), effort));
+            }
+            details.Add(string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatRunElapsedFormat"), FormatDuration(took)));
             body.Children.Add(new TextBlock
             {
                 Classes = { "run-elapsed" },
-                Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("ChatRunElapsedFormat"), FormatDuration(took)),
+                Text = string.Join("  ·  ", details),
             });
+        }
 
         // Added after the Markdown pass rather than before it, because <see cref="MarkdownMessageRenderer.RenderInto"/>
         // clears the panel it renders into: a line laid down first is not underneath the answer, it is gone. This is

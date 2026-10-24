@@ -251,6 +251,10 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// </summary>
     public TimeSpan? RunElapsed { get; init; }
 
+    /// <summary>The model and requested reasoning effort used for the final request of the run.</summary>
+    public string? RunModel { get; init; }
+    public string? RunReasoningEffort { get; init; }
+
     /// <summary>What this answer burned, in the endpoint's own reported tokens. The meter above the composer reads
     /// it back as 本轮实测, because "how big is this conversation" and "what did this reply cost" are two
     /// questions and only one of them is answered by a percentage.

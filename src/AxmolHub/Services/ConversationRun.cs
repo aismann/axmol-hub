@@ -74,6 +74,16 @@ internal sealed class ConversationRun : IDisposable
     private readonly object _gate = new();
     private readonly StringBuilder _text = new();
     private readonly StringBuilder _reasoning = new();
+    private string? _requestModel;
+    private string? _requestEffort;
+    internal (string? Model, string? Effort) RequestSelection
+    {
+        get { lock (_gate) return (_requestModel, _requestEffort); }
+    }
+    internal void SetRequestSelection(string model, string? effort)
+    {
+        lock (_gate) { _requestModel = model; _requestEffort = effort; }
+    }
     // Generation speed is measured the way DeepSeek Harness measures it: the output produced after the first
     // token-bearing frame, over the wall time between that frame and the newest one. Segments are banked when the
     // run starts the next one, so a stretch spent running a tool or waiting for an approval — which is a segment

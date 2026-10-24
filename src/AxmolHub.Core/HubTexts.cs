@@ -623,12 +623,11 @@ public static class HubTexts
         ["ChatReasoningLevelFormat"] = ("推理：{0}", "Reasoning: {0}"),
         ["ChatReasoningMappedFormat"] = ("映射为模型档位：{0}", "Mapped to model effort: {0}"),
         ["ChatReasoningUnavailable"] = ("此模型不支持推理档位", "This model does not support reasoning effort"),
-        // Who picks the tier for this request. The wording deliberately avoids a bare "Auto": in this app that word can also be the
-        // gateway's model id orcarouter/auto, while "Auto routing" on the chip has to carry exactly one meaning.
+        // The short chip label names automatic reasoning only; it does not imply that the gateway model is auto-selected.
         ["ChatRoutingMenu"] = ("档位由谁决定", "Who picks the tier"),
         ["ChatRoutingManual"] = ("我手动选", "I pick manually"),
         ["ChatRoutingAuto"] = ("自动（按任务强度）", "Auto (by task strength)"),
-        ["ChatRoutingAutoChip"] = ("自动推理", "Auto reasoning"),
+        ["ChatRoutingAutoChip"] = ("自动", "Auto"),
         ["ChatContextEstimateFormat"] = ("预计上下文：{0} / {1} tokens（{2}%），仅为本地估算", "Estimated context: {0} / {1} tokens ({2}%), local estimate only"),
         // The other reading of the same ring: the model itself said what the last request cost, so the number is
         // no longer a guess. Two keys because two different claims, and "Estimated" over a measured figure is a lie.
@@ -1107,6 +1106,8 @@ public static class HubTexts
         // thrown away with it, so without this line the total exists only at the moment nobody is reading the
         // result — and the one surface that keeps anything afterwards is a hover-revealed action bar.
         ["ChatRunElapsedFormat"] = ("本次共 {0}", "Took {0}"),
+        ["ChatRunEffortFormat"] = ("推理 {0}", "Reasoning {0}"),
+        ["ChatReasoningDefault"] = ("默认", "Default"),
         // ── A run's activity, folded into one collapsible group ──
         // The head counts once there is more than one action to summarise. Naming the first of a long run reads
         // as a claim about what the run was for, and it is not — it is whichever call happened to come first. A

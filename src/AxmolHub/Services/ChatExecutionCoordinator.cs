@@ -2567,6 +2567,8 @@ internal sealed partial class ChatExecutionCoordinator
             return (RunResult.Failed, "NoAvailableChatModels", true, null);
         }
 
+        run.SetRequestSelection(request.Value.Provider.Name + " · " + request.Value.ModelName,
+            request.Value.Reasoning ?? ChatReasoningEfforts.Default);
         // The retry records its own reply, so the segment that retried must not append a second copy of the same
         // text the call below already wrote to the transcript.
         var replyRecorded = false;
@@ -3286,7 +3288,7 @@ internal sealed partial class ChatExecutionCoordinator
                 // only place the number can still be got at. A stopped or failed round is left without one: that
                 // ending already has its own notice line, and a duration beside it would be the same sentence
                 // twice with two different clocks.
-                var stamped = result == RunResult.Completed ? StampRunElapsed(opened, run.Elapsed) : -1;
+                var stamped = result == RunResult.Completed ? StampRunElapsed(opened, run.Elapsed, run.RequestSelection) : -1;
                 // A summary is an optional title, never a visibility condition. Retire old controls until
                 // the post-run read-only Git snapshot lands; neither prose nor a tool-result guess is authority.
                 if (stamped >= 0)
@@ -3739,7 +3741,8 @@ internal sealed partial class ChatExecutionCoordinator
                     && ModelCatalog.MaySendEffort(provider, model, candidate))) return candidate;
         return null;
     }
-    private static int StampRunElapsed(Conversation opened, TimeSpan elapsed)
+    private static int StampRunElapsed(Conversation opened, TimeSpan elapsed,
+        (string? Model, string? Effort) requestSelection)
     {
         for (var index = opened.Messages.Count - 1; index >= 0; index--)
         {
@@ -3749,7 +3752,12 @@ internal sealed partial class ChatExecutionCoordinator
             // counts as an answer here rather than being stepped over on an empty-text test.
             if (turn.Text.Length == 0 && turn.PlanApprovalState is not { Length: > 0 }) continue;
             if (turn.RunElapsed is not null) return -1;
-            opened.Messages[index] = turn with { RunElapsed = elapsed };
+            opened.Messages[index] = turn with
+            {
+                RunElapsed = elapsed,
+                RunModel = requestSelection.Model,
+                RunReasoningEffort = requestSelection.Effort,
+            };
             return index;
         }
 
