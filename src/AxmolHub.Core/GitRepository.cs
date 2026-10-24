@@ -299,7 +299,7 @@ public static class GitRepository
             var root = Path.GetFullPath(repositoryRoot);
             var full = FullPathInside(root, path);
             if (full is null) return Failed("The path must be repository-relative.");
-            var resolved = await runner.RunAsync(git, ["rev-parse", "--verify", "--quiet", commit + "^{commit}"], root,
+            var resolved = await runner.RunAsync(git, ["rev-parse", "--verify", "--quiet", "--end-of-options", commit + "^{commit}"], root,
                 timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
             var oid = resolved.Output.Trim();
             if (resolved.ExitCode != 0 || oid.Length is not (40 or 64)) return Failed("The selected commit is unavailable.");

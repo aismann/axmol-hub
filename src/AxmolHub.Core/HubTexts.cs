@@ -1054,6 +1054,8 @@ public static class HubTexts
         ["InspectorDiffCompareSideBySide"] = ("并排比较", "Compare side by side"),
         ["InspectorGitWorkingTree"] = ("未暂存", "Working tree"),
         ["InspectorGitIndex"] = ("已暂存", "Index"),
+        ["InspectorGitCommit"] = ("比较提交…", "Compare commit…"),
+        ["InspectorGitCommitHint"] = ("提交哈希 / 引用", "Commit hash / ref"),
         ["InspectorDiffCopySpent"] = ("那次写入已被撤销，副本用完", "The copy was spent by a revert"),
         ["InspectorDiffUnreadable"] = ("现在读不到这个文件，或它不是文本", "The file is gone or is not text"),
         ["InspectorDiffRefusedLine"] = ("没有改动", "No change"),

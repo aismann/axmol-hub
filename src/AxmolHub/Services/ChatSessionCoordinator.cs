@@ -800,13 +800,35 @@ internal sealed partial class ChatSessionCoordinator
     private string? _repositoryReadingRoot;
     /// <summary>Raised when a read lands, so an open pane repaints. Nothing raises it on a timer.</summary>
     internal Action? RepositoryChanged;
+    private static bool IsRepositoryForWorkspace(string? workspace, string? repository)
+    {
+        if (workspace is null || repository is null) return false;
+        var relative = Path.GetRelativePath(repository, workspace);
+        return !Path.IsPathRooted(relative) && relative != ".."
+            && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+    }
+
+    internal async Task<GitFileComparison> ReadGitCommitFileAsync(string conversationId, string repositoryRoot,
+        string relativePath, string commit, CancellationToken cancellationToken = default)
+    {
+        var scope = Execution.ScopeFor(conversationId).Workspace;
+        var expected = WorkspacePaths.CanonicalRoot(scope.WorkspaceRoot);
+        var actual = WorkspacePaths.CanonicalRoot(repositoryRoot);
+        if (expected is null || actual is null || !IsRepositoryForWorkspace(expected, actual))
+            return new GitFileComparison(relativePath, null, GitFileRange.Commit,
+                GitFileVersion.Absent(), GitFileVersion.Absent(), "Repository root is outside the current session workspace.");
+        var runner = new ProcessRunner(line => scope.Log?.Write(line));
+        return await GitRepository.ReadCommitFileAsync(actual, relativePath, commit, runner,
+            scope.SensitiveValues, cancellationToken).ConfigureAwait(false);
+    }
+
     internal async Task<GitFileComparison> ReadGitFileAsync(string conversationId, string repositoryRoot,
         GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
     {
         var scope = Execution.ScopeFor(conversationId).Workspace;
         var expected = WorkspacePaths.CanonicalRoot(scope.WorkspaceRoot);
         var actual = WorkspacePaths.CanonicalRoot(repositoryRoot);
-        if (expected is null || actual is null || !string.Equals(expected, actual, StringComparison.Ordinal))
+        if (expected is null || actual is null || !IsRepositoryForWorkspace(expected, actual))
             return new GitFileComparison(entry.RelativePath, entry.OriginalPath, range,
                 GitFileVersion.Absent(), GitFileVersion.Absent(), "Repository root is outside the current session workspace.");
         var runner = new ProcessRunner(line => scope.Log?.Write(line));

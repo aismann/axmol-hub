@@ -1031,7 +1031,8 @@ public partial class MainWindow : Window
             string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("QuitDuringDownloadsBody"), running),
             HubDialogButtons.OkCancel, danger: true);
-        return answer == HubDialogResult.Ok;
+        if (answer != HubDialogResult.Ok) return false;
+        return await CodeFileWindow.ConfirmCloseDirtyAsync(this);
     }
 
     /// <summary>A quit question is asked by, and owned by, this window — so a window the close button hid has to come

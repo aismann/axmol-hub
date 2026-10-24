@@ -799,6 +799,9 @@ public sealed partial class ChatWorkspace : IDisposable
     internal Task<GitFileComparison> ReadGitFileAsync(string conversationId, string repositoryRoot,
         GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
         => _sessions.ReadGitFileAsync(conversationId, repositoryRoot, entry, range, cancellationToken);
+    internal Task<GitFileComparison> ReadGitCommitFileAsync(string conversationId, string repositoryRoot,
+        string relativePath, string commit, CancellationToken cancellationToken = default)
+        => _sessions.ReadGitCommitFileAsync(conversationId, repositoryRoot, relativePath, commit, cancellationToken);
 
     /// <summary>Where an approval decision is recorded. Set by the shell to Hub's activity log: a decision that
     /// outlives the window (a parked call answered after a restart) has to leave a trace behind, or the audit

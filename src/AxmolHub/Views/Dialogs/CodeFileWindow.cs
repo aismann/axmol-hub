@@ -14,6 +14,7 @@ public sealed class CodeFileWindow : Window
 {
     private static readonly HashSet<CodeFileWindow> OpenWindows = [];
     private readonly CodeEditorView? _editor;
+    private bool _discardClose;
 
     private CodeFileWindow(string relativePath, Control editor)
     {
@@ -44,28 +45,50 @@ public sealed class CodeFileWindow : Window
         var write = WorkspacePaths.ResolveWrite(initialScope.Sandbox, relativePath, initialScope.Guards);
         var writable = write.IsAllowed && WorkspacePaths.IsWritableText(Path.GetFileName(read.Full));
         CodeFileWindow? window = null;
-        var discardClose = false;
         var editor = new CodeEditorView(read.Full, baseline, (snapshot, text) =>
         {
-            var currentScope = scopeFor(conversationId);
-            var currentPath = WorkspacePaths.ResolveWrite(currentScope.Sandbox, relativePath, currentScope.Guards);
-            if (!currentPath.IsAllowed || !string.Equals(currentPath.Full, read.Full, StringComparison.Ordinal))
-                return new(TextReplaceVerdict.RefusedPath, "The session no longer permits this file.");
             using var lease = TextFile.AcquireWrite(read.Full);
-            var result = lease.Save(() => WorkspacePaths.ResolveWrite(currentScope.Sandbox, relativePath, currentScope.Guards), snapshot, text);
+            var result = lease.Save(() =>
+            {
+                var currentScope = scopeFor(conversationId);
+                var currentPath = WorkspacePaths.ResolveWrite(currentScope.Sandbox, relativePath, currentScope.Guards);
+                return currentPath.IsAllowed && string.Equals(currentPath.Full, read.Full, StringComparison.Ordinal)
+                    ? currentPath
+                    : WorkspacePath.Refuse(currentPath.IsAllowed ? WorkspacePathVerdict.ReparsePoint : currentPath.Verdict,
+                        relativePath);
+            }, snapshot, text);
             if (result.Verdict == TextReplaceVerdict.Written) saved?.Invoke();
             return result;
         }, writable, () =>
         {
-            discardClose = true;
-            window?.Close();
+            if (window is not null)
+            {
+                window._discardClose = true;
+                window.Close();
+            }
         }, owner);
         window = new CodeFileWindow(relativePath, editor);
         window.Closing += (_, e) =>
         {
-            if (editor.IsDirty && !discardClose) e.Cancel = true;
+            if (editor.IsDirty && !window._discardClose) e.Cancel = true;
         };
         if (owner is null) window.Show(); else window.Show(owner);
+    }
+
+    internal static async Task<bool> ConfirmCloseDirtyAsync(Window owner)
+    {
+        var dirty = OpenWindows.Where(window => window._editor?.IsDirty == true).ToArray();
+        if (dirty.Length == 0) return true;
+        var answer = await HubDialog.ShowAsync(owner, "Unsaved code files",
+            $"{dirty.Length} code file buffer(s) have unsaved changes. Discard them and quit?",
+            HubDialogButtons.YesNo, danger: true);
+        if (answer != HubDialogResult.Yes) return false;
+        foreach (var window in dirty)
+        {
+            window._discardClose = true;
+            window.Close();
+        }
+        return true;
     }
 
     public static void Show(Window? owner, string? workspaceRoot, string relativePath)

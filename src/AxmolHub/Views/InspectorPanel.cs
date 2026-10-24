@@ -29,7 +29,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// it has no session, no log and no thread to wait on, and a pane that goes and does I/O is a pane a check
     /// cannot drive from a fixture.</summary>
     public event Action? RepoRefreshRequested;
-    internal event Action<GitRepositoryState, GitStatusEntry, GitFileRange>? OpenGitComparisonRequested;
+    internal event Action<GitRepositoryState, GitStatusEntry, GitFileRange, string?>? OpenGitComparisonRequested;
     internal event Action<ChangedFile, ChatFileSnapshot>? OpenAiComparisonRequested;
 
     /// <summary>Raised by one of the empty-scope jumps: "this list is empty, the other one is not — the reader
@@ -462,9 +462,20 @@ internal sealed partial class InspectorPanel : UserControl
             if (!detail.IsVisible && detail.Content is null)
             {
                 var diff = GitRepository.DiffFor(state, entry);
-                detail.Content = diff is { Length: > 0 }
-                    ? BuildDiffBlock(diff)
-                    : EmptyLine("InspectorRepoNoDiff");
+                var detailBody = new StackPanel { Spacing = 5 };
+                var commitRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+                var commit = new TextBox { Width = 150, PlaceholderText = HubStrings.Get("InspectorGitCommitHint"), Tag = "InspectorGitCommitRef" };
+                var compareCommit = new Button { Content = HubStrings.Get("InspectorGitCommit"), Classes = { "viewer-action" }, Tag = "InspectorGitCommitCompare" };
+                compareCommit.Click += (_, _) =>
+                {
+                    var reference = commit.Text?.Trim();
+                    if (!string.IsNullOrEmpty(reference)) OpenGitComparisonRequested?.Invoke(state, entry, GitFileRange.Commit, reference);
+                };
+                commitRow.Children.Add(commit);
+                commitRow.Children.Add(compareCommit);
+                detailBody.Children.Add(commitRow);
+                detailBody.Children.Add(diff is { Length: > 0 } ? BuildDiffBlock(diff) : EmptyLine("InspectorRepoNoDiff"));
+                detail.Content = detailBody;
             }
             detail.IsVisible = !detail.IsVisible;
             header.Classes.Set("expanded", detail.IsVisible);
@@ -484,7 +495,7 @@ internal sealed partial class InspectorPanel : UserControl
     private Button GitRangeButton(string textKey, GitRepositoryState state, GitStatusEntry entry, GitFileRange range)
     {
         var button = new Button { Content = HubStrings.Get(textKey), Classes = { "viewer-action" }, Tag = "InspectorGitRange" };
-        button.Click += (_, _) => OpenGitComparisonRequested?.Invoke(state, entry, range);
+        button.Click += (_, _) => OpenGitComparisonRequested?.Invoke(state, entry, range, null);
         return button;
     }
 

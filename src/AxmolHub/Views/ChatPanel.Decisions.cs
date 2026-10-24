@@ -411,21 +411,33 @@ public partial class ChatPanel
                 HubStrings.Get("InspectorDiffViewAfter"),
                 snapshot.Before,
                 snapshot.After);
-            _inspector.OpenGitComparisonRequested += async (state, entry, range) =>
+            _inspector.OpenGitComparisonRequested += async (state, entry, range, commit) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
                 if (_chat is null || string.IsNullOrEmpty(conversationId) || state.Root is null) return;
                 try
                 {
-                    var comparison = await _chat.ReadGitFileAsync(conversationId, state.Root, entry, range);
+                    var comparison = range == GitFileRange.Commit
+                        ? await _chat.ReadGitCommitFileAsync(conversationId, state.Root, entry.RelativePath, commit ?? "")
+                        : await _chat.ReadGitFileAsync(conversationId, state.Root, entry, range);
                     if (!comparison.IsReadable || comparison.Old.Exists && !comparison.Old.IsText
                         || comparison.New.Exists && !comparison.New.IsText)
                     {
                         StatusMessage?.Invoke(comparison.Detail ?? "This Git version is not supported text.");
                         return;
                     }
-                    var leftLabel = range == GitFileRange.WorkingTree ? "Index" : "HEAD";
-                    var rightLabel = range == GitFileRange.WorkingTree ? "Working tree" : "Index";
+                    var leftLabel = range switch
+                    {
+                        GitFileRange.WorkingTree => "Index",
+                        GitFileRange.Index => "HEAD",
+                        _ => "First parent",
+                    };
+                    var rightLabel = range switch
+                    {
+                        GitFileRange.WorkingTree => "Working tree",
+                        GitFileRange.Index => "Index",
+                        _ => "Commit " + commit,
+                    };
                     DiffViewerWindow.Show(TopLevel.GetTopLevel(this) as Window,
                         comparison.OldPath is null ? comparison.Path : comparison.OldPath + " → " + comparison.Path,
                         leftLabel, rightLabel,
