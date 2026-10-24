@@ -119,6 +119,29 @@ internal sealed class ShellCodeWorkspaceChecks(Action<bool, string> check)
                 $"Before: {beforeScroll}; immediate: {immediateScroll}\n" +
                 $"Scroll: {syncedLeft} / {syncedRight}; tail: {l.ScrollOffset}; point: {point}; position: {position}\n" +
                 "Public APIs only: TextDocument, DocumentHighlighter, DocumentColorizingTransformer, AbstractMargin.\n");
+
+            var quoted = "";
+            var viewer = new DiffViewer("probe.cpp", "Before", "After", "alpha\nremoved\nomega\n", "alpha\nadded\nomega\n", text => quoted = text);
+            window.Content = viewer;
+            window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            await Task.Delay(80);
+            var inlineToggle = viewer.GetVisualDescendants().OfType<Button>().FirstOrDefault(button => Equals(button.Tag, "DiffInlineToggle"));
+            var inlineSurface = viewer.GetVisualDescendants().OfType<TextEditor>().FirstOrDefault(editor => Equals(editor.Tag, "DiffInlineSurface"));
+            var rightSurface = viewer.GetVisualDescendants().OfType<TextEditor>().FirstOrDefault(editor => Equals(editor.Tag, "DiffRightSurface"));
+            if (inlineToggle is not null) inlineToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            check(inlineSurface is { IsVisible: true } && rightSurface is { IsVisible: false },
+                "代码工作区：精确对齐可切换内联视图");
+            if (inlineSurface is not null)
+            {
+                var line = inlineSurface.Document.GetLineByNumber(3);
+                inlineSurface.Select(line.Offset, line.Length);
+                var quote = viewer.GetVisualDescendants().OfType<Button>().FirstOrDefault(button => Equals(button.Tag, "DiffQuoteSelection"));
+                quote?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }
+            check(quoted == "probe.cpp:2\nadded", "代码工作区：引用选择使用真实行号和源文本");
         }
         finally { window.Close(); }
     }
