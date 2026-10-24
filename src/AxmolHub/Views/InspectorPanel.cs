@@ -463,9 +463,14 @@ internal sealed partial class InspectorPanel : UserControl
             {
                 var diff = GitRepository.DiffFor(state, entry);
                 var detailBody = new StackPanel { Spacing = 5 };
+                detailBody.Children.Add(Themed(new TextBlock
+                {
+                    Text = HubStrings.Get("InspectorGitCommitLabel"),
+                    Classes = { "inspector-note" },
+                }, "Hub.TextSecondary"));
                 var commitRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
-                var commit = new TextBox { Width = 150, PlaceholderText = HubStrings.Get("InspectorGitCommitHint"), Tag = "InspectorGitCommitRef" };
-                var compareCommit = new Button { Content = HubStrings.Get("InspectorGitCommit"), Classes = { "viewer-action" }, Tag = "InspectorGitCommitCompare" };
+                var commit = new TextBox { Width = 220, PlaceholderText = HubStrings.Get("InspectorGitCommitHint"), Tag = "InspectorGitCommitRef" };
+                var compareCommit = new Button { Content = HubStrings.Get("InspectorGitCommit"), Classes = { "inspector-git-action" }, Tag = "InspectorGitCommitCompare" };
                 compareCommit.Click += (_, _) =>
                 {
                     var reference = commit.Text?.Trim();
@@ -494,7 +499,7 @@ internal sealed partial class InspectorPanel : UserControl
 
     private Button GitRangeButton(string textKey, GitRepositoryState state, GitStatusEntry entry, GitFileRange range)
     {
-        var button = new Button { Content = HubStrings.Get(textKey), Classes = { "viewer-action" }, Tag = "InspectorGitRange" };
+        var button = new Button { Content = HubStrings.Get(textKey), Classes = { "inspector-git-action" }, Tag = "InspectorGitRange" };
         button.Click += (_, _) => OpenGitComparisonRequested?.Invoke(state, entry, range, null);
         return button;
     }
