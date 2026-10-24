@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -133,9 +134,13 @@ internal sealed class ShellCodeWorkspaceChecks(Action<bool, string> check)
             var inlineSurface = viewer.GetVisualDescendants().OfType<TextEditor>().FirstOrDefault(editor => Equals(editor.Tag, "DiffInlineSurface"));
             var rightSurface = viewer.GetVisualDescendants().OfType<TextEditor>().FirstOrDefault(editor => Equals(editor.Tag, "DiffRightSurface"));
             settings?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            check(settings?.ContextMenu is { IsOpen: true } && settings.ContextMenu.Items.OfType<MenuItem>().Count() == 2,
-                "代码工作区：齿轮按钮会实际弹出统一与并排视图菜单");
-            var inlineMode = settings?.ContextMenu?.Items.OfType<MenuItem>().FirstOrDefault(item => Equals(item.Tag, "inline"));
+            // The gear opens a menu — a caption row over the two layouts — rather than a context menu, so the rows
+            // and the tick are read off the flyout the button actually attached.
+            var viewMenu = settings is null ? null : FlyoutBase.GetAttachedFlyout(settings) as MenuFlyout;
+            check(viewMenu is { IsOpen: true } && viewMenu.Items.OfType<MenuItem>().Count() == 3
+                  && viewMenu.Items.OfType<MenuItem>().First().Classes.Contains("menu-caption"),
+                "代码工作区：齿轮按钮会实际弹出「视图」标题行与并排、统一两行");
+            var inlineMode = viewMenu?.Items.OfType<MenuItem>().FirstOrDefault(item => Equals(item.Tag, "DiffMenuInline"));
             inlineMode?.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             window.UpdateLayout();
             Dispatcher.UIThread.RunJobs();

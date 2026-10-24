@@ -46,7 +46,8 @@ internal sealed partial class InspectorPanel : UserControl
 
     private readonly Button _planTab;
     private readonly Button _changesTab;
-    private readonly Button _scopeButton;
+    private readonly Button _viewSettings;
+    private readonly MenuFlyout _viewMenu;
     private readonly Grid _header;
     private readonly ContentControl _planHost;
     private readonly ScrollViewer _planScroll;
@@ -60,6 +61,17 @@ internal sealed partial class InspectorPanel : UserControl
     private readonly Grid _body;
     private bool _expanded;
 
+    /// <summary>Which of the two layouts a diff block draws. Unified is what the pane has always shown and what
+    /// the column's default width is comfortable at; side-by-side is what a wide column — or the pane lifted over
+    /// the window — is for, and the reader asks for it from the header gear. Not persisted: it is a way of reading
+    /// the diff in front of you, like which revision is selected, not a statement about the next session.</summary>
+    private bool _splitDiff;
+
+    /// <summary>How to redraw each diff that is already open, so a layout change reaches the blocks on screen
+    /// instead of only the ones opened afterwards. Registered per row by <see cref="Reload"/> and dropped with the
+    /// rows it was drawn from, which is why the list is cleared there rather than filtered here.</summary>
+    private readonly List<Action> _diffRebuilds = [];
+
     /// <summary>Paths a person had opened on the changes tab. A repaint clears the list to draw the newest
     /// snapshot, and a pane that folds back everything the reader opened on every streamed token is a pane that
     /// cannot be read while the run is still going — so the opened set outlives the rows it was drawn from.</summary>
@@ -72,50 +84,70 @@ internal sealed partial class InspectorPanel : UserControl
 
         var root = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
 
-        // ── Header: three tabs, and nothing else. The pane's two controls — lift the pane over the window, and
-        //    shut the column — used to live at this header's right end, which is exactly where they could not be
-        //    reached: the × was unreachable while the pane covered the window, and both were unreachable while
-        //    the column was shut. They are now the title bar's, where they outlive whichever surface is up (see
-        //    MainWindow.axaml). The tabs read as text buttons whose selected one carries an underline plate
-        //    rather than as a chrome-heavy TabControl. ──
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,*,Auto"), Margin = new Thickness(12, 10, 8, 8) };
+        // ── Header: the two tabs on the left, and the page's own gear at the far right. The control that used to
+        //    sit beside the tabs — the 「会话改动 ▾」 scope picker — was a page setting wearing a tab's clothes: it,
+        //    and the diff layout above it, answer one question ("how is this page read"), so they are one control
+        //    with four rows in it now. The tabs stay tabs; they are the only things here that switch a surface.
+        //    (The pane's lift/shut pair left this header even earlier — see MainWindow.axaml.) ──
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto"), Margin = new Thickness(12, 10, 8, 8) };
         _header = header;
         _planTab = TabButton("InspectorTabPlan");
         _changesTab = TabButton("InspectorTabChanges");
-        _scopeButton = new Button
-        {
-            Classes = { "inspector-change-scope" },
-            Name = "InspectorChangeScope",
-            Tag = "InspectorChangeScope",
-            Margin = new Thickness(10, 0, 0, 0),
-            IsVisible = false,
-        };
         _planTab.Click += (_, _) => SelectTab("plan");
         _changesTab.Click += (_, _) => SelectTab("changes");
         header.Children.Add(_planTab);
         Grid.SetColumn(_changesTab, 1);
         _changesTab.Margin = new Thickness(6, 0, 0, 0);
         header.Children.Add(_changesTab);
-        Grid.SetColumn(_scopeButton, 2);
-        header.Children.Add(_scopeButton);
-        var scopeMenu = new ContextMenu
+        var settingsIcon = new Path
         {
-            ItemsSource = new[]
+            Width = 15,
+            Height = 15,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.8,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+        };
+        settingsIcon.Bind(Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Settings"));
+        settingsIcon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        // The plate matches the plan's copy button beside it — same 32px box, same empty border — because the two
+        // sit in one header and a reader should not have to work out that both are buttons.
+        _viewSettings = new Button
+        {
+            Content = settingsIcon,
+            Name = "InspectorViewSettings",
+            Tag = "InspectorViewSettings",
+            Width = 32,
+            Height = 32,
+            MinWidth = 32,
+            Padding = new Thickness(0),
+            Margin = new Thickness(4, 0, 0, 0),
+            CornerRadius = new CornerRadius(6),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        _viewSettings.Bind(ToolTip.TipProperty, new DynamicResourceExtension("InspectorSettingsTip"));
+        // A menu rather than a context menu, built fresh on every open: that is how exactly one tick is drawn per
+        // group without keeping a second copy of the state in sync — the same idiom the diff viewer's gear uses.
+        _viewMenu = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedRight };
+        FlyoutBase.SetAttachedFlyout(_viewSettings, _viewMenu);
+        _viewSettings.Click += (_, _) =>
+        {
+            if (_viewMenu.IsOpen)
             {
-                ScopeMenuItem("InspectorScopeSessionMenu", () => SelectTab("changes")),
-                ScopeMenuItem("InspectorScopeRepositoryMenu", () =>
-                {
-                    SelectTab("repo");
-                    RepoRefreshRequested?.Invoke();
-                }),
-            },
+                _viewMenu.Hide();
+                return;
+            }
+            BuildViewMenu(_viewMenu);
+            FlyoutBase.ShowAttachedFlyout(_viewSettings);
         };
-        _scopeButton.ContextMenu = scopeMenu;
-        _scopeButton.Click += (_, _) =>
-        {
-            scopeMenu.PlacementTarget = _scopeButton;
-            scopeMenu.Open();
-        };
+        Grid.SetColumn(_viewSettings, 4);
+        header.Children.Add(_viewSettings);
         root.Children.Add(header);
 
         // ── Body: the three tab surfaces stacked, only one visible. All live in the tree so switching tabs does
@@ -157,7 +189,7 @@ internal sealed partial class InspectorPanel : UserControl
         _planCopyButton.Classes.Add("inspector-plan-copy");
         _planCopyButton.Bind(ToolTip.TipProperty, new DynamicResourceExtension("CopyMarkdown"));
         _planCopyButton.Click += async (_, _) => await CopyPlanMarkdownAsync();
-        Grid.SetColumn(_planCopyButton, 4);
+        Grid.SetColumn(_planCopyButton, 3);
         header.Children.Add(_planCopyButton);
         _planScroll = new ScrollViewer
         {
@@ -255,13 +287,6 @@ internal sealed partial class InspectorPanel : UserControl
         return item;
     }
 
-    private static MenuItem ScopeMenuItem(string textKey, Action action)
-    {
-        var item = new MenuItem { Header = HubStrings.Get(textKey), Tag = textKey };
-        item.Click += (_, _) => action();
-        return item;
-    }
-
     /// <summary>Told by the shell which of its two homes the pane is in, because the two are not the same
     /// reading. A plan laid across a whole window needs the chat column's line length rather than the window's —
     /// a document that runs 1200px per line is not faster to read, it is a scan for the end of each sentence. The
@@ -321,6 +346,69 @@ internal sealed partial class InspectorPanel : UserControl
         if (repository) RepoRefreshRequested?.Invoke();
     }
 
+    /// <summary>Fills the header gear's menu: two groups over one page — how a diff is laid out, and which of the
+    /// two change readings is up. Built fresh on every open, so the tick sits on what is true at that moment and
+    /// there is no second copy of either choice to hold in step: the menu, the tabs and the diff blocks all read
+    /// the same two fields.</summary>
+    private void BuildViewMenu(MenuFlyout menu)
+    {
+        var repository = IsRepositoryTabVisible;
+        menu.Items.Clear();
+        menu.Items.Add(MenuCaption("DiffViewSection"));
+        menu.Items.Add(MenuChoice("DiffSplitMode", "InspectorMenuSplit", _splitDiff, () =>
+        {
+            menu.Hide();
+            SetDiffView(split: true);
+        }));
+        menu.Items.Add(MenuChoice("DiffInlineMode", "InspectorMenuUnified", !_splitDiff, () =>
+        {
+            menu.Hide();
+            SetDiffView(split: false);
+        }));
+        menu.Items.Add(MenuCaption("InspectorScopeSection"));
+        menu.Items.Add(MenuChoice("InspectorScopeSessionMenu", "InspectorMenuSession", !repository, () =>
+        {
+            menu.Hide();
+            SetChangesScope("changes");
+        }));
+        menu.Items.Add(MenuChoice("InspectorScopeRepositoryMenu", "InspectorMenuRepository", repository, () =>
+        {
+            menu.Hide();
+            SetChangesScope("repo");
+        }));
+    }
+
+    /// <summary>Switches the layout of every diff the pane shows, the ones already open included: a layout is a
+    /// way of reading the same diff, so changing it with three files open must not mean collapsing and reopening
+    /// them. A border row carries no diff, and a row that was never opened carries no content to redraw.</summary>
+    private void SetDiffView(bool split)
+    {
+        if (_splitDiff == split) return;
+        _splitDiff = split;
+        foreach (var rebuild in _diffRebuilds) rebuild();
+    }
+
+    private static MenuItem MenuChoice(string textKey, string tag, bool current, Action pick)
+    {
+        var item = new MenuItem
+        {
+            Header = MenuRow.Build(null, HubStrings.Get(textKey), current),
+            Tag = tag,
+            IsChecked = current,
+        };
+        item.Click += (_, _) => pick();
+        return item;
+    }
+
+    private static MenuItem MenuCaption(string textKey) => new()
+    {
+        Header = HubStrings.Get(textKey),
+        Tag = textKey,
+        Classes = { "menu-caption" },
+        IsHitTestVisible = false,
+        Focusable = false,
+    };
+
     private void SelectTab(string tab)
     {
         var sessionChanges = string.Equals(tab, "changes", StringComparison.Ordinal);
@@ -329,9 +417,6 @@ internal sealed partial class InspectorPanel : UserControl
         var plan = !changes;
         _planTab.Classes.Set("selected", plan);
         _changesTab.Classes.Set("selected", changes);
-        _scopeButton.Content = HubStrings.Get(repo ? "InspectorScopeRepository" : "InspectorScopeSession");
-        _scopeButton.Tag = repo ? "repo" : "changes";
-        _scopeButton.IsVisible = changes || repo;
         _planScroll.IsVisible = plan;
         _changesScroll.IsVisible = sessionChanges;
         _repoScroll.IsVisible = repo;
@@ -365,6 +450,9 @@ internal sealed partial class InspectorPanel : UserControl
             _planHost.Content = viewer;
         }
 
+        // The rows about to be thrown away were the only holders of how to redraw their diffs; a stale closure
+        // here would redraw a control that no longer has a parent.
+        _diffRebuilds.Clear();
         _changesList.Children.Clear();
         if (changes.Count == 0)
         {
@@ -546,15 +634,22 @@ internal sealed partial class InspectorPanel : UserControl
         header.Content = grid;
 
         var detail = new ContentControl { IsVisible = false, Margin = new Thickness(0, 4, 0, 6) };
+        void BuildRepoDetail()
+        {
+            var diff = GitRepository.DiffFor(state, entry);
+            var detailBody = new StackPanel { Spacing = 5 };
+            detailBody.Children.Add(diff is { Length: > 0 } ? BuildDiffBlock(diff) : EmptyLine("InspectorRepoNoDiff"));
+            detail.Content = detailBody;
+        }
+        // A layout change reaches this row too, but only once it has been opened: an unopened file has no diff on
+        // screen to redraw, and reading one to keep it in step would be a git read nobody asked for.
+        _diffRebuilds.Add(() =>
+        {
+            if (detail.Content is not null) BuildRepoDetail();
+        });
         header.Click += (_, _) =>
         {
-            if (!detail.IsVisible && detail.Content is null)
-            {
-                var diff = GitRepository.DiffFor(state, entry);
-                var detailBody = new StackPanel { Spacing = 5 };
-                detailBody.Children.Add(diff is { Length: > 0 } ? BuildDiffBlock(diff) : EmptyLine("InspectorRepoNoDiff"));
-                detail.Content = detailBody;
-            }
+            if (!detail.IsVisible && detail.Content is null) BuildRepoDetail();
             detail.IsVisible = !detail.IsVisible;
             header.Classes.Set("expanded", detail.IsVisible);
         };
@@ -686,6 +781,10 @@ internal sealed partial class InspectorPanel : UserControl
             if (detail.IsVisible) _openedChanges.Add(change.RelativePath);
             else _openedChanges.Remove(change.RelativePath);
         };
+        _diffRebuilds.Add(() =>
+        {
+            if (detail.Content is not null) detail.Content = BuildDiffDetail(change, resolveDiff, resolveSnapshot);
+        });
 
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         row.Children.Add(header);
@@ -790,20 +889,26 @@ internal sealed partial class InspectorPanel : UserControl
         _ => "InspectorDiffUnreadable",
     };
 
+    /// <summary>One diff, in whichever of the two layouts the header gear is set to. Both read the same text and
+    /// both use the <c>inspector-diff-*</c> classes, so the theme and a check need not care which one is up.</summary>
+    private Control BuildDiffBlock(string diff) => _splitDiff ? BuildSplitDiffBlock(diff) : BuildUnifiedDiffBlock(diff);
+
+    private static ScrollViewer DiffViewport() => new()
+    {
+        // Hub's opaque, always-visible bars need their own layout slot, not Fluent's overlay mode.
+        AllowAutoHide = false,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        MaxHeight = 420,
+        ClipToBounds = true,
+    };
+
     /// <summary>Renders a unified diff with separate old/new line-number gutters and an explicit change marker.
     /// A horizontal scroller rather than wrapping: code that wraps loses the column alignment a diff is read by.</summary>
-    private static Control BuildDiffBlock(string diff)
+    private static Control BuildUnifiedDiffBlock(string diff)
     {
         var lines = new StackPanel { Spacing = 0 };
-        var viewer = new ScrollViewer
-        {
-            // Hub's opaque, always-visible bars need their own layout slot, not Fluent's overlay mode.
-            AllowAutoHide = false,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = 420,
-            ClipToBounds = true,
-        };
+        var viewer = DiffViewport();
         var oldLine = 0;
         var newLine = 0;
         foreach (var raw in diff.Split('\n'))
@@ -863,6 +968,152 @@ internal sealed partial class InspectorPanel : UserControl
 
         viewer.Content = new Border { Classes = { "inspector-diff" }, Child = lines };
         return viewer;
+    }
+
+    /// <summary>Half a row of the side-by-side layout: one line with the number it carries on its own side, and the
+    /// class that decides its tint. A run of removals and the insertions that replace it share a row.</summary>
+    private readonly record struct DiffHalf(string Number, string Text, string Kind);
+
+    /// <summary>The same diff read as two facing columns — removed text on the left, added text on the right —
+    /// which is what a wide column is for: a changed line and its replacement sit on one row instead of one above
+    /// the other. Built from the diff text alone, not from before/after files: this pane is handed a diff and never
+    /// a working tree, and a repository row has nothing else to read.
+    ///
+    /// All rows go into one grid rather than one grid per row, because equal columns are what makes the two sides
+    /// line up — a grid per row would size each row's halves to that row's own text. A hunk's removals are held
+    /// until the insertions that follow them have been read, so pair n of each lands on one row; a context line
+    /// carries both numbers and appears in both halves, and a line with no counterpart leaves its half blank.</summary>
+    private static Control BuildSplitDiffBlock(string diff)
+    {
+        var viewer = DiffViewport();
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
+        var removed = new List<DiffHalf>();
+        var added = new List<DiffHalf>();
+        var oldLine = 0;
+        var newLine = 0;
+        var rowIndex = 0;
+
+        void AddRow(Control left, Control? right = null)
+        {
+            grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+            Grid.SetRow(left, rowIndex);
+            grid.Children.Add(left);
+            if (right is not null)
+            {
+                Grid.SetRow(right, rowIndex);
+                Grid.SetColumn(right, 1);
+                grid.Children.Add(right);
+            }
+            rowIndex++;
+        }
+
+        void FlushPair()
+        {
+            for (var i = 0; i < Math.Max(removed.Count, added.Count); i++)
+            {
+                AddRow(
+                    i < removed.Count ? DiffHalfCell(viewer, removed[i]) : BlankHalf(),
+                    i < added.Count ? DiffHalfCell(viewer, added[i]) : null);
+            }
+            removed.Clear();
+            added.Clear();
+        }
+
+        foreach (var raw in diff.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            var lineClass = DiffLineClass(line);
+            if (lineClass == "diff-add")
+            {
+                added.Add(new DiffHalf($"{newLine++}", line[1..], lineClass));
+                continue;
+            }
+            if (lineClass == "diff-del")
+            {
+                // git prints every removal before the insertion that replaces it, so a removal arriving after one
+                // means the pair the reader is looking at is already complete.
+                if (added.Count > 0) FlushPair();
+                removed.Add(new DiffHalf($"{oldLine++}", line[1..], lineClass));
+                continue;
+            }
+            FlushPair();
+            if (lineClass == "diff-hunk") (oldLine, newLine) = ParseHunkLineNumbers(line);
+            if (lineClass.Length == 0 && line.Length == 0) continue;
+            if (line.StartsWith(' ') && oldLine > 0)
+            {
+                // Context: the same line of the file, so it belongs in both halves under both numbers.
+                var text = line[1..];
+                AddRow(
+                    DiffHalfCell(viewer, new DiffHalf($"{oldLine++}", text, "")),
+                    DiffHalfCell(viewer, new DiffHalf($"{newLine++}", text, "")));
+                continue;
+            }
+            // Everything that is not a body line — the file's header, the hunk's, the "no newline" note — spans
+            // both columns: it describes the pair rather than belonging to one side of it.
+            var band = DiffHalfCell(viewer, new DiffHalf("", line, lineClass));
+            Grid.SetColumnSpan(band, 2);
+            AddRow(band);
+        }
+        FlushPair();
+
+        viewer.Content = new Border { Classes = { "inspector-diff" }, Child = grid };
+        return viewer;
+    }
+
+    private static Border DiffHalfCell(ScrollViewer viewer, DiffHalf half)
+    {
+        var block = new Border();
+        block.Classes.Add("inspector-diff-line");
+        if (half.Kind.Length > 0) block.Classes.Add(half.Kind);
+
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*") };
+        var gutter = Themed(new TextBlock
+        {
+            Text = half.Number,
+            MinWidth = 30,
+            FontFamily = ThemedFont("Hub.Font.Mono"),
+            FontSize = 10,
+            TextAlignment = TextAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "inspector-diff-gutter" },
+        }, "Hub.TextTertiary");
+        row.Children.Add(gutter);
+
+        var marker = Themed(new TextBlock
+        {
+            Text = half.Kind == "diff-add" ? "+" : half.Kind == "diff-del" ? "−" : " ",
+            FontFamily = ThemedFont("Hub.Font.Mono"),
+            FontSize = 11.5,
+            VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "inspector-diff-marker" },
+        }, half.Kind == "diff-add" ? "Hub.Success" : half.Kind == "diff-del" ? "Hub.Danger" : "Hub.TextTertiary");
+        Grid.SetColumn(marker, 1);
+        row.Children.Add(marker);
+
+        var text = Themed(new DiffSelectableTextBlock(viewer)
+        {
+            Background = Brushes.Transparent,
+            Text = half.Text.Length == 0 ? " " : half.Text,
+            FontFamily = ThemedFont("Hub.Font.Mono"),
+            FontSize = 11.5,
+            TextWrapping = TextWrapping.NoWrap,
+        }, "Hub.TextSecondary");
+        text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.Selection"));
+        Grid.SetColumn(text, 2);
+        row.Children.Add(text);
+        block.Child = row;
+        return block;
+    }
+
+    /// <summary>The half of a row whose side has no line: the removal nothing replaced, or the insertion that
+    /// replaced nothing. It keeps the row's plate and height, so the facing line does not look like a short line
+    /// and the two columns keep their rhythm.</summary>
+    private static Border BlankHalf()
+    {
+        var block = new Border();
+        block.Classes.Add("inspector-diff-line");
+        block.Child = new TextBlock { Text = " " };
+        return block;
     }
 
     /// <summary>Extends a line selection while its pointer is held at the horizontal edge of the diff viewport.

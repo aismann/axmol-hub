@@ -1243,8 +1243,7 @@ internal sealed class ShellDecisionsChecks
                 ? "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（旧版）"
                 : "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", UndoCopyState.Read), null, "changes");
         Check(inspector.ChangeRowCountForCheck == 1 && inspector.FirstChangePathForCheck == "note.txt"
-              && inspector.ChangesTabVisibleForCheck && !inspector.PlanTabVisibleForCheck
-              && inspector.ChangeScopeLabelForCheck == HubStrings.Get("InspectorScopeSession"),
+              && inspector.ChangesTabVisibleForCheck && !inspector.PlanTabVisibleForCheck,
             "改动页把这次会话动过的文件列出来，并停在被点开的哪一页（实际 "
             + inspector.ChangeRowCountForCheck + " 行，首行「" + inspector.FirstChangePathForCheck + "」）");
         Check(inspector.ChangeFileMenuItemsForCheck.SequenceEqual([
@@ -1259,6 +1258,25 @@ internal sealed class ShellDecisionsChecks
             "unified diff 为上下文与改动行提供行号槽和明确的增删标记（实际 "
             + inspector.ChangeRowDiffGutterCountForCheck(0) + " 行号、标记「"
             + inspector.ChangeRowDiffMarkersForCheck(0) + "」）");
+        // The gear is the page's only setting surface now: the diff layout and the change scope are the same kind
+        // of question, so they are four rows in one menu, and the tick — not a label in the header — says which of
+        // each is up. Read in order, so a row that moved into the wrong group is caught as well as a missing one.
+        inspector.PressViewSettingsForCheck();
+        Check(inspector.ViewMenuRowsForCheck.SequenceEqual([
+                "DiffViewSection", "InspectorMenuSplit", "InspectorMenuUnified ✓",
+                "InspectorScopeSection", "InspectorMenuSession ✓", "InspectorMenuRepository"]),
+            "改动页齿轮菜单按「视图、改动范围」两组排出并排/统一与会话/仓库，勾落在统一视图与会话改动上（实际 "
+            + string.Join("、", inspector.ViewMenuRowsForCheck) + "）");
+        inspector.ClickViewMenuRowForCheck("InspectorMenuSplit");
+        Check(inspector.SplitDiffForCheck
+              && inspector.ChangeRowDiffMarkersForCheck(0).Contains("+", StringComparison.Ordinal)
+              && inspector.ChangeRowDiffMarkersForCheck(0).Contains("−", StringComparison.Ordinal)
+              && inspector.ChangeRowDiffGutterCountForCheck(0) > 0,
+            "选并排视图后，已经打开的那份 diff 当场改成左右两栏（实际 "
+            + inspector.ChangeRowDiffGutterCountForCheck(0) + " 行号）");
+        inspector.ClickViewMenuRowForCheck("InspectorMenuUnified");
+        Check(!inspector.SplitDiffForCheck && inspector.ChangeRowDiffGutterCountForCheck(0) >= 3,
+            "选统一视图后回到单栏，行号槽与标记照旧");
         inspector.SelectHistoryRevisionForCheck(0);
         Check(inspector.SelectedRevisionForCheck("note.txt") == "revision-1",
             "切换历史修订会将详情切到选中的那次写入");

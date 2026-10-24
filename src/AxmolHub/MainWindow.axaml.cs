@@ -1562,7 +1562,7 @@ public partial class MainWindow : Window
 
         var settings = new MenuItem
         {
-            Header = BuildMenuRow("Hub.Icon.Settings", HubStrings.Get("Settings"), current: false),
+            Header = MenuRow.Build("Hub.Icon.Settings", HubStrings.Get("Settings"), current: false),
         };
         settings.Click += (_, _) =>
         {
@@ -1573,13 +1573,13 @@ public partial class MainWindow : Window
 
         var appearance = new MenuItem
         {
-            Header = BuildMenuRow("Hub.Icon.Contrast", HubStrings.Get("Appearance"), current: false),
+            Header = MenuRow.Build("Hub.Icon.Contrast", HubStrings.Get("Appearance"), current: false),
             Tag = MenuRowTag.Appearance,
         };
 
         var language = new MenuItem
         {
-            Header = BuildMenuRow("Hub.Icon.Globe", HubStrings.Get("Language"), current: false),
+            Header = MenuRow.Build("Hub.Icon.Globe", HubStrings.Get("Language"), current: false),
             Tag = MenuRowTag.Language,
         };
         foreach (var (tag, display) in SettingsPage.LanguageChoices)
@@ -1589,7 +1589,7 @@ public partial class MainWindow : Window
             {
                 // No glyph: the name is written in its own script, which is the whole sentence, and the tick
                 // says which one is in force.
-                Header = BuildMenuRow(null, display, current),
+                Header = MenuRow.Build(null, display, current),
                 IsChecked = current,
                 Tag = tag,
             };
@@ -1605,7 +1605,7 @@ public partial class MainWindow : Window
 
         var theme = new MenuItem
         {
-            Header = BuildMenuRow("Hub.Icon.Sun", HubStrings.Get("Theme"), current: false),
+            Header = MenuRow.Build("Hub.Icon.Sun", HubStrings.Get("Theme"), current: false),
             Tag = MenuRowTag.Theme,
         };
         foreach (var value in HubTheme.All)
@@ -1613,7 +1613,7 @@ public partial class MainWindow : Window
             var current = value == ThemeService.Current;
             var item = new MenuItem
             {
-                Header = BuildMenuRow(null, HubStrings.Get(SettingsPage.ThemeTextKey(value)), current),
+                Header = MenuRow.Build(null, HubStrings.Get(SettingsPage.ThemeTextKey(value)), current),
                 IsChecked = current,
                 Tag = value,
             };
@@ -1640,7 +1640,7 @@ public partial class MainWindow : Window
 
         var license = new MenuItem
         {
-            Header = BuildMenuRow("Hub.Icon.Application", "License", current: false),
+            Header = MenuRow.Build("Hub.Icon.Application", "License", current: false),
             Tag = MenuRowTag.License,
         };
         license.Click += async (_, _) =>
@@ -1661,70 +1661,6 @@ public partial class MainWindow : Window
         internal const string Language = "menu:language";
         internal const string Theme = "menu:theme";
         internal const string License = "menu:license";
-    }
-
-    /// <summary>One row of the bottom menu: a glyph, a name, and a tick when this is the answer in force. A row
-    /// inside a submenu carries no glyph — the parent names the question, the rows under it are its answers — and
-    /// its title keeps the whole glyph slot as inset, so a child never starts left of its parent. The width is
-    /// fixed across rows so the ticks land in a column rather than wherever each name happens to end.</summary>
-    private static Control BuildMenuRow(string? iconKey, string title, bool current)
-    {
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), MinWidth = 200 };
-
-        var hasGlyph = iconKey is { Length: > 0 };
-        if (hasGlyph)
-        {
-            var icon = new Avalonia.Controls.Shapes.Path
-            {
-                Width = 15,
-                Height = 15,
-                Stretch = Stretch.Uniform,
-                Fill = Brushes.Transparent,
-                StrokeThickness = 1.7,
-                StrokeLineCap = PenLineCap.Round,
-                StrokeJoin = PenLineJoin.Round,
-                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-            };
-            icon.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension(iconKey!));
-            icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-            Grid.SetColumn(icon, 0);
-            header.Children.Add(icon);
-        }
-
-        // Named rather than positional: a row's parts are read back by the self-check, and "the first TextBlock
-        // in the grid" is a description of where a label sits, not of what it is — the same reason the provider
-        // groups carry role tags.
-        var text = new TextBlock
-        {
-            Name = "MenuRowTitle",
-            Text = title,
-            FontSize = 13,
-            FontWeight = FontWeight.SemiBold,
-            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-            Margin = new Thickness(hasGlyph ? 12 : 27, 0, 0, 0),
-        };
-        Grid.SetColumn(text, 1);
-        header.Children.Add(text);
-
-        var tick = new Avalonia.Controls.Shapes.Path
-        {
-            Name = "MenuRowTick",
-            Width = 14,
-            Height = 14,
-            Stretch = Stretch.Uniform,
-            Fill = Brushes.Transparent,
-            StrokeThickness = 1.8,
-            StrokeLineCap = PenLineCap.Round,
-            StrokeJoin = PenLineJoin.Round,
-            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 0, 0),
-            IsVisible = current,
-        };
-        tick.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Tick"));
-        tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-        Grid.SetColumn(tick, 2);
-        header.Children.Add(tick);
-        return header;
     }
 
     /// <summary>Recomputes all **imperatively** written copy after a language change (DynamicResource

@@ -428,11 +428,6 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
       <Setter Property="BorderBrush" Value="{DynamicResource Hub.Accent}" />
     </Style>
-    <Style Selector="Button.inspector-change-scope">
-      <Setter Property="Padding" Value="8,3" />
-      <Setter Property="FontSize" Value="12" />
-      <Setter Property="MinHeight" Value="26" />
-    </Style>
     <Style Selector="Button.inspector-file-menu">
       <Setter Property="Padding" Value="6,0" />
       <Setter Property="MinWidth" Value="30" />

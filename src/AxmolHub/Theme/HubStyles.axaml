@@ -333,4 +333,16 @@
     <Setter Property="IsVisible" Value="False" />
   </Style>
 
+  <!-- A caption row inside a menu — the section a set of choices belongs to. It is quiet, short, and never a
+       keyboard stop, so it reads as a heading rather than as an answer that answers nothing. Its left inset
+       matches a glyph-less MenuRow title, which keeps the caption over the words under it. -->
+  <Style Selector="MenuItem.menu-caption">
+    <Setter Property="MinHeight" Value="0" />
+    <Setter Property="Padding" Value="27,8,12,2" />
+    <Setter Property="FontSize" Value="11" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+    <Setter Property="Background" Value="Transparent" />
+  </Style>
+
 </Styles>

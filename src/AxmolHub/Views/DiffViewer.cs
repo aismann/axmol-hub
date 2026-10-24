@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -164,41 +165,57 @@ internal sealed class DiffViewer : Grid
         settingsIcon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
         var viewSettings = new Button { Content = settingsIcon, Tag = "DiffViewSettings", Classes = { "viewer-action" } };
         ToolTip.SetTip(viewSettings, HubStrings.Get("DiffViewSettings"));
-        MenuItem splitMode = null!;
-        MenuItem inlineMode = null!;
-        splitMode = ViewModeItem("DiffSplitMode", false);
-        inlineMode = ViewModeItem("DiffInlineMode", true);
-        splitMode.ToggleType = MenuItemToggleType.Radio;
-        inlineMode.ToggleType = MenuItemToggleType.Radio;
-        splitMode.IsChecked = true;
-        var viewMenu = new ContextMenu { ItemsSource = new[] { splitMode, inlineMode } };
-        viewSettings.ContextMenu = viewMenu;
+        // The gear opens a menu, not a context menu: same flyout, same rows and same tick as the assistant's
+        // switchboard, so a choice looks the same wherever Hub offers one. Built fresh on every open, which is
+        // how exactly one tick is drawn without a second copy of the state to keep in sync.
+        var viewMenu = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedRight };
+        FlyoutBase.SetAttachedFlyout(viewSettings, viewMenu);
         viewSettings.Click += (_, _) =>
         {
-            viewMenu.PlacementTarget = viewSettings;
-            viewMenu.Open();
+            if (viewMenu.IsOpen)
+            {
+                viewMenu.Hide();
+                return;
+            }
+            viewMenu.Items.Clear();
+            viewMenu.Items.Add(new MenuItem
+            {
+                Header = HubStrings.Get("DiffViewSection"),
+                Classes = { "menu-caption" },
+                IsHitTestVisible = false,
+                Focusable = false,
+            });
+            viewMenu.Items.Add(ViewModeItem("DiffSplitMode", false));
+            viewMenu.Items.Add(ViewModeItem("DiffInlineMode", true));
+            FlyoutBase.ShowAttachedFlyout(viewSettings);
         };
 
         MenuItem ViewModeItem(string key, bool inline)
         {
+            var current = _inlineMode == inline;
             var item = new MenuItem
             {
-                Header = HubStrings.Get(key),
-                Tag = inline ? "inline" : "split",
+                Header = MenuRow.Build(null, HubStrings.Get(key), current),
+                Tag = inline ? "DiffMenuInline" : "DiffMenuSplit",
+                IsChecked = current,
                 IsEnabled = !inline || script.Exact,
-                ToggleType = MenuItemToggleType.Radio,
             };
             item.Click += (_, _) =>
             {
-                _inlineMode = inline;
-                splitMode.IsChecked = !inline;
-                inlineMode.IsChecked = inline;
-                _inline.IsVisible = inline;
-                header.IsVisible = !inline;
-                _left.IsVisible = !inline;
-                _right.IsVisible = !inline;
+                // Closed first: the choice rewrites the two surfaces this flyout is anchored above.
+                viewMenu.Hide();
+                ApplyViewMode(inline);
             };
             return item;
+        }
+
+        void ApplyViewMode(bool inline)
+        {
+            _inlineMode = inline;
+            _inline.IsVisible = inline;
+            header.IsVisible = !inline;
+            _left.IsVisible = !inline;
+            _right.IsVisible = !inline;
         }
         var previous = new Button { Content = HubStrings.Get("DiffPreviousChange"), Tag = "DiffPreviousChange", IsEnabled = _changedRows.Length > 0 };
         previous.Click += (_, _) => NavigateChange(-1);

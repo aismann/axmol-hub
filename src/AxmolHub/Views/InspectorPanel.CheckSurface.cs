@@ -46,7 +46,10 @@ internal sealed partial class InspectorPanel : UserControl
     /// reached: the button fell back to the base Button theme and showed an empty plate with only its tooltip.
     /// The icon being there is therefore a property worth asserting on its own.</summary>
     internal bool PlanCopyIconForCheck => _planHost.Content is MarkdownScrollViewer viewer && MarkdownMessageRenderer.HasCopyToolbar(viewer);
-    internal bool PlanCopyButtonInHeaderForCheck => ReferenceEquals(_planCopyButton.Parent, _header) && Grid.GetColumn(_planCopyButton) == 4;
+    /// <summary>Whether the copy sits in the header, immediately left of the page's gear. Read as "immediately
+    /// left" rather than as a column number: what matters is that the two buttons share the header's right end,
+    /// and a check pinned to an index goes stale the moment a column is added between them.</summary>
+    internal bool PlanCopyButtonInHeaderForCheck => ReferenceEquals(_planCopyButton.Parent, _header) && Grid.GetColumn(_planCopyButton) + 1 == Grid.GetColumn(_viewSettings);
     internal bool PlanCopyButtonVisibleForCheck => _planCopyButton.IsVisible;
     /// <summary>Whether the plan tab's own document paints its selection from the Hub token. The pane is the
     /// renderer's other audience, and the colour of a selection is exactly the kind of thing a rule written for
@@ -55,17 +58,41 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>Whether the plan's own document carries the menu a selection earns — the pane is the renderer's
     /// other audience, and a menu attached inside ChatPanel alone would leave selecting the plan useless.</summary>
     internal bool PlanSelectionMenuForCheck => _planHost.Content is MarkdownScrollViewer viewer && SelectionMenu.HeadersForCheck(viewer).SequenceEqual([HubStrings.Get("CopyMessage"), HubStrings.Get("QuoteSelection")]);
-    /// <summary>How many buttons the header holds. Exactly three, the three tabs: the pane's other two controls
-    /// moved to the title bar, and a check that only ever pressed those would stay green while a second, dead pair
-    /// was still painted in here. Counted off the header itself rather than off the pane, because the body has
-    /// buttons of its own (the repository tab's ⟳) that have nothing to do with this.</summary>
+    /// <summary>How many buttons the header holds. Exactly four — the two tabs, the plan's copy, and the page's
+    /// gear. The count is here to catch a second, dead control surviving a move: the 「会话改动 ▾」 picker left
+    /// this header for the gear's menu, and a check that only pressed the gear would stay green while the old
+    /// button was still painted beside it. Counted off the header itself rather than off the pane, because the
+    /// body has buttons of its own (the repository tab's ⟳) that have nothing to do with this.</summary>
     internal int HeaderButtonCountForCheck => _header.GetLogicalDescendants().OfType<Button>().Count();
     internal bool ExpandedForCheck => _expanded;
     internal double PlanHostMaxWidthForCheck => _planHost.MaxWidth;
     /// <summary>The file rows, not the children of the list. An empty scope now ends on a sentence and sometimes
     /// a jump, and a count that grew because a helper line was drawn would stop meaning "how many files".</summary>
     internal int ChangeRowCountForCheck => ChangeRows().Count;
-    internal string ChangeScopeLabelForCheck => _scopeButton.Content?.ToString() ?? "";
+    /// <summary>Presses the header gear — the only way into the page's menu, which is the point: the rows a check
+    /// reads are the ones a reader's press produces.</summary>
+    internal void PressViewSettingsForCheck() => ClickTab(_viewSettings);
+
+    internal bool ViewMenuOpenForCheck => _viewMenu.IsOpen;
+
+    /// <summary>The gear's rows in the order it draws them, each carrying "✓" when its tick is lit. The ▾ button
+    /// that used to spell the scope out in the header is gone, so this menu is where the page states both of its
+    /// choices; reading it as text is reading what the reader sees.</summary>
+    internal string[] ViewMenuRowsForCheck =>
+        _viewMenu.Items.OfType<MenuItem>().Select(row => row.IsChecked == true ? $"{row.Tag} ✓" : $"{row.Tag}").ToArray();
+
+    /// <summary>The ticked rows. Two, one per group, always: a menu that ticked both layouts or neither would
+    /// leave a reader guessing which one is up, and it would disagree with the layout actually on screen.</summary>
+    internal string[] ViewMenuTickedForCheck =>
+        _viewMenu.Items.OfType<MenuItem>().Where(row => row.IsChecked == true).Select(row => $"{row.Tag}").ToArray();
+
+    internal bool SplitDiffForCheck => _splitDiff;
+
+    /// <summary>Presses one row of the gear's menu by its tag, so a check picks a setting the way a reader does
+    /// rather than assigning the field the row happens to set.</summary>
+    internal void ClickViewMenuRowForCheck(string tag) =>
+        _viewMenu.Items.OfType<MenuItem>().FirstOrDefault(row => row.Tag as string == tag)?.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+
     internal string[] ChangeFileMenuItemsForCheck => ChangeRows().FirstOrDefault()?.GetLogicalDescendants().OfType<Button>()
         .FirstOrDefault(button => button.Tag as string == "InspectorFileActions")?.ContextMenu?.Items
         .OfType<MenuItem>().Select(item => item.Header?.ToString() ?? "").ToArray() ?? [];

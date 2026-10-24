@@ -1057,6 +1057,7 @@ public static class HubTexts
         ["DiffNextChange"] = ("下一个改动", "Next change"),
         ["DiffInlineMode"] = ("统一视图", "Unified view"),
         ["DiffSplitMode"] = ("并排视图", "Split view"),
+        ["DiffViewSection"] = ("视图", "View"),
         ["DiffViewSettings"] = ("差异视图设置", "Diff view settings"),
         ["DiffStageHunk"] = ("暂存所选块", "Stage selected hunk"),
         ["DiffUnstageHunk"] = ("取消暂存所选块", "Unstage selected hunk"),
@@ -1074,10 +1075,14 @@ public static class HubTexts
         // uncommitted here" — and the two must not be merged, because a person's week of own work would otherwise
         // read as the assistant's. Every state below is a sentence the tab can end on: each names why it stopped
         // rather than drawing an empty list, which is the same rule the four diff states above follow.
-        ["InspectorScopeSession"] = ("会话改动 ▾", "Session changes ▾"),
-        ["InspectorScopeRepository"] = ("仓库改动 ▾", "Repository changes ▾"),
+        // The two scopes moved off the header and into the review gear's menu, so the words lost their caret:
+        // a menu row names an answer, it does not advertise that pressing it opens something else.
+        ["InspectorScopeSession"] = ("会话改动", "Session changes"),
+        ["InspectorScopeRepository"] = ("仓库改动", "Repository changes"),
         ["InspectorScopeSessionMenu"] = ("会话改动", "Session changes"),
         ["InspectorScopeRepositoryMenu"] = ("仓库改动", "Repository changes"),
+        ["InspectorScopeSection"] = ("改动范围", "Scope"),
+        ["InspectorSettingsTip"] = ("视图与改动范围", "View and change scope"),
         // The top bar's drawer button. Icon-only like the sidebar's, so the tooltip is the only place it has a
         // name — and it names both directions, because one glyph that opens and closes cannot say which it is
         // about to do without a second control that would repeat the column itself.
