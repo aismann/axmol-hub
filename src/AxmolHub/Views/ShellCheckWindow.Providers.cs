@@ -218,7 +218,7 @@ internal sealed class ShellProvidersChecks
         // check ever tightened enough to reject a duplicate endpoint, this is what would catch it.
         var duplicateUrl = shell.Chat.Providers.FirstOrDefault(provider => !provider.IsCustom)?.BaseUrl ?? "";
         Check(duplicateUrl.Length > 0, "至少有一个已配置 provider 提供了可复用的 base URL");
-        var twinId = shell.Chat.AddProvider("DeepSeek (个人)", duplicateUrl, "twin-model", "sk-second-account")?.Id;
+        var twinId = shell.Chat.AddProvider("DeepSeek (个人)", duplicateUrl, "twin-model", "sk-second-account", out _)?.Id;
         Check(twinId is not null, "可以为同一服务添加第二个 provider（指向同一 base URL）");
         Check(twinId is not null && shell.Chat.Providers.Count(provider => provider.BaseUrl == duplicateUrl) == 2,
             "两个 provider 可以共用一个 base URL（实际 "
@@ -304,13 +304,13 @@ internal sealed class ShellProvidersChecks
         var providerCountBefore = shell.Chat.Providers.Count;
 
         // Validation: a custom provider without a name, without a usable URL, or without a model is refused.
-        Check(shell.Chat.AddProvider("本地模型", "http://localhost:11434/v1", "llama3", null) is not null,
+        Check(shell.Chat.AddProvider("本地模型", "http://localhost:11434/v1", "llama3", null, out _) is not null,
             "添加合法的自定义 provider 成功");
         Check(shell.Chat.Providers.Count == providerCountBefore + 1, "新 provider 进入列表（实际 " + shell.Chat.Providers.Count + " 个）");
-        Check(shell.Chat.AddProvider("", "http://localhost:11434/v1", "llama3", null) is null, "缺名称的自定义 provider 被拒绝");
-        Check(shell.Chat.AddProvider("坏地址", "localhost:11434/v1", "llama3", null) is null,
+        Check(shell.Chat.AddProvider("", "http://localhost:11434/v1", "llama3", null, out _) is null, "缺名称的自定义 provider 被拒绝");
+        Check(shell.Chat.AddProvider("坏地址", "localhost:11434/v1", "llama3", null, out _) is null,
             "非绝对 http(s) 地址被拒绝（裸 host 会到第一次发消息才炸）");
-        Check(shell.Chat.AddProvider("缺模型", "http://localhost:11434/v1", "   ", null) is null, "缺模型的自定义 provider 被拒绝");
+        Check(shell.Chat.AddProvider("缺模型", "http://localhost:11434/v1", "   ", null, out _) is null, "缺模型的自定义 provider 被拒绝");
 
         // The new provider persists and reloads with its custom flag intact — a custom provider must not be
         // re-derived from the manifest (there is no manifest entry for it) on the next load.
@@ -323,15 +323,15 @@ internal sealed class ShellProvidersChecks
         reloaded.Dispose();
 
         // Editing changes a custom provider's endpoint in place.
-        Check(shell.Chat.UpdateProvider(custom.Id, "本地模型", "http://localhost:8080/v1", "qwen2", null),
+        Check(shell.Chat.UpdateProvider(custom.Id, "本地模型", "http://localhost:8080/v1", "qwen2", null, out _),
             "编辑自定义 provider 成功");
-        Check(shell.Chat.UpdateProvider(custom.Id, "本地模型", "not a url", "qwen2", null) == false,
+        Check(shell.Chat.UpdateProvider(custom.Id, "本地模型", "not a url", "qwen2", null, out _) == false,
             "编辑成非法地址被拒绝（校验与保存路径同一份规则）");
 
         // A built-in provider's base URL/name are pinned to the manifest; an update that tries to change them
         // succeeds but leaves them untouched (the model may change), so the outcome is what is asserted — a
         // boolean alone would not catch "accepted the edit and wrote the new URL anyway".
-        Check(shell.Chat.UpdateProvider("orcarouter", "改名", "http://evil", "orcarouter/auto", null),
+        Check(shell.Chat.UpdateProvider("orcarouter", "改名", "http://evil", "orcarouter/auto", null, out _),
             "内置 provider 的模型可以更新");
         var orcaAfter = shell.Chat.Providers.First(provider => provider.Id == "orcarouter");
         Check(orcaAfter.Name == "OrcaRouter" && orcaAfter.BaseUrl == "https://api.orcarouter.ai/v1",
@@ -339,6 +339,38 @@ internal sealed class ShellProvidersChecks
         Check(shell.Chat.RemoveProvider("orcarouter") == false, "内置 provider 不能被移除");
         Check(shell.Chat.RemoveProvider(custom.Id), "自定义 provider 可以移除");
         Check(shell.Chat.Providers.All(provider => !provider.IsCustom), "移除后列表里不再有自定义 provider");
+
+        // ── The add-custom-endpoint draft, as a form ──
+        // Asserted separately from the model behind it, because of how it broke: the grid declared a single row
+        // while the model field asked for row 1, so the model box was laid out on top of the name box. Every
+        // control was present, enabled and correct in isolation, and nothing in this suite opened the form.
+        settings.OpenAddProviderDraftForCheck();
+        var boxes = settings.AddProviderDraftLayoutForCheck();
+        Check(boxes.Present && boxes.Name.Height > 0 && boxes.BaseUrl.Height > 0 && boxes.Model.Height > 0
+              && !boxes.Name.Intersects(boxes.Model) && boxes.Model.Y > boxes.Name.Y,
+            "自定义 provider 草稿的三个输入框各占一行、互不重叠（实际 " + (boxes.Present ? "" : "草稿未出现，")
+            + "name=" + boxes.Name + ", url=" + boxes.BaseUrl + ", model=" + boxes.Model + "）");
+
+        // The complaint this guards: with the model box hidden, the model was always empty, and the page
+        // reported every refusal as "接口地址无效" — so a valid URL looked rejected.
+        var countBeforeDraft = shell.Chat.Providers.Count;
+        var typed = settings.FillAddProviderDraftForCheck("AgentRouterCustom", "https://agentrouter.org/v1", "");
+        var liveProblem = settings.StatusLineText;
+        Check(typed && !settings.AddProviderDraftLayoutForCheck().SaveEnabled
+              && liveProblem == HubStrings.Get("ProviderModelRequired")
+              && shell.Chat.Providers.Count == countBeforeDraft,
+            "草稿缺模型时保存被灰掉，状态行点名缺模型而不是地址无效（实际「" + liveProblem + "」）");
+
+        var committed = settings.FillAddProviderDraftForCheck("AgentRouterCustom", "https://agentrouter.org/v1", "gpt-6.1-sol")
+            && settings.AddProviderDraftLayoutForCheck().SaveEnabled
+            && settings.ClickAddProviderDraftSaveForCheck();
+        var drafted = shell.Chat.Providers.FirstOrDefault(provider => provider.IsCustom);
+        Check(committed && !settings.AddProviderDraftLayoutForCheck().Present
+              && drafted is not null && drafted.BaseUrl == "https://agentrouter.org/v1" && drafted.Model == "gpt-6.1-sol",
+            "补齐模型后保存成功：provider 落地、草稿收起（实际 " + (drafted is null ? "未添加" : "「" + drafted.Name + "」" + drafted.BaseUrl) + "）");
+
+        // Leave the list as the accounts block expects to find it: it asserts on the providers that are configured.
+        if (drafted is not null && shell.Chat.RemoveProvider(drafted.Id)) settings.RefreshProviderGroupsForCheck();
 
         // ── Sign-in methods and accounts ──
         // The block is driven through the page's real selection path (SelectProviderForCheck → the same
@@ -367,7 +399,7 @@ internal sealed class ShellProvidersChecks
         // one: a self-supplied endpoint is never gated (its requirement is unknowable) yet must still offer the
         // key entrance — otherwise the user whose local server does want a key has nowhere to give it, and the
         // row would insist it needs none.
-        var customLocal = shell.Chat.AddProvider("无凭据但有入口", "http://localhost:11434/v1", "llama3", null);
+        var customLocal = shell.Chat.AddProvider("无凭据但有入口", "http://localhost:11434/v1", "llama3", null, out _);
         Check(customLocal is not null, "为这条断言添加一个自定义 provider");
         settings.RefreshProviderGroupsForCheck();
         var customGroup = customLocal is null ? null : settings.ProviderGroupForId(customLocal.Id);
@@ -895,7 +927,7 @@ internal sealed class ShellProvidersChecks
         settings.RefreshProviderGroupsForCheck();
         Check(settings.ProviderGroupForId("orcarouter") is not null, "被拒绝移除的默认 provider 分组仍在页面上");
 
-        var customId = shell.Chat.AddProvider("Custom Test", "https://example.test/v1", "test-model", null)?.Id;
+        var customId = shell.Chat.AddProvider("Custom Test", "https://example.test/v1", "test-model", null, out _)?.Id;
         Check(customId is not null, "可以添加自定义 provider 以验证移除路径");
         settings.RefreshProviderGroupsForCheck();
         Check(settings.ProviderGroupForId(customId ?? "\u0000") is { HasRemoveButton: true },
@@ -1399,7 +1431,7 @@ internal sealed class ShellProvidersChecks
         //
         // A custom provider id is never reused, so a leftover entry could only be read by something that no
         // longer exists — and the file would grow a row per provider ever added.
-        var disposable = shell.Chat.AddProvider("Cache Probe", "https://example.test/v1", "m1", null);
+        var disposable = shell.Chat.AddProvider("Cache Probe", "https://example.test/v1", "m1", null, out _);
         Check(disposable is not null, "可以添加一个自定义 provider 来验证缓存清理");
         if (disposable is not null)
         {

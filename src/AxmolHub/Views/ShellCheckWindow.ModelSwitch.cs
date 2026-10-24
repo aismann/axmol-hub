@@ -17,8 +17,8 @@ internal sealed class ShellModelSwitchChecks
     internal void CheckModelSwitchNotice(MainWindow shell, ChatPanel panel)
     {
         const string model = "model-switch-x";
-        var first = shell.Chat.AddProvider("Model switch A local", "http://localhost:11437/v1", model, null);
-        var second = shell.Chat.AddProvider("Model switch B local", "http://localhost:11438/v1", model, null);
+        var first = shell.Chat.AddProvider("Model switch A local", "http://localhost:11437/v1", model, null, out _);
+        var second = shell.Chat.AddProvider("Model switch B local", "http://localhost:11438/v1", model, null, out _);
         Check(first is not null && second is not null, "模型切换提示的夹具建起了两个免密 provider");
         if (first is null || second is null) return;
 

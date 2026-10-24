@@ -36,7 +36,7 @@ internal sealed class ShellRequestStabilityChecks
         try
         {
             // The focused shell route has no configured model. Keep this fixture independent of suite order.
-            var local = chat.AddProvider("Request probe local", "http://localhost:11438/v1", "request-probe", null)
+            var local = chat.AddProvider("Request probe local", "http://localhost:11438/v1", "request-probe", null, out _)
                 ?? throw new InvalidOperationException("Could not create the request probe model");
             fixtureProvider = local.Id;
             if (!chat.SelectChatModel(local.Id, "request-probe"))

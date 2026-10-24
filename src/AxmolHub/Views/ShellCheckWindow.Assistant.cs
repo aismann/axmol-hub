@@ -74,7 +74,7 @@ internal sealed class ShellAssistantChecks
         const string checkModel = "shell-check-model";
         shell.Chat.AddModel(orca!.Id, checkModel);
         var checkProvider = shell.Chat.AddProvider(
-            "Shell check local", "http://localhost:11434/v1", checkModel, null);
+            "Shell check local", "http://localhost:11434/v1", checkModel, null, out _);
         Check(checkProvider is not null, "自检创建了免密本地模型 provider");
         panel.Reload();
         Check(panel.ModelChoiceCount == 1,
@@ -2134,7 +2134,7 @@ internal sealed class ShellAssistantChecks
         // Set up its own session on a fresh keyless model that declares two tiers, because the checks above
         // removed the provider this group started with — and a route taken against a model that no longer
         // resolves is no route at all.
-        var routeProvider = shell.Chat.AddProvider("Routing check local", "http://localhost:11436/v1", checkModel, null);
+        var routeProvider = shell.Chat.AddProvider("Routing check local", "http://localhost:11436/v1", checkModel, null, out _);
         routeProvider!.ReasoningModels[checkModel] = new AiModelReasoning
         {
             Efforts = [ChatReasoningEfforts.Low, ChatReasoningEfforts.High],
@@ -2172,7 +2172,7 @@ internal sealed class ShellAssistantChecks
         // change left in the app — the composer wore one name, the request went out on the provider's active model,
         // and the session's own window, token calibration and last-usage stamp all quietly described the wrong
         // model. It now refuses, names the model it could not find, and stays recoverable from the chip.
-        var gapProvider = shell.Chat.AddProvider("Model gap local", "http://localhost:11437/v1", "gap-model", null);
+        var gapProvider = shell.Chat.AddProvider("Model gap local", "http://localhost:11437/v1", "gap-model", null, out _);
         var otherModel = shell.Chat.AddModel(gapProvider!.Id, "other-model")?.Name ?? "other-model";
         var gapSession = shell.Chat.StartConversation(gapProvider.Id);
         shell.Chat.SelectChatModel(gapProvider.Id, "gap-model");

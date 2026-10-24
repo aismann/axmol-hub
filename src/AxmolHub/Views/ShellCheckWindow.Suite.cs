@@ -129,7 +129,7 @@ internal sealed class ShellCheckSuite
         if (Environment.GetEnvironmentVariable("AXMOL_COMPACTION_CHECK_ONLY") == "1")
         {
             var panel = shell.OpenAssistant();
-            var provider = shell.Chat.AddProvider("Compaction fixture", "https://offline.invalid/v1", "check-model", null)!;
+            var provider = shell.Chat.AddProvider("Compaction fixture", "https://offline.invalid/v1", "check-model", null, out _)!;
             await Context.CheckAutoCompactionAsync(shell, panel, provider.Id);
             await ContextBoundary.CheckContextBoundaryAsync(shell, panel);
             RequestStability.CheckRequestStability(shell, panel);

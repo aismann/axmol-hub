@@ -52,7 +52,7 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
             {
                 HubSnapshotProvider = () => new ChatWorkspace.HubReadOnlySnapshot([], [], []),
             };
-            var provider = chat.AddProvider("Git workflow check", "http://localhost:1234/v1", "offline-check-model", null);
+            var provider = chat.AddProvider("Git workflow check", "http://localhost:1234/v1", "offline-check-model", null, out _);
             if (provider is null)
             {
                 check(false, "夹具：Git 工作流离线模型无法创建");

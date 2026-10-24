@@ -9,8 +9,7 @@ using AxmolHub.Core;
 namespace AxmolHub;
 
 /// <summary>
-/// The "add a model provider" picker, built in code like <see cref="ProviderEditWindow"/> and
-/// <see cref="EngineMirrorDialog"/>.
+/// The "add a model provider" picker, built in code like <see cref="EngineMirrorDialog"/>.
 ///
 /// This replaces the old flow of "Add provider → an empty form". That form asked the user to already know an
 /// OpenAI-compatible base URL and a model name before they had a provider to use — which is a configuration
@@ -21,10 +20,10 @@ namespace AxmolHub;
 /// The catalog is not hardcoded — it comes from <see cref="ChatWorkspace.AvailablePresets"/>, which reads the
 /// same <c>manifests/ai-providers.json</c> that ships the endpoints. Adding a provider is a data change.
 ///
-/// The escape hatch is preserved: the last row is always "Custom endpoint…", which opens
-/// <see cref="ProviderEditWindow"/> for an endpoint nobody ships a preset for (a company gateway, a self-hosted
-/// model, an Ollama box on another machine). Without it the search dialog would be a regression for exactly the
-/// users the old form served.
+/// The escape hatch is preserved: the last row is always "Custom endpoint…", which closes the picker and opens
+/// the settings page's own add draft (名称 / 接口地址 / 模型, in place in the provider list) for an endpoint
+/// nobody ships a preset for — a company gateway, a self-hosted model, an Ollama box on another machine.
+/// Without it the search dialog would be a regression for exactly the users the old form served.
 /// </summary>
 public sealed partial class ProviderPickerWindow : Window
 {

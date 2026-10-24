@@ -131,6 +131,70 @@ public partial class SettingsPage : UserControl
     /// <summary>Runs the real "Add provider" button handler, so the self-check drives the same path a click
     /// does (the picker dialog is modal and cannot be clicked from the harness).</summary>
     internal Task ClickAddProviderForCheckAsync() => AddProviderAsync();
+
+    /// <summary>Opens the add-custom-endpoint draft directly, skipping the picker for the same reason the method
+    /// above runs the button handler: what has to be inspected is the draft, and a modal cannot be clicked.</summary>
+    internal void OpenAddProviderDraftForCheck()
+    {
+        OpenAddDraft();
+        UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+    }
+
+    /// <summary>
+    /// Where the add draft's three boxes ended up, and whether 保存 is live — read AFTER a layout pass.
+    ///
+    /// <para>Bounds rather than "the control exists", because of how this form broke: its grid declared one row
+    /// while the model field asked for row 1, so the model box was laid out on top of the name box. Both labels
+    /// read 模型名称, so the form looked like a doubled label and every control was present and enabled.</para>
+    /// </summary>
+    internal (bool Present, Rect Name, Rect BaseUrl, Rect Model, bool SaveEnabled) AddProviderDraftLayoutForCheck()
+    {
+        var draft = AddDraftChild();
+        Rect Where(string tag)
+            => AddDraftChild<TextBox>(draft, tag) is { } box && draft is not null
+               && box.TranslatePoint(default, draft) is { } origin
+                ? new Rect(origin, box.Bounds.Size)
+                : default;
+        return (draft is not null,
+            Where(SectionTags.AddDraftName),
+            Where(SectionTags.AddDraftBaseUrl),
+            Where(SectionTags.AddDraftModel),
+            AddDraftChild<Button>(draft, SectionTags.AddDraftSave)?.IsEnabled == true);
+    }
+
+    /// <summary>Types into the draft's boxes, so the TextChanged wiring that greys out 保存 actually runs.</summary>
+    internal bool FillAddProviderDraftForCheck(string name, string baseUrl, string model)
+    {
+        var draft = AddDraftChild();
+        if (draft is null)
+            return false;
+        if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftName) is { } nameBox) nameBox.Text = name;
+        if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftBaseUrl) is { } urlBox) urlBox.Text = baseUrl;
+        if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftModel) is { } modelBox) modelBox.Text = model;
+        UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        return true;
+    }
+
+    /// <summary>Presses 保存 in the draft — <c>false</c> when it is not on screen or is still greyed out, which
+    /// is itself the answer when the form is incomplete.</summary>
+    internal bool ClickAddProviderDraftSaveForCheck()
+    {
+        var save = AddDraftChild<Button>(AddDraftChild(), SectionTags.AddDraftSave);
+        if (save is null || !save.IsEnabled)
+            return false;
+        save.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        return true;
+    }
+
+    private Control? AddDraftChild()
+        => ProviderGroupList.Children.OfType<Control>().FirstOrDefault(child => child.Tag as string == SectionTags.AddProviderDraft);
+
+    private static T? AddDraftChild<T>(Control? draft, string tag) where T : Control
+        => draft?.GetVisualDescendants().OfType<T>().FirstOrDefault(child => child.Tag as string == tag);
     /// <summary>The three counts the card-boundary assertion reads: outlined cards, the providers behind them,
     /// and the children that are the page's own notices rather than a card. Read together so a failure can name
     /// which of the three moved instead of only reporting that the list was not what it should be.</summary>

@@ -441,12 +441,15 @@ public sealed partial class ChatWorkspace : IDisposable
     internal HttpClient? DeepSeekWebApiHttp { get => _providers.DeepSeekWebApiHttp; set => _providers.DeepSeekWebApiHttp = value; }
     public static string? Validate(ModelProvider provider) => ChatProviderCoordinator.Validate(provider);
     public static bool IsHttpUrl(string url) => ChatProviderCoordinator.IsHttpUrl(url);
+    /// <summary>The live "can I save yet" rule for the add/edit draft, on the fields collected so far.</summary>
+    public static string? ValidateDraft(string name, string baseUrl, string model) => ChatProviderCoordinator.ValidateDraft(name, baseUrl, model);
     /// <summary>
     /// Adds a custom provider (a user-supplied OpenAI-compatible endpoint — the path to a local model) and
-    /// returns it, or <c>null</c> when validation failed. The new provider becomes active: adding one is
+    /// returns it, or <c>null</c> when it was refused. The new provider becomes active: adding one is
     /// almost always followed by using it.
     /// </summary>
-    public ModelProvider? AddProvider(string name, string baseUrl, string model, string? apiKey) => _providers.AddProvider(name, baseUrl, model, apiKey);
+    /// <param name = "problem">The text key of the refusal, or <c>null</c> when it was added.</param>
+    public ModelProvider? AddProvider(string name, string baseUrl, string model, string? apiKey, out string? problem) => _providers.AddProvider(name, baseUrl, model, apiKey, out problem);
     /// <summary>
     /// Updates an existing provider in place. Built-in providers may have their model changed, but their base
     /// URL and name stay the manifest's (editing them would silently diverge from what the review scanned for;
@@ -455,9 +458,10 @@ public sealed partial class ChatWorkspace : IDisposable
     /// <para>The <paramref name = "apiKey"/> argument is kept so existing callers compile, but it is applied as
     /// <b>a new credential</b>, not as a field on the provider — which is now the same thing
     /// <see cref = "SetApiKey"/> does. Passing one rotates the active credential's secret rather than stacking a
-    /// second entry, matching the dialog's "leave blank to keep the stored key" contract.</para>
+    /// second entry, matching the "leave blank to keep the stored key" contract.</para>
     /// </summary>
-    public bool UpdateProvider(string providerId, string name, string baseUrl, string model, string? apiKey) => _providers.UpdateProvider(providerId, name, baseUrl, model, apiKey);
+    /// <param name = "problem">The text key of the refusal, or <c>null</c> when it was updated.</param>
+    public bool UpdateProvider(string providerId, string name, string baseUrl, string model, string? apiKey, out string? problem) => _providers.UpdateProvider(providerId, name, baseUrl, model, apiKey, out problem);
     /// <summary>
     /// Removes a provider <b>and everything that hangs off it</b>: the record, its accounts and their secrets.
     ///

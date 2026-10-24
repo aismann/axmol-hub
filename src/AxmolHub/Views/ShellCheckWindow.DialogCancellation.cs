@@ -35,7 +35,6 @@ internal sealed class ShellDialogCancellationChecks(Action<bool, string> check)
             ("Prompt", async () => await PromptWindow.ShowAsync(shell, "Fixture") is null),
             ("BuildTarget", async () => await BuildTargetDialog.PickAsync(shell, project) is null),
             ("EngineVersion", async () => await EngineVersionDialog.PickAsync(shell, catalog, null) is null),
-            ("ProviderEdit", async () => await ProviderEditWindow.ShowAsync(shell, null) is null),
             ("EngineMirror", async () => await EngineMirrorDialog.PickAsync(shell, engine,
                 [new MirrorOption("github", "", "fixture")]) is null),
             ("EngineBuild", async () => await EngineBuildWindow.PickAsync(shell, engine, target) is null),

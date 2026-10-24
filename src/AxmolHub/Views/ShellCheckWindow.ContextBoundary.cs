@@ -17,7 +17,7 @@ internal sealed class ShellContextBoundaryChecks
         var previous = chat.ClientOverride;
         var workspace = ScratchDirectory.Resolve("context-boundary", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workspace);
-        var provider = chat.AddProvider("Boundary fixture", "https://offline.invalid/v1", "boundary-model", null)!;
+        var provider = chat.AddProvider("Boundary fixture", "https://offline.invalid/v1", "boundary-model", null, out _)!;
         chat.SetModelContextTokens(provider.Id, "boundary-model", 32768);
         var session = StartAgentSession(chat, provider.Id);
         session.WorkspaceRoot = workspace;

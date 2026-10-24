@@ -198,7 +198,7 @@ internal sealed class ShellContextChecks
     internal async Task CheckOverflowRecoveryAsync(MainWindow shell, ChatPanel panel, string model)
     {
         var chat = shell.Chat;
-        var provider = chat.AddProvider("Overflow check local", "http://localhost:11436/v1", model, null);
+        var provider = chat.AddProvider("Overflow check local", "http://localhost:11436/v1", model, null, out _);
         var session = chat.StartConversation(provider!.Id);
         chat.SelectChatModel(provider.Id, model);
         for (var index = 0; index < 10; index++)
@@ -255,7 +255,7 @@ internal sealed class ShellContextChecks
 
             // Negative fixture: the wrong key. It must not be treated as a full window, and no window may be
             // learned from it.
-            var negativeProvider = chat.AddProvider("Overflow negative local", "http://localhost:11436/v1", model, null);
+            var negativeProvider = chat.AddProvider("Overflow negative local", "http://localhost:11436/v1", model, null, out _);
             var negativeSession = chat.StartConversation(negativeProvider!.Id);
             chat.SelectChatModel(negativeProvider.Id, model);
             var negativeRequests = 0;
@@ -291,8 +291,8 @@ internal sealed class ShellContextChecks
     internal async Task CheckUsageReadBackAsync(MainWindow shell, ChatPanel panel, string model)
     {
         var chat = shell.Chat;
-        var provider = chat.AddProvider("Usage check local", "http://localhost:11436/v1", model, null);
-        var declined = chat.AddProvider("Usage decline local", "http://localhost:11436/v1", model, null);
+        var provider = chat.AddProvider("Usage check local", "http://localhost:11436/v1", model, null, out _);
+        var declined = chat.AddProvider("Usage decline local", "http://localhost:11436/v1", model, null, out _);
         var unreported = chat.StartConversation(provider!.Id);
         var measured = chat.StartConversation(provider.Id);
         var healing = chat.StartConversation(declined!.Id);

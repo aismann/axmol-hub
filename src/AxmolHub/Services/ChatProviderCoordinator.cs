@@ -829,7 +829,12 @@ internal sealed partial class ChatProviderCoordinator
     internal TimeSpan DeviceCodeWait { get; set; } = DeviceCodeOAuthFlow.DefaultWait;
 
     private HttpClient? _oauthHttp;
-    internal ModelProvider? AddProvider(string name, string baseUrl, string model, string? apiKey)
+    /// <summary>
+    /// Adds a custom endpoint. <paramref name = "problem"/> carries the text key of whatever stopped it, and is
+    /// <c>null</c> on success: the caller shows it verbatim instead of guessing, which is how a missing model
+    /// used to be reported as a rejected URL.
+    /// </summary>
+    internal ModelProvider? AddProvider(string name, string baseUrl, string model, string? apiKey, out string? problem)
     {
         var provider = new ModelProvider
         {
@@ -846,7 +851,8 @@ internal sealed partial class ChatProviderCoordinator
             AuthMethods = [ProviderAuthMethods.ApiKey],
         };
 
-        if (Validate(provider) is not null) return null;
+        if ((problem = Validate(provider)) is not null) return null;
+        problem = null;
 
         _providerList.Add(provider);
         SaveProviders();
@@ -862,6 +868,7 @@ internal sealed partial class ChatProviderCoordinator
             {
                 _providerList.Remove(provider);
                 SaveProviders();
+                problem = "ApiKeyPlatformUnsupported";
                 return null;
             }
         }
@@ -869,10 +876,16 @@ internal sealed partial class ChatProviderCoordinator
         return provider;
     }
 
-    internal bool UpdateProvider(string providerId, string name, string baseUrl, string model, string? apiKey)
+    /// <inheritdoc cref = "AddProvider"/>
+    internal bool UpdateProvider(string providerId, string name, string baseUrl, string model, string? apiKey, out string? problem)
     {
         var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
-        if (provider is null) return false;
+        if (provider is null)
+        {
+            // No field is to blame: the row being edited no longer exists.
+            problem = null;
+            return false;
+        }
 
         var edited = new ModelProvider
         {
@@ -884,7 +897,8 @@ internal sealed partial class ChatProviderCoordinator
             // and this keeps the temporary object from relying on a setter with an insertion side effect.
             Models = [new ProviderModel { Name = model.Trim(), InUse = true }],
         };
-        if (Validate(edited) is not null) return false;
+        if ((problem = Validate(edited)) is not null) return false;
+        problem = null;
 
         provider.Name = edited.Name;
         provider.BaseUrl = edited.BaseUrl;
@@ -919,9 +933,15 @@ internal sealed partial class ChatProviderCoordinator
             // An edit that replaces the key must not leave the old secret in the store. Under the one-to-one
             // rule this is the same "rotate" that AddCredential performs, so it is expressed as one call rather
             // than a second code path that could drift from it.
-            if (!CanStoreSecrets) return false;
+            if (!CanStoreSecrets)
+            {
+                problem = "ApiKeyPlatformUnsupported";
+                return false;
+            }
+
             if (AddCredential(providerId, "", apiKey, CredentialSources.ApiKey) is null)
             {
+                problem = "ApiKeyPlatformUnsupported";
                 return false;
             }
         }
@@ -1151,7 +1171,8 @@ internal sealed partial class ChatProviderCoordinator
     }
 
     /// <summary>
-    /// Validates a provider's editable fields. Shared by the dialog (live "can I save yet" feedback) and by
+    /// Validates a provider's editable fields. Shared by the settings page's draft (live "can I save yet"
+    /// feedback, through <see cref = "ValidateDraft"/>) and by
     /// <see cref = "AddProvider"/>/<see cref = "UpdateProvider"/> (the real gate) so the two cannot drift — the UI
     /// must not be the only thing standing between a half-filled provider and a saved file.
     /// </summary>
@@ -1163,6 +1184,20 @@ internal sealed partial class ChatProviderCoordinator
         if (provider.Model.Trim().Length == 0) return "ProviderModelRequired";
         return null;
     }
+
+    /// <summary>
+    /// The same rule as <see cref = "Validate"/>, applied to the three fields the draft has collected so far —
+    /// before there is a provider object to hand it. What it returns is what greys out 保存 and what the draft
+    /// says out loud, so the field at fault is named while the person is still typing it.
+    /// </summary>
+    internal static string? ValidateDraft(string name, string baseUrl, string model)
+        => Validate(new ModelProvider
+        {
+            Name = name.Trim(),
+            BaseUrl = baseUrl.Trim(),
+            Models = [new ProviderModel { Name = model.Trim(), InUse = true }],
+        });
+
 
     /// <summary>
     /// Accepts only an absolute http/https URL. A bare host ("localhost:11434/v1") looks right to a person
