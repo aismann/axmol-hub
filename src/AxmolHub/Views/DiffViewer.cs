@@ -1,5 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
@@ -201,6 +203,18 @@ internal sealed class DiffViewer : Grid
         Grid.SetRow(_inline, 2);
         Grid.SetColumnSpan(_inline, 2);
         Children.Add(_inline);
+        if (_hunkAction is not null)
+        {
+            var shortcutHint = new TextBlock
+            {
+                Text = HubStrings.Get("DiffKeyboardShortcuts"),
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                FontSize = 11,
+                Opacity = .75,
+            };
+            actions.Children.Add(shortcutHint);
+        }
+        AddHandler(InputElement.KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         MinHeight = 240;
     }
 
@@ -236,6 +250,29 @@ internal sealed class DiffViewer : Grid
         if (!_exactAlignment || _currentChange < 0 || _currentChange >= _changedRows.Length) return false;
         var row = _changedRows[_currentChange];
         return row < _rowToHunk.Length && _rowToHunk[row] >= 0;
+    }
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyModifiers == KeyModifiers.Alt && e.Key is Key.Up or Key.Down)
+        {
+            NavigateChange(e.Key == Key.Up ? -1 : 1);
+            e.Handled = true;
+            return;
+        }
+        if (e.KeyModifiers != (KeyModifiers.Alt | KeyModifiers.Shift)) return;
+        var button = e.Key switch
+        {
+            Key.S => _stageButton,
+            Key.U => _unstageButton,
+            Key.R => _revertButton,
+            Key.A => _acceptButton,
+            Key.X => _rejectButton,
+            _ => null,
+        };
+        if (button?.IsEnabled != true) return;
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        e.Handled = true;
     }
 
     private void NavigateChange(int direction)

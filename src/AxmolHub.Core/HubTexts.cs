@@ -1063,6 +1063,7 @@ public static class HubTexts
         ["DiffStageHunk"] = ("暂存所选块", "Stage selected hunk"),
         ["DiffUnstageHunk"] = ("取消暂存所选块", "Unstage selected hunk"),
         ["DiffRevertHunk"] = ("还原所选块", "Revert selected hunk"),
+        ["DiffKeyboardShortcuts"] = ("Alt+↑/↓ 定位；Alt+Shift+S 暂存，U 取消暂存，R 还原；A 接受 AI 块，X 拒绝", "Alt+↑/↓ navigate; Alt+Shift+S stage, U unstage, R revert; A accept AI hunk, X reject"),
         ["DiffAcceptAiHunk"] = ("接受 AI 改动块", "Accept AI hunk"),
         ["DiffRejectAiHunk"] = ("拒绝 AI 改动块", "Reject AI hunk"),
         ["InspectorDiffCopySpent"] = ("那次写入已被撤销，副本用完", "The copy was spent by a revert"),
