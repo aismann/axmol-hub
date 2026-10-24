@@ -686,6 +686,56 @@ internal static class AiProvidersChecks
         // must not quietly re-route any of the shipped endpoints.
         Assert(AiProviderManifest.Load().All(entry => entry.Protocol is null), "no shipped preset declares a wire, so every one of them still resolves to chat");
         Assert(AiProviderManifest.CreateBuiltIn("deepseek")!.Protocol is null, "a preset that says nothing arrives with no wire rather than a guessed one");
+        // ── The declared static headers reach the requests the app builds itself ──
+        // A gateway that filters clients answers a headerless request the way it answers a stranger. On the catalog
+        // that reads as "unreachable" — a provider with no models and no explanation — and on the key probe as a
+        // 401, which this app reads as "the key was rejected", the one verdict that blocks the auth dialog for a
+        // perfectly good key. Both call sites go through ProviderStaticHeaders now, so both are measured rather
+        // than assumed: the shared source because it was the one missing them, Copilot's because its hand-written
+        // loop was replaced by that rule and must not have lost what it did.
+        var catalogBytes = System.Text.Encoding.UTF8.GetBytes("""{"object":"list","data":[{"id":"gpt-6.1-sol"}]}""");
+        var agentRouter = AiProviderManifest.CreateBuiltIn("agentrouter")
+                          ?? throw new Exception("agentrouter is missing from ai-providers.json.");
+        agentRouter.Credential = new ProviderCredential { Id = "catalog-probe", ProviderId = agentRouter.Id, Secret = "sk-test" };
+        var catalogRecorder = new RequestRecorder(catalogBytes);
+        using (var recorder = new HttpClient(catalogRecorder))
+        {
+            var catalogBatch = await new OpenAiCompatibleModelsSource().FetchAsync(recorder, agentRouter, CancellationToken.None);
+            var sent = catalogRecorder.Requests.FirstOrDefault();
+            var declaredAgent = agentRouter.ExtraHeaders.GetValueOrDefault("user-agent");
+            Assert(sent is not null && catalogBatch.Models.Contains("gpt-6.1-sol")
+                   && declaredAgent is { Length: > 0 }
+                   && sent["user-agent"] == declaredAgent
+                   && sent["authorization"] == "Bearer sk-test",
+                "the OpenAI-compatible catalog carries the provider's declared headers beside the bearer (user-agent="
+                + (sent?["user-agent"] ?? "absent") + " declared=" + (declaredAgent ?? "none")
+                + " authorization=" + (sent?["authorization"] ?? "absent")
+                + " models=" + catalogBatch.Models.Count + ")");
+        }
+
+        var copilotCatalog = AiProviderManifest.CreateBuiltIn("github-copilot")
+                             ?? throw new Exception("github-copilot is missing from ai-providers.json.");
+        copilotCatalog.Credential = new ProviderCredential { Id = "catalog-probe", ProviderId = copilotCatalog.Id, Secret = "gh-test" };
+        var copilotRecorder = new RequestRecorder(
+            System.Text.Encoding.UTF8.GetBytes("""{"data":[{"id":"gpt-6-luna","capabilities":{"type":"chat"}}]}"""));
+        using (var recorder = new HttpClient(copilotRecorder))
+        {
+            await new GithubCopilotModelsSource().FetchAsync(recorder, copilotCatalog, CancellationToken.None);
+            var sent = copilotRecorder.Requests.FirstOrDefault();
+            var declaredCopilot = copilotCatalog.ExtraHeaders.GetValueOrDefault("user-agent");
+            // .NET parses User-Agent into product tokens and hands them back separated by ", ", so a declared value
+            // that contains a space returns as "Axmol, Hub". That normalisation is the platform's and is identical on
+            // the old hand-written loop; what this assertion is about is that the declared value still gets there.
+            Assert(sent is not null && declaredCopilot is { Length: > 0 }
+                   && sent["user-agent"]?.Replace(", ", " ") == declaredCopilot
+                   && sent["x-github-api-version"] == "2026-06-01"
+                   && sent["authorization"] == "Bearer gh-test",
+                "moving Copilot's catalog headers onto the shared rule kept them all (user-agent="
+                + (sent?["user-agent"] ?? "absent") + " declared=" + (declaredCopilot ?? "none")
+                + " x-github-api-version=" + (sent?["x-github-api-version"] ?? "absent")
+                + " authorization=" + (sent?["authorization"] ?? "absent") + ")");
+        }
+
         return;
     }
 }

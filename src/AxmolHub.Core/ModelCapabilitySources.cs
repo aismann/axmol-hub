@@ -67,6 +67,10 @@ public sealed class OpenAiCompatibleModelsSource : IModelCapabilitySource
         if (provider.Credential?.Secret is { Length: > 0 } secret)
             request.Headers.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", secret);
+        // A provider whose endpoint filters clients answers this request the way it answers a stranger while
+        // accepting every inference call, and a catalog read as "unreachable" is how a provider ends up with no
+        // models and no explanation for it.
+        ProviderStaticHeaders.ApplyTo(request, provider.ExtraHeaders);
 
         using var response = await client
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)

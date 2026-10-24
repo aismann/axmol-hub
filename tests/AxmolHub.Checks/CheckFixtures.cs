@@ -108,6 +108,43 @@ sealed class FixtureHandler(byte[] bytes) : HttpMessageHandler
     }
 }
 
+/// <summary>
+/// Answers every request with the same JSON body and keeps what was actually sent — the path, and every header
+/// with its values — because the assertions this exists for are about something a request must carry and a
+/// response can never show.
+///
+/// <para><b>The snapshot is taken inside <see cref="SendAsync"/>, not handed out as the
+/// <see cref="HttpRequestMessage"/>.</b> The caller disposes its request as soon as its own method returns, and an
+/// assertion that read headers off that object afterwards would be measuring the harness's lifetime rather than
+/// the request. Values are joined with ", " when a name arrives more than once, so "sent twice" is visible instead
+/// of hidden behind whichever arrived first.</para>
+/// </summary>
+sealed class RequestRecorder(byte[] payload) : HttpMessageHandler
+{
+    /// <summary>One request, as it went out. Indexed by header name, case-insensitively.</summary>
+    internal sealed record Recorded(string Method, string Path, IReadOnlyDictionary<string, string> Headers)
+    {
+        /// <summary>A header's value, or <c>null</c> when the request did not carry that name at all.</summary>
+        public string? this[string name] => Headers.GetValueOrDefault(name);
+    }
+
+    public List<Recorded> Requests { get; } = [];
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var headers = request.Headers.ToDictionary(
+            header => header.Key,
+            header => string.Join(", ", header.Value),
+            StringComparer.OrdinalIgnoreCase);
+        Requests.Add(new Recorded(request.Method.Method, request.RequestUri?.AbsolutePath ?? "", headers));
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            RequestMessage = request,
+            Content = new StringContent(Encoding.UTF8.GetString(payload), Encoding.UTF8, "application/json"),
+        });
+    }
+}
+
 /// <summary>In-memory <see cref="ISecretStore"/> backing the <c>--check-ai-providers</c> assertions.</summary>
 sealed class InMemorySecretStore : ISecretStore
 {

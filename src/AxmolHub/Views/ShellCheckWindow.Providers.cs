@@ -248,9 +248,12 @@ internal sealed class ShellProvidersChecks
         Check(picker.RowTemplateSurvivesNullItemForCheck(),
             "行模板扛得住空项：列表回收滚出视野的容器时就是这么调它的，曾经一滚就崩");
 
-        picker.SearchForCheck("deep");
+        // The query is a product name no other preset's description mentions. "deep" used to be here, and it
+        // stopped isolating one row the day a preset legitimately described itself as fronting DeepSeek models —
+        // which is the feature the description search exists for, so the assertion was the thing that was wrong.
+        picker.SearchForCheck("copilot");
         Dispatcher.UIThread.RunJobs();
-        Check(picker.VisiblePresetIdsForCheck.Length == 1 && picker.VisiblePresetIdsForCheck[0] == "deepseek",
+        Check(picker.VisiblePresetIdsForCheck.Length == 1 && picker.VisiblePresetIdsForCheck[0] == "github-copilot",
             "搜索按名称过滤（实际 [" + string.Join(",", picker.VisiblePresetIdsForCheck) + "]）");
         Check(picker.CustomRowVisibleForCheck == false, "不相关的查询会隐藏「自定义接口」行");
 
@@ -1103,6 +1106,31 @@ internal sealed class ShellProvidersChecks
             Check(enabledDefault is { Enabled: false }
                   && !configured.Models.Any(model => model.Name == "unlisted-manifest-probe"),
                 "后续目录刷新保留用户已关闭的状态且新模型仍默认关闭");
+        }
+        // ── The key probe carries the provider's declared static headers ──
+        //
+        // The probe is the one request whose 401 is read as "the key was rejected" — the verdict that blocks the auth
+        // dialog — and a gateway that filters clients answers a headerless probe that way for a perfectly good key.
+        // So it sends the same headers inference does. Asserted here rather than in --check-ai-providers because the
+        // probe lives in this assembly and the checks project references only Core and Agent; the catalog half of
+        // the same rule is asserted there.
+        var probeRoot = Path.Combine(scratchRoot, "probe-headers-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(probeRoot);
+        var probeHandler = new ModelListProbeHandler();
+        using (var probeHttp = new System.Net.Http.HttpClient(probeHandler))
+        using (var probeWorkspace = new ChatWorkspace(probeRoot))
+        {
+            var probePreset = probeWorkspace.AddPreset("agentrouter");
+            probeWorkspace.OAuthHttp = probeHttp;
+            var probeOutcome = await probeWorkspace.CheckApiKeyAsync("agentrouter", "sk-probe");
+            var probeUserAgent = probeHandler.Requests
+                .Select(sent => sent.Headers.TryGetValues("user-agent", out var values) ? string.Join(", ", values) : null)
+                .FirstOrDefault();
+            Check(probePreset is not null
+                  && probeOutcome == KeyCheckOutcome.Accepted
+                  && probeUserAgent == "codex_cli_rs/0.101.0",
+                "密钥探测带上 provider 声明的静态头（outcome=" + probeOutcome + " user-agent=「"
+                    + (probeUserAgent ?? "无") + "」）");
         }
         // ── What a fresh provider looks like before anything is fetched ──
         //

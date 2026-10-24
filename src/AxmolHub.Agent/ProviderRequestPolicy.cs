@@ -26,7 +26,9 @@ namespace AxmolHub.Agent;
 /// the SDK's own bearer policy writes the header, and a second writer here would produce two of them, which a
 /// gateway reports as a confusing 4xx rather than as a duplicate header. opencode has to delete the SDK's header
 /// because it injects its own; we do not inject one, so there is nothing to delete. That is the cheapest way to
-/// be sure of this, and it is why the sign-in result is stored as an ordinary key.</para>
+/// be sure of this, and it is why the sign-in result is stored as an ordinary key. The declared half of the rule
+/// now lives in <see cref="ProviderStaticHeaders"/>, which drops that name outright — so a manifest cannot reach
+/// the bearer through this path even if it tries.</para>
 ///
 /// <para><b>The dynamic half exists because of a meter.</b> Copilot bills a premium request for calls a human
 /// started and treats the model's own tool rounds differently, and it decides which by reading
@@ -71,7 +73,7 @@ public sealed class ProviderRequestPolicy(
     public static IEnumerable<(string Name, string Value)> Headers(
         IReadOnlyDictionary<string, string> statics, string? semantics, string? interactionId, string? bodyJson)
     {
-        foreach (var (name, value) in statics) yield return (name, value);
+        foreach (var (name, value) in ProviderStaticHeaders.Of(statics)) yield return (name, value);
 
         // No family semantics declared: the static headers above are the whole job. Every provider shipping
         // today lands here, so this path must stay free of a JSON round trip.

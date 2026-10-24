@@ -33,13 +33,8 @@ public sealed class GithubCopilotModelsSource : IModelCapabilitySource
             request.Headers.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", secret);
         // The same headers inference needs. Copilot's catalog is served by the same API and answers without them
-        // the way it answers an unversioned inference call, which is not an answer worth parsing. Remove-then-add
-        // rather than a Set: HttpRequestHeaders has no setter, and a duplicate name would be rejected outright.
-        foreach (var (name, value) in provider.ExtraHeaders)
-        {
-            request.Headers.Remove(name);
-            request.Headers.TryAddWithoutValidation(name, value);
-        }
+        // the way it answers an unversioned inference call, which is not an answer worth parsing.
+        ProviderStaticHeaders.ApplyTo(request, provider.ExtraHeaders);
 
         using var response = await client
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);

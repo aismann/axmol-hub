@@ -710,6 +710,10 @@ internal sealed partial class ChatProviderCoordinator
             using var owned = _oauthHttp is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(20) } : null;
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            // The same static headers an inference call carries. Without them a provider that filters clients
+            // answers 401 here for a reason that is not the key — and 401 is read below as "the key was rejected",
+            // which is the one verdict that blocks the dialog.
+            ProviderStaticHeaders.ApplyTo(request, provider.ExtraHeaders);
 
             using var response = await (_oauthHttp ?? owned!).SendAsync(request, cancellationToken).ConfigureAwait(false);
 

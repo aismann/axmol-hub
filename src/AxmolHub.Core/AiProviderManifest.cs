@@ -299,6 +299,11 @@ public sealed class AiProviderEntry
     /// or by the model's own tool loop, whether the body carries a picture — are computed in the pipeline and
     /// must not be parked here. A manifest field that could claim "always user-initiated" would quietly mis-bill
     /// every tool round against the user's quota.</para>
+    ///
+    /// <para>Three names cannot be set this way — <c>authorization</c>, <c>host</c> and <c>content-length</c> —
+    /// because the credential writer, the endpoint writer and the transport own them. The rule and the reason are
+    /// in <see cref="ProviderStaticHeaders"/>, which is also what every caller goes through, so a declared entry
+    /// that tries is dropped rather than honoured on one path and not another.</para>
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = [];
 
