@@ -16,7 +16,9 @@ try {
         try {
             $taskXml = [System.Xml.XmlDocument]::new()
             $taskXml.Load($taskStream)
-            if ($taskXml.SelectSingleNode("/plist/dict/key[text()='CFBundleURLSchemes']/following-sibling::array[1]/string[text()='axmolhub']")) {
+            # CFBundleURLSchemes sits inside the dictionary CFBundleURLTypes holds, not at /plist/dict directly, so the
+            # query starts from the key wherever it is found and reads the array that follows it.
+            if ($taskXml.SelectSingleNode("//key[text()='CFBundleURLSchemes']/following-sibling::array[1]/string[text()='axmolhub']")) {
                 return
             }
         }

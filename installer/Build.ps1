@@ -144,7 +144,10 @@ if ($Runtime -like 'osx-*') {
     $taskPlistContents = $taskPlistContents.Replace('__VERSION__', [System.Security.SecurityElement]::Escape($Version))
     $taskPlistContents = $taskPlistContents.Replace('__SHORT_VERSION__', [System.Security.SecurityElement]::Escape($Version + '.0'))
     [IO.File]::WriteAllText($taskMacPlist, $taskPlistContents, [Text.UTF8Encoding]::new($false))
-    $taskArguments += @('--bundleId', $taskMacBundleId, '--plist', $taskMacPlist)
+    # --plist only. vpk treats --bundleId and --plist as alternatives for the same slot (the bundle identity it writes
+    # into Info.plist) and aborts with "Cannot use 'bundleId' and 'plist' options together, please choose one." before
+    # packing anything. The plist is the one we need, so the identity travels in it as __BUNDLE_ID__ above.
+    $taskArguments += @('--plist', $taskMacPlist)
 }
 try {
     & $taskVpk @taskArguments
