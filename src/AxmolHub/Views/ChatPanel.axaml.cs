@@ -247,7 +247,6 @@ public partial class ChatPanel : UserControl
     private bool _goalDraftSelected;
     private string? _goalDraftConversationId;
     private bool _startingGoalConversationForSend;
-    private readonly HashSet<string> _collapsedGoalCards = new(StringComparer.Ordinal);
 
     public ChatPanel()
     {
@@ -2728,8 +2727,7 @@ public partial class ChatPanel : UserControl
         // each turn the transcript paints. A body no longer on disk copies as nothing, which beats copying the
         // card's title back as though it were the plan.
         var copyText = isPlanTurn ? _chat.PlanBody(turn, out _) ?? "" : turn.Text;
-        var goalCard = fromUser && turn.IsGoal ? BuildGoalMessageCard(conversationId, turn) : null;
-        var row = BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At, goalCard,
+        var row = BuildMessageRow(fromUser, body, actionableIndex, turn.Role, copyText, isLast, turn.At,
             isGoal: fromUser && turn.IsGoal);
         target.Children.Add(row);
 
@@ -2829,86 +2827,6 @@ public partial class ChatPanel : UserControl
         // one string, so its selection needs no extractor.
         SelectionMenu.Attach(block, () => block.SelectedText ?? "", QuoteIntoComposer);
         return block;
-    }
-
-    /// <summary>Attaches the task header directly above the user message that was explicitly sent as a goal.</summary>
-    private Border BuildGoalMessageCard(string conversationId, ChatTurn turn)
-    {
-        var icon = new Avalonia.Controls.Shapes.Path
-        {
-            Width = 16,
-            Height = 16,
-            Stretch = Stretch.Uniform,
-            Data = ThemeGeometry(ComposerModeIconKey(ChatModes.Agent)),
-            Fill = Brushes.Transparent,
-            StrokeThickness = 1.7,
-            StrokeLineCap = PenLineCap.Round,
-            StrokeJoin = PenLineJoin.Round,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty,
-            new DynamicResourceExtension("Hub.TextSecondary"));
-
-        var content = new StackPanel { Spacing = 3 };
-        var heading = new DockPanel();
-        var currentGoalTurn = _chat.IsCurrentGoalTurn(conversationId, turn.At);
-        var state = currentGoalTurn ? _chat.GoalStateFor(conversationId) : ChatGoalStates.Complete;
-        var statusText = !currentGoalTurn ? "ChatGoalPrevious" : state switch
-        {
-            ChatGoalStates.Active => "ChatGoalActive",
-            ChatGoalStates.Paused => "ChatGoalPaused",
-            ChatGoalStates.Complete => "ChatGoalComplete",
-            ChatGoalStates.BudgetLimited => "ChatGoalBudgetLimited",
-            _ => "ChatGoalCleared",
-        };
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        var cardKey = conversationId + ":" + turn.At.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
-        var title = new TextBlock
-        {
-            Classes = { "goal-message-title" },
-            Text = turn.Text,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxWidth = 490,
-            IsVisible = !_collapsedGoalCards.Contains(cardKey),
-        };
-        actions.Children.Add(GoalActionButton(title.IsVisible ? "⌄" : "⌃",
-            title.IsVisible ? "ChatGoalCollapse" : "ChatGoalExpand", () =>
-            {
-                if (!_collapsedGoalCards.Add(cardKey)) _collapsedGoalCards.Remove(cardKey);
-                RenderMessages();
-            }));
-        if (currentGoalTurn && state == ChatGoalStates.Active)
-            actions.Children.Add(GoalActionButton("Ⅱ", "ChatGoalPause", () => _chat.PauseGoal(conversationId)));
-        else if (currentGoalTurn && (state is ChatGoalStates.Paused or ChatGoalStates.BudgetLimited))
-            actions.Children.Add(GoalActionButton("▶", "ChatGoalResume", () => _chat.ResumeGoal(conversationId)));
-        if (currentGoalTurn && (state is ChatGoalStates.Active or ChatGoalStates.Paused
-                                or ChatGoalStates.BudgetLimited))
-            actions.Children.Add(GoalActionButton("×", "ChatGoalClear", () => _chat.ClearGoal(conversationId)));
-        DockPanel.SetDock(actions, Dock.Right);
-        heading.Children.Add(actions);
-        var goalRun = currentGoalTurn ? _chat.RunFor(conversationId) : null;
-        heading.Children.Add(new TextBlock
-        {
-            Classes = { "goal-message-heading" },
-            Text = HubStrings.Get(statusText)
-                   + (goalRun?.IsStreaming == true ? " · " + FormatDuration(goalRun.Elapsed) : ""),
-        });
-        content.Children.Add(heading);
-        if (turn.Text.Length > 0) content.Children.Add(title);
-
-        var layout = new Grid { ColumnDefinitions = new ColumnDefinitions("20,*"), ColumnSpacing = 7 };
-        Grid.SetColumn(icon, 0);
-        Grid.SetColumn(content, 1);
-        layout.Children.Add(icon);
-        layout.Children.Add(content);
-        var card = new Border
-        {
-            Classes = { "goal-message-card" },
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Child = layout,
-        };
-        ToolTip.SetTip(card, turn.Text.Length == 0 ? HubStrings.Get("ChatGoalCardHeading") : turn.Text);
-        return card;
     }
 
     private Button GoalActionButton(string glyph, string tooltipKey, Action action)
@@ -4057,13 +3975,12 @@ public partial class ChatPanel : UserControl
     /// </summary>
     private Control BuildMessageRow(
         bool fromUser, StackPanel body, int? index, string role, string text, bool isLast, DateTimeOffset? at = null,
-        Control? goalCard = null, bool isGoal = false)
+        bool isGoal = false)
     {
-        var column = new StackPanel { Spacing = goalCard is null ? 6 : 3 };
+        var column = new StackPanel { Spacing = 6 };
 
         if (fromUser)
         {
-            if (goalCard is not null) column.Children.Add(goalCard);
             column.Children.Add(new Border
             {
                 Classes = { "user-pill" },

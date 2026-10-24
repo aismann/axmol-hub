@@ -42,25 +42,6 @@
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
     </Style>
-    <Style Selector="Border.goal-message-card">
-      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="12" />
-      <Setter Property="Padding" Value="10,7" />
-      <Setter Property="MaxWidth" Value="560" />
-    </Style>
-    <Style Selector="TextBlock.goal-message-heading">
-      <Setter Property="FontSize" Value="11" />
-      <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
-    </Style>
-    <Style Selector="TextBlock.goal-message-title">
-      <Setter Property="FontSize" Value="13" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
-      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-    </Style>
-
     <!-- The in-place message editor replaces the bubble's own text, so it has to disappear into the pill:
          no frame, no background, no minimum height of its own. Its ink is the body's for the same reason —
          editing a message must not brighten the words being edited. -->

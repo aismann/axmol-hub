@@ -345,27 +345,24 @@ internal sealed class ShellAssistantChecks
         shell.Chat.OpenConversation(markerPeer.Id);
         shell.Chat.SeedGoalForCheck(markerPeer.Id, "完成目标并依据证据核验");
         Dispatcher.UIThread.RunJobs();
-        Check(panel.GoalMessageCardCountForCheck == 1
+        Check(panel.GoalMessageCardCountForCheck == 0
               && panel.GoalCapsuleForCheck
-              && panel.GoalMessageCardPrecedesUserPillForCheck
               && panel.GoalMessageMetaForCheck
-              && panel.GoalMessageCardTitleForCheck == "完成目标并依据证据核验"
-              && panel.GoalMessageCardStatusForCheck.StartsWith(HubStrings.Get("ChatGoalActive"), StringComparison.Ordinal)
-              && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalPause"))
-              && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalClear"))
-              && panel.GoalMessageCardActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalCollapse"))
+              && panel.GoalCapsuleActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalPause"))
+              && panel.GoalCapsuleActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalClear"))
               && shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Goal == "完成目标并依据证据核验",
-            "显式目标会持久化，卡片与操作保留，消息下方显示时间、复制和目标发送标记");
+            "显式目标持久化；消息卡片已移除，活动目标胶囊及其操作和消息元信息仍显示");
         shell.Chat.PauseGoal(markerPeer.Id);
         Dispatcher.UIThread.RunJobs();
         Check(shell.Chat.StoredCopyForCheck(markerPeer.Id)?.GoalState == ChatGoalStates.Paused
-              && panel.GoalMessageCardStatusForCheck.StartsWith(HubStrings.Get("ChatGoalPaused"), StringComparison.Ordinal),
-            "目标暂停操作持久化状态并更新目标卡");
+              && panel.GoalCapsuleForCheck
+              && panel.GoalCapsuleActionTooltipsForCheck.Contains(HubStrings.Get("ChatGoalResume")),
+            "目标暂停后胶囊仍显示并提供继续操作");
         shell.Chat.ClearGoal(markerPeer.Id);
         Dispatcher.UIThread.RunJobs();
         Check(shell.Chat.StoredCopyForCheck(markerPeer.Id)?.Goal is null
-              && panel.GoalMessageCardStatusForCheck.StartsWith(HubStrings.Get("ChatGoalCleared"), StringComparison.Ordinal),
-            "清除目标会移除会话目标并保留可辨认的历史目标卡");
+              && !panel.GoalCapsuleHostVisibleForCheck,
+            "清除目标移除胶囊并保留普通目标发送消息");
         foreach (var id in new[] { markerBranch?.Id, markerSource.Id, markerPeer.Id })
             if (id is { } gone) shell.Chat.DeleteConversation(gone);
         // The page goes back to whatever the fixture had on screen: deleting the active session empties the panel,

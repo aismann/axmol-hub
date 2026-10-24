@@ -1163,19 +1163,18 @@ public partial class ChatPanel : UserControl
     internal string ModeIndicatorLabelForCheck => ModeIndicatorLabel.Text ?? "";
     internal bool GoalDraftSelectedForCheck => GoalDraftSelectedForActiveConversation;
     internal int GoalMessageCardCountForCheck => MessageRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Border>().Count(border => border.Classes.Contains("goal-message-card"));
+    internal bool GoalCapsuleHostVisibleForCheck => GoalCapsuleHost.IsVisible;
     internal bool GoalCapsuleForCheck => GoalCapsuleHost.IsVisible
-        && GoalCapsuleHost.GetLogicalDescendants().OfType<TextBlock>().Any(block => block.Classes.Contains("goal-capsule-text") && block.Text == GoalMessageCardTitleForCheck)
+        && GoalCapsuleHost.GetLogicalDescendants().OfType<TextBlock>().Any(block => block.Classes.Contains("goal-capsule-text") && block.Text == "完成目标并依据证据核验")
         && Grid.GetRow(GoalCapsuleHost) == Grid.GetRow(SteerConfirmHost) + 1
         && Grid.GetRow(ComposerFrame) == Grid.GetRow(GoalCapsuleHost) + 1;
-    internal bool GoalMessageCardPrecedesUserPillForCheck => MessageRows.Any(row => row is Border { Child: StackPanel column } && column.Children.Count >= 2 && column.Children[0] is Border card && card.Classes.Contains("goal-message-card") && column.Children[1] is Border pill && pill.Classes.Contains("user-pill"));
     internal bool GoalMessageMetaForCheck => MessageRows.Where(row => row.Classes.Contains("user-row"))
         .Any(row => row.GetLogicalDescendants().OfType<TextBlock>().Any(block => block.Classes.Contains("goal-sent-marker")
             && block.Text == HubStrings.Get("ChatGoalSentAsGoal"))
             && row.GetLogicalDescendants().OfType<TextBlock>().Any(block => block.Classes.Contains("message-timestamp"))
             && row.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Tag, "CopyMessage")));
-    internal string GoalMessageCardTitleForCheck => MessageRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("goal-message-title"))?.Text ?? "";
-    internal string GoalMessageCardStatusForCheck => MessageRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("goal-message-heading"))?.Text ?? "";
-    internal string[] GoalMessageCardActionTooltipsForCheck => MessageRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>().Select(button => ToolTip.GetTip(button)?.ToString() ?? "").Where(tip => tip.Length > 0).ToArray();
+    internal string[] GoalCapsuleActionTooltipsForCheck => GoalCapsuleHost.GetLogicalDescendants().OfType<Button>()
+        .Select(button => ToolTip.GetTip(button)?.ToString() ?? "").Where(tip => tip.Length > 0).ToArray();
     internal bool ComposerPlusCenteredForCheck => AddContextButton.HorizontalContentAlignment == HorizontalAlignment.Center && AddContextButton.VerticalContentAlignment == VerticalAlignment.Center;
     internal bool ContextRingBelowComposerForCheck => ContextButton.Parent is Grid row && Grid.GetRow(row) == 6 && Grid.GetColumn(ContextButton) == 4 && ReferenceEquals(WorkspaceChip.Parent, row) && ContextPercentLabel.Text == ContextPopoverPercent.Text;
     internal string ComposerSpeedForCheck => RequestSpeedLabel.Text ?? "";
