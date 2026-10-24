@@ -141,48 +141,63 @@ public partial class SettingsPage : UserControl
         Dispatcher.UIThread.RunJobs();
     }
 
-    /// <summary>
-    /// Where the add draft's two boxes ended up, and whether 保存 is live — read AFTER a layout pass.
-    ///
-    /// <para>Bounds rather than "the control exists", because of how this form broke: its grid declared one row
-    /// while a second field asked for row 1, so that field was laid out on top of its neighbour. Both labels
-    /// read 模型名称, so the form looked like a doubled label and every control was present and enabled.</para>
-    /// </summary>
-    internal (bool Present, Rect Name, Rect BaseUrl, bool SaveEnabled) AddProviderDraftLayoutForCheck()
+    /// <summary>Where every add-draft field landed and whether Add is enabled, read after layout.</summary>
+    internal (bool Present, Rect Name, Rect BaseUrl, Rect Wire, Rect Key, Rect Headers, bool SaveEnabled)
+        AddProviderDraftLayoutForCheck()
     {
         var draft = AddDraftChild();
         Rect Where(string tag)
-            => AddDraftChild<TextBox>(draft, tag) is { } box && draft is not null
-               && box.TranslatePoint(default, draft) is { } origin
-                ? new Rect(origin, box.Bounds.Size)
+            => AddDraftChild<Control>(draft, tag) is { } control && draft is not null
+               && control.TranslatePoint(default, draft) is { } origin
+                ? new Rect(origin, control.Bounds.Size)
                 : default;
         return (draft is not null,
             Where(SectionTags.AddDraftName),
             Where(SectionTags.AddDraftBaseUrl),
+            Where(SectionTags.AddDraftWire),
+            Where(SectionTags.AddDraftKey),
+            Where(SectionTags.AddDraftHeaders),
             AddDraftChild<Button>(draft, SectionTags.AddDraftSave)?.IsEnabled == true);
     }
 
-    /// <summary>Types into the draft's boxes, so the TextChanged wiring that greys out 保存 actually runs.</summary>
-    internal bool FillAddProviderDraftForCheck(string name, string baseUrl)
+    internal (int Count, string? SelectedProtocol, bool KeyIsMasked) AddProviderDraftWireOptionsForCheck()
     {
         var draft = AddDraftChild();
-        if (draft is null)
-            return false;
+        var wire = AddDraftChild<ComboBox>(draft, SectionTags.AddDraftWire);
+        return (wire?.Items.Count ?? 0,
+            (wire?.SelectedItem as ComboBoxItem)?.Tag as string,
+            AddDraftChild<TextBox>(draft, SectionTags.AddDraftKey)?.PasswordChar != default(char));
+    }
+
+    /// <summary>Fills the draft through its real input controls so validation events run as they do for a user.</summary>
+    internal bool FillAddProviderDraftForCheck(
+        string name,
+        string baseUrl,
+        string protocol = "chat",
+        string apiKey = "",
+        string headersJson = "")
+    {
+        var draft = AddDraftChild();
+        if (draft is null) return false;
         if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftName) is { } nameBox) nameBox.Text = name;
         if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftBaseUrl) is { } urlBox) urlBox.Text = baseUrl;
+        if (AddDraftChild<ComboBox>(draft, SectionTags.AddDraftWire) is { } wireBox)
+            wireBox.SelectedItem = wireBox.Items.OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag as string, protocol, StringComparison.Ordinal));
+        if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftKey) is { } keyBox) keyBox.Text = apiKey;
+        if (AddDraftChild<TextBox>(draft, SectionTags.AddDraftHeaders) is { } headersBox) headersBox.Text = headersJson;
         UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         return true;
     }
 
-    /// <summary>Presses 保存 in the draft — <c>false</c> when it is not on screen or is still greyed out, which
-    /// is itself the answer when the form is incomplete.</summary>
-    internal bool ClickAddProviderDraftSaveForCheck()
+    /// <summary>Presses Add and awaits its real commit path, including the model-list refresh for a supplied key.</summary>
+    internal async Task<bool> ClickAddProviderDraftSaveForCheck()
     {
         var save = AddDraftChild<Button>(AddDraftChild(), SectionTags.AddDraftSave);
-        if (save is null || !save.IsEnabled)
-            return false;
+        if (save is null || !save.IsEnabled) return false;
         save.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        if (_addProviderCommitTask is { } commit) await commit;
         UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         return true;

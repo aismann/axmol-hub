@@ -165,8 +165,9 @@ public static class ChatClientFactory
         var credential = new ApiKeyCredential(provider.ApiKey ?? "not-needed");
         // Built only for a provider that asked for it: an ordinary OpenAI-compatible endpoint must not start
         // carrying headers from a different family.
-        var headers = provider.ExtraHeaders.Count > 0 || provider.RequestSemantics is { Length: > 0 }
-            ? new ProviderRequestPolicy(provider.ExtraHeaders, provider.RequestSemantics, interactionId)
+        var providerHeaders = provider.Headers;
+        var headers = providerHeaders.Count > 0 || provider.RequestSemantics is { Length: > 0 }
+            ? new ProviderRequestPolicy(providerHeaders, provider.RequestSemantics, interactionId)
             : null;
 
         if (ProtocolFor(provider, model) == Core.ModelProtocols.Responses)

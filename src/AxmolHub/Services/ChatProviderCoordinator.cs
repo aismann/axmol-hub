@@ -1,3 +1,4 @@
+using System.Text.Json;
 using static AxmolHub.ChatSessionCoordinator;
 using static AxmolHub.ChatExecutionCoordinator;
 using AxmolHub.Agent;
@@ -714,7 +715,7 @@ internal sealed partial class ChatProviderCoordinator
             // The same static headers an inference call carries. Without them a provider that filters clients
             // answers 401 here for a reason that is not the key — and 401 is read below as "the key was rejected",
             // which is the one verdict that blocks the dialog.
-            ProviderStaticHeaders.ApplyTo(request, provider.ExtraHeaders);
+            ProviderStaticHeaders.ApplyTo(request, provider.Headers);
 
             using var response = await (_oauthHttp ?? owned!).SendAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -836,8 +837,21 @@ internal sealed partial class ChatProviderCoordinator
     /// once got reported as a rejected URL. The model may be empty — the endpoint's own catalog fills it in
     /// later, and a gateway that lists nothing can stay model-less without blocking the provider.
     /// </summary>
-    internal ModelProvider? AddProvider(string name, string baseUrl, string model, string? apiKey, out string? problem)
+    internal ModelProvider? AddProvider(
+        string name,
+        string baseUrl,
+        string model,
+        string? apiKey,
+        out string? problem,
+        string? protocol = null,
+        IReadOnlyDictionary<string, string>? customHeaders = null)
     {
+        if (protocol is not null && !ModelProtocols.IsKnown(protocol))
+        {
+            problem = "ProviderWireApiInvalid";
+            return null;
+        }
+
         var trimmedModel = model.Trim();
         var provider = new ModelProvider
         {
@@ -845,6 +859,10 @@ internal sealed partial class ChatProviderCoordinator
             Name = name.Trim(),
             IsCustom = true,
             BaseUrl = baseUrl.Trim(),
+            Protocol = protocol,
+            CustomHeaders = customHeaders is null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : customHeaders.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
             // No model, no row: a blank ProviderModel would render as an empty row in the list and read as a
             // model whose name is "".
             Models = trimmedModel.Length == 0 ? [] : [new ProviderModel { Name = trimmedModel, InUse = true }],
@@ -1174,12 +1192,41 @@ internal sealed partial class ChatProviderCoordinator
     /// before there is a provider object to hand it. What it returns is what greys out 保存 and what the draft
     /// says out loud, so the field at fault is named while the person is still typing it.
     /// </summary>
-    internal static string? ValidateDraft(string name, string baseUrl)
-        => Validate(new ModelProvider
+    internal static string? ValidateDraft(string name, string baseUrl, string? headersJson = null)
+    {
+        var problem = Validate(new ModelProvider
         {
             Name = name.Trim(),
             BaseUrl = baseUrl.Trim(),
         });
+        if (problem is not null) return problem;
+        return TryParseCustomHeaders(headersJson, out _) ? null : "ProviderCustomHeadersInvalid";
+    }
+
+    /// <summary>Parses the optional JSON object of string-valued custom request headers.</summary>
+    internal static bool TryParseCustomHeaders(
+        string? json,
+        out Dictionary<string, string> headers)
+    {
+        headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(json)) return true;
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return false;
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String) return false;
+                headers[property.Name] = property.Value.GetString() ?? "";
+            }
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 
 
     /// <summary>

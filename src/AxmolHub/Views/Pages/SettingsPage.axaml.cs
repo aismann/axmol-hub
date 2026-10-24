@@ -82,6 +82,7 @@ public partial class SettingsPage : UserControl
 
     /// <summary>Whether an "add custom endpoint" draft is open at the top of the provider list.</summary>
     private bool _addingProvider;
+    private Task? _addProviderCommitTask;
 
     /// <summary>Whether an "add model" draft row is open inside a provider.</summary>
     private bool _addingModel;
@@ -1683,8 +1684,8 @@ public partial class SettingsPage : UserControl
         return stack;
     }
 
-    /// <summary>Wraps a labelled field for the draft's two-column grid.</summary>
-    private static Control BuildField(string label, TextBox box, string? hint = null)
+    /// <summary>Wraps one full-width labelled field in a provider draft.</summary>
+    private static Control BuildField(string label, Control box, string? hint = null)
     {
         var stack = new StackPanel { Spacing = 2 };
         stack.Children.Add(new TextBlock
@@ -1738,44 +1739,47 @@ public partial class SettingsPage : UserControl
         return status;
     }
 
-    /// <summary>The "add custom endpoint" draft, inserted first in the provider list. Four fields, cancel/save,
-    /// and the same validation the save path re-runs.</summary>
+    /// <summary>The custom endpoint form inserted in place at the top of the provider list. Each setting gets
+    /// its own full-width row, following GitHub Desktop's custom endpoint fields.</summary>
     private Control BuildAddProviderDraft()
     {
-        var stack = new StackPanel { Spacing = 8, Tag = SectionTags.AddProviderDraft };
-
+        var stack = new StackPanel { Spacing = 12, Tag = SectionTags.AddProviderDraft };
         stack.Children.Add(new TextBlock
         {
             Text = HubStrings.Get("AddCustomProvider"),
             FontWeight = FontWeight.SemiBold,
         });
 
-        // Identity only. The key is not asked here: the list page never hosts a credential box — the row's 鉴权
-        // button takes it afterwards. No model is asked for either: the model list is fetched from the
-        // endpoint's own /models once the provider exists, and ＋ on the row adds one by hand for a gateway that
-        // lists nothing.
-        //
-        // One declared row, two columns. A field put in a row the grid never declared lands back on row 0 and
-        // paints itself on top of its neighbour — this form once did exactly that, with a model box nobody could
-        // see, its label drawn twice.
-        var fields = new Grid
+        var name = new TextBox { Tag = SectionTags.AddDraftName, PlaceholderText = HubStrings.Get("ProviderDisplayNameHint") };
+        var baseUrl = new TextBox { Tag = SectionTags.AddDraftBaseUrl, PlaceholderText = "https://api.example.com/v1" };
+        var wire = new ComboBox
         {
-            ColumnDefinitions = new ColumnDefinitions("1*,1*"),
-            RowDefinitions = new RowDefinitions("Auto"),
-            ColumnSpacing = 12,
+            Tag = SectionTags.AddDraftWire,
+            SelectedIndex = 0,
+            ItemsSource = new[]
+            {
+                new ComboBoxItem { Content = HubStrings.Get("ProviderWireChat"), Tag = ModelProtocols.Chat },
+                new ComboBoxItem { Content = HubStrings.Get("ProviderWireResponses"), Tag = ModelProtocols.Responses },
+            },
+        };
+        var apiKey = new TextBox
+        {
+            Tag = SectionTags.AddDraftKey,
+            PasswordChar = '•',
+            PlaceholderText = "sk-…",
+            Classes = { "password" },
+        };
+        var customHeaders = new TextBox
+        {
+            Tag = SectionTags.AddDraftHeaders,
+            PlaceholderText = "{}",
         };
 
-        var name = new TextBox { Tag = SectionTags.AddDraftName };
-        fields.Children.Add(BuildField(HubStrings.Get("ProviderName"), name));
-        Grid.SetColumn(fields.Children[^1], 0);
-        Grid.SetRow(fields.Children[^1], 0);
-
-        var baseUrl = new TextBox { Tag = SectionTags.AddDraftBaseUrl };
-        fields.Children.Add(BuildField(HubStrings.Get("ProviderBaseUrl"), baseUrl, HubStrings.Get("ProviderBaseUrlHint")));
-        Grid.SetColumn(fields.Children[^1], 1);
-        Grid.SetRow(fields.Children[^1], 0);
-
-        stack.Children.Add(fields);
+        stack.Children.Add(BuildField(HubStrings.Get("ProviderName"), name, HubStrings.Get("ProviderDisplayNameHint")));
+        stack.Children.Add(BuildField(HubStrings.Get("ProviderBaseUrl"), baseUrl, HubStrings.Get("ProviderBaseUrlHint")));
+        stack.Children.Add(BuildField(HubStrings.Get("ProviderWireApi"), wire, HubStrings.Get("ProviderWireApiHint")));
+        stack.Children.Add(BuildField(HubStrings.Get("ProviderApiKeyOptional"), apiKey, HubStrings.Get("ProviderApiKeyHint")));
+        stack.Children.Add(BuildField(HubStrings.Get("ProviderCustomHeaders"), customHeaders, HubStrings.Get("ProviderCustomHeadersHint")));
 
         var buttons = new StackPanel
         {
@@ -1787,25 +1791,26 @@ public partial class SettingsPage : UserControl
         cancel.Click += (_, _) => CloseDraft();
         var save = new Button
         {
-            Content = HubStrings.Get("Save"),
+            Content = HubStrings.Get("AddProviderAction"),
             Classes = { "primary" },
             IsDefault = true,
             Tag = SectionTags.AddDraftSave,
         };
-        save.Click += async (_, _) => await CommitAddProviderDraft(name, baseUrl);
+        save.Click += async (_, _) =>
+        {
+            _addProviderCommitTask = CommitAddProviderDraft(name, baseUrl, wire, apiKey, customHeaders);
+            await _addProviderCommitTask;
+        };
         buttons.Children.Add(cancel);
         buttons.Children.Add(save);
         stack.Children.Add(buttons);
 
-        // The draft validates as it is typed. 保存 stays greyed until the same rule the save path re-runs
-        // passes, and the field at fault is named in the status line while it is still being typed — the
-        // first hint must not be the click. Nothing is said before the first keystroke: an empty new form is
-        // not an error, it is a form nobody has filled in yet.
         void RefreshDraft()
         {
-            var problem = ChatWorkspace.ValidateDraft(name.Text ?? "", baseUrl.Text ?? "");
+            var problem = ChatWorkspace.ValidateDraft(name.Text ?? "", baseUrl.Text ?? "", customHeaders.Text);
             save.IsEnabled = problem is null;
-            var entered = (name.Text ?? "").Trim().Length > 0 || (baseUrl.Text ?? "").Trim().Length > 0;
+            var entered = !string.IsNullOrWhiteSpace(name.Text) || !string.IsNullOrWhiteSpace(baseUrl.Text)
+                          || !string.IsNullOrWhiteSpace(customHeaders.Text);
             if (problem is not null && entered)
                 SetProviderStatus(true, HubStrings.Get(problem));
             else
@@ -1814,32 +1819,41 @@ public partial class SettingsPage : UserControl
 
         name.TextChanged += (_, _) => RefreshDraft();
         baseUrl.TextChanged += (_, _) => RefreshDraft();
+        customHeaders.TextChanged += (_, _) => RefreshDraft();
         RefreshDraft();
-
         return stack;
     }
 
-    private async Task CommitAddProviderDraft(TextBox name, TextBox baseUrl)
+    private async Task CommitAddProviderDraft(
+        TextBox name,
+        TextBox baseUrl,
+        ComboBox wire,
+        TextBox apiKey,
+        TextBox customHeaders)
     {
         if (_chat is null) return;
+        if (!ChatProviderCoordinator.TryParseCustomHeaders(customHeaders.Text, out var parsedHeaders))
+        {
+            SetProviderStatus(true, HubStrings.Get("ProviderCustomHeadersInvalid"));
+            return;
+        }
 
-        var created = _chat.AddProvider(name.Text ?? "", baseUrl.Text ?? "", "", null, out var problem);
+        var protocol = (wire.SelectedItem as ComboBoxItem)?.Tag as string ?? ModelProtocols.Chat;
+        var secret = string.IsNullOrWhiteSpace(apiKey.Text) ? null : apiKey.Text;
+        var created = _chat.AddProvider(
+            name.Text ?? "", baseUrl.Text ?? "", "", secret, out var problem, protocol, parsedHeaders);
         if (created is null)
         {
-            // Whatever refused it says which field, in its own words. Reporting a fixed "invalid URL" here is
-            // what made an empty model box look like a rejected endpoint.
             if (problem is not null) SetProviderStatus(true, HubStrings.Get(problem));
             return;
         }
 
         SetProviderStatus(false, HubStrings.Get("ProviderAdded"));
         CloseDraft();
-        // Connect it now so the card does not land half-ready: a custom endpoint that wants a key gets the
-        // auth dialog, a keyless one is done.
-        if (created.CanAuthenticate)
-        {
-            await AuthenticateProviderAsync(created);
-        }
+        // A supplied key is stored in the OS credential store by AddProvider and can immediately fetch models.
+        // With a blank optional key, finish keyless and leave the existing row authentication action available.
+        if (secret is not null)
+            await RefreshModelsAsync(created);
     }
 
     /// <summary>
@@ -3123,11 +3137,13 @@ public partial class SettingsPage : UserControl
         /// <summary>The draft form inserted at the top of the provider list by "add custom endpoint".</summary>
         internal const string AddProviderDraft = "provider-add-draft";
 
-        // The add draft's two boxes and its save button. Tagged because this form shipped with a field painted on
-        // top of another (its grid declared one row while a second field asked for row 1) and nothing could tell:
-        // an assertion has to be able to ask where each box actually is, and whether save is still greyed out.
+        // The add draft's five controls and its save button. Each control is tagged so the self-check can measure
+        // that every setting occupies its own full-width row, and can read the selected wire and validation state.
         internal const string AddDraftName = "provider-add-name";
         internal const string AddDraftBaseUrl = "provider-add-base-url";
+        internal const string AddDraftWire = "provider-add-wire";
+        internal const string AddDraftKey = "provider-add-key";
+        internal const string AddDraftHeaders = "provider-add-headers";
         internal const string AddDraftSave = "provider-add-save";
     }
 private string SelectedToolApprovalMode=> ToolApprovalPicker.SelectedItem is ComboBoxItem { Tag: string tag } && IsToolApprovalMode(tag) ? tag : ToolApprovalModes.Ask;

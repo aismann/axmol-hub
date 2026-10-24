@@ -124,6 +124,36 @@ public sealed class ModelProvider
     [JsonIgnore]
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    private Dictionary<string, string> _customHeaders = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Additional request headers entered for a custom endpoint. Persisted with the provider; unlike
+    /// <see cref="ExtraHeaders"/>, these are a user choice rather than a manifest fact.
+    /// </summary>
+    public Dictionary<string, string> CustomHeaders
+    {
+        get => _customHeaders;
+        set => _customHeaders = value is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The effective static headers for requests to this provider. Manifest headers are the defaults; custom
+    /// headers replace them case-insensitively. Reserved transport/credential headers are filtered when applied.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyDictionary<string, string> Headers
+    {
+        get
+        {
+            var headers = new Dictionary<string, string>(ExtraHeaders, StringComparer.OrdinalIgnoreCase);
+            foreach (var (name, value) in CustomHeaders)
+                headers[name] = value;
+            return headers;
+        }
+    }
+
     /// <summary>
     /// Which provider family's per-request header semantics this provider speaks — see
     /// <see cref="AiProviderEntry.RequestSemantics"/> for what that means and why it is not a header. Another

@@ -34,7 +34,7 @@ public sealed class GithubCopilotModelsSource : IModelCapabilitySource
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", secret);
         // The same headers inference needs. Copilot's catalog is served by the same API and answers without them
         // the way it answers an unversioned inference call, which is not an answer worth parsing.
-        ProviderStaticHeaders.ApplyTo(request, provider.ExtraHeaders);
+        ProviderStaticHeaders.ApplyTo(request, provider.Headers);
 
         using var response = await client
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);

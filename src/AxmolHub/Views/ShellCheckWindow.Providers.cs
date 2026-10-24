@@ -355,44 +355,90 @@ internal sealed class ShellProvidersChecks
         Check(shell.Chat.RemoveProvider(custom.Id), "自定义 provider 可以移除");
         Check(shell.Chat.Providers.All(provider => !provider.IsCustom), "移除后列表里不再有自定义 provider");
 
-        // ── The add-custom-endpoint draft, as a form ──
-        // Asserted separately from the model behind it, because of how it broke: the grid declared a single row
-        // while the model field asked for row 1, so the model box was laid out on top of the name box. Every
-        // control was present, enabled and correct in isolation, and nothing in this suite opened the form.
+        // ── The custom endpoint draft: one full-width field per row and the same endpoint settings GitHub Desktop exposes ──
         settings.OpenAddProviderDraftForCheck();
         var boxes = settings.AddProviderDraftLayoutForCheck();
-        Check(boxes.Present && boxes.Name.Height > 0 && boxes.BaseUrl.Height > 0 && boxes.Name.Width > 0
-              && boxes.BaseUrl.Width > 0 && !boxes.Name.Intersects(boxes.BaseUrl) && boxes.BaseUrl.X > boxes.Name.X,
-            "自定义 provider 草稿的名称与地址并排各占一栏、互不重叠（实际 " + (boxes.Present ? "" : "草稿未出现，")
-            + "name=" + boxes.Name + ", url=" + boxes.BaseUrl + "）");
+        var rows = new[] { boxes.Name, boxes.BaseUrl, boxes.Wire, boxes.Key, boxes.Headers };
+        var options = settings.AddProviderDraftWireOptionsForCheck();
+        Check(boxes.Present && rows.All(rect => rect.Height > 0 && rect.Width > 0)
+              && rows.All(rect => Math.Abs(rect.X - rows[0].X) < 1 && Math.Abs(rect.Width - rows[0].Width) < 1)
+              && rows.Zip(rows.Skip(1), (first, next) => next.Y > first.Y && !first.Intersects(next)).All(valid => valid),
+            "自定义 provider 的五个设置各占一行、左边界和宽度一致（实际 [" + string.Join("; ", rows) + "]）");
+        Check(options.Count == 2 && options.SelectedProtocol == ModelProtocols.Chat && options.KeyIsMasked,
+            "Wire API 只列 Chat Completions 与 Responses、默认 Chat，API key 输入受遮蔽（实际 count="
+            + options.Count + " selected=" + (options.SelectedProtocol ?? "none") + " masked=" + options.KeyIsMasked + ")");
 
-        // What the message must still say, and what it must stop saying. An unusable address greys out 保存 and
-        // names the address — that sentence has to stay true, since it is the one that was being borrowed for
-        // every other kind of refusal.
         var badUrlTyped = settings.FillAddProviderDraftForCheck("AgentRouterCustom", "agentrouter.org/v1");
         var badUrlProblem = settings.StatusLineText;
         Check(badUrlTyped && !settings.AddProviderDraftLayoutForCheck().SaveEnabled
               && badUrlProblem == HubStrings.Get("ProviderBaseUrlInvalid"),
-            "地址不完整时保存被灰掉，状态行点名地址（实际「" + badUrlProblem + "」）");
+            "地址不完整时添加按钮被禁用，状态行点名地址（实际「" + badUrlProblem + "」）");
 
-        // A good address is not asked for a model: the list comes from the endpoint's own /models afterwards.
+        var badHeadersTyped = settings.FillAddProviderDraftForCheck(
+            "AgentRouterCustom", "https://agentrouter.org/v1", ModelProtocols.Responses, "", "{");
+        var badHeadersProblem = settings.StatusLineText;
+        var nonStringHeadersTyped = settings.FillAddProviderDraftForCheck(
+            "AgentRouterCustom", "https://agentrouter.org/v1", ModelProtocols.Responses, "", "{\"X-Org\":true}");
+        Check(badHeadersTyped && nonStringHeadersTyped && !settings.AddProviderDraftLayoutForCheck().SaveEnabled
+              && badHeadersProblem == HubStrings.Get("ProviderCustomHeadersInvalid")
+              && settings.StatusLineText == HubStrings.Get("ProviderCustomHeadersInvalid"),
+            "无效 JSON 或非字符串请求头值都会禁用添加并点名请求头（实际「" + settings.StatusLineText + "」）");
+
         var countBeforeDraft = shell.Chat.Providers.Count;
-        var typed = settings.FillAddProviderDraftForCheck("AgentRouterCustom", "https://agentrouter.org/v1");
+        var typed = settings.FillAddProviderDraftForCheck(
+            "AgentRouterCustom", "https://agentrouter.org/v1", ModelProtocols.Responses,
+            "sk-custom-endpoint", "{\"X-Org\":\"acme\"}");
         var liveProblem = settings.StatusLineText;
+        var selectedOptions = settings.AddProviderDraftWireOptionsForCheck();
         Check(typed && settings.AddProviderDraftLayoutForCheck().SaveEnabled && string.IsNullOrEmpty(liveProblem)
+              && selectedOptions.SelectedProtocol == ModelProtocols.Responses
               && shell.Chat.Providers.Count == countBeforeDraft,
-            "只填名称与地址就能保存，模型不再拦路（状态行「" + liveProblem + "」）");
+            "名称、地址、Responses、API key 与合法请求头有效后可添加（状态行「" + liveProblem + "」）");
 
-        var committed = settings.ClickAddProviderDraftSaveForCheck();
+        var modelListHandler = new ModelListProbeHandler("""{"object":"list","data":[{"id":"custom-model"}]}""");
+        using var modelListHttp = new System.Net.Http.HttpClient(modelListHandler);
+        shell.Chat.ModelListHttp = modelListHttp;
+        var committed = await settings.ClickAddProviderDraftSaveForCheck();
+        shell.Chat.ModelListHttp = null;
         var drafted = shell.Chat.Providers.FirstOrDefault(provider => provider.IsCustom);
         Check(committed && !settings.AddProviderDraftLayoutForCheck().Present
-              && drafted is not null && drafted.BaseUrl == "https://agentrouter.org/v1" && drafted.Models.Count == 0
+              && drafted is not null && drafted.BaseUrl == "https://agentrouter.org/v1"
+              && drafted.Protocol == ModelProtocols.Responses
+              && drafted.CustomHeaders.TryGetValue("x-org", out var customHeader) && customHeader == "acme"
+              && drafted.Headers.Count == 1 && drafted.Headers.TryGetValue("X-Org", out var effectiveHeader)
+              && effectiveHeader == "acme"
+              && modelListHandler.Requests.Count == 1
+              && modelListHandler.Requests[0].Headers.TryGetValues("X-Org", out var sentHeader)
+              && sentHeader.Single() == "acme"
+              && shell.Chat.CredentialFor(drafted.Id)?.Secret == "sk-custom-endpoint"
+              && shell.Chat.CachedModels(drafted.Id).Contains("custom-model", StringComparer.OrdinalIgnoreCase)
               && shell.Chat.Providers.Count == countBeforeDraft + 1,
-            "保存后 provider 落地、草稿收起，模型列表留空等目录刷新（实际 "
-            + (drafted is null ? "未添加" : "「" + drafted.Name + "」" + drafted.BaseUrl + "，模型 " + drafted.Models.Count + " 个") + "）");
+            "添加后线路、请求头、密钥与目录模型均生效（实际 "
+            + (drafted is null ? "未添加" : "wire=" + drafted.Protocol + " headers=" + drafted.Headers.Count
+                + " key=" + (shell.Chat.CredentialFor(drafted.Id)?.HasSecret == true)
+                + " catalog=" + shell.Chat.CachedModels(drafted.Id).Count) + "）");
 
-        // Leave the list as the accounts block expects to find it: it asserts on the providers that are configured.
+        using var providerReload = new ChatWorkspace(scratchRoot);
+        var reloadedConfigCustom = providerReload.Providers.FirstOrDefault(provider => provider.Id == drafted?.Id);
+        var expectedWireLine = string.Format(CultureInfo.CurrentCulture,
+            HubStrings.Get("ProviderWireFormat"), "/v1/responses");
+        Check(drafted is not null && settings.ProviderGroupForId(drafted.Id)?.WireText == expectedWireLine,
+            "新建 provider 的折叠行显示所选 Responses 请求路径（实际「"
+            + (drafted is null ? "无分组" : settings.ProviderGroupForId(drafted.Id)?.WireText ?? "无线路") + "」）");
+        Check(reloadedConfigCustom is { Protocol: ModelProtocols.Responses }
+              && reloadedConfigCustom.CustomHeaders.TryGetValue("x-org", out var savedHeader) && savedHeader == "acme",
+            "重开 workspace 后自定义线路与请求头仍持久化");
+
         if (drafted is not null && shell.Chat.RemoveProvider(drafted.Id)) settings.RefreshProviderGroupsForCheck();
+
+        // A blank optional key remains a legitimate keyless endpoint and does not force an authentication dialog.
+        settings.OpenAddProviderDraftForCheck();
+        settings.FillAddProviderDraftForCheck("Keyless endpoint", "http://localhost:11434/v1");
+        var keylessSaved = await settings.ClickAddProviderDraftSaveForCheck();
+        var keyless = shell.Chat.Providers.FirstOrDefault(provider => provider.IsCustom);
+        Check(keylessSaved && keyless is { IsCustom: true } && shell.Chat.CredentialFor(keyless.Id) is null,
+            "API key 留空时仍能添加自定义 provider，且不会创建凭据");
+        if (keyless is not null && shell.Chat.RemoveProvider(keyless.Id)) settings.RefreshProviderGroupsForCheck();
 
         // ── Sign-in methods and accounts ──
         // The block is driven through the page's real selection path (SelectProviderForCheck → the same

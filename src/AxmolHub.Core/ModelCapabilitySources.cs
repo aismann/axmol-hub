@@ -70,7 +70,7 @@ public sealed class OpenAiCompatibleModelsSource : IModelCapabilitySource
         // A provider whose endpoint filters clients answers this request the way it answers a stranger while
         // accepting every inference call, and a catalog read as "unreachable" is how a provider ends up with no
         // models and no explanation for it.
-        ProviderStaticHeaders.ApplyTo(request, provider.ExtraHeaders);
+        ProviderStaticHeaders.ApplyTo(request, provider.Headers);
 
         using var response = await client
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
