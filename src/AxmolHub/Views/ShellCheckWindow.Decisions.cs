@@ -1311,6 +1311,14 @@ internal sealed class ShellDecisionsChecks
         inspector.Reload("# 计划", changes, UnfoldDiff, null, "changes");
         if (!inspector.ChangeRowExpandedForCheck(0))
             inspector.ClickChangeRowForCheck(0);
+        Check(inspector.ChangeDiffUsesSharedVerticalScrollForCheck(0),
+            "统一 diff 按内容自然展开、只保留横向滚动；纵向浏览由 Changes 页唯一的滚动条负责");
+        inspector.PressViewSettingsForCheck();
+        inspector.ClickViewMenuRowForCheck("DiffSplitMode");
+        Check(inspector.ChangeDiffUsesSharedVerticalScrollForCheck(0),
+            "分栏 diff 同样自然展开并共用 Changes 页纵向滚动条");
+        inspector.PressViewSettingsForCheck();
+        inspector.ClickViewMenuRowForCheck("DiffInlineMode");
         Check(inspector.UnfoldTipForCheck(0) == HubStrings.Get("InspectorExpandFile")
               && !inspector.ChangeRowTextForCheck(0).Contains("第四行", StringComparison.Ordinal)
               && wholeAsks == 0,

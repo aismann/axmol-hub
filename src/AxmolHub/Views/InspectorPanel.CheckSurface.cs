@@ -88,6 +88,21 @@ internal sealed partial class InspectorPanel : UserControl
 
     internal bool SplitDiffForCheck => _splitDiff;
 
+    /// <summary>Every diff's horizontal viewport has no vertical cap or scrollbar, while the Changes page owns the
+    /// vertical bar. Read off the rendered row so this catches both layouts and cannot be satisfied by a setting
+    /// the builder stopped using.</summary>
+    internal bool ChangeDiffUsesSharedVerticalScrollForCheck(int index)
+    {
+        var row = ChangeRows().ElementAtOrDefault(index);
+        if (row is null) return false;
+        var viewers = row.GetLogicalDescendants().OfType<ScrollViewer>().ToArray();
+        return viewers.Length > 0
+            && viewers.All(viewer => viewer.HorizontalScrollBarVisibility == ScrollBarVisibility.Auto
+                && viewer.VerticalScrollBarVisibility == ScrollBarVisibility.Disabled
+                && double.IsPositiveInfinity(viewer.MaxHeight))
+            && _changesScroll.VerticalScrollBarVisibility == ScrollBarVisibility.Auto;
+    }
+
     /// <summary>Presses one row of the gear's menu by its tag, so a check picks a setting the way a reader does
     /// rather than assigning the field the row happens to set.</summary>
     internal void ClickViewMenuRowForCheck(string tag) =>
@@ -106,7 +121,12 @@ internal sealed partial class InspectorPanel : UserControl
         get
         {
             var controls = _changesList.GetLogicalDescendants().OfType<ComboBox>().ToArray();
-            return controls.Any(control => Equals(control.Tag, "InspectorHistorySelector")) && controls.All(control => !Equals(control.Tag, "InspectorDiffViewSelector")) && _changesList.GetLogicalDescendants().OfType<ScrollViewer>().Any(viewer => viewer.VerticalScrollBarVisibility == ScrollBarVisibility.Auto);
+            var diffViewports = _changesList.GetLogicalDescendants().OfType<ScrollViewer>().ToArray();
+            return controls.Any(control => Equals(control.Tag, "InspectorHistorySelector"))
+                && controls.All(control => !Equals(control.Tag, "InspectorDiffViewSelector"))
+                && _changesScroll.VerticalScrollBarVisibility == ScrollBarVisibility.Auto
+                && diffViewports.Any(viewer => viewer.HorizontalScrollBarVisibility == ScrollBarVisibility.Auto
+                    && viewer.VerticalScrollBarVisibility == ScrollBarVisibility.Disabled);
         }
     }
 

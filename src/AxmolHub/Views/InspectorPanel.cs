@@ -1017,11 +1017,11 @@ internal sealed partial class InspectorPanel : UserControl
 
     private static ScrollViewer DiffViewport() => new()
     {
-        // Hub's opaque, always-visible bars need their own layout slot, not Fluent's overlay mode.
+        // Keep horizontal scrolling for long source lines, but let this viewer measure the full diff height.
+        // Vertical scrolling belongs to _changesScroll so several expanded files share one page scrollbar.
         AllowAutoHide = false,
         HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        MaxHeight = 420,
+        VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
         ClipToBounds = true,
     };
 
