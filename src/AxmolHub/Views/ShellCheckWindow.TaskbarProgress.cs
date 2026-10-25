@@ -118,6 +118,21 @@ internal sealed class ShellTaskbarProgressChecks(Action<bool, string> check)
         {
             if (OperatingSystem.IsMacOS())
             {
+                // The marquee must travel a closed ring around the icon, not a bar: walk the same arc-length
+                // function the drawing uses and check it comes back to its start without gaps or spikes.
+                var total = MacDockProgress.RingPerimeterForCheck;
+                var ring = Enumerable.Range(0, 64).Select(index => MacDockProgress.RingPointForCheck(total * index / 64)).ToArray();
+                var walked = ring.Select((point, index) =>
+                {
+                    var next = ring[(index + 1) % ring.Length];
+                    return Math.Sqrt((next.X - point.X) * (next.X - point.X) + (next.Y - point.Y) * (next.Y - point.Y));
+                }).Sum();
+                var closedRing = MacDockProgress.RingPointForCheck(total) == MacDockProgress.RingPointForCheck(0);
+                var surrounds = closedRing && Math.Abs(walked - total) < total * 0.01
+                    && ring.Max(point => point.X) - ring.Min(point => point.X) > 118
+                    && ring.Max(point => point.Y) - ring.Min(point => point.Y) > 118
+                    && ring.All(point => point.X is >= 3 and <= 125 && point.Y is >= 3 and <= 125);
+
                 using var dock = new MacDockProgress();
                 dock.SetInProgress(true);
                 dock.SetInProgress(true);
@@ -137,8 +152,10 @@ internal sealed class ShellTaskbarProgressChecks(Action<bool, string> check)
                 dock.SetInProgress(true);
                 var restarted = await WaitForConditionAsync(() => dock.FramesForCheck > stopped + 2);
                 dock.Dispose();
-                check(minimized && hidden && drawn && released && restarted && !dock.HasResourcesForCheck,
-                    "macOS 原生 Dock 实际绘制并在最小化/隐藏后继续计时，停止释放资源且可重新启动（绘制 " + dock.DrawsForCheck + " 帧）");
+                check(surrounds && minimized && hidden && drawn && released && restarted && !dock.HasResourcesForCheck,
+                    "macOS 原生 Dock 绕图标绘制闭合跑马灯并在最小化/隐藏后继续计时，停止释放资源且可重新启动（周长 "
+                    + total.ToString("0.0") + "pt，采样折线 " + walked.ToString("0.0") + "pt，绘制 "
+                    + dock.DrawsForCheck + " 帧）");
             }
             else
             {

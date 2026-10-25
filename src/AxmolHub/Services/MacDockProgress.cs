@@ -8,6 +8,13 @@ namespace AxmolHub;
 internal sealed class MacDockProgress : IDisposable
 {
     private const string ObjC = "/usr/lib/libobjc.A.dylib";
+    // The Dock scales whatever the content view draws, so the tile is described in fixed 128-point logic.
+    private const double Tile = 128, RingInset = 3, Corner = 26, RingWidth = 5, RevolutionSeconds = 1.4;
+    private static readonly NativeRect TrackRect = new(RingInset, RingInset, Tile - 2 * RingInset, Tile - 2 * RingInset);
+    private static readonly NativeRect IconRect = new(8, 8, Tile - 16, Tile - 16);
+    private static readonly double Perimeter = 2 * (Tile - 2 * RingInset - 2 * Corner) * 2 + 2 * Math.PI * Corner;
+    // Longest and faintest first, so the bright head lands on top of its own tail.
+    private static readonly (double Tail, double Alpha)[] Tails = [(.30, .16), (.16, .40), (.07, .95)];
     private static readonly DrawHandler DrawCallback = Draw;
     private static readonly TickHandler TickCallback = Tick;
     private static readonly Dictionary<IntPtr, MacDockProgress> Owners = [];
@@ -16,6 +23,8 @@ internal sealed class MacDockProgress : IDisposable
     private long _started;
     internal int FramesForCheck { get; private set; }
     internal int DrawsForCheck { get; private set; }
+    internal static double RingPerimeterForCheck => Perimeter;
+    internal static (double X, double Y) RingPointForCheck(double distance) => RingPoint(distance);
     internal bool HasResourcesForCheck => _tile != IntPtr.Zero || _view != IntPtr.Zero || _timer != IntPtr.Zero;
 
     internal void SetInProgress(bool active)
@@ -108,27 +117,77 @@ internal sealed class MacDockProgress : IDisposable
         try
         {
             if (!Owners.TryGetValue(self, out var owner)) return;
-            DrawImage(owner._icon, Sel("drawInRect:fromRect:operation:fraction:"),
-                new(0, 0, 128, 128), default, 2, 1);
+            // The tile is the Dock's, so the icon is drawn by hand: a marquee around it means nothing can be left
+            // to NSDockTile's own image drawing.
+            DrawImage(owner._icon, Sel("drawInRect:fromRect:operation:fraction:"), IconRect, default, 2, 1);
             var context = Class("NSGraphicsContext");
             Send(context, Sel("saveGraphicsState"));
             try
             {
-                var track = RoundedRect(Class("NSBezierPath"), Sel("bezierPathWithRoundedRect:xRadius:yRadius:"),
-                    new(12, 8, 104, 8), 4, 4);
-                Send(Color(Class("NSColor"), Sel("colorWithCalibratedWhite:alpha:"), 0, .3), Sel("setFill"));
-                Send(track, Sel("fill"));
-                Send(track, Sel("addClip"));
-                var phase = (Stopwatch.GetElapsedTime(owner._started).TotalSeconds / 1.2) % 1;
-                var segment = RoundedRect(Class("NSBezierPath"), Sel("bezierPathWithRoundedRect:xRadius:yRadius:"),
-                    new(12 - 28 + phase * 132, 8, 28, 8), 4, 4);
-                Send(Color(Class("NSColor"), Sel("colorWithCalibratedWhite:alpha:"), .95, 1), Sel("setFill"));
-                Send(segment, Sel("fill"));
+                // A dim full ring gives the moving segment a track to travel on, so the icon reads as "working"
+                // instead of merely highlighted.
+                Stroke(RoundedRect(Class("NSBezierPath"), Sel("bezierPathWithRoundedRect:xRadius:yRadius:"),
+                    TrackRect, Corner, Corner), 1, .12, RingWidth);
+                var phase = Stopwatch.GetElapsedTime(owner._started).TotalSeconds % RevolutionSeconds / RevolutionSeconds;
+                foreach (var (tail, alpha) in Tails) StrokeComet(phase * Perimeter, tail * Perimeter, alpha);
             }
             finally { Send(context, Sel("restoreGraphicsState")); }
             owner.DrawsForCheck++;
         }
         catch (Exception ex) { Trace.WriteLine("Dock activity draw: " + ex); }
+    }
+
+    /// <summary>Strokes one segment of the ring, its head at <paramref name="head"/> and its tail behind it.</summary>
+    private static void StrokeComet(double head, double length, double alpha)
+    {
+        const int samples = 22;
+        var path = Send(Class("NSBezierPath"), Sel("bezierPath"));
+        for (var i = 0; i <= samples; i++)
+        {
+            var (x, y) = RingPoint(head - length + length * i / samples);
+            if (i == 0) MoveTo(path, Sel("moveToPoint:"), x, y);
+            else LineTo(path, Sel("lineToPoint:"), x, y);
+        }
+        Stroke(path, 1, alpha, RingWidth);
+    }
+
+    private static void Stroke(IntPtr path, double white, double alpha, double width)
+    {
+        Send(Color(Class("NSColor"), Sel("colorWithCalibratedWhite:alpha:"), white, alpha), Sel("setStroke"));
+        SendDouble(path, Sel("setLineWidth:"), width);
+        SendInteger(path, Sel("setLineCapStyle:"), 1); // NSLineCapStyleRound
+        Send(path, Sel("stroke"));
+    }
+
+    /// <summary>Walks the rounded rectangle by arc length, so equal steps are equal travel around the icon.</summary>
+    private static (double X, double Y) RingPoint(double distance)
+    {
+        const double left = RingInset, bottom = RingInset, size = Tile - 2 * RingInset, radius = Corner;
+        var straight = size - 2 * radius;
+        var quarter = Math.PI * radius / 2;
+        var d = distance % Perimeter;
+        if (d < 0) d += Perimeter;
+        if (d <= straight) return (left + radius + d, bottom);
+        d -= straight;
+        if (d <= quarter) return OnCorner(left + size - radius, bottom + radius, -90 + 90 * d / quarter);
+        d -= quarter;
+        if (d <= straight) return (left + size, bottom + radius + d);
+        d -= straight;
+        if (d <= quarter) return OnCorner(left + size - radius, bottom + size - radius, 90 * d / quarter);
+        d -= quarter;
+        if (d <= straight) return (left + size - radius - d, bottom + size);
+        d -= straight;
+        if (d <= quarter) return OnCorner(left + radius, bottom + size - radius, 90 + 90 * d / quarter);
+        d -= quarter;
+        if (d <= straight) return (left, bottom + size - radius - d);
+        d -= straight;
+        return OnCorner(left + radius, bottom + radius, 180 + 90 * Math.Min(d / quarter, 1));
+    }
+
+    private static (double X, double Y) OnCorner(double centerX, double centerY, double degrees)
+    {
+        var radians = degrees * Math.PI / 180;
+        return (centerX + Corner * Math.Cos(radians), centerY + Corner * Math.Sin(radians));
     }
 
     // CGFloat is double on both supported macOS ABIs. No struct-return objc_msgSend is used: x64 would
@@ -154,5 +213,10 @@ internal sealed class MacDockProgress : IDisposable
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void DrawImage(IntPtr receiver, IntPtr selector, NativeRect target, NativeRect source, nuint operation, double fraction);
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern IntPtr CreateTimer(IntPtr receiver, IntPtr selector, double seconds, IntPtr target, IntPtr action, IntPtr info, byte repeats);
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void AddTimer(IntPtr receiver, IntPtr selector, IntPtr timer, IntPtr mode);
+    [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void SendDouble(IntPtr receiver, IntPtr selector, double value);
+    [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void SendInteger(IntPtr receiver, IntPtr selector, nint value);
+    // moveToPoint:/lineToPoint: take NSPoint by value; two doubles is the same argument shape as the struct.
+    [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void MoveTo(IntPtr receiver, IntPtr selector, double x, double y);
+    [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void LineTo(IntPtr receiver, IntPtr selector, double x, double y);
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern IntPtr NewString(IntPtr receiver, IntPtr selector, [MarshalAs(UnmanagedType.LPUTF8Str)] string value);
 }
