@@ -547,6 +547,22 @@ public partial class MainWindow
     internal bool InspectorExpandedForCheck => _inspectorExpanded;
     internal bool InspectorOverlayVisibleForCheck => InspectorExpandHost.IsVisible;
     internal Rect InspectorOverlayBoundsForCheck => InClient(InspectorExpandSurface);
+    /// <summary>The slot the bar keeps the tabs in, and the strip inside it, both in the client root's space. Two
+    /// rects because they answer two different claims: the slot is the column (so it says *which* column the tabs
+    /// belong to), and the strip inside it is where the twelve-pixel inset lands, which is what "the tabs start
+    /// where the pane starts" is actually measured against.</summary>
+    internal Rect InspectorTabSlotBoundsForCheck => InClient(InspectorTabSlot);
+    internal Rect InspectorTabsBoundsForCheck => InspectorTabSlot.Content is Visual strip ? InClient(strip) : default;
+    internal bool InspectorTabSlotVisibleForCheck => InspectorTabSlot.IsVisible;
+    /// <summary>Whether the slot holds the same object the pane exposes. The pane draws the tabs and the bar only
+    /// says where they are, so a slot holding a second strip would look right and press nothing.</summary>
+    internal bool InspectorTabsAreThePaneStripForCheck => InspectorPaneForCheck is { } pane && ReferenceEquals(InspectorTabSlot.Content, pane.TabStrip);
+    /// <summary>The pane's own border, whose left edge is the line the tabs are aligned to.</summary>
+    internal Rect InspectorBorderBoundsForCheck => InClient(Inspector);
+    /// <summary>The two controls that stand aside while the pane is lifted, read by visibility because no geometry
+    /// can see a control a sibling was painted over.</summary>
+    internal bool SidebarToggleVisibleForCheck => SidebarToggle.IsVisible;
+    internal bool PageTitleVisibleForCheck => PageTitle.IsVisible;
     internal Rect SidebarBoundsForCheck => InClient(Sidebar);
     internal Rect TitleBarBoundsForCheck => InClient(TitleBar);
     internal Rect PageBoundsForCheck => InClient(PageHost);

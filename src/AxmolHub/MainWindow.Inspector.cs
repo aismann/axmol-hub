@@ -127,7 +127,8 @@ public partial class MainWindow
     /// <summary>The pane's two possible homes: the column, and the overlay it is lifted into. Exactly one may
     /// hold it — a control with a live visual parent cannot be adopted by a second <c>ContentControl</c>, which
     /// is an exception rather than a quiet failure — so every move clears both first, and nothing else in this
-    /// file assigns to either host.</summary>
+    /// file assigns to either host. The tabs are the one thing that moves the other way: they are never inside the
+    /// pane, and this is the single place they are handed to the bar's slot.</summary>
     private Control? InspectorPane
         => InspectorHost.Content as Control ?? InspectorExpandContent.Content as Control;
 
@@ -135,6 +136,10 @@ public partial class MainWindow
     {
         InspectorHost.Content = null;
         InspectorExpandContent.Content = null;
+        // The plan/changes strip is the one part of the pane that does not travel with it: both homes put it in the
+        // same title-bar slot, so the tabs stay where the reader left them while the pane is lifted. Handing it over
+        // here rather than in each of the two calls is what keeps one entry point for "the pane changed hands".
+        InspectorTabSlot.Content = (pane as InspectorPanel)?.TabStrip;
         if (_inspectorExpanded) InspectorExpandContent.Content = pane;
         else InspectorHost.Content = pane;
     }
@@ -193,17 +198,30 @@ public partial class MainWindow
     /// exactly when there is a column to lift (so it is absent both when the column is shut and when the pane has
     /// already covered the shell), and the drawer is the column's mirror image: while the pane is lifted there is
     /// no column to shut, so the same button becomes the way back down (see
-    /// <see cref="SyncInspectorDrawerChrome"/>).</summary>
+    /// <see cref="SyncInspectorDrawerChrome"/>). And it is the one place the bar's *left* end is told what it
+    /// holds: the tabs' slot, and the two controls — the drawer and the page title — that stand aside while the
+    /// pane is lifted so the strip can take their place.</summary>
     private void SetInspectorColumnVisible()
     {
         var show = _inspectorOpen && _currentKey == "Assistant" && !_inspectorExpanded;
         // The one rule the column may not break: a column on screen has a pane in it. Every way of getting here
         // except an explicit <see cref="OpenInspector"/> — a restored open flag, a page navigation, coming back
         // out of the lifted state — used to be able to show the chrome with nothing inside, and the header and the
-        // tabs all live *in* the pane, so what was on screen was an empty strip at the window's edge.
+        // tabs all stem from the pane, so what was on screen was an empty strip at the window's edge.
         if (show) EnsureInspectorPane();
         InspectorColumn.IsVisible = show;
         InspectorResizeGrip.IsVisible = show;
+        // The tabs outlive both homes, so they are placed here and not by the move. In the column the slot *is* the
+        // column's left edge — a five-pixel margin for the grip stands in for the column's own first column — and
+        // lifted it becomes the bar's left end across all three columns, which is the drawer button's place. That
+        // is the whole reason the two controls beside it stand aside: the strip is drawn where they were, and a
+        // drawer the reader could not see is worse than one that comes back with the column it belongs to. Every
+        // route in and out of the lifted state ends here, so leaving the assistant page puts all three back.
+        InspectorTabSlot.IsVisible = _inspectorOpen && _currentKey == "Assistant";
+        Grid.SetColumn(InspectorTabSlot, _inspectorExpanded ? 0 : 2);
+        Grid.SetColumnSpan(InspectorTabSlot, _inspectorExpanded ? 3 : 1);
+        InspectorTabSlot.Margin = _inspectorExpanded ? default : new Thickness(5, 0, 0, 0);
+        SidebarToggle.IsVisible = PageTitle.IsVisible = !_inspectorExpanded;
         // The drawer button belongs to the page, not to the column: while the pane is lifted the column is
         // legitimately empty, and a button that flipped off there would leave the person no way back to the column
         // at all. On another page there is nothing for it to show or hide, and nothing to lift either.

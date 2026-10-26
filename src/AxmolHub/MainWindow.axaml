@@ -411,12 +411,16 @@
 
     <!-- ==================== Inspector pane ====================
          The tabs read as text with an underline on the selected one rather than as a boxed TabControl: the pane
-         is already a boxed column, and a second box inside it is chrome saying "navigation" a second time. -->
+         is already a boxed column, and a second box inside it is chrome saying "navigation" a second time.
+         They are drawn in the title bar rather than in the pane (see InspectorTabSlot), so they are 32 high —
+         the bar's own height — and the selected underline is their bottom border, which lands exactly on the
+         bar's lower edge: the streak of colour a reader follows down is the pane's own top edge. -->
     <Style Selector="Button.inspector-tab">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0,0,0,2" />
-      <Setter Property="Padding" Value="2,4" />
+      <Setter Property="Padding" Value="2,0" />
+      <Setter Property="MinHeight" Value="32" />
       <Setter Property="FontSize" Value="13" />
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextTertiary}" />
       <Setter Property="CornerRadius" Value="0" />
@@ -683,6 +687,24 @@
         </StackPanel>
       </Grid>
     </Grid>
+
+    <!-- ==================== The inspector's tabs ====================
+         The Plan/Changes strip, in the bar's own row and in the right-hand column: column 2 is where the pane's
+         left edge is, plus the five-pixel grip the slot's margin stands for, so the strip's left edge lands on the
+         pane's border and its twelve-pixel inset lands on the pane's text — no coordinate is measured, both of the
+         pane's homes are derived from the column. While the pane is lifted the column has no width, so
+         SetInspectorColumnVisible widens the slot to all three columns and the strip takes the drawer button's
+         place at the window's left edge; the ▯ drawer and the page title stand aside there, because the strip is
+         drawn where they were.
+
+         A sibling *after* the bar rather than a child of it, so the strip paints above the bar's transparent drag
+         layer instead of being fed to it. The slot keeps no background, so only the strip's own plate stops the
+         window drag; every other pixel of the bar is as draggable as it was. Only the tabs come up here — the
+         pane's gear, its copy plate and the changes editing trio stay in its header, which is the row a reader
+         still meets once the strip is out of it. -->
+    <ContentControl x:Name="InspectorTabSlot" Grid.Row="0" Grid.Column="2"
+                    HorizontalAlignment="Left" VerticalAlignment="Top"
+                    Margin="5,0,0,0" IsVisible="False" />
 
     <!-- ==================== Sidebar ==================== -->
     <Grid Grid.Row="1" Grid.Column="0" ColumnDefinitions="*,5">

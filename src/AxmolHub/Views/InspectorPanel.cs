@@ -55,6 +55,7 @@ internal sealed partial class InspectorPanel : UserControl
 
     private readonly Button _planTab;
     private readonly Button _changesTab;
+    private readonly StackPanel _tabs;
     private readonly Button _viewSettings;
     private readonly MenuFlyout _viewMenu;
     private readonly Grid _header;
@@ -99,12 +100,14 @@ internal sealed partial class InspectorPanel : UserControl
 
         var root = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,*") };
 
-        // ── Header: the two tabs on the left, and the page's own gear at the far right. The control that used to
-        //    sit beside the tabs — the 「会话改动 ▾」 scope picker — was a page setting wearing a tab's clothes: it,
-        //    and the diff layout above it, answer one question ("how is this page read"), so they are one control
-        //    with four rows in it now. The tabs stay tabs; they are the only things here that switch a surface.
+        // ── Header: the page's own gear at the far right, the copy plate beside it, and the changes editing pair
+        //    when it is on. The two tabs left this row for the title bar (see TabStrip): the strip a reader
+        //    switches a surface with is one strip, in the same place in both of the pane's homes, and a tab inside
+        //    this header would have to be moved between them. The control that used to sit beside them — the
+        //    「会话改动 ▾」 scope picker — was a page setting wearing a tab's clothes: it, and the diff layout above
+        //    it, answer one question ("how is this page read"), so they are one control with four rows in it now.
         //    (The pane's lift/shut pair left this header even earlier — see MainWindow.axaml.) ──
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto,Auto"), Margin = new Thickness(12, 10, 8, 8) };
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto"), Margin = new Thickness(12, 10, 8, 8) };
         _header = header;
         _planTab = TabButton("InspectorTabPlan");
         _changesTab = TabButton("InspectorTabChanges");
@@ -114,10 +117,22 @@ internal sealed partial class InspectorPanel : UserControl
             SelectTab("repo");
             RepoRefreshRequested?.Invoke();
         };
-        header.Children.Add(_planTab);
-        Grid.SetColumn(_changesTab, 1);
-        _changesTab.Margin = new Thickness(6, 0, 0, 0);
-        header.Children.Add(_changesTab);
+        // The tabs are not in this header, and not in this pane's tree at all: the shell hosts the strip in the
+        // title bar's row, in the column the pane's own left edge is, so "the tabs start where the pane starts" is
+        // a layout answer rather than a pair of coordinates kept in step by hand. The plate is painted in the bar's
+        // own colour because the strip is drawn *on* that bar, where the page title can otherwise run underneath
+        // it: the plate ends the title at the tabs instead of printing two texts on top of each other, and it is
+        // the only hundred-odd pixels of the bar that stop dragging the window.
+        _tabs = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Bottom,
+        };
+        _tabs.Bind(Panel.BackgroundProperty, new DynamicResourceExtension("Hub.TitleBarBackground"));
+        _tabs.Children.Add(_planTab);
+        _tabs.Children.Add(_changesTab);
         var settingsIcon = new Path
         {
             Width = 15,
@@ -165,7 +180,7 @@ internal sealed partial class InspectorPanel : UserControl
             BuildViewMenu(_viewMenu);
             FlyoutBase.ShowAttachedFlyout(_viewSettings);
         };
-        Grid.SetColumn(_viewSettings, 4);
+        Grid.SetColumn(_viewSettings, 2);
         header.Children.Add(_viewSettings);
         var editActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
         var pencil = new Path
@@ -215,7 +230,7 @@ internal sealed partial class InspectorPanel : UserControl
         editActions.Children.Add(_editDiff);
         editActions.Children.Add(_cancelEdit);
         editActions.Children.Add(_saveEdit);
-        Grid.SetColumn(editActions, 5);
+        Grid.SetColumn(editActions, 3);
         header.Children.Add(editActions);
         root.Children.Add(header);
         Grid.SetRow(_editStatus, 1);
@@ -260,7 +275,7 @@ internal sealed partial class InspectorPanel : UserControl
         _planCopyButton.Classes.Add("inspector-plan-copy");
         _planCopyButton.Bind(ToolTip.TipProperty, new DynamicResourceExtension("CopyMarkdown"));
         _planCopyButton.Click += async (_, _) => await CopyPlanMarkdownAsync();
-        Grid.SetColumn(_planCopyButton, 3);
+        Grid.SetColumn(_planCopyButton, 1);
         header.Children.Add(_planCopyButton);
         _planScroll = new ScrollViewer
         {
@@ -296,6 +311,14 @@ internal sealed partial class InspectorPanel : UserControl
         Content = root;
         SelectTab("plan");
     }
+
+    /// <summary>The Plan/Changes strip, handed to the shell once and hosted by it — never drawn inside this pane.
+    /// Both of the pane's homes put it in the same title-bar slot (see <c>InspectorTabSlot</c> in MainWindow.axaml),
+    /// which is what keeps a reader's switch between the two surfaces where it is while the pane is lifted over the
+    /// window, and what keeps the tabs' left edge on the pane's own edge in either state without this file
+    /// measuring anything. The shell reads it through <c>SetInspectorPane</c>, the one place the pane changes
+    /// hands.</summary>
+    public Control TabStrip => _tabs;
 
     private static Button TabButton(string textKey)
     {
@@ -388,8 +411,10 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>Told by the shell which of its two homes the pane is in, because the two are not the same
     /// reading. A plan laid across a whole window needs the chat column's line length rather than the window's —
     /// a document that runs 1200px per line is not faster to read, it is a scan for the end of each sentence. The
-    /// diff keeps every pixel: side-by-side changes are exactly what the room is for. Which of the two surfaces is
-    /// up is the title bar's to say, not this pane's: it draws no control for it (see the constructor).</summary>
+    /// diff keeps every pixel: side-by-side changes are exactly what the room is for. The tabs are the one control
+    /// this state does not reach: they live in the title bar (<see cref="TabStrip"/>), and the shell moves their
+    /// slot rather than the strip — so being lifted changes where the pane reads, never what it is read with.
+    /// </summary>
     public void SetExpanded(bool expanded)
     {
         _expanded = expanded;

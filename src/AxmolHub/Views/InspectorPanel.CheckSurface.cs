@@ -61,8 +61,9 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>Whether the plan's own document carries the menu a selection earns — the pane is the renderer's
     /// other audience, and a menu attached inside ChatPanel alone would leave selecting the plan useless.</summary>
     internal bool PlanSelectionMenuForCheck => _planHost.Content is MarkdownScrollViewer viewer && SelectionMenu.HeadersForCheck(viewer).SequenceEqual([HubStrings.Get("CopyMessage"), HubStrings.Get("QuoteSelection")]);
-    /// <summary>Visible header actions only: the plan page has two tabs, a gear and an optional copy button.
-    /// Hidden Changes edit actions must not inflate this count or appear over a plan.</summary>
+    /// <summary>Visible header actions only: the plan page has a gear and an optional copy button. The tabs are
+    /// not in this row any more — they are in the title bar (see <see cref="TabStrip"/>) — and the hidden Changes
+    /// edit actions must not inflate this count or appear over a plan.</summary>
     internal int HeaderButtonCountForCheck => _header.GetLogicalDescendants().OfType<Button>().Count(button => button.IsVisible);
     internal bool ExpandedForCheck => _expanded;
     internal double PlanHostMaxWidthForCheck => _planHost.MaxWidth;
