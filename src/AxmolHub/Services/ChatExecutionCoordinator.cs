@@ -1192,7 +1192,7 @@ internal sealed partial class ChatExecutionCoordinator
         => TryEnqueueSend(conversationId, text, attachedContext, pictures, false, out refusalKey);
     internal bool TryEnqueueSend(string conversationId, string text, string? attachedContext,
         IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey, string? expectedPlanToken = null,
-        bool isGitOperationFallback = false, string? replyToId = null)
+        bool isGitOperationFallback = false, string? replyToId = null, IReadOnlyList<ChatImage>? reusedImages = null)
     {
         refusalKey = null;
         if (_compressingConversations.Contains(conversationId))
@@ -1201,7 +1201,7 @@ internal sealed partial class ChatExecutionCoordinator
             return false;
         }
 
-        if (!isGitOperationFallback && !isGoal && pictures is not { Count: > 0 } && string.IsNullOrEmpty(attachedContext)
+        if (!isGitOperationFallback && !isGoal && pictures is not { Count: > 0 } && reusedImages is not { Count: > 0 } && string.IsNullOrEmpty(attachedContext)
             && expectedPlanToken is null && GitWorkflow.ParseRequest(text, out var explicitTitle, out var validGitSyntax) is { } gitAction
             && (Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId)) is { } gitConversation
             && NormalizeMode(gitConversation.Mode) == ChatModes.Agent && PendingPlanToken(gitConversation) is null)
@@ -1251,11 +1251,29 @@ internal sealed partial class ChatExecutionCoordinator
             return false;
         }
 
+        if (reusedImages is { Count: > 0 })
+        {
+            foreach (var image in reusedImages)
+            {
+                var bytes = Sessions.Registry.Store.ReadImage(conversationId, image.File);
+                if (bytes is null || bytes.LongLength != image.Bytes
+                    || ChatImageFormat.Identify(bytes)?.MediaType != image.MediaType)
+                {
+                    refusalKey = "ChatFailed";
+                    return false;
+                }
+            }
+        }
         for (var index = 0; index < pictures?.Count; index++)
         {
-            var verdict = ChatImageFormat.Admit(pictures[index], index);
+            var verdict = ChatImageFormat.Admit(pictures[index], (reusedImages?.Count ?? 0) + index);
             if (verdict == ChatImageVerdict.Accepted) continue;
             refusalKey = ImageRefusalKey(verdict);
+            return false;
+        }
+        if ((reusedImages?.Count ?? 0) > ChatImageFormat.MaxImagesPerMessage)
+        {
+            refusalKey = ImageRefusalKey(ChatImageVerdict.TooMany);
             return false;
         }
 
@@ -1269,7 +1287,7 @@ internal sealed partial class ChatExecutionCoordinator
                 var pending = planIndex >= 0 ? opened.Messages[planIndex] : null;
                 var context = pending is null ? attachedContext : PlanRevisionInstruction
                     + (string.IsNullOrEmpty(attachedContext) ? "" : "\n\n" + attachedContext);
-                var userTurn = ChatTurn.User(text, context, StorePictures(conversationId, pictures),
+                var userTurn = ChatTurn.User(text, context, StorePictures(conversationId, pictures, reusedImages),
                     isGoal: isGoal && pending is null) with
                 {
                     Plan = pending?.Plan,
@@ -1327,11 +1345,12 @@ internal sealed partial class ChatExecutionCoordinator
         }).ConfigureAwait(false);
     }
 
-    private List<ChatImage>? StorePictures(string conversationId, IReadOnlyList<byte[]>? pictures)
+    private List<ChatImage>? StorePictures(string conversationId, IReadOnlyList<byte[]>? pictures,
+        IReadOnlyList<ChatImage>? reusedImages = null)
     {
-        if (pictures is not { Count: > 0 }) return null;
-        var stored = new List<ChatImage>(pictures.Count);
-        foreach (var bytes in pictures)
+        if (pictures is not { Count: > 0 } && reusedImages is not { Count: > 0 }) return null;
+        var stored = reusedImages?.ToList() ?? [];
+        foreach (var bytes in pictures ?? [])
             if (Sessions.Registry.Store.AttachImage(conversationId, bytes, stored.Count) is { Image: { } image })
                 stored.Add(image);
         return stored;

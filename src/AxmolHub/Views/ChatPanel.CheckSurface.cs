@@ -1099,6 +1099,28 @@ public partial class ChatPanel : UserControl
     /// asserting is what the composer decides once it has the payload, not whether Windows answered.
     /// </summary>
     internal Task<bool> PasteTransferForCheck(IAsyncDataTransfer transfer) => TakeClipboardAsync(transfer);
+    internal DataTransfer MessageClipboardForCheck(string conversationId, ChatTurn turn)
+    {
+        var images = turn.Images.Select(image => ReadPictureBytes(_chat.StoredImagePath(conversationId, image.File))
+                is { } bytes ? new ChatMessageClipboardImage(image, bytes) : null)
+            .Where(image => image is not null).Cast<ChatMessageClipboardImage>().ToArray();
+        var item = new DataTransferItem();
+        item.Set(DataFormat.Text, turn.Text);
+        item.Set(ChatMessageClipboard.Format, ChatMessageClipboard.Serialize(
+            new ChatMessageClipboardPayload(turn.Text, conversationId, images)));
+        var data = new DataTransfer();
+        data.Add(item);
+        foreach (var image in images)
+        {
+            var bitmap = new Bitmap(new System.IO.MemoryStream(image.Bytes));
+            data.Add(DataTransferItem.Create(DataFormat.Bitmap, bitmap));
+        }
+        return data;
+    }
+    internal int ReusedPendingPictureCountForCheck => _pendingPictures.Count(picture =>
+        picture.ReusedAttachment is not null && picture.SourceConversationId == _chat.ViewedConversationId);
+    internal string? SteerDraftTextForCheck => _steerDraft?.Text;
+    internal int SteerDraftPictureCountForCheck => _steerDraft?.Pictures?.Count ?? 0;
     /// <summary>Raises the composer's own drop event, so the drop target and the file extraction run exactly as
     /// they do when a screenshot is dragged in from Explorer.</summary>
     internal void DropForCheck(IDataTransfer transfer) => ComposerFrame.RaiseEvent(new DragEventArgs(DragDrop.DropEvent, transfer, ComposerFrame, default, KeyModifiers.None));

@@ -1242,6 +1242,56 @@ internal sealed class ShellTranscriptChecks
                 "粘来的与拖来的两张按到达顺序落进同一条消息，两边都存成 PNG（实际 "
                 + (entered?.Images.Count ?? -1) + " 张，目录里 " + StoredPictureCount(panel, entrance.Id) + " 个文件）");
 
+            var copyTransfer = panel.MessageClipboardForCheck(entrance.Id, entered!);
+            var copyItem = copyTransfer.Items.First(item => item.Formats.Contains(ChatMessageClipboard.Format));
+            Check(copyItem.Formats.Contains(DataFormat.Text)
+                  && copyItem.Formats.Contains(ChatMessageClipboard.Format)
+                  && copyTransfer.Items.Count(item => item.Formats.Contains(DataFormat.Bitmap)) == 2
+                  && (await panel.PasteTransferForCheck(copyTransfer))
+                  && panel.PendingPictureCountForCheck == 2
+                  && panel.ReusedPendingPictureCountForCheck == 2
+                  && panel.InputTextForCheck == entered!.Text,
+                "Hub 内复制粘贴同时带回文字与两个原附件引用（实际复用 "
+                + panel.ReusedPendingPictureCountForCheck + " 张）");
+            await panel.SendComposerForCheck();
+            await panel.WaitForRunToFinishForCheck();
+            var reused = chat.StoredCopyForCheck(entrance.Id)?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User);
+            Check(reused is { Images.Count: 2 }
+                  && reused.Images.Select(image => image.File).SequenceEqual(entered!.Images.Select(image => image.File))
+                  && StoredPictureCount(panel, entrance.Id) == 2,
+                "同一会话粘贴后继续发送仍引用原附件文件，没有重复存储（目录里 "
+                + StoredPictureCount(panel, entrance.Id) + " 个）");
+
+            var crossSession = chat.StartConversation();
+            chat.SetApprovalMode(crossSession.Id, ToolApprovalModes.Full);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+            var crossTransfer = panel.MessageClipboardForCheck(entrance.Id, entered!);
+            Check(await panel.PasteTransferForCheck(crossTransfer)
+                  && panel.PendingPictureCountForCheck == 2
+                  && panel.ReusedPendingPictureCountForCheck == 0
+                  && panel.InputTextForCheck == entered!.Text,
+                "另一会话粘贴Hub剪贴板数据时从携带的图片字节导入，而不引用源会话路径");
+            await panel.SendComposerForCheck();
+            await panel.WaitForRunToFinishForCheck();
+            var imported = chat.StoredCopyForCheck(crossSession.Id)?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User);
+            Check(imported is { Images.Count: 2 }
+                  && imported.Images.All(image => image.MediaType == "image/png")
+                  && StoredPictureCount(panel, crossSession.Id) == 2,
+                "跨会话发送后图片写入目标会话的附件目录（实际 "
+                + (imported?.Images.Count ?? -1) + " 张）");
+
+            var unavailable = ChatTurn.User("文字仍可复制", images: [new ChatImage("gone.png", "image/png", 8)]);
+            var unavailableTransfer = panel.MessageClipboardForCheck(entrance.Id, unavailable);
+            Check(await panel.PasteTransferForCheck(unavailableTransfer)
+                  && panel.PendingPictureCountForCheck == 0
+                  && panel.InputTextForCheck == unavailable.Text,
+                "源附件不可用时仍可复制并粘贴消息文字，不会伪造一张空图片");
+            panel.SetInputForCheck("");
+            chat.OpenConversation(entrance.Id);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+
             // A reply already on screen is exactly when a picture gets added, and the steer is a second append:
             // a composer that empties its chips while the run refused the message would drop the picture the
             // person is looking at.
@@ -1256,7 +1306,8 @@ internal sealed class ShellTranscriptChecks
             panel.SetInputForCheck("再看这张图");
             await panel.SendComposerForCheck();
             Dispatcher.UIThread.RunJobs();
-            Check(panel.SteerConfirmVisibleForCheck && panel.SteerConfirmTextForCheck == "再看这张图",
+            Check(panel.SteerConfirmVisibleForCheck && panel.SteerConfirmTextForCheck == "再看这张图"
+                  && panel.SteerDraftPictureCountForCheck == 1,
                 "回复进行中带图再发一次，先摆到确认条上，图跟着这句一起走（实际「"
                 + panel.SteerConfirmTextForCheck + "」）");
             panel.ClickSteerCommitForCheck();

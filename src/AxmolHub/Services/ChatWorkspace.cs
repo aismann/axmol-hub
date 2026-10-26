@@ -694,7 +694,7 @@ public sealed partial class ChatWorkspace : IDisposable
     /// <summary>Starts a run for one message. A pending plan turns it into feedback in Plan mode, never approval
     /// or a new goal. <paramref name="expectedPlanToken"/> guards drafts against a review changing during an
     /// asynchronous attachment read; a refusal leaves the decision and the caller's draft untouched.</summary>
-    public bool TryEnqueueSend(string conversationId, string text, string? attachedContext, IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey, string? expectedPlanToken = null, string? replyToId = null) => _execution.TryEnqueueSend(conversationId, text, attachedContext, pictures, isGoal, out refusalKey, expectedPlanToken, replyToId: replyToId);
+    public bool TryEnqueueSend(string conversationId, string text, string? attachedContext, IReadOnlyList<byte[]>? pictures, bool isGoal, out string? refusalKey, string? expectedPlanToken = null, string? replyToId = null, IReadOnlyList<ChatImage>? reusedImages = null) => _execution.TryEnqueueSend(conversationId, text, attachedContext, pictures, isGoal, out refusalKey, expectedPlanToken, replyToId: replyToId, reusedImages: reusedImages);
     /// <summary>Streams a reply against a session whose history is already final — edit-and-resend,
     /// regenerate, or a turn resumed from an approved tool call. It appends <b>nothing</b>: the request is rebuilt
     /// from the transcript, so the question the previous attempt never answered goes back on the wire once, as the

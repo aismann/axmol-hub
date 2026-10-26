@@ -2005,7 +2005,8 @@ public partial class ChatPanel : UserControl
     /// <summary>Offers one picture to the composer. The rules are Core's, the same four a captured frame is
     /// admitted by, and the notice names which one fired: "capture a smaller region" and "attach fewer at once"
     /// are different fixes, and a notice that only says "no" gets the same file picked again.</summary>
-    private void AddPendingPicture(byte[] bytes, string name)
+    private void AddPendingPicture(byte[] bytes, string name, ChatImage? reusedAttachment = null,
+        string? sourceConversationId = null)
     {
         var verdict = ChatImageFormat.Admit(bytes, _pendingPictures.Count);
         if (verdict != ChatImageVerdict.Accepted)
@@ -2014,7 +2015,7 @@ public partial class ChatPanel : UserControl
             return;
         }
 
-        _pendingPictures.Add(new PendingPicture(bytes, name));
+        _pendingPictures.Add(new PendingPicture(bytes, name, reusedAttachment, sourceConversationId));
         RenderContextAttachments();
         UpdateSendState();
     }
@@ -2135,7 +2136,36 @@ public partial class ChatPanel : UserControl
     /// <summary>The paste's one decision: did a picture get taken, or should the box paste text as it always
     /// has? Split out because it is the half a check can be handed a payload for.</summary>
     private async Task<bool> TakeClipboardAsync(IAsyncDataTransfer? transfer)
-        => transfer is not null && await TakePicturesAsync(transfer) > 0;
+    {
+        if (transfer is null) return false;
+        foreach (var item in transfer.Items)
+        {
+            if (!item.Formats.Contains(ChatMessageClipboard.Format)
+                || await item.TryGetRawAsync(ChatMessageClipboard.Format) is not byte[] raw
+                || ChatMessageClipboard.TryDeserialize(raw) is not { } payload) continue;
+            var currentId = _chat.ViewedConversationId;
+            foreach (var image in payload.Images)
+            {
+                var sameSession = currentId == payload.ConversationId
+                    && _chat.StoredImagePath(currentId!, image.Attachment.File) is { } path
+                    && ReadPictureBytes(path) is { } stored
+                    && stored.AsSpan().SequenceEqual(image.Bytes);
+                if (sameSession)
+                    AddPendingPicture(image.Bytes, image.Attachment.File, image.Attachment, payload.ConversationId);
+                else
+                    AddPendingPicture(image.Bytes, image.Attachment.File);
+            }
+            if (payload.Text.Length > 0)
+            {
+                var existing = InputBox.Text ?? "";
+                InputBox.Text = existing.Length == 0 ? payload.Text : existing + Environment.NewLine + payload.Text;
+                InputBox.CaretIndex = InputBox.Text.Length;
+                UpdateSendState();
+            }
+            return true;
+        }
+        return await TakePicturesAsync(transfer) > 0;
+    }
 
     /// <summary>
     /// The paste's actual decision, separated from the clipboard so it can be handed a transfer of a known shape.
@@ -2208,7 +2238,14 @@ public partial class ChatPanel : UserControl
     /// <summary>The bytes of every picture waiting in the composer, in chip order, or null when there are none —
     /// the shape the send and steer paths take so an empty draft stays exactly the request it was before.</summary>
     private IReadOnlyList<byte[]>? PendingPictureBytes()
-        => _pendingPictures.Count == 0 ? null : _pendingPictures.Select(picture => picture.Bytes).ToArray();
+        => _pendingPictures.Where(picture => picture.ReusedAttachment is null
+                || picture.SourceConversationId != _chat.ViewedConversationId)
+            .Select(picture => picture.Bytes).ToArray() is { Length: > 0 } fresh ? fresh : null;
+
+    private IReadOnlyList<ChatImage>? PendingReusedPictures()
+        => _pendingPictures.Where(picture => picture.ReusedAttachment is not null
+                && picture.SourceConversationId == _chat.ViewedConversationId)
+            .Select(picture => picture.ReusedAttachment!).ToArray() is { Length: > 0 } reused ? reused : null;
 
     /// <summary>
     /// The pictures one sent message carries, painted from the file Hub kept. Bounded so a 5K capture cannot push
@@ -4022,8 +4059,8 @@ public partial class ChatPanel : UserControl
             var current = CurrentIndex();
             if (current < 0 || _chat.ActiveConversation is not { } conversation) return false;
             var turn = conversation.Messages[current];
-            return await CopyToClipboardAsync(
-                turn.PlanApprovalState is not null ? _chat.PlanBody(turn, out _) ?? "" : turn.Text);
+            var text = turn.PlanApprovalState is not null ? _chat.PlanBody(turn, out _) ?? "" : turn.Text;
+            return await CopyMessageToClipboardAsync(conversation.Id, turn, text);
         }
         void RegenerateCurrent()
         {
@@ -4412,6 +4449,50 @@ public partial class ChatPanel : UserControl
         }
     }
 
+    private async Task<bool> CopyMessageToClipboardAsync(string conversationId, ChatTurn turn, string text)
+    {
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard is null) return false;
+        var images = new List<ChatMessageClipboardImage>();
+        var bitmaps = new List<Bitmap>();
+        try
+        {
+            foreach (var image in turn.Images)
+            {
+                var bytes = ReadPictureBytes(_chat.StoredImagePath(conversationId, image.File));
+                if (bytes is not { Length: > 0 }) continue;
+                try
+                {
+                    var bitmap = new Bitmap(new System.IO.MemoryStream(bytes));
+                    bitmaps.Add(bitmap);
+                    images.Add(new ChatMessageClipboardImage(image, bytes));
+                }
+                catch (Exception)
+                {
+                    // An unavailable or undecodable attachment must not prevent the message text from being copied.
+                }
+            }
+
+            var payload = new ChatMessageClipboardPayload(text, conversationId, images);
+            var textItem = new DataTransferItem();
+            textItem.Set(DataFormat.Text, text);
+            textItem.Set(ChatMessageClipboard.Format, ChatMessageClipboard.Serialize(payload));
+            var data = new DataTransfer();
+            data.Add(textItem);
+            foreach (var bitmap in bitmaps) data.Add(DataTransferItem.Create(DataFormat.Bitmap, bitmap));
+            await clipboard.SetDataAsync(data);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            foreach (var bitmap in bitmaps) bitmap.Dispose();
+        }
+    }
+
     /// <summary>
     /// Keeps the round button in step with the composer: the same button sends or stops, and it stays
     /// greyed out while the box is empty so "there is nothing to send" is visible before the click rather than
@@ -4553,9 +4634,10 @@ public partial class ChatPanel : UserControl
 
         var text = (InputBox.Text ?? "").Trim();
         var pictures = PendingPictureBytes();
+        var reusedPictures = PendingReusedPictures();
         // A picture with no question under it is a message: "look at this" is what people actually send, and a
         // send button that stays grey because the box is empty would say otherwise.
-        if (text.Length == 0 && pictures is null) return;
+        if (text.Length == 0 && _pendingPictures.Count == 0) return;
         if (_chat.SelectedChatModel is null)
         {
             // One sentence, one door: the pre-check and the refusal behind <c>TryEnqueueSend</c> both come through
@@ -4582,7 +4664,7 @@ public partial class ChatPanel : UserControl
             ReportPlanDraftChanged();
             return;
         }
-        if (!SendTextAsync(text, context, pictures, expectedPlanToken, _replyToId)) return;
+        if (!SendTextAsync(text, context, pictures, expectedPlanToken, _replyToId, reusedPictures)) return;
         ClearReplyTarget();
         _contextAttachments.Clear();
         _pendingPictures.Clear();
@@ -4594,9 +4676,9 @@ public partial class ChatPanel : UserControl
     /// the transcript like any other row, so there is no second copy of it here to keep in step. Reports whether
     /// the message got in, because the caller owns the draft and must not empty the box on a refusal.</summary>
     private bool SendTextAsync(string text, string? attachedContext = null, IReadOnlyList<byte[]>? pictures = null,
-        string? expectedPlanToken = null, string? replyToId = null)
+        string? expectedPlanToken = null, string? replyToId = null, IReadOnlyList<ChatImage>? reusedImages = null)
     {
-        if (text.Length == 0 && pictures is not { Count: > 0 }) return false;
+        if (text.Length == 0 && pictures is not { Count: > 0 } && reusedImages is not { Count: > 0 }) return false;
         var isGoal = GoalDraftSelectedForActiveConversation;
         if (_chat.ActiveConversation is null)
         {
@@ -4607,7 +4689,8 @@ public partial class ChatPanel : UserControl
         }
         if (_chat.ActiveConversation is not { } conversation) return false;
 
-        if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, isGoal, out var refusalKey, expectedPlanToken, replyToId))
+        if (!_chat.TryEnqueueSend(conversation.Id, text, attachedContext, pictures, isGoal, out var refusalKey,
+                expectedPlanToken, replyToId, reusedImages))
         {
             if (refusalKey == "ChatPlanChanged") ReportPlanDraftChanged();
             else AppendNotice(NoticeFor(refusalKey, conversation.Id), danger: true);
@@ -5212,7 +5295,8 @@ public partial class ChatPanel : UserControl
     /// file to point at — a pasted capture arrives as a bitmap, and what all three have in common is the bytes
     /// Hub would store.
     /// </summary>
-    private sealed record PendingPicture(byte[] Bytes, string Name);
+    private sealed record PendingPicture(byte[] Bytes, string Name, ChatImage? ReusedAttachment = null,
+        string? SourceConversationId = null);
 
     internal double BubbleIconActionWidth(int visibleIndex)
         => MessageRows.ElementAtOrDefault(visibleIndex)?
