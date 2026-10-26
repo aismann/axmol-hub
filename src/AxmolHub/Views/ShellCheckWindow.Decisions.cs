@@ -1156,9 +1156,9 @@ internal sealed class ShellDecisionsChecks
         var expandedPane = shell.InspectorPaneForCheck;
         Check(expandedPane is not null
               && expandedPane.ExpandedForCheck
-              && expandedPane.HeaderButtonCountForCheck == 4
+              && expandedPane.HeaderButtonCountForCheck == (expandedPane.PlanCopyButtonVisibleForCheck ? 4 : 3)
               && expandedPane.PlanHostMaxWidthForCheck == 820,
-            "撑开后计划页收到聊天列的行长而不是铺满整屏，面板头上只有三个页签和计划页复制按钮（正文列宽上限 "
+            "撑开后计划页保持正文行长，页眉只显示页签、设置及可用的复制按钮，不显示差异编辑控件（正文列宽上限 "
             + Fmt(expandedPane?.PlanHostMaxWidthForCheck ?? 0) + "，头上按钮 "
             + (expandedPane?.HeaderButtonCountForCheck ?? -1) + " 枚）");
         Check(!shell.InspectorExpandToggleVisibleForCheck
@@ -1246,9 +1246,8 @@ internal sealed class ShellDecisionsChecks
               && inspector.ChangesTabVisibleForCheck && !inspector.PlanTabVisibleForCheck,
             "改动页把这次会话动过的文件列出来，并停在被点开的哪一页（实际 "
             + inspector.ChangeRowCountForCheck + " 行，首行「" + inspector.FirstChangePathForCheck + "」）");
-        Check(inspector.ChangeFileMenuItemsForCheck.SequenceEqual([
-                HubStrings.Get("InspectorViewFile"), HubStrings.Get("InspectorEditFile")]),
-            "会话改动文件行提供明确的 View file / Edit file 菜单入口");
+        Check(inspector.ChangeOpenFileButtonForCheck,
+            "会话改动文件行提供单一的 Open file 图标入口，直接打开整份文件编辑");
         inspector.ClickChangeRowForCheck(0);
         Check(inspector.DurableDiffControlsForCheck,
             "改动详情提供可切换的历史修订和可滚动的差异文本区域");
@@ -1258,14 +1257,11 @@ internal sealed class ShellDecisionsChecks
             "unified diff 为上下文与改动行提供行号槽和明确的增删标记（实际 "
             + inspector.ChangeRowDiffGutterCountForCheck(0) + " 行号、标记「"
             + inspector.ChangeRowDiffMarkersForCheck(0) + "」）");
-        // The gear is the page's only setting surface now: the diff layout and the change scope are the same kind
-        // of question, so they are four rows in one menu, and the tick — not a label in the header — says which of
-        // each is up. Read in order, so a row that moved into the wrong group is caught as well as a missing one.
+        // Changes always displays repository changes. Its gear controls only diff presentation, never scope.
         inspector.PressViewSettingsForCheck();
         Check(inspector.ViewMenuRowsForCheck.SequenceEqual([
-                "DiffViewSection", "InspectorMenuSplit", "InspectorMenuUnified ✓",
-                "InspectorScopeSection", "InspectorMenuSession ✓", "InspectorMenuRepository"]),
-            "改动页齿轮菜单按「视图、改动范围」两组排出并排/统一与会话/仓库，勾落在统一视图与会话改动上（实际 "
+                "DiffViewSection", "InspectorMenuSplit", "InspectorMenuUnified ✓"]),
+            "Changes 设置只包含差异布局，不提供 Session/Repo 范围切换（实际 "
             + string.Join("、", inspector.ViewMenuRowsForCheck) + "）");
         inspector.ClickViewMenuRowForCheck("InspectorMenuSplit");
         Check(inspector.SplitDiffForCheck
@@ -1371,11 +1367,10 @@ internal sealed class ShellDecisionsChecks
                   .Replace("{0}", "2").Replace("{1}", "1"), StringComparison.Ordinal),
             "仓库页停在被点开的那一页，列出仓库相对 HEAD 的三个脏路径，并把分支与领先落后写在同一行（实际「"
             + inspector.RepoHeadlineForCheck + "」）");
-        Check(inspector.RepoFileMenuItemsForCheck(0).SequenceEqual([
-                HubStrings.Get("InspectorViewFile"), HubStrings.Get("InspectorEditFile")]),
-            "仓库文件行同样提供明确的 View file / Edit file 菜单入口");
-        Check(inspector.RepoCommitComparisonControlsAbsentForCheck,
-            "仓库文件行不再显示按提交引用比较的输入框或按钮");
+        Check(inspector.RepoOpenFileButtonForCheck(0),
+            "仓库文件行提供单一的 Open file 图标入口，直接打开整份文件编辑");
+        Check(inspector.RepoCommitComparisonControlsAbsentForCheck && inspector.RepoComparisonRangeButtonsAbsentForCheck,
+            "仓库文件行不显示提交引用、暂存区或工作区比较按钮");
         Check(inspector.RepoCaveatForCheck == HubStrings.Get("InspectorRepoCaveat"),
             "仓库页第一句就讲清这是仓库的全部改动，不只是本会话做的（实际「" + inspector.RepoCaveatForCheck + "」）");
         // The shared-path mark is the one place the two lists are allowed to speak to each other: note.txt is in
@@ -1389,23 +1384,19 @@ internal sealed class ShellDecisionsChecks
         // A row's hunks come from the click, not from the list paint: the snapshot carries a diff for src/main.cpp
         // and none for the untracked png, and each row has to answer differently rather than the tab deciding for
         // all of them.
+        inspector.ReadComparisonRequested = (_, entry, range) => Task.FromResult<ChatFileSnapshot?>(
+            entry.RelativePath == "assets/logo.png" ? null
+                : range == GitFileRange.WorkingTreeAgainstHead
+                    ? new ChatFileSnapshot("old", "new") : new ChatFileSnapshot("staged", "new"));
         inspector.ClickRepoRowForCheck(0);
         Check(inspector.RepoRowExpandedForCheck(0)
-              && inspector.RepoRowTextForCheck(0).Contains(" ~ + ~ new", StringComparison.Ordinal),
-            "点开仓库行才取它的 diff，取到的是这个文件自己的那段（实际「" + inspector.RepoRowTextForCheck(0) + "」）");
-        // A repository row is the one unfold the pane cannot answer from memory — its other side lives in git — so
-        // the shell is stubbed here and the answer is marked: a row that quietly kept its hunks would look
-        // expanded and fail, which is the point of asking at all.
-        inspector.WholeDiffRequested = (_, _) =>
-            Task.FromResult<string?>("@@ -1,2 +1,2 @@\n 第一行\n-旧\n+新\n 仓库整份的尾巴");
-        inspector.ClickRepoUnfoldForCheck(0);
-        Check(inspector.RepoRowTextForCheck(0).Contains("仓库整份的尾巴", StringComparison.Ordinal),
-            "仓库文件行也能展开成整份：那一行向 shell 要的另一半画了出来，而不是退回自己的 hunk（实际「"
-            + inspector.RepoRowTextForCheck(0) + "」）");
-        inspector.ClickRepoUnfoldForCheck(0);
-        Check(!inspector.RepoRowTextForCheck(0).Contains("仓库整份的尾巴", StringComparison.Ordinal)
-              && inspector.RepoRowExpandedForCheck(0),
-            "再点一次回到 hunk，行本身仍然开着");
+              && inspector.RepoRowTextForCheck(0).Contains("old", StringComparison.Ordinal)
+              && inspector.RepoRowTextForCheck(0).Contains("new", StringComparison.Ordinal)
+              && !inspector.RepoRowTextForCheck(0).Contains("staged", StringComparison.Ordinal),
+            "单击仓库路径立即显示 HEAD 到工作区的完整差异，包含暂存与未暂存改动（实际「" + inspector.RepoRowTextForCheck(0) + "」）");
+        // Clicking the row a second time collapses its inline, full HEAD-to-worktree comparison.
+        inspector.ClickRepoRowForCheck(0);
+        Check(!inspector.RepoRowExpandedForCheck(0), "再次点击仓库路径收起内联差异");
         inspector.ClickRepoRowForCheck(2);
         Check(inspector.RepoRowTextForCheck(2).Contains(HubStrings.Get("InspectorRepoNoDiff"), StringComparison.Ordinal),
             "读不到改动内容的行讲清读不到，而不是画一片空白（实际「" + inspector.RepoRowTextForCheck(2) + "」）");
@@ -1440,61 +1431,24 @@ internal sealed class ShellDecisionsChecks
         Check(inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorRepoReading"), StringComparison.Ordinal),
             "还没读到仓库时面板说在读，而不是先说没有");
 
-        // ── the empty-scope jump: an empty list that knows the other one is not ──
-        // Both directions are one rule seen from the two tabs, and the rule is that a jump only appears over a
-        // list that really is worth opening. A jump to an empty list is a button that goes nowhere, and a jump
-        // that names a count the app never read would be a claim this surface cannot make — so every state that
-        // has no read behind it stays silent, and that is asserted as hard as the jump itself.
+        // Changes always shows repository state; session history remains in its model for a future UI decision.
         var dirtyThree = new GitRepositoryState(GitReadOutcome.Ok, @"D:\dev\probe", "master", 0, 0,
-            [
-                new GitStatusEntry("note.txt", " ", "M", false),
-                new GitStatusEntry("src/main.cpp", "M", " ", false),
-                new GitStatusEntry("assets/图标.png", "?", "?", true),
-            ],
+            [new GitStatusEntry("note.txt", " ", "M", false),
+             new GitStatusEntry("src/main.cpp", "M", " ", false),
+             new GitStatusEntry("assets/图标.png", "?", "?", true)],
             new Dictionary<string, string>(StringComparer.Ordinal), false, null);
         var cleanTree = new GitRepositoryState(GitReadOutcome.Ok, @"D:\dev\probe", "master", 0, 0, [],
             new Dictionary<string, string>(StringComparer.Ordinal), false, null);
-        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), dirtyThree, "changes");
-        Check(inspector.ChangeRowCountForCheck == 0 && inspector.ChangeJumpPresentForCheck
-              && inspector.ChangeJumpTextForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                  HubStrings.Get("InspectorChangesJumpRepoFormat"), 3),
-            "改动页空着而仓库有未提交时，那句空状态本身是个能点的跳转，报的正是读到的那个数（实际「"
-            + inspector.ChangeJumpTextForCheck + "」）");
-        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), null, "changes");
-        Check(!inspector.ChangeJumpPresentForCheck,
-            "还没读到仓库时改动页不跳转：没验证过的事实不该写成一句邀请");
-        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), cleanTree, "changes");
-        Check(!inspector.ChangeJumpPresentForCheck,
-            "读到的是干净工作树时也不跳转：那边也没有可看的东西，跳过去只是多一次空手");
-        // The other tab, the same rule. This is the screen right after the assistant ran `git commit`: nothing is
-        // uncommitted any more, and the reader is looking at a list that can no longer answer what they came for.
-        inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), cleanTree, "repo");
-        Check(inspector.RepoRowCountForCheck == 0 && inspector.RepoJumpPresentForCheck
-              && inspector.RepoJumpTextForCheck == string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                  HubStrings.Get("InspectorRepoJumpSessionFormat"), changes.Length)
-              && inspector.RepoNoticeForCheck == HubStrings.Get("InspectorRepoEmpty"),
-            "工作树干净而本会话改过文件时，仓库页把话递回改动页，而那一句「工作树与 HEAD 一致」还是它自己的一句，"
-            + "跳转没有混进去（实际「" + inspector.RepoJumpTextForCheck + "」/「" + inspector.RepoNoticeForCheck + "」）");
-        var jumpedWrong = "";
-        foreach (var (outcome, _) in whyKeys)
-        {
-            inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read),
-                GitRepositoryState.Stopped(outcome, "probe"), "repo");
-            if (inspector.RepoJumpPresentForCheck) jumpedWrong += (jumpedWrong.Length == 0 ? "" : "、") + outcome;
-        }
-        inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), null, "repo");
-        if (inspector.RepoJumpPresentForCheck) jumpedWrong += "还没读";
-        Check(jumpedWrong.Length == 0,
-            "读不到仓库的每一种原因都不跳转，因为那种时候这一边自己就是答案（多余的跳转：" + jumpedWrong + "）");
-        // The panel asks and the shell lands it. A jump must not switch this pane's own visibility, because the ask
-        // can arrive while the column is shut, and only the shell knows the page it is on.
-        var jumpedTo = "";
-        inspector.ScopeJumpRequested += target => jumpedTo = target;
-        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), dirtyThree, "changes");
-        inspector.ClickChangeJumpForCheck();
-        Check(jumpedTo == "repo" && inspector.ChangesTabVisibleForCheck && !inspector.RepoTabVisibleForCheck,
-            "点跳转：面板只把「要去哪一页」递出去，自己不换页（实际请求「" + jumpedTo + "」，仍停在改动页 "
-            + inspector.ChangesTabVisibleForCheck + "）");
+        inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), dirtyThree, "changes");
+        Check(inspector.RepoTabVisibleForCheck && inspector.RepoRowCountForCheck == dirtyThree.Entries.Count
+              && !inspector.SessionChangesSurfaceVisibleForCheck && !inspector.RepoJumpPresentForCheck,
+            "Changes 默认 Repo 并列出全部仓库更改，session 历史仍保留在模型中但不作为独立范围展示");
+        inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), cleanTree, "changes");
+        Check(inspector.RepoRowCountForCheck == 0 && inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorRepoEmpty"), StringComparison.Ordinal),
+            "Changes 的空状态来自仓库，而不是 session 历史列表");
+        inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), null, "repo");
+        Check(inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorRepoReading"), StringComparison.Ordinal),
+            "默认 Changes 的 Repo 数据读取中显示明确状态");
 
         // The repository tab's own chain, end to end: entering the tab hands a read request to the workspace, the
         // read answers away from the UI thread, and the answer has to land back on the pane. No git is needed to
@@ -1524,56 +1478,24 @@ internal sealed class ShellDecisionsChecks
             "仓库页把读取请求递出去、读完自己落回面板，并说清这个会话还没有工作目录（实际「"
             + (shell.InspectorPaneForCheck?.RepoNoticeForCheck ?? "") + "」）");
         // And one read for one question: the same tab opened twice must not start two gits, because the pane is
-        // repaintable from the transcript and a repository read is the expensive thing on this surface.
+        // Reopening Changes shows the same repository scope and reuses the cached repository state.
         var readsAfterFirst = shell.Chat.RepositoryReadsForCheck;
         shell.CloseInspector();
-        shell.OpenInspector("repo", -1);
+        shell.OpenInspector("changes", -1);
         Dispatcher.UIThread.RunJobs();
-        Check(shell.Chat.RepositoryReadsForCheck == readsAfterFirst
+        Check(shell.InspectorTabForCheck == "repo" && shell.Chat.RepositoryReadsForCheck == readsAfterFirst
               && shell.InspectorPaneForCheck is { } repoAgain
               && repoAgain.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorRepoNoWorkspace"),
                   StringComparison.Ordinal),
-            "同一目录再开一次仓库页用的是已经读到的那一份，不是又跑一遍 git（两次之间读了 "
+            "重新打开 Changes 仍显示 Repo，并复用已读取的仓库状态（新增读取 "
             + (shell.Chat.RepositoryReadsForCheck - readsAfterFirst) + " 次）");
         shell.CloseInspector();
         shell.Chat.DeleteConversation(repoSession.Id);
         panel.Reload();
         Dispatcher.UIThread.RunJobs();
 
-        // The jump on a live pane is the part a fixture pane cannot prove: the ask goes out to the shell, and the
-        // shell lands it on the other tab. The repository answer is seeded rather than read, because a check
-        // machine has no dirty repository to point a session at — and the seeding is what lets the same cell prove
-        // the jump costs no git, since the snapshot it was drawn from is the one the target tab is served from.
-        var jumpWorkspace = ScratchDirectory.Resolve("review-jump-workspace");
-        System.IO.Directory.CreateDirectory(jumpWorkspace);
-        var jumpSession = chat.StartConversation();
-        chat.OpenConversation(jumpSession.Id);
-        chat.SetWorkspaceRoot(jumpSession.Id, jumpWorkspace);
-        panel.Reload();
-        chat.SeedRepositoryForCheck(chat.WorkspaceRootFor(jumpSession.Id) ?? jumpWorkspace, dirtyThree);
-        var readsBeforeJump = chat.RepositoryReadsForCheck;
-        shell.OpenInspector("changes", -1);
-        shell.UpdateLayout();
-        Dispatcher.UIThread.RunJobs();
-        Check(shell.InspectorPaneForCheck is { } jumpPane && jumpPane.ChangesTabVisibleForCheck
-              && jumpPane.ChangeJumpPresentForCheck,
-            "会话一个文件都没写过时，活的改动页上就摆着那个跳转（实际「"
-            + (shell.InspectorPaneForCheck?.ChangeJumpTextForCheck ?? "") + "」）");
-        shell.InspectorPaneForCheck?.ClickChangeJumpForCheck();
-        shell.UpdateLayout();
-        Dispatcher.UIThread.RunJobs();
-        Check(shell.InspectorVisibleForCheck
-              && shell.InspectorTabForCheck == "repo"
-              && shell.InspectorPaneForCheck is { } afterJump
-              && afterJump.RepoTabVisibleForCheck && !afterJump.ChangesTabVisibleForCheck
-              && chat.RepositoryReadsForCheck == readsBeforeJump,
-            "点这个跳转换的是外壳那一页（外壳记的是「" + shell.InspectorTabForCheck + "」），不是面板自己换个可见性，"
-            + "而且它一次 git 都不多跑（两次之间读了 " + (chat.RepositoryReadsForCheck - readsBeforeJump) + " 次）");
-        chat.ClearRepositoryForCheck();
-        shell.CloseInspector();
-        chat.DeleteConversation(jumpSession.Id);
-        panel.Reload();
-        Dispatcher.UIThread.RunJobs();
+        // Session changes are retained in the underlying chat data; the user-facing Changes surface stays repository-wide.
+
 
         // ── the status strip's repository slot ──
         // The mapping is asserted as a table before anything live, because four of these states have to stay

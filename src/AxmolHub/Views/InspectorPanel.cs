@@ -30,13 +30,22 @@ internal sealed partial class InspectorPanel : UserControl
     /// it has no session, no log and no thread to wait on, and a pane that goes and does I/O is a pane a check
     /// cannot drive from a fixture.</summary>
     public event Action? RepoRefreshRequested;
-    internal event Action<GitRepositoryState, GitStatusEntry, GitFileRange, string?>? OpenGitComparisonRequested;
+    internal Func<GitRepositoryState, GitStatusEntry, GitFileRange, Task<ChatFileSnapshot?>>? ReadComparisonRequested { get; set; }
+    internal Func<string, string, string, ChangesEditBuffer?>? OpenEditBuffer { get; set; }
+    internal event Action? FilesSaved;
+    private string _conversationId = "";
+    private readonly Dictionary<string, ChangesEditSession> _editSessions = new(StringComparer.Ordinal);
+    private ChangesEditSession EditSession => _editSessions.TryGetValue(_conversationId, out var session)
+        ? session : _editSessions[_conversationId] = new ChangesEditSession();
+    private readonly Button _editDiff;
+    private readonly Button _cancelEdit;
+    private readonly Button _saveEdit;
+    private readonly TextBlock _editStatus;
 
     /// <summary>Raised by one of the empty-scope jumps: "this list is empty, the other one is not — the reader
     /// could want that one instead". The panel names the tab it wants and never switches itself, because landing
     /// on a tab can mean opening a column that is shut, and only the shell knows the page it is on. It is the
     /// same ask a run's <c>+N −M</c> chip makes, on the same route.</summary>
-    public event Action<string>? ScopeJumpRequested;
 
     /// <summary>Raised on every tab the pane lands on — including the one <see cref="Reload"/> was told to show.
     /// The pane owns which surface is visible; the shell owns which one the next repaint asks for. Without this
@@ -88,19 +97,23 @@ internal sealed partial class InspectorPanel : UserControl
     {
         ClipToBounds = true;
 
-        var root = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
+        var root = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,*") };
 
         // ── Header: the two tabs on the left, and the page's own gear at the far right. The control that used to
         //    sit beside the tabs — the 「会话改动 ▾」 scope picker — was a page setting wearing a tab's clothes: it,
         //    and the diff layout above it, answer one question ("how is this page read"), so they are one control
         //    with four rows in it now. The tabs stay tabs; they are the only things here that switch a surface.
         //    (The pane's lift/shut pair left this header even earlier — see MainWindow.axaml.) ──
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto"), Margin = new Thickness(12, 10, 8, 8) };
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto,Auto,Auto"), Margin = new Thickness(12, 10, 8, 8) };
         _header = header;
         _planTab = TabButton("InspectorTabPlan");
         _changesTab = TabButton("InspectorTabChanges");
         _planTab.Click += (_, _) => SelectTab("plan");
-        _changesTab.Click += (_, _) => SelectTab("changes");
+        _changesTab.Click += (_, _) =>
+        {
+            SelectTab("repo");
+            RepoRefreshRequested?.Invoke();
+        };
         header.Children.Add(_planTab);
         Grid.SetColumn(_changesTab, 1);
         _changesTab.Margin = new Thickness(6, 0, 0, 0);
@@ -154,12 +167,64 @@ internal sealed partial class InspectorPanel : UserControl
         };
         Grid.SetColumn(_viewSettings, 4);
         header.Children.Add(_viewSettings);
+        var editActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var pencil = new Path
+        {
+            Data = Geometry.Parse("M16 3 21 8 8 21 3 21 3 16ZM14 5 19 10"),
+            Width = 15, Height = 15, Stretch = Stretch.Uniform, Fill = Brushes.Transparent,
+            StrokeThickness = 1.6,
+        };
+        pencil.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        _editDiff = new Button { Content = pencil, Tag = "InspectorEditDiff", Classes = { "viewer-action" } };
+        _editDiff.Bind(ToolTip.TipProperty, new DynamicResourceExtension("InspectorEditDiff"));
+        _cancelEdit = new Button { Content = HubStrings.Get("InspectorCancelEdit"), Tag = "InspectorCancelEdit" };
+        _saveEdit = new Button { Content = HubStrings.Get("InspectorSaveEdit"), Tag = "InspectorSaveEdit" };
+        _editStatus = Themed(new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12, 0, 12, 6) }, "Hub.TextSecondary");
+        _editDiff.Click += (_, _) =>
+        {
+            EditSession.Begin();
+            _editStatus.Text = null;
+            foreach (var rebuild in _diffRebuilds.ToArray()) rebuild();
+            UpdateEditActions();
+        };
+        _cancelEdit.Click += (_, _) =>
+        {
+            EditSession.Cancel();
+            _editStatus.Text = null;
+            foreach (var rebuild in _diffRebuilds.ToArray()) rebuild();
+            UpdateEditActions();
+        };
+        _saveEdit.Click += (_, _) =>
+        {
+            try
+            {
+                var failure = EditSession.Save();
+                _editStatus.Text = failure is null ? null : HubStrings.Get("InspectorEditSaveFailed") + " " + failure;
+                if (failure is null)
+                {
+                    foreach (var rebuild in _diffRebuilds.ToArray()) rebuild();
+                    FilesSaved?.Invoke();
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                _editStatus.Text = HubStrings.Get("InspectorEditSaveFailed") + " " + ex.Message;
+            }
+            UpdateEditActions();
+        };
+        editActions.Children.Add(_editDiff);
+        editActions.Children.Add(_cancelEdit);
+        editActions.Children.Add(_saveEdit);
+        Grid.SetColumn(editActions, 5);
+        header.Children.Add(editActions);
         root.Children.Add(header);
+        Grid.SetRow(_editStatus, 1);
+        root.Children.Add(_editStatus);
 
         // ── Body: the three tab surfaces stacked, only one visible. All live in the tree so switching tabs does
         //    not rebuild them, and a check can read any of them without selecting it first. ──
         _body = new Grid();
-        Grid.SetRow(_body, 1);
+        Grid.SetRow(_body, 2);
 
         _planHost = new ContentControl { Margin = new Thickness(12, 0, 12, 12) };
         // The plan is the one tab whose text runs edge to edge, so it scrolls in the pane's own scroller like the
@@ -240,27 +305,24 @@ internal sealed partial class InspectorPanel : UserControl
 
     private Control FileActions(string path)
     {
-        var dots = new StackPanel
+        var icon = new Path
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 3,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
+            Data = Geometry.Parse("M14 3h7v7M21 3 11 13M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"),
+            Width = 15,
+            Height = 15,
+            Stretch = Stretch.Uniform,
+            StrokeThickness = 1.8,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            Fill = Brushes.Transparent,
             IsHitTestVisible = false,
-            Children =
-            {
-                new Ellipse { Width = 3, Height = 3 },
-                new Ellipse { Width = 3, Height = 3 },
-                new Ellipse { Width = 3, Height = 3 },
-            },
         };
-        foreach (var dot in dots.Children.OfType<Ellipse>())
-            dot.Bind(Shape.FillProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        icon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
         var button = new Button
         {
-            Content = dots,
+            Content = icon,
             Classes = { "inspector-file-menu" },
-            Tag = "InspectorFileActions",
+            Tag = "InspectorOpenFile",
             Width = 32,
             Height = 32,
             MinWidth = 32,
@@ -269,20 +331,8 @@ internal sealed partial class InspectorPanel : UserControl
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        var menu = new ContextMenu
-        {
-            ItemsSource = new[]
-            {
-                FileAction("InspectorViewFile", () => ViewFileRequested?.Invoke(path)),
-                FileAction("InspectorEditFile", () => OpenFileRequested?.Invoke(path)),
-            },
-        };
-        button.ContextMenu = menu;
-        button.Click += (_, _) =>
-        {
-            menu.PlacementTarget = button;
-            menu.Open();
-        };
+        ToolTip.SetTip(button, HubStrings.Get("InspectorOpenFile"));
+        button.Click += (_, _) => OpenFileRequested?.Invoke(path);
         return button;
     }
 
@@ -335,13 +385,6 @@ internal sealed partial class InspectorPanel : UserControl
         return button;
     }
 
-    private static MenuItem FileAction(string textKey, Action action)
-    {
-        var item = new MenuItem { Header = HubStrings.Get(textKey), Tag = textKey };
-        item.Click += (_, _) => action();
-        return item;
-    }
-
     /// <summary>Told by the shell which of its two homes the pane is in, because the two are not the same
     /// reading. A plan laid across a whole window needs the chat column's line length rather than the window's —
     /// a document that runs 1200px per line is not faster to read, it is a scan for the end of each sentence. The
@@ -389,18 +432,6 @@ internal sealed partial class InspectorPanel : UserControl
         }, TimeSpan.FromSeconds(1.2));
     }
 
-    /// <summary>Shows one tab surface and marks its button. All three stay in the tree, so painting a new plan
-    /// does not rebuild a diff somebody had opened, and a check can read a tab it never selected. Anything that
-    /// is not one of the two action tabs lands on the plan, which is the pane's rest state. The shell is told
-    /// every time, including when it was the one that named the tab: one route, so a header click and a repaint
-    /// cannot disagree about where the reader is standing.</summary>
-    internal void SetChangesScope(string scope)
-    {
-        var repository = scope == "repo";
-        SelectTab(repository ? "repo" : "changes");
-        if (repository) RepoRefreshRequested?.Invoke();
-    }
-
     /// <summary>Fills the header gear's menu: two groups over one page — how a diff is laid out, and which of the
     /// two change readings is up. Built fresh on every open, so the tick sits on what is true at that moment and
     /// there is no second copy of either choice to hold in step: the menu, the tabs and the diff blocks all read
@@ -419,17 +450,6 @@ internal sealed partial class InspectorPanel : UserControl
         {
             menu.Hide();
             SetDiffView(split: false);
-        }));
-        menu.Items.Add(MenuCaption("InspectorScopeSection"));
-        menu.Items.Add(MenuChoice("InspectorScopeSessionMenu", "InspectorMenuSession", !repository, () =>
-        {
-            menu.Hide();
-            SetChangesScope("changes");
-        }));
-        menu.Items.Add(MenuChoice("InspectorScopeRepositoryMenu", "InspectorMenuRepository", repository, () =>
-        {
-            menu.Hide();
-            SetChangesScope("repo");
         }));
     }
 
@@ -466,17 +486,19 @@ internal sealed partial class InspectorPanel : UserControl
 
     private void SelectTab(string tab)
     {
-        var sessionChanges = string.Equals(tab, "changes", StringComparison.Ordinal);
-        var repo = string.Equals(tab, "repo", StringComparison.Ordinal);
-        var changes = sessionChanges || repo;
-        var plan = !changes;
+        // Changes is always the repository-wide view. Map the legacy session scope to the same tab so an old
+        // saved shell state or an in-flight jump cannot resurrect the session-only list.
+        var plan = !string.Equals(tab, "changes", StringComparison.Ordinal)
+            && !string.Equals(tab, "repo", StringComparison.Ordinal);
+        var selected = plan ? "plan" : "repo";
         _planTab.Classes.Set("selected", plan);
-        _changesTab.Classes.Set("selected", changes);
+        _changesTab.Classes.Set("selected", !plan);
         _planScroll.IsVisible = plan;
-        _changesScroll.IsVisible = sessionChanges;
-        _repoScroll.IsVisible = repo;
+        _changesScroll.IsVisible = false;
+        _repoScroll.IsVisible = !plan;
         _planCopyButton.IsVisible = plan && _planHost.Content is MarkdownScrollViewer;
-        TabSelected?.Invoke(tab);
+        UpdateEditActions();
+        TabSelected?.Invoke(selected);
     }
 
     /// <summary>Paints the three tabs from a snapshot and lands on the asked-for one. The diff resolver is lazy
@@ -490,8 +512,17 @@ internal sealed partial class InspectorPanel : UserControl
         GitRepositoryState? repository,
         string tab,
         Action<string>? quote = null,
-        Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot = null)
+        Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot = null,
+        string conversationId = "")
     {
+        if (_conversationId != conversationId)
+        {
+            _conversationId = conversationId;
+            _openedChanges.Clear();
+            _selectedRevisions.Clear();
+            _expandedFiles.Clear();
+            _editStatus.Text = null;
+        }
         if (string.IsNullOrWhiteSpace(planMarkdown))
         {
             _planHost.Content = EmptyLine("InspectorPlanEmpty");
@@ -512,11 +543,6 @@ internal sealed partial class InspectorPanel : UserControl
         if (changes.Count == 0)
         {
             _changesList.Children.Add(EmptyLine("InspectorChangesEmpty"));
-            // A jump earns its line only from a read that already says the tree is dirty. With nothing read,
-            // "the repository holds changes" would be a claim this surface never verified, and an invitation to
-            // go and find out anyway.
-            if (repository is { IsReadable: true } readable && readable.Entries.Count > 0)
-                _changesList.Children.Add(Jump("repo", "InspectorChangesJumpRepoFormat", readable.Entries.Count));
         }
         else
         {
@@ -553,11 +579,6 @@ internal sealed partial class InspectorPanel : UserControl
         if (repository.Entries.Count == 0)
         {
             _repoBody.Children.Add(EmptyLine("InspectorRepoEmpty"));
-            // The case this exists for: the assistant just ran `git commit`. The working tree is clean, the
-            // session's own writes are still on the transcript, and a reader who is told only "matches HEAD" has
-            // no way back to what they came here to see.
-            if (changes.Count > 0)
-                _repoBody.Children.Add(Jump("changes", "InspectorRepoJumpSessionFormat", changes.Count));
             return;
         }
         foreach (var entry in repository.Entries)
@@ -692,11 +713,47 @@ internal sealed partial class InspectorPanel : UserControl
         void ShowDiff(string? diff)
         {
             var detailBody = new StackPanel { Spacing = 5 };
-            detailBody.Children.Add(diff is { Length: > 0 } ? BuildDiffBlock(diff) : EmptyLine("InspectorRepoNoDiff"));
+            detailBody.Children.Add(diff is { Length: > 0 } ? BuildDiffBlock(entry.RelativePath, diff) : EmptyLine("InspectorRepoNoDiff"));
             detail.Content = detailBody;
         }
+        var selectedRange = GitFileRange.WorkingTreeAgainstHead;
+        var generation = 0;
         void BuildRepoDetail(bool whole)
         {
+            var request = ++generation;
+            if (ReadComparisonRequested is { } read)
+            {
+                var owner = _conversationId;
+                var range = selectedRange;
+                detail.Content = EmptyLine("InspectorRepoReading");
+                _ = FillComparison();
+                async Task FillComparison()
+                {
+                    try
+                    {
+                        var snapshot = await read(state, entry, range);
+                        if (request != generation || owner != _conversationId) return;
+                        if (snapshot is null) { ShowDiff(GitRepository.DiffFor(state, entry)); return; }
+                        var body = new StackPanel { Spacing = 5 };
+                        if (range == GitFileRange.WorkingTreeAgainstHead
+                            && EditableDiff(entry.RelativePath, snapshot.Before) is { } editable)
+                        {
+                            body.Children.Add(editable);
+                            if (editable is ChangesDiffEditView) { detail.Content = body; return; }
+                        }
+                        var diff = FileDiff.Unified(snapshot.Before, snapshot.After, entry.RelativePath,
+                            whole ? ChatChanges.InspectorLimits.Expanded() : ChatChanges.InspectorLimits);
+                        body.Children.Add(BuildDiffBlock(entry.RelativePath, diff, snapshot));
+                        detail.Content = body;
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                    {
+                        if (request == generation && owner == _conversationId)
+                            detail.Content = new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap };
+                    }
+                }
+                return;
+            }
             if (!whole || WholeDiffRequested is not { } ask)
             {
                 ShowDiff(GitRepository.DiffFor(state, entry));
@@ -721,34 +778,24 @@ internal sealed partial class InspectorPanel : UserControl
         });
         header.Click += (_, _) =>
         {
-            if (!detail.IsVisible && detail.Content is null) BuildRepoDetail(_expandedFiles.Contains(entry.RelativePath));
-            detail.IsVisible = !detail.IsVisible;
-            header.Classes.Set("expanded", detail.IsVisible);
+            if (detail.IsVisible)
+            {
+                detail.IsVisible = false;
+                header.Classes.Set("expanded", false);
+                return;
+            }
+            BuildRepoDetail(_expandedFiles.Contains(entry.RelativePath));
+            detail.IsVisible = true;
+            header.Classes.Set("expanded", true);
         };
 
-        var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
+        var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         repositoryRow.Children.Add(header);
-        var repositoryUnfold = UnfoldButton(entry.RelativePath, whole =>
-        {
-            if (!detail.IsVisible)
-            {
-                detail.IsVisible = true;
-                header.Classes.Set("expanded", true);
-            }
-            BuildRepoDetail(whole);
-        });
-        Grid.SetColumn(repositoryUnfold, 1);
-        repositoryRow.Children.Add(repositoryUnfold);
-        var repositoryFileActions = FileActions(entry.RelativePath);
-        Grid.SetColumn(repositoryFileActions, 2);
+        var repositoryFileActions = FileActions(state.Root is { Length: > 0 } root
+            ? System.IO.Path.Combine(root, entry.RelativePath) : entry.RelativePath);
+        Grid.SetColumn(repositoryFileActions, 1);
         repositoryRow.Children.Add(repositoryFileActions);
         container.Children.Add(repositoryRow);
-        if (!entry.Untracked && entry.IndexState != " " && entry.IndexState != "U")
-        {
-            var ranges = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(6, 0, 0, 4) };
-            ranges.Children.Add(GitRangeButton("InspectorGitIndex", state, entry, GitFileRange.Index));
-            container.Children.Add(ranges);
-        }
         container.Children.Add(detail);
         return container;
     }
@@ -772,13 +819,6 @@ internal sealed partial class InspectorPanel : UserControl
         done(diff);
     }
 
-    private Button GitRangeButton(string textKey, GitRepositoryState state, GitStatusEntry entry, GitFileRange range)
-    {
-        var button = new Button { Content = HubStrings.Get(textKey), Classes = { "inspector-git-action" }, Tag = "InspectorGitRange" };
-        button.Click += (_, _) => OpenGitComparisonRequested?.Invoke(state, entry, range, null);
-        return button;
-    }
-
     /// <summary>A muted line of prose in the body. Used twice (the caveat and the shared-path mark), so it is one
     /// style rather than a hand-placed size in two spots.</summary>
     private static Control Note(string textKey) => Themed(new TextBlock
@@ -796,30 +836,9 @@ internal sealed partial class InspectorPanel : UserControl
             Classes = { "inspector-empty" },
         }, "Hub.TextTertiary");
 
-    /// <summary>A sentence that is also a button: the empty-state jump. Two decisions in its construction. It
-    /// carries <c>inspector-jump</c> and never <c>inspector-empty</c>, because the notice accessor reads this body
-    /// by that class and a jump that borrowed the class would silently rewrite what the tab is said to end on.
-    /// And its text is an explicit child rather than a bound foreground, so the hover rule in the shell's styles
-    /// can reach it — a <see cref="Themed"/> brush would be a local binding, and a local binding outranks a
-    /// selector, which is how a control that should brighten when pointed at would stay grey.</summary>
-    private Control Jump(string targetTab, string textKey, int count)
-    {
-        var text = new TextBlock
-        {
-            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture, HubStrings.Get(textKey), count),
-            TextWrapping = TextWrapping.Wrap,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Classes = { "inspector-jump" },
-        };
-        var button = new Button { Classes = { "inspector-jump" }, Tag = targetTab, Content = text };
-        button.Click += (_, _) => ScopeJumpRequested?.Invoke(targetTab);
-        return button;
-    }
-
     /// <summary>A change row opened for reading rather than for its diff. The panel names files but has no session
     /// and does no I/O of its own, so the path goes out exactly as the repository refresh ask does.</summary>
     internal event Action<string>? OpenFileRequested;
-    internal event Action<string>? ViewFileRequested;
 
     /// <summary>The whole-file diff of one repository entry, asked for when a repository row is unfolded. Unlike
     /// a session's change — whose two texts the transcript already holds as snapshots — a repository file's other
@@ -996,8 +1015,48 @@ internal sealed partial class InspectorPanel : UserControl
         if (diff is null) return EmptyLine(DiffUnavailableKey(change, state));
 
         var body = new StackPanel { Spacing = 6 };
-        body.Children.Add(BuildDiffBlock(diff));
+        var snapshot = resolveSnapshot?.Invoke(change).Snapshot;
+        var latest = change.History?.LastOrDefault()?.Id ?? change.ChangeId;
+        var historic = change.SelectedRevisionId is { Length: > 0 } id && latest is not null && id != latest;
+        if (snapshot is not null && !historic && EditableDiff(change.RelativePath, snapshot.Before) is { } editable)
+        {
+            body.Children.Add(editable);
+            if (editable is ChangesDiffEditView) return body;
+        }
+        else if (EditSession.Editing) body.Children.Add(Note("InspectorEditSnapshotRequired"));
+        if (snapshot is not null && !historic && !EditSession.Editing
+            && OpenEditBuffer?.Invoke(_conversationId, change.RelativePath, snapshot.Before) is { } current)
+        {
+            // Latest changes follow the workspace after either editor saves. Historical snapshots stay immutable.
+            snapshot = snapshot with { After = current.Text };
+            diff = FileDiff.Unified(snapshot.Before, snapshot.After, change.RelativePath,
+                _expandedFiles.Contains(change.RelativePath) ? ChatChanges.InspectorLimits.Expanded() : ChatChanges.InspectorLimits);
+        }
+        body.Children.Add(BuildDiffBlock(change.RelativePath, diff, snapshot));
         return body;
+    }
+
+    private void UpdateEditActions()
+    {
+        var changes = _repoScroll.IsVisible;
+        _editDiff.IsVisible = changes && !EditSession.Editing;
+        _editDiff.IsEnabled = OpenEditBuffer is not null && _conversationId.Length > 0;
+        _cancelEdit.IsVisible = changes && EditSession.Editing;
+        _saveEdit.IsVisible = changes && EditSession.Editing;
+        _saveEdit.IsEnabled = EditSession.IsDirty;
+        _editStatus.IsVisible = changes && !string.IsNullOrEmpty(_editStatus.Text);
+    }
+
+    private Control? EditableDiff(string path, string before)
+    {
+        if (!EditSession.Editing) return null;
+        if (!EditSession.Buffers.TryGetValue(path, out var buffer))
+        {
+            buffer = OpenEditBuffer?.Invoke(_conversationId, path, before);
+            if (buffer is null) return Note("InspectorEditUnsupported");
+            EditSession.Buffers.Add(path, buffer);
+        }
+        return new ChangesDiffEditView(buffer, _splitDiff, UpdateEditActions);
     }
 
     private static string DiffUnavailableKey(ChangedFile change, UndoCopyState state) => state switch
@@ -1013,7 +1072,11 @@ internal sealed partial class InspectorPanel : UserControl
 
     /// <summary>One diff, in whichever of the two layouts the header gear is set to. Both read the same text and
     /// both use the <c>inspector-diff-*</c> classes, so the theme and a check need not care which one is up.</summary>
-    private Control BuildDiffBlock(string diff) => _splitDiff ? BuildSplitDiffBlock(diff) : BuildUnifiedDiffBlock(diff);
+    private Control BuildDiffBlock(string path, string diff, ChatFileSnapshot? snapshot = null)
+    {
+        using var syntax = new ChangesDiffSyntax(path, diff, snapshot);
+        return _splitDiff ? BuildSplitDiffBlock(diff, syntax) : BuildUnifiedDiffBlock(diff, syntax);
+    }
 
     private static ScrollViewer DiffViewport() => new()
     {
@@ -1027,7 +1090,43 @@ internal sealed partial class InspectorPanel : UserControl
 
     /// <summary>Renders a unified diff with separate old/new line-number gutters and an explicit change marker.
     /// A horizontal scroller rather than wrapping: code that wraps loses the column alignment a diff is read by.</summary>
-    private static Control BuildUnifiedDiffBlock(string diff)
+    private static DiffSelectableTextBlock DiffCodeText(ScrollViewer viewer, string displayText, string codeText,
+        IReadOnlyList<ChangesDiffSyntax.Span>? sections)
+    {
+        var text = Themed(new DiffSelectableTextBlock(viewer)
+        {
+            Background = Brushes.Transparent,
+            FontFamily = ThemedFont("Hub.Font.Mono"),
+            FontSize = 11.5,
+            TextWrapping = TextWrapping.NoWrap,
+        }, "Hub.TextSecondary");
+        text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.Selection"));
+        if (displayText.Length == 0) displayText = " ";
+        if (sections is null || sections.Count == 0 || codeText.Length == 0 || displayText.Length != codeText.Length)
+        {
+            text.Text = displayText;
+            return text;
+        }
+
+        var cursor = 0;
+        foreach (var section in sections)
+        {
+            var start = Math.Clamp(section.Start, cursor, codeText.Length);
+            var end = Math.Clamp(section.Start + section.Length, start, codeText.Length);
+            if (start > cursor) text.Inlines!.Add(new Avalonia.Controls.Documents.Run(displayText[cursor..start]));
+            if (end > start)
+            {
+                var run = new Avalonia.Controls.Documents.Run(displayText[start..end]);
+                if (section.Brush is { } foreground) run.Foreground = foreground;
+                text.Inlines!.Add(run);
+                cursor = end;
+            }
+        }
+        if (cursor < displayText.Length) text.Inlines!.Add(new Avalonia.Controls.Documents.Run(displayText[cursor..]));
+        return text;
+    }
+
+    private static Control BuildUnifiedDiffBlock(string diff, ChangesDiffSyntax syntax)
     {
         var lines = new StackPanel { Spacing = 0 };
         var viewer = DiffViewport();
@@ -1037,6 +1136,7 @@ internal sealed partial class InspectorPanel : UserControl
         {
             var line = raw.TrimEnd('\r');
             var lineClass = DiffLineClass(line);
+            var sourceLine = lineClass == "diff-del" ? oldLine : newLine;
             var numbers = DiffLineNumbers(line, lineClass, ref oldLine, ref newLine);
             var block = new Border();
             block.Classes.Add("inspector-diff-line");
@@ -1073,14 +1173,10 @@ internal sealed partial class InspectorPanel : UserControl
                 : line.StartsWith(' ') && numbers.Length > 0
                     ? line[1..]
                     : line;
-            var text = Themed(new DiffSelectableTextBlock(viewer)
-            {
-                Background = Brushes.Transparent,
-                Text = displayLine.Length == 0 ? " " : displayLine,
-                FontFamily = ThemedFont("Hub.Font.Mono"),
-                FontSize = 11.5,
-                TextWrapping = TextWrapping.NoWrap,
-            }, "Hub.TextSecondary");
+            var codeText = line.StartsWith('+') || line.StartsWith('-') || line.StartsWith(' ')
+                ? line[1..] : line;
+            var text = DiffCodeText(viewer, displayLine, codeText,
+                numbers.Length > 0 ? syntax.Line(lineClass == "diff-del", sourceLine) : null);
             text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.Selection"));
             Grid.SetColumn(text, 2);
             row.Children.Add(text);
@@ -1105,7 +1201,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// line up — a grid per row would size each row's halves to that row's own text. A hunk's removals are held
     /// until the insertions that follow them have been read, so pair n of each lands on one row; a context line
     /// carries both numbers and appears in both halves, and a line with no counterpart leaves its half blank.</summary>
-    private static Control BuildSplitDiffBlock(string diff)
+    private static Control BuildSplitDiffBlock(string diff, ChangesDiffSyntax syntax)
     {
         var viewer = DiffViewport();
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
@@ -1134,8 +1230,8 @@ internal sealed partial class InspectorPanel : UserControl
             for (var i = 0; i < Math.Max(removed.Count, added.Count); i++)
             {
                 AddRow(
-                    i < removed.Count ? DiffHalfCell(viewer, removed[i]) : BlankHalf(),
-                    i < added.Count ? DiffHalfCell(viewer, added[i]) : null);
+                    i < removed.Count ? DiffHalfCell(viewer, removed[i], syntax) : BlankHalf(),
+                    i < added.Count ? DiffHalfCell(viewer, added[i], syntax) : null);
             }
             removed.Clear();
             added.Clear();
@@ -1166,8 +1262,8 @@ internal sealed partial class InspectorPanel : UserControl
                 // Context: the same line of the file, so it belongs in both halves under both numbers.
                 var text = line[1..];
                 AddRow(
-                    DiffHalfCell(viewer, new DiffHalf($"{oldLine++}", text, "")),
-                    DiffHalfCell(viewer, new DiffHalf($"{newLine++}", text, "")));
+                    DiffHalfCell(viewer, new DiffHalf($"{oldLine++}", text, ""), syntax, old: true),
+                    DiffHalfCell(viewer, new DiffHalf($"{newLine++}", text, ""), syntax));
                 continue;
             }
             // Everything that is not a body line — the file's header, the hunk's, the "no newline" note — spans
@@ -1182,7 +1278,7 @@ internal sealed partial class InspectorPanel : UserControl
         return viewer;
     }
 
-    private static Border DiffHalfCell(ScrollViewer viewer, DiffHalf half)
+    private static Border DiffHalfCell(ScrollViewer viewer, DiffHalf half, ChangesDiffSyntax? syntax = null, bool old = false)
     {
         var block = new Border();
         block.Classes.Add("inspector-diff-line");
@@ -1212,15 +1308,8 @@ internal sealed partial class InspectorPanel : UserControl
         Grid.SetColumn(marker, 1);
         row.Children.Add(marker);
 
-        var text = Themed(new DiffSelectableTextBlock(viewer)
-        {
-            Background = Brushes.Transparent,
-            Text = half.Text.Length == 0 ? " " : half.Text,
-            FontFamily = ThemedFont("Hub.Font.Mono"),
-            FontSize = 11.5,
-            TextWrapping = TextWrapping.NoWrap,
-        }, "Hub.TextSecondary");
-        text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.Selection"));
+        var text = DiffCodeText(viewer, half.Text, half.Text,
+            int.TryParse(half.Number, out var number) ? syntax?.Line(old || half.Kind == "diff-del", number) : null);
         Grid.SetColumn(text, 2);
         row.Children.Add(text);
         block.Child = row;
@@ -1318,7 +1407,7 @@ internal sealed partial class InspectorPanel : UserControl
             {
                 var hit = TextLayout.HitTestPoint(point - new Point(Padding.Left, Padding.Top));
                 SelectionStart = _selectionAnchor;
-                SelectionEnd = Math.Clamp(hit.TextPosition, 0, Text?.Length ?? 0);
+                SelectionEnd = Math.Clamp(hit.TextPosition, 0, TextForCheck(this).Length);
             }
         }
 

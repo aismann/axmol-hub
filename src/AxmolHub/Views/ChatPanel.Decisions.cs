@@ -409,14 +409,12 @@ public partial class ChatPanel
             // The pane asks; this is where the ask turns into a git read, because the panel has no session, no
             // log and no thread to wait on — and a pane that did its own I/O could not be fed a fixture by a check.
             _inspector.RepoRefreshRequested += RequestRepositoryRead;
-            // A repository row's unfold button: the two sides of that file, read through the same comparison the
-            // viewer uses — this is the one diff the pane cannot resolve from memory, so it is asked for here and
-            // answered with the preview's caps lifted, which is what turns hunks into the whole file.
+            // Repository file rows ask for a single HEAD-to-working-tree snapshot, including staged and unstaged edits.
             _inspector.WholeDiffRequested = async (state, entry) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
                 if (_chat is null || string.IsNullOrEmpty(conversationId) || state.Root is null) return null;
-                var comparison = await _chat.ReadGitFileAsync(conversationId, state.Root, entry, GitFileRange.WorkingTree);
+                var comparison = await _chat.ReadGitFileAsync(conversationId, state.Root, entry, GitFileRange.WorkingTreeAgainstHead);
                 if (comparison.Old.Exists && !comparison.Old.IsText || comparison.New.Exists && !comparison.New.IsText)
                     return null;
                 return FileDiff.Unified(
@@ -425,87 +423,28 @@ public partial class ChatPanel
                     entry.RelativePath,
                     ChatChanges.InspectorLimits.Expanded());
             };
-            _inspector.OpenGitComparisonRequested += async (state, entry, range, commit) =>
+            _inspector.ReadComparisonRequested = async (state, entry, range) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
-                if (_chat is null || string.IsNullOrEmpty(conversationId) || state.Root is null) return;
-                try
-                {
-                    var comparison = range == GitFileRange.Commit
-                        ? await _chat.ReadGitCommitFileAsync(conversationId, state.Root, entry.RelativePath, commit ?? "")
-                        : await _chat.ReadGitFileAsync(conversationId, state.Root, entry, range);
-                    if (!comparison.IsReadable || comparison.Old.Exists && !comparison.Old.IsText
-                        || comparison.New.Exists && !comparison.New.IsText)
-                    {
-                        StatusMessage?.Invoke(comparison.Detail ?? "This Git version is not supported text.");
-                        return;
-                    }
-                    var leftLabel = range switch
-                    {
-                        GitFileRange.WorkingTree => "Index",
-                        GitFileRange.Index => "HEAD",
-                        _ => "First parent",
-                    };
-                    var rightLabel = range switch
-                    {
-                        GitFileRange.WorkingTree => "Working tree",
-                        GitFileRange.Index => "Index",
-                        _ => "Commit " + commit + (comparison.ComparisonNote is null ? "" : " · " + comparison.ComparisonNote),
-                    };
-                    var canOperateHunks = !entry.Untracked && entry.OriginalPath is null
-                        && !entry.IndexState.Contains('U') && !entry.WorktreeState.Contains('U')
-                        && !entry.IndexState.Contains('T') && !entry.WorktreeState.Contains('T');
-                    DiffViewerWindow.Show(TopLevel.GetTopLevel(this) as Window,
-                        comparison.OldPath is null ? comparison.Path : comparison.OldPath + " → " + comparison.Path,
-                        leftLabel, rightLabel,
-                        comparison.Old.Exists ? comparison.Old.Snapshot.Text ?? "" : "",
-                        comparison.New.Exists ? comparison.New.Snapshot.Text ?? "" : "",
-                        text =>
-                        {
-                            if (_chat.ActiveConversation?.Id == conversationId) QuoteIntoComposer(text);
-                            else StatusMessage?.Invoke("The conversation changed; the selection was not inserted.");
-                        },
-                        range == GitFileRange.Commit || !canOperateHunks ? null : async (hunkIndex, action) =>
-                        {
-                            if (_chat.ActiveConversation?.Id != conversationId)
-                                return new DiffHunkActionResult(false, "The conversation changed; no repository action was performed.");
-                            if (action == DiffHunkAction.Revert
-                                && await HubDialog.ShowAsync(TopLevel.GetTopLevel(this) as Window,
-                                    "Revert hunk", "Revert only this hunk in the working tree? This cannot be undone by Hub.",
-                                    HubDialogButtons.OkCancel, danger: true) != HubDialogResult.Ok)
-                                return new DiffHunkActionResult(false, "Revert cancelled.");
-                            var result = await _chat.ApplyGitHunkAsync(conversationId, state.Root!, entry, comparison, hunkIndex, action);
-                            if (result.RefreshRequired) _ = _chat.RefreshRepositoryAsync(conversationId);
-                            return result;
-                        },
-                        range switch
-                        {
-                            GitFileRange.WorkingTree when canOperateHunks => DiffHunkAction.Stage,
-                            GitFileRange.Index when canOperateHunks => DiffHunkAction.Unstage,
-                            _ => null,
-                        });
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-                {
-                    StatusMessage?.Invoke("Git comparison failed: " + ex.Message);
-                }
+                if (_chat is null || string.IsNullOrEmpty(conversationId) || state.Root is null) return null;
+                var comparison = await _chat.ReadGitFileAsync(conversationId, state.Root, entry, range);
+                if (!comparison.IsReadable || comparison.Old.Exists && !comparison.Old.IsText
+                    || comparison.New.Exists && !comparison.New.IsText) return null;
+                return new ChatFileSnapshot(comparison.Old.Exists ? comparison.Old.Snapshot.Text ?? "" : "",
+                    comparison.New.Exists ? comparison.New.Snapshot.Text ?? "" : "");
+            };
+            _inspector.OpenEditBuffer = (owner, path, before) => _chat is null ? null
+                : ChangesEditBuffer.Open(path, before, () => _chat.WorkspaceScopeFor(owner));
+            _inspector.FilesSaved += () =>
+            {
+                if (_chat?.ActiveConversation is { } active) _ = _chat.RefreshRepositoryAsync(active.Id);
+                RefreshInspector?.Invoke();
             };
             // An empty scope pointing at the one that is not goes out through the same door a run's chip uses:
             // landing on a tab can mean opening a column that is shut, and only the shell knows the page it is on.
-            _inspector.ScopeJumpRequested += target => OpenInspector?.Invoke(target, -1);
             // And whichever tab the pane ends up showing, the shell is told, because the next repaint asks for a
             // tab by name. Without this the reader's own click is undone by the next streamed token.
             _inspector.TabSelected += tab => InspectorTabFollowed?.Invoke(tab);
-            // A change row clicked twice asks for the file, and the directory to read it from is the conversation's
-            // own — asked of the chat at click time, because the pane outlives the conversation it was built for.
-            _inspector.ViewFileRequested += relativePath =>
-            {
-                var activeId = _chat?.ActiveConversation?.Id;
-                if (string.IsNullOrEmpty(activeId) || _chat is null) return;
-                var scope = _chat.WorkspaceScopeFor(activeId);
-                CodeFileWindow.Show(TopLevel.GetTopLevel(this) as Window,
-                    scope?.WorkspaceRoot ?? "", relativePath);
-            };
             _inspector.OpenFileRequested += relativePath =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
@@ -536,7 +475,8 @@ public partial class ChatPanel
             QuoteIntoComposer,
             change => _chat is null
                 ? (null, UndoCopyState.MissingSnapshot)
-                : (_chat.SnapshotForChange(change, change.SelectedRevisionId, out var state), state));
+                : (_chat.SnapshotForChange(change, change.SelectedRevisionId, out var state), state),
+            conversationId);
         // Painting by any route leaves the pane in step with the transcript, so the repaint that follows a
         // click would be a second rebuild of the same thing.
         _inspectorSignature = conversation is null ? "" : conversation.Id + ":" + conversation.Messages.Count;

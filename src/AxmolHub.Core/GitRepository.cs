@@ -101,6 +101,7 @@ public enum GitFileRange
     WorkingTree,
     Index,
     Commit,
+    WorkingTreeAgainstHead,
 }
 
 /// <summary>One side of a comparison: whether it exists at all, the bounded snapshot of its bytes, and the version
@@ -384,6 +385,13 @@ public static class GitRepository
             if (range == GitFileRange.WorkingTree)
             {
                 old = indexVersion;
+                @new = worktreeVersion;
+            }
+            else if (range == GitFileRange.WorkingTreeAgainstHead)
+            {
+                old = await ReadHeadVersionAsync(git, runner, root, indexPath, maxBytes, sensitiveValues, cancellation);
+                if (!old.Exists && oldPath is { Length: > 0 } && oldPath != indexPath)
+                    old = await ReadHeadVersionAsync(git, runner, root, oldPath, maxBytes, sensitiveValues, cancellation);
                 @new = worktreeVersion;
             }
             else

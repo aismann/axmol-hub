@@ -52,7 +52,7 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
             await Task.Delay(30);
             shell.UpdateLayout();
             var text = pane.GetVisualDescendants().OfType<SelectableTextBlock>()
-                .FirstOrDefault(block => block.Text == line);
+                .FirstOrDefault(block => InspectorPanel.TextForCheck(block) == line);
             var viewer = text?.GetVisualAncestors().OfType<ScrollViewer>().FirstOrDefault();
             if (text is null || viewer is null || viewer.Extent.Width <= viewer.Viewport.Width)
             {

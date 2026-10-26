@@ -1,5 +1,8 @@
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Shapes;
+using Avalonia.Controls.Documents;
+using ShapePath = Avalonia.Controls.Shapes.Path;
 using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
 using Markdown.Avalonia;
@@ -21,7 +24,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// stayed green, because the shell already knew the tab it had just been asked for.</summary>
     internal void ClickPlanTabForCheck() => ClickTab(_planTab);
     internal void ClickChangesTabForCheck() => ClickTab(_changesTab);
-    internal void ClickRepoTabForCheck() => SetChangesScope("repo");
+    internal void ClickRepoTabForCheck() => ClickTab(_changesTab);
     private static void ClickTab(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     /// <summary>The markdown the plan tab is holding, read off the rendered viewer's own <c>Tag</c>. A check can
     /// therefore prove *which* plan a card click landed on, not merely that some plan is on screen.</summary>
@@ -58,12 +61,9 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>Whether the plan's own document carries the menu a selection earns — the pane is the renderer's
     /// other audience, and a menu attached inside ChatPanel alone would leave selecting the plan useless.</summary>
     internal bool PlanSelectionMenuForCheck => _planHost.Content is MarkdownScrollViewer viewer && SelectionMenu.HeadersForCheck(viewer).SequenceEqual([HubStrings.Get("CopyMessage"), HubStrings.Get("QuoteSelection")]);
-    /// <summary>How many buttons the header holds. Exactly four — the two tabs, the plan's copy, and the page's
-    /// gear. The count is here to catch a second, dead control surviving a move: the 「会话改动 ▾」 picker left
-    /// this header for the gear's menu, and a check that only pressed the gear would stay green while the old
-    /// button was still painted beside it. Counted off the header itself rather than off the pane, because the
-    /// body has buttons of its own (the repository tab's ⟳) that have nothing to do with this.</summary>
-    internal int HeaderButtonCountForCheck => _header.GetLogicalDescendants().OfType<Button>().Count();
+    /// <summary>Visible header actions only: the plan page has two tabs, a gear and an optional copy button.
+    /// Hidden Changes edit actions must not inflate this count or appear over a plan.</summary>
+    internal int HeaderButtonCountForCheck => _header.GetLogicalDescendants().OfType<Button>().Count(button => button.IsVisible);
     internal bool ExpandedForCheck => _expanded;
     internal double PlanHostMaxWidthForCheck => _planHost.MaxWidth;
     /// <summary>The file rows, not the children of the list. An empty scope now ends on a sentence and sometimes
@@ -108,9 +108,9 @@ internal sealed partial class InspectorPanel : UserControl
     internal void ClickViewMenuRowForCheck(string tag) =>
         _viewMenu.Items.OfType<MenuItem>().FirstOrDefault(row => row.Tag as string == tag)?.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
 
-    internal string[] ChangeFileMenuItemsForCheck => ChangeRows().FirstOrDefault()?.GetLogicalDescendants().OfType<Button>()
-        .FirstOrDefault(button => button.Tag as string == "InspectorFileActions")?.ContextMenu?.Items
-        .OfType<MenuItem>().Select(item => item.Header?.ToString() ?? "").ToArray() ?? [];
+    internal bool ChangeOpenFileButtonForCheck => ChangeRows().FirstOrDefault()?.GetLogicalDescendants().OfType<Button>()
+        .Any(button => button.Tag as string == "InspectorOpenFile"
+            && button.Content is ShapePath icon && icon.Data is not null) == true;
     internal string FirstChangePathForCheck => ChangeRows().FirstOrDefault()?.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("inspector-path"))?.Text ?? "";
     /// <summary>Which file rows the reader had opened, as the panel keeps them across repaints. A check drives
     /// this by clicking a row rather than by setting the field, so what it asserts is the wiring.</summary>
@@ -137,10 +137,22 @@ internal sealed partial class InspectorPanel : UserControl
             selector.SelectedIndex = index;
     }
 
+    internal static string TextForCheck(TextBlock block) => block.Text
+        ?? string.Concat(block.Inlines?.Select(inline => inline switch
+        {
+            Run run => run.Text,
+            Span span => string.Concat(span.Inlines.Select(child => child switch
+            {
+                Run nestedRun => nestedRun.Text,
+                _ => "",
+            })),
+            _ => "",
+        }) ?? []);
+
     internal string? SelectedRevisionForCheck(string path) => _selectedRevisions.GetValueOrDefault(path);
     /// <summary>Every string in one change row, joined: the verdict mark, the path, the counts, and once opened,
     /// the diff lines themselves — which is how a check tells the frozen preview from a resolved one.</summary>
-    internal string ChangeRowTextForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row ? string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? "")) : "";
+    internal string ChangeRowTextForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row ? string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>().Select(TextForCheck)) : "";
     internal int ChangeRowDiffGutterCountForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row ? row.GetLogicalDescendants().OfType<TextBlock>().Count(block => block.Classes.Contains("inspector-diff-gutter") && !string.IsNullOrWhiteSpace(block.Text)) : 0;
     internal string ChangeRowDiffMarkersForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row ? string.Concat(row.GetLogicalDescendants().OfType<TextBlock>().Where(block => block.Classes.Contains("inspector-diff-marker")).Select(block => block.Text)) : "";
     internal bool ChangeRowExpandedForCheck(int index) => ChangeRows().ElementAtOrDefault(index)is { } row && row.GetLogicalDescendants().OfType<ContentControl>().FirstOrDefault()?.IsVisible == true;
@@ -156,6 +168,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>The empty-scope jump on the changes tab, as the reader sees it. Read apart from the notice line
     /// on purpose: "the session has changed nothing" and "the repository holds three files, go look" are two
     /// sentences, and a check that only saw the first would pass on a pane that cannot offer the second.</summary>
+    internal bool SessionChangesSurfaceVisibleForCheck => _changesScroll.IsVisible;
     internal string ChangeJumpTextForCheck => JumpText(_changesList);
     internal bool ChangeJumpPresentForCheck => ChangeJumpTextForCheck.Length > 0;
 
@@ -196,20 +209,24 @@ internal sealed partial class InspectorPanel : UserControl
     /// this is how that is proven rather than inferred from a row count.</summary>
     internal string RepoNoticeForCheck => string.Join(" ~ ", _repoBody.GetLogicalDescendants().OfType<TextBlock>().Where(block => block.Classes.Contains("inspector-empty")).Select(block => block.Text ?? ""));
     internal string RepoFirstPathForCheck => _repoBody.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("inspector-path"))?.Text ?? "";
-    internal string[] RepoFileMenuItemsForCheck(int index) => _repoBody.GetLogicalDescendants().OfType<Button>()
-        .Where(button => button.Tag as string == "InspectorFileActions").ElementAtOrDefault(index)?.ContextMenu?.Items
-        .OfType<MenuItem>().Select(item => item.Header?.ToString() ?? "").ToArray() ?? [];
+    internal bool RepoOpenFileButtonForCheck(int index) => _repoBody.GetLogicalDescendants().OfType<Button>()
+        .Where(button => button.Tag as string == "InspectorOpenFile").ElementAtOrDefault(index)?.Content is ShapePath icon
+        && icon.Data is not null;
 
     /// <summary>Every string in one row, joined: the two status letters, the path, and the mark when this
     /// conversation also wrote it. Read as text because that is what the reader sees, and a fixture state makes
     /// the whole tab assertable without a repository behind it.</summary>
-    internal string RepoRowTextForCheck(int index) => RepositoryRows().ElementAtOrDefault(index)is { } row ? string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? "")) : "";
+    internal string RepoRowTextForCheck(int index) => RepositoryRows().ElementAtOrDefault(index)is { } row ? string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>().Select(TextForCheck)) : "";
     internal int RepoRowCountForCheck => RepositoryRows().Count;
+    internal bool RepoComparisonRangeButtonsAbsentForCheck => RepositoryRows().SelectMany(row => row.GetLogicalDescendants())
+        .All(control => control is not Button button || button.Tag as string is not ("InspectorGitIndex" or "InspectorGitWorkingTree"));
+
     internal bool RepoCommitComparisonControlsAbsentForCheck => RepositoryRows().SelectMany(row => row.GetLogicalDescendants())
         .All(control => control is not TextBox
             && (control is not Button button || button.Tag as string is not ("InspectorGitCommitRef" or "InspectorGitCommitCompare")));
 
-    internal bool RepoRowExpandedForCheck(int index) => RepositoryRows().ElementAtOrDefault(index)is { } row && row.GetLogicalDescendants().OfType<ContentControl>().FirstOrDefault(control => control != row)?.IsVisible == true;
+    internal bool RepoRowExpandedForCheck(int index) => RepositoryRows().ElementAtOrDefault(index)is { } row
+        && row.GetLogicalDescendants().OfType<ContentControl>().FirstOrDefault(control => control.Margin == new Avalonia.Thickness(0, 4, 0, 6))?.IsVisible == true;
     internal void ClickRepoRowForCheck(int index)
     {
         if (RepositoryRows().ElementAtOrDefault(index)is not { } row)
@@ -217,17 +234,8 @@ internal sealed partial class InspectorPanel : UserControl
         row.GetLogicalDescendants().OfType<Button>().FirstOrDefault(button => button.Classes.Contains("inspector-change-header"))?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
 
-    /// <summary>Presses a repository row's unfold button. The row's whole-file side comes from git rather than from
-    /// memory, so this is also the click that proves the pane asked the shell for it instead of falling back to
-    /// the hunks it already had.</summary>
-    internal void ClickRepoUnfoldForCheck(int index)
-    {
-        if (RepositoryRows().ElementAtOrDefault(index)is not { } row)
-            return;
-        row.GetLogicalDescendants().OfType<Button>()
-            .FirstOrDefault(button => button.Tag as string == "InspectorUnfoldFile")
-            ?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-    }
+    /// <summary>Compatibility helper; repository paths now toggle their complete comparison inline.</summary>
+    internal void ClickRepoUnfoldForCheck(int index) => ClickRepoRowForCheck(index);
 
     /// <summary>Presses the ⟳ through its own button, so a check drives the event the panel raises rather than
     /// calling the shell method the button happens to end up in.</summary>

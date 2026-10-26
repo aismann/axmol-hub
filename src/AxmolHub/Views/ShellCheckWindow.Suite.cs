@@ -85,9 +85,9 @@ internal sealed class ShellCheckSuite
             await taskbarProgress.VerifyAsync(scratchRoot);
             return;
         }
-        if (Environment.GetEnvironmentVariable("AXMOL_CODE_WORKSPACE_CHECK_ONLY") == "1")
+        if (Environment.GetEnvironmentVariable("AXMOL_CHANGES_EDIT_CHECK_ONLY") == "1")
         {
-            await new ShellCodeWorkspaceChecks(Check).VerifyAsync();
+            await new ShellChangesEditChecks(Check).VerifyAsync(scratchRoot);
             return;
         }
         var gitWorkflow = new ShellGitWorkflowChecks(_report, Check);
@@ -96,6 +96,7 @@ internal sealed class ShellCheckSuite
             await gitWorkflow.VerifyAsync();
             return;
         }
+        await new ShellChangesEditChecks(Check).VerifyAsync(scratchRoot);
         // The starting point must be Chinese: the assertions below hard-code "this is a Chinese UI".
         // App forces Chinese in verification mode; if that forcing is removed, this blows up
         // immediately rather than only on some machine whose language is English.

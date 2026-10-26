@@ -87,12 +87,13 @@ public sealed class CodeFileWindow : Window
         var dirty = OpenWindows.Where(window => window._editor?.IsDirty == true).ToArray();
         var shell = owner as MainWindow;
         var shellDirty = shell?.CodeWorkspaceIsDirty == true;
-        var count = dirty.Length + (shellDirty ? 1 : 0);
+        var count = dirty.Length + (shellDirty ? 1 : 0) + ChangesEditSession.DirtyCount;
         if (count == 0) return true;
         var answer = await HubDialog.ShowAsync(owner, "Unsaved code files",
             $"{count} code file buffer(s) have unsaved changes. Discard them and quit?",
             HubDialogButtons.YesNo, danger: true);
         if (answer != HubDialogResult.Yes) return false;
+        ChangesEditSession.DiscardAll();
         foreach (var window in dirty)
         {
             window._discardClose = true;

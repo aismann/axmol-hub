@@ -1034,8 +1034,13 @@ public static class HubTexts
         // ── The right-hand inspector ──
         ["InspectorTabPlan"] = ("计划", "Plan"),
         ["InspectorTabChanges"] = ("改动", "Changes"),
-        ["InspectorViewFile"] = ("查看文件", "View file"),
-        ["InspectorEditFile"] = ("编辑文件", "Edit file"),
+        ["InspectorOpenFile"] = ("打开文件", "Open file"),
+        ["InspectorEditDiff"] = ("编辑差异", "Edit diff"),
+        ["InspectorCancelEdit"] = ("取消", "Cancel"),
+        ["InspectorSaveEdit"] = ("保存", "Save"),
+        ["InspectorEditSaveFailed"] = ("保存失败，未保存的编辑已保留。", "Save failed; unsaved edits have been retained."),
+        ["InspectorEditUnsupported"] = ("此文件不可编辑；可能已删除、为二进制、超出大小限制或没有写入权限。", "This file cannot be edited: it may be deleted, binary, too large, or outside writable scope."),
+        ["InspectorEditSnapshotRequired"] = ("历史版本或缺少原文快照的差异只读。请使用打开文件编辑当前文件。", "Historical revisions and diffs without source snapshots are read-only. Use Open file to edit the current file."),
         ["InspectorChangesEmpty"] = ("这个会话还没改动任何文件", "This session has not touched any file yet"),
         ["InspectorPlanEmpty"] = ("还没有生成计划", "No plan yet"),
         // The plan exists and its document does not. "No plan yet" would be the wrong sentence to show somebody
@@ -1046,25 +1051,9 @@ public static class HubTexts
         ["InspectorDiffCopyGone"] = ("旧版会话的改动前副本已不可用", "This legacy session's pre-image is unavailable"),
         ["InspectorDiffPendingSnapshot"] = ("这次改动记录仍待核实，暂时无法显示", "This change record is still pending verification"),
         ["InspectorDiffMissingSnapshot"] = ("这次改动的历史快照已缺失", "The snapshot for this change is missing"),
-        ["InspectorDiffViewUnified"] = ("差异", "Diff"),
-        ["InspectorDiffViewBefore"] = ("改动前", "Before"),
-        ["InspectorDiffViewAfter"] = ("改动后", "After"),
-        ["InspectorDiffCompareSideBySide"] = ("查看差异", "View diff"),
-        ["InspectorGitWorkingTree"] = ("比较工作区更改", "Compare working-tree changes"),
-        ["InspectorGitIndex"] = ("比较暂存更改", "Compare staged changes"),
-        ["DiffQuoteSelection"] = ("引用所选行", "Quote selected lines"),
-        ["DiffPreviousChange"] = ("上一个改动", "Previous change"),
-        ["DiffNextChange"] = ("下一个改动", "Next change"),
         ["DiffInlineMode"] = ("统一视图", "Unified view"),
         ["DiffSplitMode"] = ("并排视图", "Split view"),
         ["DiffViewSection"] = ("视图", "View"),
-        ["DiffViewSettings"] = ("差异视图设置", "Diff view settings"),
-        ["DiffStageHunk"] = ("暂存所选块", "Stage selected hunk"),
-        ["DiffUnstageHunk"] = ("取消暂存所选块", "Unstage selected hunk"),
-        ["DiffRevertHunk"] = ("还原所选块", "Revert selected hunk"),
-        ["DiffKeyboardShortcuts"] = ("Alt+↑/↓ 定位；Alt+Shift+S 暂存，U 取消暂存，R 还原；A 接受 AI 块，X 拒绝", "Alt+↑/↓ navigate; Alt+Shift+S stage, U unstage, R revert; A accept AI hunk, X reject"),
-        ["DiffAcceptAiHunk"] = ("接受 AI 改动块", "Accept AI hunk"),
-        ["DiffRejectAiHunk"] = ("拒绝 AI 改动块", "Reject AI hunk"),
         ["InspectorDiffCopySpent"] = ("那次写入已被撤销，副本用完", "The copy was spent by a revert"),
         ["InspectorDiffUnreadable"] = ("现在读不到这个文件，或它不是文本", "The file is gone or is not text"),
         ["InspectorDiffRefusedLine"] = ("没有改动", "No change"),
@@ -1079,12 +1068,7 @@ public static class HubTexts
         // rather than drawing an empty list, which is the same rule the four diff states above follow.
         // The two scopes moved off the header and into the review gear's menu, so the words lost their caret:
         // a menu row names an answer, it does not advertise that pressing it opens something else.
-        ["InspectorScopeSession"] = ("会话改动", "Session changes"),
-        ["InspectorScopeRepository"] = ("仓库改动", "Repository changes"),
-        ["InspectorScopeSessionMenu"] = ("会话改动", "Session changes"),
-        ["InspectorScopeRepositoryMenu"] = ("仓库改动", "Repository changes"),
-        ["InspectorScopeSection"] = ("改动范围", "Scope"),
-        ["InspectorSettingsTip"] = ("视图与改动范围", "View and change scope"),
+        ["InspectorSettingsTip"] = ("差异视图设置", "Diff view settings"),
         // The top bar's drawer button. Icon-only like the sidebar's, so the tooltip is the only place it has a
         // name — and it names both directions, because one glyph that opens and closes cannot say which it is
         // about to do without a second control that would repeat the column itself.
@@ -1117,10 +1101,6 @@ public static class HubTexts
         // dead end, so the empty sentence offers the way across — and only ever with a number it has actually
         // verified: the changes tab offers this when a read has said the tree is dirty, the repository tab when
         // the transcript says this session wrote files.
-        ["InspectorChangesJumpRepoFormat"] = ("仓库里有 {0} 处未提交，去仓库页看",
-            "the repository holds {0} uncommitted files — look at the Repository tab"),
-        ["InspectorRepoJumpSessionFormat"] = ("本会话改了 {0} 个文件，去改动页看",
-            "this session changed {0} files — look at the Changes tab"),
         // The column's two states. The restore wording names Esc because the key is the only other way out of a
         // surface that has just covered the window, and a keyboard exit nobody announces is not a keyboard exit.
         ["InspectorExpand"] = ("撑开面板到整个窗口", "Expand the panel to the whole window"),
