@@ -633,17 +633,43 @@
            resizing it, and a four-way arrow there promises a resize that will never happen; the plain arrow the
            rest of the window uses is the honest one. -->
       <Border x:Name="TitleBarDragArea" Background="Transparent" />
-      <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto">
-        <Button x:Name="SidebarToggle" Grid.Column="0" Classes="titlebar" Margin="4,0,0,0">
-          <Path Classes="stroked" Data="{StaticResource Hub.Icon.Panel}"
-                Width="12" Height="12" Stretch="Uniform" />
-        </Button>
-        <!-- Not hit-test visible on purpose: the bar is one press surface. Avalonia hit-tests drawn geometry, so
-             an ordinary label here would swallow every press that landed on the title — a hole in the middle of
-             the one region that drags the window and answers a double-click. -->
-        <TextBlock x:Name="PageTitle" Grid.Column="1"
-                   FontSize="13" Margin="8,0,0,0" MaxWidth="420"
-                   IsHitTestVisible="False"
+      <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto">
+        <!-- The nav zone: the drawer's button and the page's own name, in a cell as wide as the sidebar. MinWidth
+             follows Sidebar.Width, the same number row one's first column is built from, so this cell's right edge
+             *is* the sidebar's border — live through a grip drag, zero while the drawer is shut. That is the whole
+             trick behind the hairline below: no coordinate is measured, the bar simply inherits the column's own
+             width. -->
+        <Grid x:Name="TitleNavZone" Grid.Column="0" ColumnDefinitions="Auto,Auto,*"
+              MinWidth="{Binding Width, ElementName=Sidebar}">
+          <Button x:Name="SidebarToggle" Grid.Column="0" Classes="titlebar" Margin="4,0,0,0">
+            <Path Classes="stroked" Data="{StaticResource Hub.Icon.Panel}"
+                  Width="12" Height="12" Stretch="Uniform" />
+          </Button>
+          <!-- Not hit-test visible on purpose: the bar is one press surface. Avalonia hit-tests drawn geometry, so
+               an ordinary label here would swallow every press that landed on the page's name — a hole in the one
+               region that drags the window and answers a double-click. The conversation's title below is the
+               exception, and it is one for a reason: a tooltip needs something to hover. -->
+          <TextBlock x:Name="NavTitle" Grid.Column="1"
+                     FontSize="13" Margin="8,0,0,0" MaxWidth="180"
+                     IsHitTestVisible="False"
+                     TextTrimming="CharacterEllipsis" />
+          <!-- The sidebar's right border, continued up through the bar: the same brush, the same one pixel, its right
+               edge flush with this cell's so it lands on the very pixel column that border paints — a 300-wide
+               sidebar paints its border in [299,300), and this element does too. Hidden while the drawer is shut,
+               because then there is no border to continue; SyncTitleZones owns that. -->
+          <Border x:Name="TitleZoneDivider" Grid.Column="2"
+                  Width="1" HorizontalAlignment="Right"
+                  Background="{DynamicResource Hub.BorderSubtle}"
+                  IsHitTestVisible="False" IsVisible="False" />
+        </Grid>
+        <!-- The conversation's own title, in the conversation zone: it starts twelve pixels after the hairline, the
+             same inset the pane's tab strip takes on its side of the bar. Hit-test visible, unlike the page's name,
+             because a tooltip only appears over an element the pointer can hit — and the press it takes is handed
+             to the bar's own handler, so pressing here still drags the window (MainWindow.InitializeTitleBar).
+             The star column truncates it before the pane's two buttons when the window is narrow; the 240 is the
+             cap for a window wide enough to have room, which is what keeps a long title from running under ⤢. -->
+        <TextBlock x:Name="ConversationTitle" Grid.Column="1"
+                   FontSize="13" Margin="12,0,0,0" MaxWidth="240"
                    TextTrimming="CharacterEllipsis" />
         <!-- The right column's two buttons, in the order the reader meets them: lift the pane over the whole
              window, then open or shut the column. They are the pane header's own two controls, moved up here
@@ -657,17 +683,17 @@
              the pair appearing and disappearing, which is what keeps the drawer and the three caption plates at
              the same x in all three states (nothing open, column, lifted) — asserted against the pixels,
              because a plate that has been painted over keeps its bounds and only loses its face. -->
-        <Button x:Name="InspectorExpandToggle" Grid.Column="3" Classes="titlebar"
+        <Button x:Name="InspectorExpandToggle" Grid.Column="2" Classes="titlebar"
                 IsVisible="False" Margin="0,0,4,0">
           <Path Classes="stroked" Data="{StaticResource Hub.Icon.Expand}"
                 Width="12" Height="12" Stretch="Uniform" />
         </Button>
-        <Button x:Name="InspectorToggle" Grid.Column="4" Classes="titlebar"
+        <Button x:Name="InspectorToggle" Grid.Column="3" Classes="titlebar"
                 IsVisible="False" Margin="0,0,4,0">
           <Path x:Name="InspectorToggleGlyph" Classes="stroked" Data="{StaticResource Hub.Icon.PanelRight}"
                 Width="12" Height="12" Stretch="Uniform" />
         </Button>
-        <StackPanel x:Name="WindowControls" Grid.Column="5" Orientation="Horizontal">
+        <StackPanel x:Name="WindowControls" Grid.Column="4" Orientation="Horizontal">
           <!-- Stretch="None" on all three, with the glyphs authored in the 12x12 box they are drawn in. The
                glyphs above live on a 0-24 grid and are scaled with Uniform; these three are not, because scaling
                a 1-unit stroke by the fit factor is what made the minimize bar render either as a dot or as two
@@ -694,8 +720,8 @@
          pane's border and its twelve-pixel inset lands on the pane's text — no coordinate is measured, both of the
          pane's homes are derived from the column. While the pane is lifted the column has no width, so
          SetInspectorColumnVisible widens the slot to all three columns and the strip takes the drawer button's
-         place at the window's left edge; the ▯ drawer and the page title stand aside there, because the strip is
-         drawn where they were.
+         place at the window's left edge; the ▯ drawer, the page's name and the conversation's title stand aside
+         there, because the strip is drawn where they were.
 
          A sibling *after* the bar rather than a child of it, so the strip paints above the bar's transparent drag
          layer instead of being fed to it. The slot keeps no background, so only the strip's own plate stops the
@@ -705,6 +731,16 @@
     <ContentControl x:Name="InspectorTabSlot" Grid.Row="0" Grid.Column="2"
                     HorizontalAlignment="Left" VerticalAlignment="Top"
                     Margin="5,0,0,0" IsVisible="False" />
+
+    <!-- The pane's left border, continued up through the bar: the same one-pixel line at the same x, so the column
+         reads as a column from the window's top edge down instead of starting at the bar's bottom edge. The
+         five-pixel margin is the same grip the slot's margin stands for, which is what lands this on the pane's own
+         border pixel; it is a sibling *after* the slot so the hairline paints over the strip's plate rather than
+         under it. Its visibility is the `show` the column and its grip already share — no new state. -->
+    <Border x:Name="InspectorEdgeDivider" Grid.Row="0" Grid.Column="2"
+            HorizontalAlignment="Left" Width="1" Margin="5,0,0,0"
+            Background="{DynamicResource Hub.BorderSubtle}"
+            IsHitTestVisible="False" IsVisible="False" />
 
     <!-- ==================== Sidebar ==================== -->
     <Grid Grid.Row="1" Grid.Column="0" ColumnDefinitions="*,5">

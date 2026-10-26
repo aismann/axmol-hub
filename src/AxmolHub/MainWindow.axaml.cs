@@ -574,11 +574,12 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Repaints the top-bar page title after any <see cref="ChatWorkspace.Changed"/> raise. Switching to another
-    /// session and renaming the open one are visible only through that event, and a title left on the previous
-    /// session is a title that lies - so this is where the refresh hangs. The hop and the null test are
+    /// Repaints the bar's two names after any <see cref="ChatWorkspace.Changed"/> raise. On the assistant page the
+    /// page's name is fixed and the conversation's title is what moves; switching to another session and renaming
+    /// the open one are visible only through that event, and a title left on the previous session is a title that
+    /// lies - so this is where the refresh hangs. The hop and the null test are
     /// <see cref="SyncApprovalBadge"/>'s, for the same reasons: not every raise site is provably on the UI thread,
-    /// and <c>WireChatRuns</c> subscribes before <c>InitializeComponent</c> has built <c>PageTitle</c>.
+    /// and <c>WireChatRuns</c> subscribes before <c>InitializeComponent</c> has built <c>NavTitle</c>.
     /// </summary>
     private void SyncPageTitle()
     {
@@ -587,7 +588,7 @@ public partial class MainWindow : Window
             Dispatcher.UIThread.Post(SyncPageTitle);
             return;
         }
-        if (PageTitle is null) return;
+        if (NavTitle is null) return;
         UpdatePageTitle();
     }
 
@@ -1959,6 +1960,12 @@ public partial class MainWindow : Window
         TitleBarDragArea.PointerMoved += OnTitleBarMoved;
         TitleBarDragArea.PointerReleased += OnTitleBarReleased;
 
+        // The conversation's title is hit-test visible so its tooltip has something to hover — which would make it
+        // exactly the hole this bar must not have if it kept the press to itself. It gets the same handler instead:
+        // every press captures the pointer on TitleBarDragArea, so a press that lands on the title still starts a
+        // window drag, and the moves and the release are delivered to the layer that owns them.
+        ConversationTitle.PointerPressed += OnTitleBarPressed;
+
         MinimizeButton.Click += (_, _) => WindowState = WindowState.Minimized;
         MaximizeButton.Click += (_, _) => ToggleMaximized();
         CloseButton.Click += (_, _) => Close();
@@ -2428,6 +2435,11 @@ public partial class MainWindow : Window
             ResizeGrip.IsVisible = false;
         }
 
+        // The width above already moves the bar's nav zone — that is a binding, no code needed. What the bar cannot
+        // see through a binding is whether there is still a border worth continuing into it, so the hairline's
+        // visibility is asked for here.
+        SyncTitleZones();
+
         if (_preferences.SidebarCollapsed != !expanded)
         {
             _preferences.SidebarCollapsed = !expanded;
@@ -2518,19 +2530,47 @@ public partial class MainWindow : Window
         ActivityLog.Text = "";
     }
 
-    /// <summary>Updates the top-bar title for the current page.</summary>
+    /// <summary>Writes the bar's two names for the current page: the page's own name in the nav zone, and — on the
+    /// assistant page only — the open conversation's title in the conversation zone.</summary>
     private void UpdatePageTitle()
     {
-        PageTitle.Text = _currentKey switch
+        NavTitle.Text = _currentKey switch
         {
-            "Assistant" => _chat.ActiveConversation is { Title.Length: > 0 } active
-                ? active.Title
-                : HubStrings.Get("Assistant"),
+            "Assistant" => HubStrings.Get("Assistant"),
             "Projects" => HubStrings.Get("Projects"),
             "Installs" => HubStrings.Get("Installs"),
             "Toolchains" => HubStrings.Get("Toolchains"),
             _ => "",
         };
+
+        // The assistant page is the only one with a second name to show, and a conversation without a title
+        // contributes none: the nav zone already says "AI 助手", so a placeholder here would say it twice.
+        var title = _currentKey == "Assistant" && _chat.ActiveConversation is { Title.Length: > 0 } active
+            ? active.Title
+            : "";
+        ConversationTitle.Text = title;
+        // The hint is the whole title that the truncation may hide; it is the only reason the label is hit-test
+        // visible (see InitializeTitleBar).
+        ToolTip.SetTip(ConversationTitle, title.Length == 0 ? null : title);
+        SyncTitleZones();
+    }
+
+    /// <summary>
+    /// Decides what the bar's zones show: the two names and the hairline between them. Three facts go in — the page
+    /// and the open conversation's title, which <see cref="UpdatePageTitle"/> has just written, and the two drawers'
+    /// state — and this is their only writer, so the hairline cannot end up drawn beside an empty zone.
+    ///
+    /// That hairline is the sidebar's own border continued into the bar (MainWindow.axaml), so it exists only while
+    /// there is a border to continue and a second name to separate from the first.
+    /// </summary>
+    private void SyncTitleZones()
+    {
+        // The lifted pane is a surface over the whole window and its strip takes the bar's left end; both names
+        // stand aside there rather than print under a tab strip.
+        var chrome = !_inspectorExpanded;
+        NavTitle.IsVisible = chrome;
+        ConversationTitle.IsVisible = chrome && ConversationTitle.Text is { Length: > 0 };
+        TitleZoneDivider.IsVisible = ConversationTitle.IsVisible && IsSidebarExpanded;
     }
 
     private void InitializeChrome()    {

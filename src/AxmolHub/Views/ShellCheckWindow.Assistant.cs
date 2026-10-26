@@ -774,30 +774,46 @@ internal sealed class ShellAssistantChecks
         Check(sidebar.ConversationListText.Contains(saved!.Title, StringComparison.Ordinal)
               && sidebar.ConversationListText.Contains("测试提问", StringComparison.Ordinal),
             "左侧会话列表显示由首条消息生成的标题");
-        Check(shell.PageTitleText == saved.Title,
-            "会话首条消息完成后顶栏标题更新（实际「" + shell.PageTitleText + "」）");
+        // The bar names two things now, and both are asserted here because they come out of one write: the nav zone
+        // says which page this is (and does not move when the conversation does), the conversation zone carries the
+        // session's title, its tooltip carries the whole of it, and the hairline between the two zones is the
+        // sidebar's own border continued into the bar — the same pixel column, not a second line near it.
+        shell.UpdateLayout();
+        Dispatcher.UIThread.RunJobs();
+        var zoneDivider = shell.TitleZoneDividerBoundsForCheck;
+        var sidebarBorder = shell.SidebarBoundsForCheck.Right - 1;
+        Check(shell.ConversationTitleText == saved.Title
+              && shell.ConversationTitleTip == saved.Title
+              && shell.NavTitleText == HubStrings.Get("Assistant")
+              && shell.TitleZoneDividerVisibleForCheck
+              && Math.Abs(zoneDivider.X - sidebarBorder) <= 0.5
+              && shell.ConversationTitleBoundsForCheck.X >= shell.SidebarBoundsForCheck.Right,
+            "会话首条消息完成后标题栏两半各就各位（导航区「" + shell.NavTitleText + "」恒为页面名，会话区「"
+            + shell.ConversationTitleText + "」且悬停提示为全文，区线 " + Fmt(zoneDivider.X)
+            + " 压在侧栏边框 " + Fmt(sidebarBorder) + " 上）");
 
-        // The page title is state, not a label repainted whenever somebody remembered to: opening another session
-        // repaints it at once, renaming the open session repaints it too, and renaming a session that is not open
-        // leaves it alone. All three paths raise nothing but ChatWorkspace.Changed, so they are asserted together.
-        // The fixtures leave nothing behind: the count checks below measure the same list they were written against.
+        // The conversation's title is state, not a label repainted whenever somebody remembered to: opening another
+        // session repaints it at once, renaming the open session repaints it too, and renaming a session that is
+        // not open leaves it alone. All three paths raise nothing but ChatWorkspace.Changed, so they are asserted
+        // together. The fixtures leave nothing behind: the count checks below measure the same list they were
+        // written against.
         var titleSwitch = shell.Chat.StartConversation();
         shell.Chat.SeedTurnForCheck(titleSwitch.Id, "顶栏跟随甲");
         var titleStay = shell.Chat.StartConversation();
         shell.Chat.SeedTurnForCheck(titleStay.Id, "顶栏跟随乙");
         shell.Chat.OpenConversation(titleSwitch.Id);
-        var titleSawSwitch = shell.PageTitleText;
+        var titleSawSwitch = shell.ConversationTitleText;
         shell.Chat.OpenConversation(titleStay.Id);
-        var titleSawStay = shell.PageTitleText;
+        var titleSawStay = shell.ConversationTitleText;
         Check(titleSawSwitch == titleSwitch.Title && titleSawStay == titleStay.Title,
-            "切换会话后顶栏标题立即跟随当前会话（甲「" + titleSawSwitch + "」应为「" + titleSwitch.Title
+            "切换会话后会话标题立即跟随当前会话（甲「" + titleSawSwitch + "」应为「" + titleSwitch.Title
             + "」，乙「" + titleSawStay + "」应为「" + titleStay.Title + "」）");
         var titleRenamed = shell.Chat.RenameConversation(titleStay.Id, "顶栏跟随改名");
-        Check(titleRenamed && shell.PageTitleText == "顶栏跟随改名",
-            "重命名当前会话后顶栏标题立即更新（实际「" + shell.PageTitleText + "」）");
+        Check(titleRenamed && shell.ConversationTitleText == "顶栏跟随改名",
+            "重命名当前会话后会话标题立即更新（实际「" + shell.ConversationTitleText + "」）");
         var titleRenamedOther = shell.Chat.RenameConversation(titleSwitch.Id, "顶栏不动的改名");
-        Check(titleRenamedOther && shell.PageTitleText == "顶栏跟随改名",
-            "改的是非当前会话时顶栏标题不动（实际「" + shell.PageTitleText + "」）");
+        Check(titleRenamedOther && shell.ConversationTitleText == "顶栏跟随改名",
+            "改的是非当前会话时会话标题不动（实际「" + shell.ConversationTitleText + "」）");
         shell.Chat.DeleteConversation(titleSwitch.Id);
         shell.Chat.DeleteConversation(titleStay.Id);
         shell.Chat.OpenConversation(saved!.Id);
@@ -909,13 +925,17 @@ internal sealed class ShellAssistantChecks
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(!shell.SidebarExpandedForCheck && Math.Abs(shell.SidebarWidthForCheck) < 0.5
-              && !shell.ResizeGripVisibleForCheck,
-            "点击 ☰ 后侧栏宽度收为 0 且拖拽手柄隐藏");
+              && !shell.ResizeGripVisibleForCheck
+              && !shell.TitleZoneDividerVisibleForCheck,
+            "点击 ☰ 后侧栏宽度收为 0、拖拽手柄隐藏，标题栏那条区线也随边框一起消失");
         shell.ToggleSidebarForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.SidebarExpandedForCheck && shell.SidebarWidthForCheck >= 240,
-            "再次点击 ☰ 后侧栏恢复原宽度");
+        Check(shell.SidebarExpandedForCheck && shell.SidebarWidthForCheck >= 240
+              && Math.Abs(shell.TitleNavZoneBoundsForCheck.Width - shell.SidebarWidthForCheck) <= 0.5
+              && shell.TitleZoneDividerVisibleForCheck == shell.ConversationTitleVisibleForCheck,
+            "再次点击 ☰ 后侧栏恢复原宽度，标题栏的导航格跟着同宽、区线随边框回到栏里（格 "
+            + Fmt(shell.TitleNavZoneBoundsForCheck.Width) + "，侧栏 " + Fmt(shell.SidebarWidthForCheck) + "）");
 
         // ── The app's own title bar ──
         // The window used to wear the platform's title bar and its drawers sat in a 42px bar below it. Both
@@ -1292,11 +1312,14 @@ internal sealed class ShellAssistantChecks
         // placement the reader gets when they pull a maximized window off the screen.
         Shell.CheckRestoreDragPlacement(shell, dragArea);
 
-        // The page title is a label sitting in the middle of that surface, and a label that answers hit tests is a
+        // The page's name is a label sitting in the middle of that surface, and a label that answers hit tests is a
         // dead hole in it — exactly where a reader would double-click. Pinned as the property that decides it, the
-        // same way the drawn decorations are: the pixels can only be proven with a hand on the mouse.
-        Check(!shell.PageTitleHitTestableForCheck,
-            "标题栏里的页面标题不参与命中测试：整条标题栏是一整块可按可拖的面，标签不能在上面开洞");
+        // same way the drawn decorations are: the pixels can only be proven with a hand on the mouse. The
+        // conversation's title is the one label that must answer hit tests, because a tooltip only appears over an
+        // element the pointer can hit; the press it takes is handed to the bar's own handler, so the pair is
+        // asserted together rather than the name alone.
+        Check(!shell.NavTitleHitTestableForCheck && shell.ConversationTitleHitTestableForCheck,
+            "标题栏的页面名不参与命中测试，会话标题参与（Tooltip 需要有悬停目标，它吃下的按下仍走拖动窗口的那一个处理器）");
 
         Shell.CheckSnapHookPress(shell);
 

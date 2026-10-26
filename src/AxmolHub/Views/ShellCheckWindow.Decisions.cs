@@ -1141,7 +1141,10 @@ internal sealed class ShellDecisionsChecks
         var dockedSlot = shell.InspectorTabSlotBoundsForCheck;
         var dockedTabs = shell.InspectorTabsBoundsForCheck;
         var paneLeft = shell.InspectorBorderBoundsForCheck.X;
-        var dockedChrome = shell.SidebarToggleVisibleForCheck && shell.PageTitleVisibleForCheck;
+        // The pane's border continued into the bar, read while there is still a column for it to be the edge of.
+        var dockedPaneEdge = shell.InspectorEdgeDividerBoundsForCheck;
+        var dockedPaneEdgeVisible = shell.InspectorEdgeDividerVisibleForCheck;
+        var dockedChrome = shell.SidebarToggleVisibleForCheck && shell.NavTitleVisibleForCheck;
         shell.ClickInspectorExpandToggleForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -1160,26 +1163,31 @@ internal sealed class ShellDecisionsChecks
             + Fmt(overlay.Width) + "×" + Fmt(overlay.Height) + " @ y=" + Fmt(overlay.Y) + "，客户区 "
             + Fmt(client.Width) + "×" + Fmt(client.Height) + "）");
         // The tabs, in both states at once: the strip is the pane's, the slot is the bar's, and one rule places it
-        // either way — the column's edge while docked, the bar's left end while lifted. The two controls that own
-        // that end of the bar step aside for it, and stepping aside has to be reversible: the Esc check below asks
-        // for them back.
+        // either way — the column's edge while docked, the bar's left end while lifted. The controls that own that
+        // end of the bar step aside for it, and stepping aside has to be reversible: the Esc check below asks for
+        // them back. The pane's own left border comes up here with the strip, at the same x, so the column reads as
+        // a column from the window's top edge down.
         var liftedSlot = shell.InspectorTabSlotBoundsForCheck;
         var liftedTabs = shell.InspectorTabsBoundsForCheck;
         Check(shell.InspectorTabSlotVisibleForCheck
               && shell.InspectorTabsAreThePaneStripForCheck
               && dockedChrome
+              && dockedPaneEdgeVisible
+              && Math.Abs(dockedPaneEdge.X - paneLeft) <= 0.5
               && Math.Abs(dockedSlot.X - paneLeft) <= 0.5
               && Math.Abs(dockedTabs.X - paneLeft - 12) <= 0.5
               && Math.Abs(liftedSlot.X - client.X) <= 0.5
               && Math.Abs(liftedTabs.X - client.X - 12) <= 0.5
               && Math.Abs(liftedTabs.Bottom - overlay.Y) <= 0.5
               && !shell.SidebarToggleVisibleForCheck
-              && !shell.PageTitleVisibleForCheck,
-            "页签长在标题栏里：停靠时条子从面板左缘起（槽 " + Fmt(dockedSlot.X) + "，面板 " + Fmt(paneLeft)
-            + "），撑开后同一根条子落到窗口左缘、下沿正压在面板上沿（" + Fmt(liftedTabs.Width) + "×"
-            + Fmt(liftedTabs.Height) + " @ " + Fmt(liftedTabs.X) + ",底 " + Fmt(liftedTabs.Bottom) + " / 覆盖层顶 "
-            + Fmt(overlay.Y) + "），☰ 和页面标题让位（☰ " + shell.SidebarToggleVisibleForCheck + "、标题 "
-            + shell.PageTitleVisibleForCheck + "）");
+              && !shell.NavTitleVisibleForCheck
+              && !shell.ConversationTitleVisibleForCheck
+              && !shell.InspectorEdgeDividerVisibleForCheck,
+            "页签长在标题栏里，面板的左缘也跟着长上来：停靠时条子和那条一像素的线都从面板左缘起（槽 "
+            + Fmt(dockedSlot.X) + "、线 " + Fmt(dockedPaneEdge.X) + "，面板 " + Fmt(paneLeft) + "），撑开后同一根条子落到"
+            + "窗口左缘、下沿正压在面板上沿（" + Fmt(liftedTabs.Width) + "×" + Fmt(liftedTabs.Height) + " @ "
+            + Fmt(liftedTabs.X) + ",底 " + Fmt(liftedTabs.Bottom) + " / 覆盖层顶 " + Fmt(overlay.Y)
+            + "），☰、页面名、会话标题与那条线一起让位");
         var expandedPane = shell.InspectorPaneForCheck;
         Check(expandedPane is not null
               && expandedPane.ExpandedForCheck
@@ -1206,9 +1214,11 @@ internal sealed class ShellDecisionsChecks
               && shell.InspectorToggleTipForCheck == HubTexts.Get("InspectorToggleTip", HubStrings.Language)
               && shell.InspectorPaneForCheck?.PlanTabVisibleForCheck == true
               && shell.SidebarToggleVisibleForCheck
-              && shell.PageTitleVisibleForCheck
+              && shell.NavTitleVisibleForCheck
+              && shell.InspectorEdgeDividerVisibleForCheck
+              && shell.ConversationTitleVisibleForCheck == (shell.ConversationTitleText.Length > 0)
               && Math.Abs(shell.InspectorTabsBoundsForCheck.X - shell.InspectorBorderBoundsForCheck.X - 12) <= 0.5,
-            "Esc 把面板收回右边那一列：抽屉换回面板图标、话也说「显示或隐藏」，撑开那枚又回来了，列宽还是撑开前拖到的 480，计划页也还在，页签跟着回到列上、☰ 与页面标题也回来了（实际 "
+            "Esc 把面板收回右边那一列：抽屉换回面板图标、话也说「显示或隐藏」，撑开那枚又回来了，列宽还是撑开前拖到的 480，计划页也还在，页签跟着回到列上，☰、页面名和面板左缘那条线也回来了（会话标题回到「有标题才出现」）（实际 "
             + Fmt(shell.InspectorWidthForCheck) + "）");
 
         // The drawer's restore face, driven through the button's own Click rather than through the method behind

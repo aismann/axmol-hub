@@ -199,8 +199,8 @@ public partial class MainWindow
     /// already covered the shell), and the drawer is the column's mirror image: while the pane is lifted there is
     /// no column to shut, so the same button becomes the way back down (see
     /// <see cref="SyncInspectorDrawerChrome"/>). And it is the one place the bar's *left* end is told what it
-    /// holds: the tabs' slot, and the two controls — the drawer and the page title — that stand aside while the
-    /// pane is lifted so the strip can take their place.</summary>
+    /// holds: the tabs' slot, and the controls — the drawer, the page's name and the conversation's title — that
+    /// stand aside while the pane is lifted so the strip can take their place.</summary>
     private void SetInspectorColumnVisible()
     {
         var show = _inspectorOpen && _currentKey == "Assistant" && !_inspectorExpanded;
@@ -211,6 +211,10 @@ public partial class MainWindow
         if (show) EnsureInspectorPane();
         InspectorColumn.IsVisible = show;
         InspectorResizeGrip.IsVisible = show;
+        // The pane's left border, continued up through the bar at the pane's own x (see the InspectorEdgeDivider
+        // comment in MainWindow.axaml). It rides with the column for the reason the grip does — and lifted there is
+        // no column for a border to be the edge of.
+        InspectorEdgeDivider.IsVisible = show;
         // The tabs outlive both homes, so they are placed here and not by the move. In the column the slot *is* the
         // column's left edge — a five-pixel margin for the grip stands in for the column's own first column — and
         // lifted it becomes the bar's left end across all three columns, which is the drawer button's place. That
@@ -221,7 +225,10 @@ public partial class MainWindow
         Grid.SetColumn(InspectorTabSlot, _inspectorExpanded ? 0 : 2);
         Grid.SetColumnSpan(InspectorTabSlot, _inspectorExpanded ? 3 : 1);
         InspectorTabSlot.Margin = _inspectorExpanded ? default : new Thickness(5, 0, 0, 0);
-        SidebarToggle.IsVisible = PageTitle.IsVisible = !_inspectorExpanded;
+        SidebarToggle.IsVisible = !_inspectorExpanded;
+        // The bar's two names and the hairline between them ride with the same fact, and SyncTitleZones is their
+        // only writer — so it is asked here rather than the three elements being poked from the outside.
+        SyncTitleZones();
         // The drawer button belongs to the page, not to the column: while the pane is lifted the column is
         // legitimately empty, and a button that flipped off there would leave the person no way back to the column
         // at all. On another page there is nothing for it to show or hide, and nothing to lift either.

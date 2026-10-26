@@ -335,10 +335,32 @@ public partial class MainWindow
     /// state and put it where the formula says. The check drives this with the press point a bar press would have
     /// carried, and stops before the <see cref = "Window.BeginMoveDrag"/> that would otherwise not return.</summary>
     internal void RestoreForDragForCheck(Point press) => RestoreForDrag(press);
-    /// <summary>Whether the bar's page title takes pointer input. It must not: the title is a label in the middle
-    /// of the one press surface the window has, and a label that answers hit tests punches a dead hole in it —
-    /// exactly where a reader would double-click to maximize.</summary>
-    internal bool PageTitleHitTestableForCheck => PageTitle.IsHitTestVisible;
+    /// <summary>Whether the bar's page name takes pointer input. It must not: the name is a label in the middle of
+    /// the one press surface the window has, and a label that answers hit tests punches a dead hole in it — exactly
+    /// where a reader would double-click to maximize. The conversation's title is the one exception, and the bar
+    /// answers the press it takes through its own handler (see <c>InitializeTitleBar</c>), so it is not a hole.</summary>
+    internal bool NavTitleHitTestableForCheck => NavTitle.IsHitTestVisible;
+    /// <summary>Whether the conversation's title takes pointer input. It must: a tooltip only appears over an
+    /// element the pointer can hit, and the tooltip is where the whole title stays readable.</summary>
+    internal bool ConversationTitleHitTestableForCheck => ConversationTitle.IsHitTestVisible;
+
+    /// <summary>The bar's two names, and the geometry of the zones they sit in. The nav zone's own box is here
+    /// because its right edge *is* the sidebar's border — the hairline inside it is that border's pixel column, and
+    /// a check reading only the hairline could be satisfied by a second line drawn somewhere near the first.
+    /// </summary>
+    internal Rect TitleNavZoneBoundsForCheck => InClient(TitleNavZone);
+    internal string NavTitleText => NavTitle.Text ?? "";
+    internal bool NavTitleVisibleForCheck => NavTitle.IsVisible;
+    internal string ConversationTitleText => ConversationTitle.Text ?? "";
+    internal string ConversationTitleTip => ToolTip.GetTip(ConversationTitle) as string ?? "";
+    internal bool ConversationTitleVisibleForCheck => ConversationTitle.IsVisible;
+    internal Rect ConversationTitleBoundsForCheck => InClient(ConversationTitle);
+    internal Rect TitleZoneDividerBoundsForCheck => InClient(TitleZoneDivider);
+    internal bool TitleZoneDividerVisibleForCheck => TitleZoneDivider.IsVisible;
+    /// <summary>The pane's border continued into the bar. Measured the way the pane's own border is
+    /// (<see cref="InspectorBorderBoundsForCheck"/>), so the two can be compared as numbers.</summary>
+    internal Rect InspectorEdgeDividerBoundsForCheck => InClient(InspectorEdgeDivider);
+    internal bool InspectorEdgeDividerVisibleForCheck => InspectorEdgeDivider.IsVisible;
 
     /// <summary>One of the title bar's two drawer plates, measured in the bar. Read by name so the check can
     /// compare the pair without this file exporting a member per button.</summary>
@@ -559,10 +581,9 @@ public partial class MainWindow
     internal bool InspectorTabsAreThePaneStripForCheck => InspectorPaneForCheck is { } pane && ReferenceEquals(InspectorTabSlot.Content, pane.TabStrip);
     /// <summary>The pane's own border, whose left edge is the line the tabs are aligned to.</summary>
     internal Rect InspectorBorderBoundsForCheck => InClient(Inspector);
-    /// <summary>The two controls that stand aside while the pane is lifted, read by visibility because no geometry
-    /// can see a control a sibling was painted over.</summary>
+    /// <summary>The controls that stand aside while the pane is lifted, read by visibility because no geometry can
+    /// see a control a sibling was painted over.</summary>
     internal bool SidebarToggleVisibleForCheck => SidebarToggle.IsVisible;
-    internal bool PageTitleVisibleForCheck => PageTitle.IsVisible;
     internal Rect SidebarBoundsForCheck => InClient(Sidebar);
     internal Rect TitleBarBoundsForCheck => InClient(TitleBar);
     internal Rect PageBoundsForCheck => InClient(PageHost);
@@ -633,8 +654,6 @@ public partial class MainWindow
 
     /// <summary>The conversation sidebar section, for the shell self-check.</summary>
     internal ChatSidebar ChatSidebarSection => _chatSidebar!;
-    /// <summary>The title bar's title text as shown, for the shell self-check.</summary>
-    internal string PageTitleText => PageTitle.Text ?? "";
     /// <summary>The settings gear's tooltip, for the shell self-check: the button is icon-only, so the tip is
     /// the only place its name is spelled out.</summary>
     internal string SettingsLabel => ToolTip.GetTip(SettingsButton) as string ?? "";
