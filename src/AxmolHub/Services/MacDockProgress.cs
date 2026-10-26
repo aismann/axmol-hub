@@ -9,7 +9,9 @@ internal sealed class MacDockProgress : IDisposable
 {
     private const string ObjC = "/usr/lib/libobjc.A.dylib";
     // The Dock scales whatever the content view draws, so the tile is described in fixed 128-point logic.
-    private const double Tile = 128, RingInset = 3, Corner = 26, RingWidth = 5, RevolutionSeconds = 1.4;
+    private const double Tile = 128, RingInset = 3, Corner = 26, RingWidth = 5, RevolutionSeconds = 2.0;
+    private static readonly (double Red, double Green, double Blue) TailColor = (.26, .52, 1.0);
+    private static readonly (double Red, double Green, double Blue) HeadColor = (.35, .78, 1.0);
     private static readonly NativeRect TrackRect = new(RingInset, RingInset, Tile - 2 * RingInset, Tile - 2 * RingInset);
     private static readonly NativeRect IconRect = new(8, 8, Tile - 16, Tile - 16);
     private static readonly double Perimeter = 2 * (Tile - 2 * RingInset - 2 * Corner) * 2 + 2 * Math.PI * Corner;
@@ -129,7 +131,7 @@ internal sealed class MacDockProgress : IDisposable
                 Stroke(RoundedRect(Class("NSBezierPath"), Sel("bezierPathWithRoundedRect:xRadius:yRadius:"),
                     TrackRect, Corner, Corner), 1, .12, RingWidth);
                 var phase = Stopwatch.GetElapsedTime(owner._started).TotalSeconds % RevolutionSeconds / RevolutionSeconds;
-                foreach (var (tail, alpha) in Tails) StrokeComet(phase * Perimeter, tail * Perimeter, alpha);
+                foreach (var (tail, alpha) in Tails) StrokeComet(-phase * Perimeter, tail * Perimeter, alpha, -1);
             }
             finally { Send(context, Sel("restoreGraphicsState")); }
             owner.DrawsForCheck++;
@@ -138,22 +140,33 @@ internal sealed class MacDockProgress : IDisposable
     }
 
     /// <summary>Strokes one segment of the ring, its head at <paramref name="head"/> and its tail behind it.</summary>
-    private static void StrokeComet(double head, double length, double alpha)
+    private static void StrokeComet(double head, double length, double alpha, int direction)
     {
-        const int samples = 22;
-        var path = Send(Class("NSBezierPath"), Sel("bezierPath"));
-        for (var i = 0; i <= samples; i++)
+        const int samples = 44;
+        var previous = RingPoint(head - direction * length);
+        for (var i = 1; i <= samples; i++)
         {
-            var (x, y) = RingPoint(head - length + length * i / samples);
-            if (i == 0) MoveTo(path, Sel("moveToPoint:"), x, y);
-            else LineTo(path, Sel("lineToPoint:"), x, y);
+            var next = RingPoint(head - direction * length + direction * length * i / samples);
+            var path = Send(Class("NSBezierPath"), Sel("bezierPath"));
+            MoveTo(path, Sel("moveToPoint:"), previous.X, previous.Y);
+            LineTo(path, Sel("lineToPoint:"), next.X, next.Y);
+            var color = GradientColor((double)i / samples);
+            Stroke(path, color.Red, color.Green, color.Blue, alpha, RingWidth);
+            previous = next;
         }
-        Stroke(path, 1, alpha, RingWidth);
     }
 
-    private static void Stroke(IntPtr path, double white, double alpha, double width)
+    private static (double Red, double Green, double Blue) GradientColor(double position) =>
+        (TailColor.Red + (HeadColor.Red - TailColor.Red) * position,
+         TailColor.Green + (HeadColor.Green - TailColor.Green) * position,
+         TailColor.Blue + (HeadColor.Blue - TailColor.Blue) * position);
+
+    private static void Stroke(IntPtr path, double white, double alpha, double width) =>
+        Stroke(path, white, white, white, alpha, width);
+
+    private static void Stroke(IntPtr path, double red, double green, double blue, double alpha, double width)
     {
-        Send(Color(Class("NSColor"), Sel("colorWithCalibratedWhite:alpha:"), white, alpha), Sel("setStroke"));
+        Send(Color(Class("NSColor"), Sel("colorWithCalibratedRed:green:blue:alpha:"), red, green, blue, alpha), Sel("setStroke"));
         SendDouble(path, Sel("setLineWidth:"), width);
         SendInteger(path, Sel("setLineCapStyle:"), 1); // NSLineCapStyleRound
         Send(path, Sel("stroke"));
@@ -209,7 +222,7 @@ internal sealed class MacDockProgress : IDisposable
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void SendBool(IntPtr receiver, IntPtr selector, byte value);
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern IntPtr InitFrame(IntPtr receiver, IntPtr selector, NativeRect frame);
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern IntPtr RoundedRect(IntPtr receiver, IntPtr selector, NativeRect frame, double xRadius, double yRadius);
-    [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern IntPtr Color(IntPtr receiver, IntPtr selector, double white, double alpha);
+    [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern IntPtr Color(IntPtr receiver, IntPtr selector, double red, double green, double blue, double alpha);
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void DrawImage(IntPtr receiver, IntPtr selector, NativeRect target, NativeRect source, nuint operation, double fraction);
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern IntPtr CreateTimer(IntPtr receiver, IntPtr selector, double seconds, IntPtr target, IntPtr action, IntPtr info, byte repeats);
     [DllImport(ObjC, EntryPoint = "objc_msgSend")] private static extern void AddTimer(IntPtr receiver, IntPtr selector, IntPtr timer, IntPtr mode);
