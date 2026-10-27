@@ -80,6 +80,9 @@ internal sealed partial class InspectorPanel : UserControl
     private TurnReview _review = TurnReview.Empty;
     private GitRepositoryState? _repository;
     private GitCommitList _commits = GitCommitList.Stopped(GitCommitListOutcome.NoUpstream);
+    // Whether the commit list has been read at all. The list's default value is "no upstream", which is a fact
+    // about the branch and not about whether anybody asked — before the read, the scope says it is reading.
+    private bool _commitsRead;
     private GitChangedPaths _commitPaths = GitChangedPaths.Stopped(GitCommitListOutcome.Ok);
     private IReadOnlyList<GitBranchInfo> _branches = [];
     private string? _commit;
@@ -720,6 +723,11 @@ internal sealed partial class InspectorPanel : UserControl
     /// four reasons it was rather than showing an empty pane.</summary>
     private void RenderCommitted()
     {
+        if (!_commitsRead)
+        {
+            _repoBody.Children.Add(EmptyLine("InspectorRepoReading"));
+            return;
+        }
         switch (_commits.Outcome)
         {
             case GitCommitListOutcome.Ok:
@@ -970,6 +978,7 @@ internal sealed partial class InspectorPanel : UserControl
                 if (answer.Commits is { } commits)
                 {
                     _commits = commits;
+                    _commitsRead = true;
                     _commitsFor = root;
                     if (_commit is null && commits.Commits.Count > 0) _commit = commits.Commits[0].Id;
                 }
