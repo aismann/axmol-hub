@@ -80,16 +80,15 @@ internal sealed class ShellAssistantChecks
         shell.Chat.SelectReasoningEffort(ChatReasoningEfforts.Default);
         Check(panel.ModelChoiceCount == 1,
             "模型选择器排除未鉴权 provider，只列出可用模型（实际 " + panel.ModelChoiceCount + " 项）");
-        // Models without declared capabilities still expose the five-position slider's conservative try ladder.
-        // That UI mapping is not persisted as model metadata; selecting a tier remains an explicit user action.
+        // Models without declared capabilities expose the conservative three-tier try ladder.
+        // The fallback is not persisted as model metadata; selecting a tier remains an explicit user action.
         Check(panel.SelectModelForCheck(checkProvider!.Id, checkModel)
               && panel.SelectedModelText.Contains(checkModel, StringComparison.Ordinal)
               && panel.SelectedModelReasoningEffortsForCheck.SequenceEqual(
-                  [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
-                   ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Ultra])
+                  [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High])
               && ModelCatalog.EffortsFor(checkProvider, checkModel).Count == 0
               && panel.ReasoningChipTextForCheck.Length == 0,
-            "未知模型显示五档可尝试滑块映射，但不伪造模型元数据或未选择档位");
+            "未知模型显示 Low/Medium/High 三档，但不伪造模型元数据或未选择档位");
         checkProvider.ReasoningModels[checkModel] = new AiModelReasoning
         {
             Efforts = [ChatReasoningEfforts.Low, ChatReasoningEfforts.High],
@@ -97,11 +96,8 @@ internal sealed class ShellAssistantChecks
         panel.Reload();
         Check(panel.SelectModelForCheck(checkProvider.Id, checkModel)
               && panel.SelectedModelReasoningEffortsForCheck
-                  .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.Low,
-                      ChatReasoningEfforts.High, ChatReasoningEfforts.High, ChatReasoningEfforts.High])
-              && panel.SelectedModelReasoningEffortsForCheck.Distinct(StringComparer.OrdinalIgnoreCase)
                   .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.High]),
-            "五档滑块按顺序映射到明确声明的低/高档位（实际 "
+            "滑块直接展示模型明确声明的低/高档位（实际 "
             + string.Join("/", panel.SelectedModelReasoningEffortsForCheck) + "）");
         // 「自动」 now means Hub routing a request by task complexity, and the gateway has its own model id of
         // that name. A tier is something the person picked, so a session that never picked one prints nothing at

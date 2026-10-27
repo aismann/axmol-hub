@@ -1551,15 +1551,9 @@
             <ToggleSwitch x:Name="AutoReasoningSwitch" Grid.Column="1" />
           </Grid>
           <TextBlock x:Name="ReasoningLevelLabel" Classes="context-popover-detail" />
-          <Slider x:Name="ReasoningLevelSlider" Minimum="0" Maximum="4" TickFrequency="1"
+          <Slider x:Name="ReasoningLevelSlider" Minimum="0" Maximum="2" TickFrequency="1"
                   IsSnapToTickEnabled="True" />
-          <Grid ColumnDefinitions="*,*,*,*,*">
-            <TextBlock Text="{DynamicResource ChatReasoningLevel1}" HorizontalAlignment="Left" Classes="model-level-caption" />
-            <TextBlock Grid.Column="1" Text="{DynamicResource ChatReasoningLevel2}" HorizontalAlignment="Center" Classes="model-level-caption" />
-            <TextBlock Grid.Column="2" Text="{DynamicResource ChatReasoningLevel3}" HorizontalAlignment="Center" Classes="model-level-caption" />
-            <TextBlock Grid.Column="3" Text="{DynamicResource ChatReasoningLevel4}" HorizontalAlignment="Center" Classes="model-level-caption" />
-            <TextBlock Grid.Column="4" Text="{DynamicResource ChatReasoningLevel5}" HorizontalAlignment="Right" Classes="model-level-caption" />
-          </Grid>
+          <Grid x:Name="ReasoningEffortLabels" />
           <Button x:Name="OpenModelMenuButton" Classes="model-menu-button" HorizontalContentAlignment="Stretch">
             <Grid ColumnDefinitions="*,Auto">
               <TextBlock x:Name="ModelSettingsSelectedModel" TextTrimming="CharacterEllipsis" />

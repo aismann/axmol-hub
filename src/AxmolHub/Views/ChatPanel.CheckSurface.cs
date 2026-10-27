@@ -992,15 +992,14 @@ public partial class ChatPanel : UserControl
     internal string SelectedReasoningForCheck => _chat.ActiveReasoningEffort;
     internal string ReasoningChipTextForCheck => SelectedReasoningLabel.Text ?? "";
 
-    /// <summary>The five levels displayed by the reasoning slider, mapped onto the selected model's effort ladder.</summary>
+    /// <summary>The selectable effort ladder currently displayed by the reasoning slider.</summary>
     internal string[] SelectedModelReasoningEffortsForCheck
     {
         get
         {
             var selected = _chat.SelectedChatModel;
-            return selected is null ? [] : Enumerable.Range(0, 5)
-                .Select(level => ModelCatalog.EffortForFiveLevel(selected.Provider, selected.ModelName, level) ?? "")
-                .ToArray();
+            return selected is null ? []
+                : ModelCatalog.SelectableReasoningEfforts(selected.Provider, selected.ModelName).ToArray();
         }
     }
 

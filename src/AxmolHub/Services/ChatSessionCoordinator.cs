@@ -71,19 +71,22 @@ internal sealed partial class ChatSessionCoordinator
         get
         {
             var choice = Providers.SelectedChatModel;
-            if (choice is null) return 2;
+            if (choice is null) return 0;
+            var efforts = ModelCatalog.SelectableReasoningEfforts(choice.Provider, choice.ModelName);
             var current = ActiveReasoningEffort;
-            var exact = Enumerable.Range(0, 5).FirstOrDefault(level =>
-                string.Equals(ModelCatalog.EffortForFiveLevel(choice.Provider, choice.ModelName, level), current,
-                    StringComparison.OrdinalIgnoreCase), -1);
-            return exact >= 0 ? exact : 2;
+            var exact = Enumerable.Range(0, efforts.Count).FirstOrDefault(level =>
+                string.Equals(efforts[level], current, StringComparison.OrdinalIgnoreCase), -1);
+            if (exact >= 0) return exact;
+            var medium = efforts.ToList().FindIndex(effort =>
+                string.Equals(effort, ChatReasoningEfforts.Medium, StringComparison.OrdinalIgnoreCase));
+            return medium >= 0 ? medium : efforts.Count / 2;
         }
     }
 
     internal bool SelectReasoningLevel(int level)
     {
         var choice = Providers.SelectedChatModel;
-        var effort = choice is null ? null : ModelCatalog.EffortForFiveLevel(choice.Provider, choice.ModelName, level);
+        var effort = choice is null ? null : ModelCatalog.EffortAtLevel(choice.Provider, choice.ModelName, level);
         return effort is not null && SelectReasoningEffort(effort);
     }
 

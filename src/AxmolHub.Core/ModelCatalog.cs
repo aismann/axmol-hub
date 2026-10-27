@@ -67,7 +67,7 @@ public static class ModelCatalog
     }
 
     public static bool SupportsReasoningEffort(ModelProvider? provider, string? modelName)
-        => EffortsFor(provider, modelName).Count > 0 || MayTryUnreportedEfforts(provider, modelName);
+        => SelectableReasoningEfforts(provider, modelName).Count > 0;
 
     public static bool SupportsReasoningEffort(ModelProvider? provider, string? modelName, string effort)
         => EffortsFor(provider, modelName).Contains(effort, StringComparer.OrdinalIgnoreCase);
@@ -116,25 +116,43 @@ public static class ModelCatalog
                    .Contains(effort, StringComparer.OrdinalIgnoreCase) != true;
     }
 
-    /// <summary>Maps one of five stable UI positions onto this model's known or still-tryable effort ladder.</summary>
-    public static string? EffortForFiveLevel(ModelProvider? provider, string? modelName, int level)
+    /// <summary>The selectable tiers for one model, ordered from least to most reasoning. GPT families use
+    /// their model-specific ladder even when endpoint metadata includes an extra tier; other models prefer known
+    /// declared or observed tiers, then fall back to the conservative three-tier ladder.</summary>
+    public static IReadOnlyList<string> SelectableReasoningEfforts(ModelProvider? provider, string? modelName)
     {
-        if (level is < 0 or > 4 || !SupportsReasoningEffort(provider, modelName)) return null;
-        var reported = EffortsFor(provider, modelName)
+        var gptEfforts = GptEffortsFor(modelName);
+        if (gptEfforts is not null)
+            return gptEfforts.Where(effort => MaySendEffort(provider, modelName, effort)).ToList();
+        var known = EffortsFor(provider, modelName)
             .Where(ChatReasoningEfforts.IsTier)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(effort => ModelRouting.Rank(effort))
             .ToList();
-        var ladder = reported.Count > 0
-            ? reported
-            : new[]
-            {
-                ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
-                ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Ultra,
-            }.Where(effort => MaySendEffort(provider, modelName, effort)).ToList();
-        if (ladder.Count == 0) return null;
-        var index = (int)Math.Round(level * (ladder.Count - 1) / 4d, MidpointRounding.AwayFromZero);
-        return ladder[index];
+        if (known.Count > 0) return known;
+        return new[] { ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High }
+            .Where(effort => MaySendEffort(provider, modelName, effort)).ToList();
+    }
+
+    /// <summary>Known GPT model families have a documented selectable ladder even when the endpoint's model
+    /// list omits capability metadata. Other unrecognized models use the conservative three-tier fallback.</summary>
+    private static string[]? GptEffortsFor(string? modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName)
+            || !modelName.Trim().StartsWith("gpt-", StringComparison.OrdinalIgnoreCase)) return null;
+        return modelName.Contains("luna", StringComparison.OrdinalIgnoreCase)
+            ? [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                ChatReasoningEfforts.XHigh]
+            : [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Ultra];
+    }
+
+    /// <summary>Returns the effort at a selectable slider index, or null when the index is outside this model's
+    /// current ladder.</summary>
+    public static string? EffortAtLevel(ModelProvider? provider, string? modelName, int level)
+    {
+        var efforts = SelectableReasoningEfforts(provider, modelName);
+        return level >= 0 && level < efforts.Count ? efforts[level] : null;
     }
 
     /// <summary>The tier a refusal named, or null when the message is not about reasoning. Both halves have to

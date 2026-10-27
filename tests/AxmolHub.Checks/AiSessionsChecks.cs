@@ -308,13 +308,41 @@ internal static class AiSessionsChecks
         };
         if (!ModelCatalog.SupportsReasoningEffort(deepSeekProvider, "deepseek-flash", ChatReasoningEfforts.Max) || ModelCatalog.SupportsReasoningEffort(deepSeekProvider, "deepseek-flash", ChatReasoningEfforts.Medium))
             throw new Exception("DeepSeek effort choices should match the live /models metadata.");
-        if (ModelCatalog.EffortForFiveLevel(deepSeekProvider, "deepseek-flash", 0) != "low"
-            || ModelCatalog.EffortForFiveLevel(deepSeekProvider, "deepseek-flash", 2) != "high"
-            || ModelCatalog.EffortForFiveLevel(deepSeekProvider, "deepseek-flash", 4) != "max"
-            || ModelCatalog.EffortForFiveLevel(deepSeekProvider, "deepseek-flash", 5) is not null)
-            throw new Exception("Five UI positions did not map monotonically across the model's declared effort ladder.");
-        if (ModelCatalog.EffortForFiveLevel(openAiProvider, "unknown-model", 2) != ChatReasoningEfforts.High)
-            throw new Exception("An unreported model did not retain the conservative five-position trial ladder.");
+        if (!ModelCatalog.SelectableReasoningEfforts(deepSeekProvider, "deepseek-flash")
+                .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.High, ChatReasoningEfforts.Max])
+            || ModelCatalog.EffortAtLevel(deepSeekProvider, "deepseek-flash", 0) != ChatReasoningEfforts.Low
+            || ModelCatalog.EffortAtLevel(deepSeekProvider, "deepseek-flash", 1) != ChatReasoningEfforts.High
+            || ModelCatalog.EffortAtLevel(deepSeekProvider, "deepseek-flash", 2) != ChatReasoningEfforts.Max
+            || ModelCatalog.EffortAtLevel(deepSeekProvider, "deepseek-flash", 3) is not null)
+            throw new Exception("The slider did not expose and select the model's declared tiers directly.");
+        if (!ModelCatalog.SelectableReasoningEfforts(openAiProvider, "unknown-model")
+                .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High])
+            || ModelCatalog.EffortAtLevel(openAiProvider, "unknown-model", 2) != ChatReasoningEfforts.High)
+            throw new Exception("An unrecognized model did not fall back to the Low, Medium, High ladder.");
+        if (!ModelCatalog.SelectableReasoningEfforts(openAiProvider, "gpt-6-luna")
+                .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                    ChatReasoningEfforts.XHigh])
+            || !ModelCatalog.SelectableReasoningEfforts(openAiProvider, "gpt-6.1-sol")
+                .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                    ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Ultra]))
+            throw new Exception("GPT Luna and non-Luna models did not expose their distinct reasoning tiers.");
+        var gptLunaWithMax = ProviderWith("gpt-6-luna", new AiModelReasoning
+        {
+            Efforts = [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Max],
+        });
+        var gptOtherWithMax = ProviderWith("gpt-6.1-sol", new AiModelReasoning
+        {
+            Efforts = [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Ultra, ChatReasoningEfforts.Max],
+        });
+        if (!ModelCatalog.SelectableReasoningEfforts(gptLunaWithMax, "gpt-6-luna")
+                .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                    ChatReasoningEfforts.XHigh])
+            || !ModelCatalog.SelectableReasoningEfforts(gptOtherWithMax, "gpt-6.1-sol")
+                .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High,
+                    ChatReasoningEfforts.XHigh, ChatReasoningEfforts.Ultra]))
+            throw new Exception("GPT metadata leaked Max into the model-specific reasoning ladder.");
         Console.WriteLine("PASS: reasoning efforts come from explicit model metadata, including DeepSeek /models.");
         // What a model was seen to do outranks what a file said, and what it refused closes only that one tier.
         static ModelProvider ProviderWith(string model, AiModelReasoning profile)

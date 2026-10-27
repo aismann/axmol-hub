@@ -26,6 +26,7 @@ public partial class ChatPanel : UserControl
     private readonly Button ForkNotice = new() { Classes = { "fork-notice" }, IsVisible = false,
         MaxWidth = 820, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 12, 0, 0) };
     private readonly StackPanel NoticeHost = new();
+    private bool _updatingReasoningControls;
 
     /// <summary>How many plain rows one promotion pass may upgrade. A scroll arrives as a burst and a pass that
     /// swallowed the whole burst would stall the very frame it exists to keep smooth, so the rest wait for the
@@ -364,7 +365,7 @@ public partial class ChatPanel : UserControl
         };
         ReasoningLevelSlider.ValueChanged += (_, _) =>
         {
-            if (AutoReasoningSwitch.IsChecked == true) return;
+            if (_updatingReasoningControls || AutoReasoningSwitch.IsChecked == true) return;
             var level = (int)Math.Round(ReasoningLevelSlider.Value);
             _chat.SelectReasoningLevel(level);
             UpdateModelSettingsPopup();
@@ -742,25 +743,66 @@ public partial class ChatPanel : UserControl
         ModelSettingsPopup.IsOpen = true;
     }
 
+    private static string ReasoningEffortLabel(string effort)
+        => HubStrings.Get(effort.ToLowerInvariant() switch
+        {
+            ChatReasoningEfforts.Low => "ChatEffortLow",
+            ChatReasoningEfforts.Medium => "ChatEffortMedium",
+            ChatReasoningEfforts.High => "ChatEffortHigh",
+            ChatReasoningEfforts.XHigh => "ChatEffortXHigh",
+            ChatReasoningEfforts.Max => "ChatEffortMax",
+            ChatReasoningEfforts.Ultra => "ChatEffortUltra",
+            _ => "ChatEffortHigh",
+        });
+
     private void UpdateModelSettingsPopup()
     {
         var selected = _chat.SelectedChatModel;
         var hasModel = selected is not null;
         var supportsReasoning = hasModel && ModelCatalog.SupportsReasoningEffort(
             selected!.Provider, selected.ModelName);
+        var efforts = selected is null
+            ? Array.Empty<string>()
+            : ModelCatalog.SelectableReasoningEfforts(selected.Provider, selected.ModelName).ToArray();
         AutoReasoningSwitch.IsEnabled = supportsReasoning;
         AutoReasoningSwitch.IsChecked = _chat.ActiveRouting == ChatRouting.Auto;
         ReasoningLevelSlider.IsEnabled = supportsReasoning && AutoReasoningSwitch.IsChecked != true;
+        _updatingReasoningControls = true;
+        try
+        {
+            ReasoningLevelSlider.Minimum = 0;
+            ReasoningLevelSlider.Maximum = Math.Max(0, efforts.Length - 1);
+            ReasoningLevelSlider.TickFrequency = 1;
+            ReasoningLevelSlider.Value = supportsReasoning
+                ? Math.Clamp(_chat.ActiveReasoningLevel, 0, efforts.Length - 1)
+                : 0;
+            ReasoningEffortLabels.Children.Clear();
+            ReasoningEffortLabels.ColumnDefinitions.Clear();
+            for (var index = 0; index < efforts.Length; index++)
+            {
+                ReasoningEffortLabels.ColumnDefinitions.Add(new ColumnDefinition(1, GridUnitType.Star));
+                var caption = new TextBlock
+                {
+                    Text = ReasoningEffortLabel(efforts[index]),
+                    HorizontalAlignment = index == 0 ? HorizontalAlignment.Left
+                        : index == efforts.Length - 1 ? HorizontalAlignment.Right : HorizontalAlignment.Center,
+                    Classes = { "model-level-caption" },
+                };
+                Grid.SetColumn(caption, index);
+                ReasoningEffortLabels.Children.Add(caption);
+            }
+        }
+        finally
+        {
+            _updatingReasoningControls = false;
+        }
         if (supportsReasoning)
         {
-            var level = _chat.ActiveReasoningLevel;
-            ReasoningLevelSlider.Value = level;
-            var actual = ModelCatalog.EffortForFiveLevel(selected!.Provider, selected.ModelName, level);
+            var level = (int)Math.Round(ReasoningLevelSlider.Value);
+            var actual = efforts[level];
             ReasoningLevelLabel.Text = HubStrings.Get("ChatReasoningLevelFormat").Replace("{0}",
-                HubStrings.Get($"ChatReasoningLevel{level + 1}"));
-            if (actual is not null)
-                ToolTip.SetTip(ReasoningLevelSlider, HubStrings.Get("ChatReasoningMappedFormat")
-                    .Replace("{0}", actual));
+                ReasoningEffortLabel(actual));
+            ToolTip.SetTip(ReasoningLevelSlider, actual);
         }
         else
         {
