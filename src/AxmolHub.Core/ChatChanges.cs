@@ -135,6 +135,31 @@ public static class ChatChanges
         return list;
     }
 
+    /// <summary>Returns successful writes for one activity group without collapsing repeated writes to the same
+    /// path. Each returned row represents the exact file revision produced by that tool call.</summary>
+    public static IReadOnlyList<ChangedFile> ForCalls(Conversation? conversation, IReadOnlySet<string> callIds)
+    {
+        if (conversation is null || callIds.Count == 0) return [];
+        var results = conversation.Messages
+            .Where(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 })
+            .GroupBy(turn => turn.ToolCallId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last().Text, StringComparer.Ordinal);
+        var changes = new List<ChangedFile>();
+        for (var index = 0; index < conversation.Messages.Count; index++)
+        {
+            var turn = conversation.Messages[index];
+            if (turn.Role != ChatRoles.Assistant || turn.ToolName != FileWriteTool
+                || turn.ToolCallId is not { Length: > 0 } callId || !callIds.Contains(callId)) continue;
+            var path = ChatUndoStore.WritePathOf(turn.ToolArguments);
+            if (path.Length == 0 || !results.TryGetValue(callId, out var result)) continue;
+            var verdict = VerdictOf(result);
+            if (verdict is not (ChangeVerdict.Created or ChangeVerdict.Edited)) continue;
+            changes.Add(new ChangedFile(path, verdict, callId, index, turn.ApprovalPreview, turn.UndoName,
+                turn.ToolArguments, FirstLine(result), true, LinesOf(turn), turn.UndoRevisionId ?? turn.ChangeId));
+        }
+        return changes;
+    }
+
     /// <summary>
     /// The diff for one entry, or null with <paramref name="state"/> saying why there is none. Called when a row
     /// is expanded, never for the whole list — a session of twelve writes must not read twelve files to show
@@ -269,28 +294,6 @@ public static class ChatChanges
             ?? (turn.ApprovalPreview is { Length: > 0 } frozen
                 ? ToCounts(CountChanges(frozen))
                 : new ChangeLineCounts(0, 0));
-
-    /// <summary>What this conversation changed, as one line of arithmetic: how many files, and how far they moved.
-    ///
-    /// <para>The line count is summed over <see cref="Of"/>'s deduplicated rows — the newest write to each path —
-    /// rather than over every call, because the surface this number opens lists exactly those rows with exactly
-    /// those diffs. A total over all calls would be a different quantity wearing the same words, and the one thing
-    /// this figure exists to be is honest about the click that follows it. The head of a run keeps the other basis
-    /// on purpose: it answers what that round did, and both read <see cref="LinesOf"/> per turn, so a session with
-    /// one write shows the same numbers in both places.</para>
-    /// </summary>
-    public static (int Files, int Added, int Removed) Summary(Conversation? conversation)
-    {
-        var files = Of(conversation);
-        var added = 0;
-        var removed = 0;
-        foreach (var file in files)
-        {
-            added += file.Lines?.Added ?? 0;
-            removed += file.Lines?.Removed ?? 0;
-        }
-        return (files.Count, added, removed);
-    }
 
     private static ChangeLineCounts ToCounts((int Added, int Removed) counts)
         => new(counts.Added, counts.Removed);

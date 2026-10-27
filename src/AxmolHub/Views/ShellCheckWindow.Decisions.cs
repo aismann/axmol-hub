@@ -554,46 +554,67 @@ internal sealed class ShellDecisionsChecks
             await panel.WaitForRunToFinishForCheck();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            Check(panel.RunDiffChipCountForCheck == 1 && panel.RunDiffChipsInsideGroupHeadsForCheck
-                  && panel.RunDiffChipTextForCheck(0).Contains("+1", StringComparison.Ordinal),
-                "这轮运行在组头上带出一个可点的 +N −M，数字正是刚批准的那段 diff（实际「"
-                + panel.RunDiffChipTextForCheck(0) + "」）");
-            // The count is read as the tail of the sentence that produced it. Pinned to the head's right edge it
-            // became a column of its own, and a column whose left edge moves with every label width is not
-            // something the eye learns to scan in a transcript.
+            // The aggregate stays a number and stops being a control: the run totals what its edits did, and the
+            // way into a diff is the row of the edit, which is the only thing that knows which file it touched.
+            // The head carries it right after the sentence — pinned to the head's right edge it became a column of
+            // its own, and a column whose left edge moves with every label width is not something the eye learns to
+            // scan in a transcript.
+            var headTotal = panel.ActivityGroupDiffTotalForCheck(0);
             var (headInline, headGapText) = panel.ActivityGroupHeadTrailingGapForCheck(0) is { } headMeasured
                 ? (headMeasured.Gap <= 12 && headMeasured.RightSlack > 40,
                    "间隙 " + headMeasured.Gap.ToString("0.#") + "px，右余 "
                    + headMeasured.RightSlack.ToString("0.#") + "px")
                 : (false, "量不出来");
+            Check(headTotal.Contains("+1", StringComparison.Ordinal)
+                  && headTotal.Contains("−1", StringComparison.Ordinal)
+                  && panel.RunDiffChipCountForCheck == 0,
+                "组头上带出这轮的 +N −M，数字正是刚批准的那段 diff，而且它是个数字而不是按钮（实际「"
+                + headTotal + "」，可点 " + panel.RunDiffChipCountForCheck + " 个）");
             Check(headInline,
                 "组头的 +N −M 跟着那句话走，右端留给空白（实际 " + headGapText + "）");
-            var chipTokenBefore = panel.ActivityGroupInstanceTokenForCheck(0);
-            var chipPressed = panel.ClickRunDiffChipForCheck(0);
+            // ── the edit row carries its own diff ──
+            // One row, one file, one diff. The row is where the fold already lives, so there is nothing to press
+            // twice: a reader who wants to see what a write did opens the write.
+            if (shell.InspectorVisibleForCheck) shell.CloseInspector();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            // Bound once, non-null: if the press did not produce a pane, the cells below fail on their own terms
-            // rather than on a null dereference, and none of them is a claim about a pane that is not there.
-            var chipPane = shell.InspectorPaneForCheck ?? new InspectorPanel();
-            Check(chipPressed && shell.InspectorVisibleForCheck
-                  && shell.InspectorPaneForCheck is not null
-                  && chipPane.ChangesTabVisibleForCheck && !chipPane.RepoTabVisibleForCheck
-                  && !chipPane.PlanTabVisibleForCheck
-                  && chipPane.ChangeRowCountForCheck == 1
-                  && chipPane.FirstChangePathForCheck == "chip-note.txt"
+            panel.SetActivityGroupExpandedForCheck(0, true);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.EditRowCountForCheck == 1
+                  && panel.EditRowDiffTotalForCheck(0).Contains("+1", StringComparison.Ordinal),
+                "展开工具组后那次写入是一行改动，行内自带 +N −M（实际 " + panel.EditRowCountForCheck + " 行，「"
+                + panel.EditRowDiffTotalForCheck(0) + "」）");
+            var chipTokenBefore = panel.ActivityGroupInstanceTokenForCheck(0);
+            panel.SetEditRowExpandedForCheck(0, true);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.EditRowDiffExpandedForCheck(0)
+                  && panel.EditRowDetailTextForCheck(0).Contains("chip-note.txt", StringComparison.Ordinal)
+                  && !shell.InspectorVisibleForCheck
                   && panel.ActivityGroupInstanceTokenForCheck(0) == chipTokenBefore,
-                "点组头上那个数字，右边那一列就开到改动页并列出刚动过的文件，而那一折还是同一个控件、没有被这次点击重建"
-                + $"（点击 {chipPressed}，显示 {shell.InspectorVisibleForCheck}，行 {chipPane.ChangeRowCountForCheck}，"
-                + $"路径 {chipPane.FirstChangePathForCheck}，组 {chipTokenBefore}/{panel.ActivityGroupInstanceTokenForCheck(0)}）");
-            // A repaint that folds everything the reader had opened is the same teardown seen from the other side:
-            // the row is opened here, before the second run, and has to come back open out of it.
-            chipPane.ClickChangeRowForCheck(0);
-            Check(chipPane.ChangeRowExpandedForCheck(0)
-                  && chipPane.ChangeRowTextForCheck(0).Contains("第二行（改过）", StringComparison.Ordinal),
-                "点开改动行才取它的 diff，取到的是批准时冻结的那一段（实际「"
-                + chipPane.ChangeRowTextForCheck(0) + "」）");
-            // The pane is open while the assistant keeps working, which is exactly when it used to stop telling the
-            // truth: it was painted once, on opening, and every write after that landed in a list nobody repainted.
+                "展开那行改动直接在行内显示该文件的历史 diff，不打开右侧 Changes，且虚拟列表组控件保持不变"
+                + $"（行内 diff {panel.EditRowDiffExpandedForCheck(0)}，右栏 {shell.InspectorVisibleForCheck}，"
+                + $"组 {chipTokenBefore}/{panel.ActivityGroupInstanceTokenForCheck(0)}）");
+            // The row's own fold belongs to the row, so a fold of the run must not take it with it. Collapsing the
+            // run recycles the rows; reopening it has to hand back the same open detail, because the fold the
+            // reader chose is theirs and not the run's.
+            panel.SetActivityGroupExpandedForCheck(0, false);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            panel.SetActivityGroupExpandedForCheck(0, true);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.EditRowCountForCheck == 1 && panel.EditRowDiffExpandedForCheck(0)
+                  && panel.EditRowDetailTextForCheck(0).Contains("chip-note.txt", StringComparison.Ordinal),
+                "收起再展开工具组后，那行改动仍记得自己展开过，diff 还在行内（行 "
+                + panel.EditRowCountForCheck + "，展开 " + panel.EditRowDiffExpandedForCheck(0) + "）");
+            // The detailed historical diff remains attached to its turn; it is not duplicated as a session-wide
+            // list in the repository view.
+            Check(ChatChanges.Of(chipSession).Any(change => change.RelativePath == "chip-note.txt"
+                  && change.Lines is { Added: 1, Removed: 1 }),
+                "轮次历史快照仍保留精确 diff 数据，但不混入 Repo Changes 的列表");
+            // The repo pane stays repository-wide while the assistant keeps working.
             var chipTwoClient = new ApprovalChatClient
             {
                 CallsRemaining = 1,
@@ -613,12 +634,9 @@ internal sealed class ShellDecisionsChecks
             await panel.WaitForRunToFinishForCheck();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            Check(chipPane.ChangeRowCountForCheck == 2
-                  && chipPane.FirstChangePathForCheck == "chip-note.txt",
-                "开着的改动页跟着这一轮多出来的那次写入一起长，不用重新点开（实际 "
-                + chipPane.ChangeRowCountForCheck + " 行）");
-            Check(chipPane.ChangeRowExpandedForCheck(0) && chipPane.OpenChangeCountForCheck == 1,
-                "重绘之后读者开着的那一行还开着：刷新不该把他翻开的文件折回去");
+            Check(panel.EditRowCountForCheck >= 1 && panel.EditRowDiffExpandedForCheck(0)
+                  && panel.EditRowDetailTextForCheck(0).Contains("chip-note.txt", StringComparison.Ordinal),
+                "虚拟转录在后续轮次写入后仍保留先前那行改动展开的 diff");
             // ── the same number in the tier that never asked ──
             // This is the premise the recorded tally exists for. A write only freezes a preview when it parks for a
             // card, so in 自动审批 there is no diff text in the transcript at all — and a count read off previews
@@ -651,29 +669,32 @@ internal sealed class ShellDecisionsChecks
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             var silentTurn = silentSession.Messages.Find(turn => turn.ToolName == "file_write");
+            var silentTotal = panel.ActivityGroupDiffTotalForCheck(0);
             // The turn has to be named, not merely "not carrying a preview": a null turn satisfies a null check on
             // its own and would let a fixture that wrote nothing pass as a tier that never asked.
-            Check(silentTurn is not null && panel.RunDiffChipCountForCheck == 1
-                  && panel.RunDiffChipTextForCheck(0).Contains("+5", StringComparison.Ordinal)
+            Check(silentTurn is not null
+                  && silentTotal.Contains("+5", StringComparison.Ordinal)
+                  && silentTotal.Contains("−3", StringComparison.Ordinal)
                   && silentTurn.ApprovalPreview is null
                   && silentTurn.ChangeLines is { Added: 5, Removed: 3 },
                 "自动审批档那次写入没有卡片、也冻不出预览，组头上照样报出 +5 −3（实际「"
-                + panel.RunDiffChipTextForCheck(0) + "」，调用轮 "
+                + silentTotal + "」，调用轮 "
                 + (silentTurn is null ? "不存在" : "在") + "，预览 "
                 + (silentTurn?.ApprovalPreview is null ? "没有" : "有") + "）");
-            // ── the band above the composer: this session's own tally, and the way into the list behind it ──
-            // One landed write and no question outstanding is the state the plate is meant to be read in, and it is
-            // also the state where it sits directly on top of the input box: with nothing owed an answer, the band
-            // is the row nearest the composer.
+            // ── the repository pill above the composer ──
+            // Unlike the turn chip above, this is a current workspace snapshot: it includes edits from any source
+            // and is intentionally independent of the active conversation's history.
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var pillLine = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatChangesPillFormat"), 1);
+            var pillRepository = chat.RepositoryFor(workspace)?.State;
+            var pillLine = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatChangesPillFormat"), pillRepository?.Entries.Count ?? 0);
             Check(panel.ChangesPillVisibleForCheck
+                  && pillRepository is { IsReadable: true, Entries.Count: > 0 }
                   && panel.ChangesPillTextForCheck.Contains(pillLine, StringComparison.Ordinal)
-                  && panel.ChangesPillTextForCheck.Contains("+5", StringComparison.Ordinal)
-                  && panel.ChangesPillTextForCheck.Contains("−3", StringComparison.Ordinal),
-                "输入框上方那条胶囊说出这一个文件和那五行增删（实际「" + panel.ChangesPillTextForCheck + "」）");
+                  && !panel.ChangesPillTextForCheck.Contains("+5", StringComparison.Ordinal)
+                  && !panel.ChangesPillTextForCheck.Contains("−3", StringComparison.Ordinal),
+                "输入框上方胶囊显示仓库快照文件数，不重复轮次增删行数（实际「" + panel.ChangesPillTextForCheck + "」）");
             Check(panel.ChangesPillBottomForCheck is { } pillBottom && pillBottom <= 0.5,
                 "没有待批准问题时，胶囊就是贴在输入框上方的那一条，没有盖到输入区（下沿相对输入框上边 "
                 + (panel.ChangesPillBottomForCheck ?? double.NaN).ToString("F1", CultureInfo.InvariantCulture) + "）");
@@ -681,10 +702,10 @@ internal sealed class ShellDecisionsChecks
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             var bandPane = shell.InspectorPaneForCheck ?? new InspectorPanel();
-            Check(pressedPill && shell.InspectorVisibleForCheck && bandPane.ChangesTabVisibleForCheck
-                  && bandPane.ChangeRowCountForCheck == 1,
-                "点胶囊把右边那一列开到改动页，页上的行数就是胶囊说的那个文件数（页 "
-                + bandPane.ChangeRowCountForCheck + " 行）");
+            Check(pressedPill && shell.InspectorVisibleForCheck && bandPane.RepoTabVisibleForCheck
+                  && bandPane.RepoRowCountForCheck == (pillRepository?.Entries.Count ?? -1),
+                "点胶囊打开仓库 Changes，仓库行数与胶囊的快照文件数一致（页 "
+                + bandPane.RepoRowCountForCheck + " 行，胶囊 " + (pillRepository?.Entries.Count ?? -1) + "）");
             // The plate is a thing the eye is sent to on purpose, so it has to be drawn, not merely laid out, and
             // framed with the token that separates from the raised surface — Hub.BorderSubtle is that same grey in
             // the dark variant and would draw no edge at all.
@@ -732,15 +753,20 @@ internal sealed class ShellDecisionsChecks
                   && bandPairs.All(pair => pair.Removed == 3),
                 "六个写入各归各的调用，增删行数按各自那次编辑落下（实际 "
                 + string.Join(" / ", bandPairs.Select(pair => "+" + pair.Added + " −" + pair.Removed)) + "）");
-            Check(panel.ChangesPillTextForCheck.Contains(
-                      string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatChangesPillFormat"), 6),
-                      StringComparison.Ordinal)
-                  && panel.ChangesPillTextForCheck.Contains("+27", StringComparison.Ordinal)
-                  && panel.ChangesPillTextForCheck.Contains("−18", StringComparison.Ordinal),
-                "胶囊说的是这六个文件的总数（实际「" + panel.ChangesPillTextForCheck + "」）");
+            await chat.RefreshRepositoryAsync(bandSession.Id);
+            Dispatcher.UIThread.RunJobs();
+            panel.Reload();
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var bandRepository = chat.RepositoryFor(workspace)?.State;
+            var bandPillLine = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatChangesPillFormat"), bandRepository?.Entries.Count ?? 0);
+            Check(bandRepository is { IsReadable: true, Entries.Count: >= 6 }
+                  && panel.ChangesPillTextForCheck.Contains(bandPillLine, StringComparison.Ordinal)
+                  && !panel.ChangesPillTextForCheck.Contains("+27", StringComparison.Ordinal),
+                "仓库扫描刷新后胶囊显示整个工作区的改动数，而不是本会话六次写入的行数（实际「" + panel.ChangesPillTextForCheck + "」）");
             bandPane = shell.InspectorPaneForCheck ?? bandPane;
-            Check(bandPane.ChangeRowCountForCheck == 6,
-                "胶囊报的文件数就是点开后改动页的行数（页 " + bandPane.ChangeRowCountForCheck + " 行）");
+            Check(bandPane.RepoRowCountForCheck == bandRepository?.Entries.Count,
+                "Repo Changes 文件行数与胶囊共享同一仓库快照（页 " + bandPane.RepoRowCountForCheck + " 行）");
             // ── the two plates share one row, and scrolling does not move the box ──
             // The band's height is reserved by whether the transcript <i>can</i> scroll rather than by where the
             // reading position stopped. Without that, the way back down would lift the composer every time the
@@ -935,7 +961,7 @@ internal sealed class ShellDecisionsChecks
             + shell.InspectorWidthForCheck + "）");
         shell.ClickInspectorToggleForCheck();
         Check(shell.InspectorVisibleForCheck && shell.InspectorWidthForCheck == 480
-              && shell.InspectorTabForCheck == "changes",
+              && shell.InspectorTabForCheck == "repo",
             "标题栏重新打开右栏时恢复原宽度和当前页签（宽度 "
             + shell.InspectorWidthForCheck + "，页签「" + shell.InspectorTabForCheck + "」）");
         shell.NavigateTo("Projects");
@@ -1000,9 +1026,9 @@ internal sealed class ShellDecisionsChecks
         tabPane?.ClickChangesTabForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.InspectorTabForCheck == "changes" && tabPane is { } afterChanges
-              && afterChanges.ChangesTabVisibleForCheck && !afterChanges.PlanTabVisibleForCheck
-              && afterChanges.SelectedTabKeyForCheck == "changes",
+        Check(shell.InspectorTabForCheck == "repo" && tabPane is { } afterChanges
+              && afterChanges.RepoTabVisibleForCheck && !afterChanges.PlanTabVisibleForCheck
+              && afterChanges.SelectedTabKeyForCheck == "repo",
             "点页眉的「改动」：外壳跟着改到改动页，页眉的下划线也移过去了（外壳记的是「"
             + shell.InspectorTabForCheck + "」，页眉标的是「"
             + (shell.InspectorPaneForCheck?.SelectedTabKeyForCheck ?? "") + "」）");
@@ -1011,8 +1037,8 @@ internal sealed class ShellDecisionsChecks
         panel.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.InspectorPaneForCheck is { } afterPaint && afterPaint.ChangesTabVisibleForCheck
-              && !afterPaint.PlanTabVisibleForCheck && shell.InspectorTabForCheck == "changes",
+        Check(shell.InspectorPaneForCheck is { } afterPaint && afterPaint.RepoTabVisibleForCheck
+              && !afterPaint.PlanTabVisibleForCheck && shell.InspectorTabForCheck == "repo",
             "转录又长一截之后重画，那一列还停在改动页，不会把人弹回他两分钟前就走开的计划页");
         // The reader's actual complaint: 仓库 showed the plan, because the read that landed repainted the column
         // on the tab the shell still remembered. Entering it by click must ask for its one read *and* still be
@@ -1038,7 +1064,7 @@ internal sealed class ShellDecisionsChecks
         shell.InspectorPaneForCheck?.ClickChangesTabForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(chat.RepositoryReadsForCheck == quietReads && shell.InspectorTabForCheck == "changes"
+        Check(chat.RepositoryReadsForCheck == quietReads && shell.InspectorTabForCheck == "repo"
               && ReferenceEquals(shell.InspectorPaneForCheck, tabPane),
             "计划与改动两页一次 git 都不问，换页也不重造面板（外壳记的是「"
             + shell.InspectorTabForCheck + "」）");
@@ -1118,9 +1144,9 @@ internal sealed class ShellDecisionsChecks
         shell.ClickInspectorToggleForCheck();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.InspectorVisibleForCheck && shell.InspectorTabForCheck == "changes"
+        Check(shell.InspectorVisibleForCheck && shell.InspectorTabForCheck == "repo"
               && shell.InspectorPaneForCheck is { } reopened
-              && reopened.ChangesTabVisibleForCheck && !reopened.PlanTabVisibleForCheck,
+              && reopened.RepoTabVisibleForCheck && !reopened.PlanTabVisibleForCheck,
             "再按展开：回到读者上次停的那一页，而不是从头塞给他一个计划（外壳记的是「"
             + shell.InspectorTabForCheck + "」）");
         var barBounds = shell.TitleBarBoundsForCheck;
@@ -1283,9 +1309,9 @@ internal sealed class ShellDecisionsChecks
                 ? "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（旧版）"
                 : "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", UndoCopyState.Read), null, "changes");
         Check(inspector.ChangeRowCountForCheck == 1 && inspector.FirstChangePathForCheck == "note.txt"
-              && inspector.ChangesTabVisibleForCheck && !inspector.PlanTabVisibleForCheck,
-            "改动页把这次会话动过的文件列出来，并停在被点开的哪一页（实际 "
-            + inspector.ChangeRowCountForCheck + " 行，首行「" + inspector.FirstChangePathForCheck + "」）");
+              && inspector.RepoTabVisibleForCheck && !inspector.PlanTabVisibleForCheck,
+            "历史轮次改动数据仍可读取，但 Changes 默认停在仓库视图（历史 "
+            + inspector.ChangeRowCountForCheck + " 项，首项「" + inspector.FirstChangePathForCheck + "」）");
         Check(inspector.ChangeOpenFileButtonForCheck,
             "会话改动文件行提供单一的 Open file 图标入口，直接打开整份文件编辑");
         inspector.ClickChangeRowForCheck(0);
@@ -1381,11 +1407,10 @@ internal sealed class ShellDecisionsChecks
             "三页各显示各的，切到计划页不会把改动页或仓库页也带出来");
 
         // ── the repository tab, fed a snapshot the same shape the reader produces ──
-        // The three states this tab can be in are three different claims, so each is asserted on its own words:
-        // the caveat that the list is the repository's rather than the session's, the per-file row with git's own
-        // two letters, and the mark that says a path is in <i>both</i> lists. Fixture-driven first — the pane must
-        // be readable without a git anywhere near the check — and the live read that proves the snapshot shape is
-        // asserted headlessly in --check-ai-workspace, where the real repository lives.
+        // The repository list is independent of transcript history: it carries git's own status for every dirty
+        // path, with no per-session marker. Fixture-driven first — the pane must be readable without a git anywhere
+        // near the check — and the live read that proves the snapshot shape is asserted headlessly in
+        // --check-ai-workspace, where the real repository lives.
         var repoState = new GitRepositoryState(GitReadOutcome.Ok, @"D:\dev\probe", "master", 2, 1,
             [
                 new GitStatusEntry("src/main.cpp", "M", " ", false),
@@ -1413,14 +1438,12 @@ internal sealed class ShellDecisionsChecks
             "仓库文件行不显示提交引用、暂存区或工作区比较按钮");
         Check(inspector.RepoCaveatForCheck == HubStrings.Get("InspectorRepoCaveat"),
             "仓库页第一句就讲清这是仓库的全部改动，不只是本会话做的（实际「" + inspector.RepoCaveatForCheck + "」）");
-        // The shared-path mark is the one place the two lists are allowed to speak to each other: note.txt is in
-        // the session's changes and in the repository's status, and saying so adds no claim to either.
-        Check(inspector.RepoRowTextForCheck(1).Contains(HubStrings.Get("InspectorRepoSessionAlsoTouched"),
+        Check(inspector.RepoRowTextForCheck(1).Contains("note.txt", StringComparison.Ordinal)
+              && !inspector.RepoRowTextForCheck(1).Contains(HubStrings.Get("InspectorRepoSessionAlsoTouched"),
                   StringComparison.Ordinal)
-              && inspector.RepoRowTextForCheck(1).Contains("note.txt", StringComparison.Ordinal)
               && !inspector.RepoRowTextForCheck(0).Contains(HubStrings.Get("InspectorRepoSessionAlsoTouched"),
                   StringComparison.Ordinal),
-            "本会话也动过的那个路径被标出来，没动过的不被顺手标（实际「" + inspector.RepoRowTextForCheck(1) + "」）");
+            "仓库文件行只呈现仓库状态，不再附加 Session 汇总/交叉标记（实际「" + inspector.RepoRowTextForCheck(1) + "」）");
         // A row's hunks come from the click, not from the list paint: the snapshot carries a diff for src/main.cpp
         // and none for the untracked png, and each row has to answer differently rather than the tab deciding for
         // all of them.

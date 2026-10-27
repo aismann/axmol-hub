@@ -79,21 +79,53 @@ public partial class ChatPanel : UserControl
     /// thinking duration — "执行工具 0 次" is a count of nothing, so a thought-only run says how long it thought.</summary>
     internal string ActivityGroupTitleForCheck(int index) => ActivityGroupAt(index)?.GetLogicalDescendants().OfType<ToggleButton>().FirstOrDefault(button => button.Classes.Contains("activity-group-head"))?.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault()?.Text ?? "";
     internal bool ActivityGroupExpandedForCheck(int index) => ActivityGroupAt(index)?.GetLogicalDescendants().OfType<ToggleButton>().FirstOrDefault(head => head.Classes.Contains("activity-group-head"))?.IsChecked == true;
-    /// <summary>How many of the flow's aggregate counts are pressable. Zero would mean the number is back to
-    /// being decoration — the state the pane existed to escape and no build error would ever report.</summary>
-    internal int RunDiffChipCountForCheck => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>().Count(button => button.Classes.Contains("file-chip-action"));
+    /// <summary>The head's aggregate count, in the words it is drawn with. It is a label rather than a button now:
+    /// the number is read, and the fold that shows a diff is opened by the edit's own row.</summary>
+    internal string ActivityGroupDiffTotalForCheck(int index) => ActivityGroupAt(index)?.GetLogicalDescendants().OfType<StackPanel>().FirstOrDefault(panel => panel.Classes.Contains("edit-counts")) is { } counts
+        ? string.Join(" ", counts.GetLogicalDescendants().OfType<TextBlock>().Select(text => text.Text))
+        : "";
+    /// <summary>How many pressable counts are left in the transcript. Zero is the contract: a count that opens a
+    /// place has to hold the thing it counts, and the count belongs to the run while the diff belongs to a row.</summary>
+    internal int RunDiffChipCountForCheck => RealizedTranscriptRows
+        .SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants()))
+        .OfType<Button>().Count(button => button.Classes.Contains("file-chip-action"));
 
-    /// <summary>Whether every chip hangs under a group head. This is the fact that makes "pressing the count does
-    /// not fold the run" a statement about the tree rather than about one fixture: the chip is the head's own
-    /// descendant, so the button taking the press is what keeps the reader's fold.</summary>
-    internal bool RunDiffChipsInsideGroupHeadsForCheck
+    /// <summary>How many rows in the transcript are edits — the rows that carry their own numbers and can open
+    /// their own diff. A session that wrote two files has to show two, or the diff of one of them is unreachable
+    /// however well the run's total adds up.</summary>
+    internal int EditRowCountForCheck => EditRowGrids.Count();
+    private IEnumerable<Grid> EditRowGrids => RealizedTranscriptRows
+        .SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants()))
+        .OfType<Grid>()
+        .Where(grid => grid.Classes.Contains("activity-row") && grid.Classes.Contains("edit"));
+    /// <summary>The numbers the Nth edit row worked with, read out of the row's own cell rather than the run's.
+    /// Both have to agree, and reading them apart is what proves the row says anything at all.</summary>
+    internal string EditRowDiffTotalForCheck(int index) => EditRowCountsPanel(index) is { } panel
+        ? string.Join(" ", panel.GetLogicalDescendants().OfType<TextBlock>().Select(text => text.Text))
+        : "";
+    /// <summary>Whether the Nth edit row's unfold is holding a diff. This is the fact the reader acts on: the row
+    /// is the only place a write's diff can be opened from, so a row that unfolds to counts and no diff is a dead
+    /// end dressed as a fold.</summary>
+    internal bool EditRowDiffExpandedForCheck(int index) => EditRowDiffSlot(index)?.GetLogicalDescendants().OfType<ScrollViewer>().Any() == true;
+    /// <summary>Everything the Nth edit row's unfold says, whitespace-normalised: the diff's lines, its `@@` hunks
+    /// and the counts above them, read as one string.</summary>
+    internal string EditRowDetailTextForCheck(int index) => EditRowDetail(index) is { } detail
+        ? string.Join("\n", detail.GetLogicalDescendants().OfType<TextBlock>()
+            .Select(text => text.Text).Where(text => !string.IsNullOrWhiteSpace(text)))
+        : "";
+    internal void SetEditRowExpandedForCheck(int index, bool expanded)
     {
-        get
-        {
-            var chips = RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>().Where(button => button.Classes.Contains("file-chip-action")).ToList();
-            return chips.Count > 0 && chips.All(chip => chip.GetLogicalAncestors().OfType<ToggleButton>().Any(head => head.Classes.Contains("activity-group-head")));
-        }
+        if (EditRowGrids.ElementAtOrDefault(index) is not { } grid) return;
+        if (grid.GetLogicalAncestors().OfType<ToggleButton>().FirstOrDefault() is { } toggle) toggle.IsChecked = expanded;
     }
+    private StackPanel? EditRowCountsPanel(int index) => EditRowGrids.ElementAtOrDefault(index)?.GetLogicalDescendants()
+        .OfType<StackPanel>().FirstOrDefault(panel => panel.Classes.Contains("edit-counts"));
+    private StackPanel? EditRowDiffSlot(int index) => EditRowGrids.ElementAtOrDefault(index)?.GetLogicalAncestors()
+        .OfType<Border>().FirstOrDefault(border => border.Classes.Contains("activity-row-shell"))?
+        .GetLogicalDescendants().OfType<StackPanel>().FirstOrDefault(panel => panel.Classes.Contains("edit-diff"));
+    private Border? EditRowDetail(int index) => EditRowGrids.ElementAtOrDefault(index)?.GetLogicalAncestors()
+        .OfType<Border>().FirstOrDefault(border => border.Classes.Contains("activity-row-shell"))?
+        .GetLogicalDescendants().OfType<Border>().FirstOrDefault(border => border.Classes.Contains("activity-detail"));
 
     /// <summary>Whether the band above the composer is showing its tally at all. A plate that is present in the
     /// tree but never made visible would satisfy a scan of the transcript and tell nobody anything on screen.</summary>
@@ -176,20 +208,6 @@ public partial class ChatPanel : UserControl
     /// nothing about which one is drawn.</summary>
     internal Border? ChangesPillBorderForCheck => ChangesPillHost.GetLogicalDescendants().OfType<Border>().FirstOrDefault(border => border.Classes.Contains("changes-pill"));
 
-    /// <summary>Presses one chip through its own click event and says whether there was a chip to press. A raised
-    /// Click is precisely what a ToggleButton ignores, so the fold state asserted next to this call can only be
-    /// explained by the wiring — not by a check that never touched the head.</summary>
-    internal bool ClickRunDiffChipForCheck(int index)
-    {
-        if (RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>().Where(button => button.Classes.Contains("file-chip-action")).ElementAtOrDefault(index)is not { } chip)
-            return false;
-        chip.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        return true;
-    }
-
-    /// <summary>The text a chip carries, joined: the two counts the reader pressed. Read as text so a cell can
-    /// prove the pane opened from <i>this</i> run's number rather than from some other group's.</summary>
-    internal string RunDiffChipTextForCheck(int index) => RealizedTranscriptRows.SelectMany(row => new ILogical[] { row }.Concat(row.GetLogicalDescendants())).OfType<Button>().Where(button => button.Classes.Contains("file-chip-action")).ElementAtOrDefault(index)is { } chip ? string.Join(" ", chip.GetLogicalDescendants().OfType<TextBlock>().Select(block => block.Text ?? "")) : "";
     /// <summary>Which group control the Nth fold is painted from, as an instance token. A run that grows its own
     /// group leaves the token alone; a run that tears the flow down and rebuilds it hands back a fresh number even
     /// when the restored head looks identical — and the person who had it open would see it close.</summary>
@@ -318,7 +336,8 @@ public partial class ChatPanel : UserControl
             return null;
         var head = group.GetLogicalDescendants().OfType<ToggleButton>().FirstOrDefault(button => button.Classes.Contains("activity-group-head"));
         var grid = head?.GetLogicalDescendants().OfType<Grid>().FirstOrDefault();
-        return TrailingGap(grid, grid?.Children.OfType<TextBlock>().FirstOrDefault(), grid?.Children.OfType<Button>().FirstOrDefault());
+        var counts = grid?.Children.FirstOrDefault(child => child.Classes.Contains("edit-counts"));
+        return TrailingGap(grid, grid?.Children.OfType<TextBlock>().FirstOrDefault(), counts);
     }
 
     private static (double Gap, double RightSlack)? TrailingGap(Control? container, TextBlock? label, Control? chip)

@@ -302,8 +302,11 @@ public partial class ChatPanel
             case "group":
             {
                 var open = IsFoldOpen(_expandedGroups, item.Session, item.GroupKey!);
+                var groupTurns = item.GroupTurns!;
+                // The head is one line and its own count trails the sentence; nothing hangs under it but the rows it
+                // folds, so there is no margin to reserve for a child that is not there.
                 var head = new ToggleButton { Classes = { "activity-group-head" }, IsChecked = open,
-                    Content = BuildActivityGroupHead(item.GroupTurns!, item.GroupCalls) };
+                    Content = BuildActivityGroupHead(groupTurns, item.GroupCalls) };
                 head.IsCheckedChanged += (_, _) =>
                 {
                     if (item.Session != _chat.ViewedConversationId) return;
@@ -528,7 +531,7 @@ public partial class ChatPanel
                     existing.GroupTurns = incoming[i].GroupTurns;
                     existing.GroupStamp = incoming[i].GroupStamp;
                     if (_realizedTranscript.TryGetValue(existing.Key, out var view)
-                        && view.Host.Children.FirstOrDefault() is Border { Child: ToggleButton head })
+                        && view.Host.GetVisualDescendants().OfType<ToggleButton>().FirstOrDefault() is { } head)
                         head.Content = BuildActivityGroupHead(existing.GroupTurns!, existing.GroupCalls);
                 }
                 existing.Source = incoming[i].Source;

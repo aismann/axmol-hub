@@ -179,23 +179,8 @@ internal static class AiToolsChecks
             throw new Exception("With no recorded tally the preview is the only thing left, and it counted " + $"{ladderPreviewOnly.Added}+ — a session written before this field existed would lose its numbers entirely.");
         if (ChatChanges.LinesOf(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch) { ToolName = "read_file", ToolCallId = "r-1" })is not { Added: 0, Removed: 0 })
             throw new Exception("A turn that wrote no lines claimed some.");
-        var ladderSession = new Conversation
-        {
-            Id = "tally-session",
-            Title = "tally"
-        };
         var ladderArgs = """{"path":"src/p.cpp","old_string":"a","new_string":"b"}""";
-        ladderSession.Append(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch) { ToolName = "file_write", ToolCallId = "w-1", ToolArguments = ladderArgs, ChangeLines = new ChangeLineCounts(1, 1), });
-        ladderSession.Append(new ChatTurn(ChatRoles.Tool, "Edited src/p.cpp.", DateTimeOffset.UnixEpoch) { ToolCallId = "w-1" });
-        ladderSession.Append(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch) { ToolName = "file_write", ToolCallId = "w-2", ToolArguments = ladderArgs, ChangeLines = new ChangeLineCounts(5, 2), });
-        ladderSession.Append(new ChatTurn(ChatRoles.Tool, "Edited src/p.cpp.", DateTimeOffset.UnixEpoch) { ToolCallId = "w-2" });
-        // Two writes to one path are one row in the pane the tally opens, so the total is the row's: the newest write.
-        var ladderSum = ChatChanges.Summary(ladderSession);
-        if (ladderSum is not (1, 5, 2))
-            throw new Exception($"Two writes to one file summed to {ladderSum.Files} files " + $"{ladderSum.Added}+/{ladderSum.Removed}- — the pane lists one row, so the pill must not total both.");
-        if (ChatChanges.Summary(null)is not (0, 0, 0))
-            throw new Exception("A session with no conversation reported a change.");
-        Console.WriteLine("PASS: the tally prefers the recorded count, falls back to a frozen preview, and sums the " + "newest write per path — which is the row the click opens.");
+        Console.WriteLine("PASS: each write turn keeps its recorded tally, falling back to its frozen preview when needed.");
         var tallyStoreRoot = Path.Combine(toolRoot, "tally-store");
         Directory.CreateDirectory(Path.Combine(tallyStoreRoot, "ai", "sessions"));
         var tallyStored = new Conversation

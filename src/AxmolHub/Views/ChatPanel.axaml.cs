@@ -346,12 +346,11 @@ public partial class ChatPanel : UserControl
             if (!viewed) return;
             UpdateSendState();
             ConversationStateChanged?.Invoke();
-            // A run that just finished can have moved the repository without Hub's file tool ever being part of
-            // it — a build that regenerated sources, a code format, a checkout the assistant asked to approve.
-            // So the repository tab asks for a fresh read here if it is the one being looked at. Nothing else is
-            // asked to read: the other two tabs are the transcript, which this event already repaints above.
-            if (_chat.ActiveConversation?.Id == conversationId
-                && _inspector is { } pane && pane.IsRepositoryTabVisible) RequestRepositoryRead();
+            // The repository pill is a live workspace summary, not a transcript tally. A completed run may have
+            // changed files through tools, a build, formatting, or a checkout, so refresh the snapshot even when
+            // the repository tab is closed; RepositoryChanged updates the pill without repainting transcript rows.
+            if (_chat.ActiveConversation?.Id == conversationId)
+                RequestRepositoryRead();
         };
         ModelPicker.Click += (_, _) => ShowModelSettings();
         ModelSettingsPopup.PlacementTarget = ModelPicker;
@@ -2792,7 +2791,7 @@ public partial class ChatPanel : UserControl
                 approvalSurface = BuildApprovalPendingLine(turn);
             else if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 }
                      || (turn.ChangeId is { Length: > 0 } && !turn.UndoConsumed))
-                approvalSurface = BuildCallRecord(conversationId, callId, turn);
+                approvalSurface = BuildCallRecord(conversationId, callId, turn, index);
         }
         if (isPlanTurn) approvalSurface = BuildPlanCard(turn, index);
 
@@ -3014,12 +3013,13 @@ public partial class ChatPanel : UserControl
     /// the right edge is what keeps the head one line the eye finishes in order, rather than a second column whose
     /// left edge moves with every label width.
     /// </summary>
-    private Control BuildActivityGroupHead(List<(int Index, ChatTurn Turn, string? ToolName)> turns, int callCount)
+    private static Control BuildActivityGroupHead(List<(int Index, ChatTurn Turn, string? ToolName)> turns,
+        int callCount)
     {
         // The head toggle carries the HubExpanderHeader theme, which supplies the same left `>`/`v` arrow the
         // sidebar's workspace groups use — so no chevron is built here, and the grid only lays out the sentence and
-        // the aggregate diff chip. The slack goes to the last column, after the chip.
-        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        // the aggregate count. The slack goes to the last column, after the count.
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*") };
 
         var (text, added, removed) = GroupSummary(turns, callCount);
         // The sentence embeds the first call's description, so its length is not bounded — and an Auto column is
@@ -3036,9 +3036,10 @@ public partial class ChatPanel : UserControl
 
         if (added + removed > 0)
         {
-            var chip = BuildDiffChip(added, removed);
-            Grid.SetColumn(chip, 1);
-            grid.Children.Add(chip);
+            var total = DiffCounts(added, removed);
+            total.Margin = CountsGap;
+            Grid.SetColumn(total, 1);
+            grid.Children.Add(total);
         }
 
         return grid;
@@ -3083,51 +3084,60 @@ public partial class ChatPanel : UserControl
         var removed = 0;
         foreach (var call in calls)
         {
-            var lines = ChatChanges.LinesOf(call.Turn);
+            var lines = DiffOf(call.Turn);
             added += lines.Added;
             removed += lines.Removed;
         }
         return (added, removed);
     }
 
-    /// <summary>
-    /// The run's aggregate line count, and the way into the pane that lists what produced it.
-    ///
-    /// It stays the same <c>Border.file-chip</c> wrapped in a bare transparent Button rather than becoming a
-    /// visible button: the count is the thing being read, and a plate on the head of a folded group is exactly
-    /// the chrome the charter has no room for. Wrapping it in a button is also what keeps the group open — the
-    /// button takes the pointer press, so the head's ToggleButton never sees it and the fold the reader chose
-    /// does not collapse under the click that was meant to open a diff.
-    /// </summary>
-    private Control BuildDiffChip(int added, int removed)
+    /// <summary>What one call moved, wherever it moved it. A file the tool wrote carries its counts in the changes
+    /// ledger; a patch reaches the disk through a command, and its counts are the lines its own envelope spells. Both
+    /// are asked here so a run of patches totals like a run of writes, and so a row's number cannot disagree with the
+    /// head above it.</summary>
+    private static (int Added, int Removed) DiffOf(ChatTurn call)
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var lines = ChatChanges.LinesOf(call);
+        if (lines.Added + lines.Removed > 0) return (lines.Added, lines.Removed);
+        var patch = PatchText.ForCall(call);
+        return patch is null ? (0, 0) : (patch.Added, patch.Removed);
+    }
+
+    /// <summary>The gap between a sentence and the numbers that follow it, and the reason it is a measurement
+    /// rather than a character: a space in the string would be the first thing a trimmed label eats, and a tab in a
+    /// grid column is not a tab stop — both end up as "Edit src/x.cs+3 −1", which reads as one token.</summary>
+    private static readonly Thickness CountsGap = new(8, 0, 0, 0);
+
+    /// <summary>The pair of numbers an edit is read by, in the ink the inspector already gives them: <c>+3</c> in the
+    /// added tone, <c>−1</c> in the removed one, and nothing at all for a count that is zero — a write that only
+    /// added must not also claim it removed nothing. The ink lives in the stylesheet beside the numbers' own class,
+    /// so a count reads the same wherever it is drawn.
+    ///
+    /// <para>It is a label, not a button. The number is the thing being read, the way into a diff is the row of the
+    /// edit itself where the fold already lives, and a plate on the head of a folded run is exactly the chrome the
+    /// transcript has no room for.</para></summary>
+    private static StackPanel DiffCounts(int added, int removed)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "edit-counts" },
+        };
         if (added > 0) row.Children.Add(new TextBlock
         {
-            Classes = { "file-chip-add" },
+            Classes = { "edit-count-added" },
             Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("InspectorAddedFormat"), added),
         });
         if (removed > 0) row.Children.Add(new TextBlock
         {
-            Classes = { "file-chip-del" },
+            Classes = { "edit-count-removed" },
             Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("InspectorRemovedFormat"), removed),
         });
-        var chip = new Button
-        {
-            Classes = { "file-chip-action" },
-            Tag = "InspectorOpenChanges",
-            Content = new Border { Classes = { "file-chip", "inline-chip" }, Child = row },
-            VerticalAlignment = VerticalAlignment.Center,
-            // The head's slack now sits after this column, so the button has to hold still at its own width: the
-            // expander template centers its content, and a stretched button would float the count into the middle
-            // of the empty row.
-            HorizontalAlignment = HorizontalAlignment.Left,
-        };
-        ToolTip.SetTip(chip, HubStrings.Get("InspectorOpenChanges"));
-        chip.Click += (_, _) => OpenInspector?.Invoke("changes", -1);
-        return chip;
+        return row;
     }
 
     /// <summary>How tall a thinking body may get before it scrolls. The bound is the existing detail panel's, not
@@ -3293,6 +3303,8 @@ public partial class ChatPanel : UserControl
             detail.IsVisible = expanded;
             RememberFold(_expandedRows, conversationId, foldKey, expanded);
         };
+        // …and a row that was left open is restored as one, rather than being rebuilt closed over the reader's
+        // choice the moment the group is folded and unfolded again.
         toggle.IsChecked = IsFoldOpen(_expandedRows, conversationId, foldKey);
 
         var content = new StackPanel { Spacing = 0 };
@@ -3611,12 +3623,24 @@ public partial class ChatPanel : UserControl
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
 
-        body.Children.Add(new TextBlock
+        // A patch's arguments *are* the change, so printing them back would show the file twice and the edit
+        // nowhere. The files it names are drawn as the change instead, by the same renderer the inspector reads a
+        // recorded write with — a fold that showed the envelope verbatim was the one edit in the transcript that
+        // could not be read as a diff.
+        var patch = PatchText.ForCall(call);
+        if (patch is not null)
         {
-            Classes = { "activity-detail-label" },
-            Text = HubStrings.Get("ActivityDetailInput"),
-        });
-        body.Children.Add(BoundedDetailScroll(FormatToolArguments(call), 160));
+            foreach (var section in patch.Sections) body.Children.Add(BuildPatchSection(section));
+        }
+        else
+        {
+            body.Children.Add(new TextBlock
+            {
+                Classes = { "activity-detail-label" },
+                Text = HubStrings.Get("ActivityDetailInput"),
+            });
+            body.Children.Add(BoundedDetailScroll(FormatToolArguments(call), 160));
+        }
 
         body.Children.Add(new TextBlock
         {
@@ -3631,6 +3655,146 @@ public partial class ChatPanel : UserControl
             IsVisible = false,
             Child = body,
         };
+    }
+
+    /// <summary>The unfold of an edit row: what that write moved, as the diff of the file it moved in it. It is the
+    /// same change the inspector reads, drawn by the same renderer, and it stays inside the row because the fold the
+    /// reader opened is the row's own — opening the right-hand pane instead would take the diff away from the line
+    /// that names the file.
+    ///
+    /// <para>The body fills on the first expand and never before: resolving a diff opens the file, and a run of
+    /// twelve writes must not read twelve files to draw twelve closed rows.</para></summary>
+    private Border BuildEditRowDetail(string conversationId, ChatTurn call)
+    {
+        var body = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Classes = { "edit-diff" },
+        };
+
+        var detail = new Border
+        {
+            Classes = { "activity-detail" },
+            IsVisible = false,
+            Child = body,
+        };
+
+        var filled = false;
+        void Fill()
+        {
+            if (filled) return;
+            filled = true;
+            var counts = DiffOf(call);
+            if (counts.Added > 0 || counts.Removed > 0) body.Children.Add(DiffCounts(counts.Added, counts.Removed));
+            body.Children.Add(BuildEditDiff(conversationId, call));
+        }
+
+        // The fold is driven off visibility rather than off the toggle, because opening one is not the only way it
+        // opens: a row the reader left expanded is restored as one they never touched, and that path has to fill it
+        // too.
+        detail.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == IsVisibleProperty && detail.IsVisible) Fill();
+        };
+        return detail;
+    }
+
+    /// <summary>One write's diff, under the name of the file it moved. The header is not decoration: the fold is
+    /// where a reader goes to find out what a write did, and a diff with no path over it is a change nobody can
+    /// place. A revision that cannot be resolved says why in the inspector's own words rather than drawing an
+    /// empty block.</summary>
+    private Control BuildEditDiff(string conversationId, ChatTurn call)
+    {
+        var body = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Spacing = 2,
+        };
+
+        var change = call.ToolCallId is { Length: > 0 } callId && _chat is not null
+            ? _chat.ChangesForCalls(_chat.ActiveConversation, new HashSet<string>(StringComparer.Ordinal) { callId })
+                .FirstOrDefault()
+            : null;
+        if (change is null)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Classes = { "activity-detail-body" },
+                Text = HubStrings.Get("InspectorDiffUnreadable"),
+            });
+            return body;
+        }
+
+        body.Children.Add(new TextBlock
+        {
+            Classes = { "activity-detail-label" },
+            Text = change.RelativePath,
+        });
+
+        var diff = (string?)null;
+        var state = UndoCopyState.Unreadable;
+        if (_chat is not null) diff = _chat.DiffForChange(change, conversationId, out state);
+        if (diff is null)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Classes = { "activity-detail-body" },
+                Text = HubStrings.Get(InspectorPanel.DiffUnavailableKey(change, state)),
+            });
+            return body;
+        }
+
+        var snapshot = _chat?.SnapshotForChange(change, change.SelectedRevisionId, out _);
+        using var syntax = new ChangesDiffSyntax(change.RelativePath, diff, snapshot);
+        var block = InspectorPanel.BuildUnifiedDiffBlock(diff, syntax);
+        // The bound is the fold's, not the diff's: a six-hundred-line change inside a transcript row would push
+        // every row after it off the screen, and the box already scrolls both ways.
+        block.MaxHeight = 320;
+        body.Children.Add(block);
+        return body;
+    }
+
+    /// <summary>One file of a patch, as the fold shows it: the path the envelope named, then the lines it moved in
+    /// it. A move says where it goes; a delete says it is one, because the envelope spells no lines for a file it
+    /// removes and an empty block would look like a failed read.</summary>
+    private static Control BuildPatchSection(PatchSection section)
+    {
+        var card = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Spacing = 2,
+            Margin = new Thickness(0, 0, 0, 6),
+        };
+
+        card.Children.Add(new TextBlock
+        {
+            Classes = { "activity-detail-label" },
+            Text = section.MovedTo is { Length: > 0 } moved ? $"{section.Path} → {moved}" : section.Path,
+        });
+
+        if (section.Operation == PatchFileOperation.Delete)
+        {
+            card.Children.Add(new TextBlock
+            {
+                Classes = { "activity-detail-body" },
+                Text = HubStrings.Get("PatchDeletedFile"),
+            });
+        }
+        else if (section.Lines.Count > 0)
+        {
+            // There is no snapshot to highlight from — the envelope carries the change and never the file — so these
+            // rows keep the tint and the marker and go without a lexer, rather than colouring a file nobody read.
+            var diff = string.Join('\n', section.Lines);
+            using var syntax = new ChangesDiffSyntax(section.Path, diff, null);
+            var block = InspectorPanel.BuildUnifiedDiffBlock(diff, syntax, numbered: false);
+            block.MaxHeight = 320;
+            card.Children.Add(block);
+        }
+
+        return card;
     }
 
     /// <summary>One half of the exchange in a scroll window of its own. The bound is the point: a compiler's whole
@@ -3700,7 +3864,16 @@ public partial class ChatPanel : UserControl
     private Control BuildActivityRow(ChatTurn? call, ChatTurn result)
     {
         var command = call?.ToolName == "run_command" ? ArgField(call.ToolArguments, "command", "cmd") : null;
-        var showsCommand = !string.IsNullOrWhiteSpace(command);
+        var patch = call is null ? null : PatchText.ForCall(call);
+        // An edit made through a patch names its files in the verb and its size in the counts, so it does not echo
+        // the command: the command line holds the patch itself, and the folded one-liner of it that used to sit
+        // here was several hundred characters of envelope with nothing readable in it.
+        var showsCommand = !string.IsNullOrWhiteSpace(command) && patch is null;
+        // What this call moved, wherever it moved it: a write keeps its counts in the changes ledger and a patch
+        // spells them in its own envelope. Reading both through one function is what keeps a row's number and the
+        // total of the run above it from disagreeing about the same call.
+        var (movedIn, movedOut) = call is null ? (0, 0) : DiffOf(call);
+        var showsCounts = movedIn + movedOut > 0;
         // What a command ended with, when anything recorded it: the exit code and how long it ran. They trail the
         // preview rather than replacing it — one line still reads in order — and they are absent for every other
         // tool, because a read has no exit code and a duration for one answers nothing anybody asked.
@@ -3710,7 +3883,7 @@ public partial class ChatPanel : UserControl
         // used to eat all the slack and pin the preview to the row's right edge, which made the eye cross the
         // whole column to finish the sentence. Without a preview the label keeps the star, because that is where
         // a long 「读取 <path>」 gets trimmed.
-        var columns = showsCommand ? "Auto,Auto,*" : "Auto,*";
+        var columns = showsCommand || showsCounts ? "Auto,Auto,*" : "Auto,*";
         for (var trailing = 0; trailing < marks; trailing++) columns += ",Auto";
         var grid = new Grid
         {
@@ -3761,10 +3934,20 @@ public partial class ChatPanel : UserControl
             grid.Children.Add(chip);
         }
 
+        // A patch's or a write's own size, in the same place and the same ink the head of a run uses: the two
+        // numbers are what tells an edit of three lines from an edit of three hundred without opening either.
+        if (showsCounts)
+        {
+            var counts = DiffCounts(movedIn, movedOut);
+            counts.Margin = CountsGap;
+            Grid.SetColumn(counts, 2);
+            grid.Children.Add(counts);
+        }
+
         // The verdict of a command, in the two numbers a person would ask for. The code is drawn as a chip like the
         // command it follows, and takes the danger ink when it is not zero: the row already carries a red mark for a
         // failed call, and a `0` in green beside one would be the row disagreeing with itself.
-        var trailingColumn = showsCommand ? 3 : 2;
+        var trailingColumn = showsCommand || showsCounts ? 3 : 2;
         if (facts?.ExitCode is { } exitCode && call is not null
             && string.Equals(call.ToolName, WorkspaceTools.RunCommandTool, StringComparison.Ordinal))
         {
@@ -3835,13 +4018,23 @@ public partial class ChatPanel : UserControl
                     ArgField(args, "pattern", "query", "glob") ?? ""),
             ToolNames.ListDirectory
                 => string.Format(culture, HubStrings.Get("ActivityRowList"), path.Length > 0 ? path : "."),
-            ToolNames.RunCommand => HubStrings.Get("ActivityRowRunCommand"),
+            ToolNames.RunCommand => PatchText.ForCall(call) is { } patch
+                ? DescribePatch(patch)
+                : HubStrings.Get("ActivityRowRunCommand"),
             // Host and path only: the query is where a token hides, and this line is stored in the transcript.
             ToolNames.WebFetch => string.Format(culture, HubStrings.Get("ActivityRowFetch"),
                 WebFetch.Shown(ArgField(args, "url") ?? "")),
             _ => string.Format(culture, HubStrings.Get("ActivityRowGeneric"), name),
         };
     }
+
+    /// <summary>A patch named by what it does: one file by its path, several by the count. The wording is the
+    /// wording a write gets, because how an edit reached the disk is the tool's business rather than the reader's —
+    /// the same three-line change must not read as "edit" in one row and "run command" in the next.</summary>
+    private static string DescribePatch(PatchSummary patch)
+        => string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get(patch.Sections.Count == 1 ? "ActivityRowEditFile" : "ActivityRowEditFilesFormat"),
+            patch.Sections.Count == 1 ? patch.Sections[0].Path : patch.Sections.Count);
 
     /// <summary>The first string-valued field among <paramref name="keys"/> from a tool's JSON arguments, or null.
     /// A malformed payload is treated as absent rather than thrown: a description is not worth failing a paint.</summary>
@@ -3945,7 +4138,7 @@ public partial class ChatPanel : UserControl
 
     /// <summary>The decided call, still in the record and no longer actionable: what became of it is the only
     /// thing worth the space — and, for a write, the one exit it has while a copy is left behind it.</summary>
-    private Control BuildCallRecord(string conversationId, string callId, ChatTurn turn)
+    private Control BuildCallRecord(string conversationId, string callId, ChatTurn turn, int index)
     {
         // A write that never had to ask still changed the file, so it gets a line of its own naming the file
         // rather than the tool: who was asked is a permission detail, what moved is the record.
@@ -3982,7 +4175,53 @@ public partial class ChatPanel : UserControl
                 ChatUndoStore.WritePathOf(turn.ToolArguments)));
         }
 
-        return new Border { Classes = { "approval-record" }, Child = row };
+        return BuildEditRecord(conversationId, callId, turn, RowKey(index, "write"), row);
+    }
+
+    /// <summary>A landed write, as the row that can open its own diff. The record line stays the row's face —
+    /// whether anybody was asked is still part of what happened — and the numbers of what moved sit at its right
+    /// edge, the same <c>+N −M</c> the run above it totals, read from this call rather than from the run. Its own
+    /// diff opens under it, so a reader who wants to see the change never has to leave the line that names the file
+    /// for the right-hand pane. A call that moved no file keeps the plain record line: it has nothing to unfold.</summary>
+    private Control BuildEditRecord(string conversationId, string callId, ChatTurn turn, string foldKey,
+        StackPanel line)
+    {
+        var record = new Border { Classes = { "approval-record" }, Child = line };
+        if (_chat is null
+            || _chat.ChangesForCalls(_chat.ActiveConversation, new HashSet<string>(StringComparer.Ordinal) { callId })
+                .Count == 0)
+            return record;
+
+        var face = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        face.Classes.Add("activity-row");
+        face.Classes.Add("edit");
+        face.Children.Add(record);
+        var counts = DiffOf(turn);
+        if (counts.Added > 0 || counts.Removed > 0)
+        {
+            var numbers = DiffCounts(counts.Added, counts.Removed);
+            numbers.Margin = CountsGap;
+            Grid.SetColumn(numbers, 1);
+            face.Children.Add(numbers);
+        }
+
+        var toggle = new ToggleButton { Classes = { "activity-row-toggle" }, Content = face };
+        var detail = BuildEditRowDetail(conversationId, turn);
+        // Each write owns its fold, keyed by the occurrence it answers: two writes to one file are two rows, and
+        // opening one must not open the other.
+        toggle.IsCheckedChanged += (_, _) =>
+        {
+            var expanded = toggle.IsChecked == true;
+            detail.IsVisible = expanded;
+            RememberFold(_expandedRows, conversationId, foldKey, expanded);
+        };
+        toggle.IsChecked = IsFoldOpen(_expandedRows, conversationId, foldKey);
+
+        return new Border
+        {
+            Classes = { "activity-row-shell" },
+            Child = new StackPanel { Spacing = 0, Children = { toggle, detail } },
+        };
     }
 
     private Button BuildUndoButton(string conversationId, string callId, string path)

@@ -769,18 +769,21 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
-    <Style Selector="Border.file-chip TextBlock.file-chip-add">
-      <Setter Property="Foreground" Value="{DynamicResource Hub.Success}" />
-      <Setter Property="Margin" Value="5,0,0,0" />
-    </Style>
     <!-- An exit code that is not zero. The chip keeps its shape and sizes so the row still reads as one line; only
          the ink changes, which is the same rule the failed row's sentence follows. -->
     <Style Selector="Border.file-chip.failed TextBlock">
       <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
     </Style>
-    <Style Selector="Border.file-chip TextBlock.file-chip-del">
+    <!-- The two inks an edit is read by: +N green, −M red. Keyed on the count itself and not on a chip above it,
+         because the transcript draws these numbers as bare text on a row and on the head of a run — the earlier
+         selectors were scoped to a Border.file-chip that the row no longer has, so both numbers silently fell back
+         to body ink and the one thing the row exists to show was the one thing with no colour. SuccessText and
+         DangerText are the ink weights; Hub.Success and Hub.Danger are fills (see HubTokens). -->
+    <Style Selector="TextBlock.edit-count-added">
+      <Setter Property="Foreground" Value="{DynamicResource Hub.SuccessText}" />
+    </Style>
+    <Style Selector="TextBlock.edit-count-removed">
       <Setter Property="Foreground" Value="{DynamicResource Hub.DangerText}" />
-      <Setter Property="Margin" Value="4,0,0,0" />
     </Style>
     <!-- A count or a command preview that reads immediately after its own sentence is a fragment of that line, not
          a plate beside it: the raised wash alone separates it from the proportional text. The frame is hidden by
@@ -788,38 +791,6 @@
          slide the digits sideways on hover. Declared after Border.file-chip so the later rule is the one that wins. -->
     <Style Selector="Border.file-chip.inline-chip">
       <Setter Property="BorderBrush" Value="Transparent" />
-    </Style>
-    <!-- The run's aggregate +N −M, which is also the way into the pane that lists what produced it. The chip stays
-         the same Border, wrapped in a bare transparent Button: a default button plate on the head of a folded
-         group is chrome the shell has no room for, and the count is the thing being read. The press is taken by
-         the button, so the group's own toggle never sees it and the fold the reader opened stays open. -->
-    <Style Selector="Button.file-chip-action">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Padding" Value="0" />
-      <Setter Property="Margin" Value="0" />
-      <Setter Property="MinHeight" Value="0" />
-      <Setter Property="MinWidth" Value="0" />
-      <Setter Property="Cursor" Value="Hand" />
-      <Setter Property="VerticalAlignment" Value="Center" />
-      <Setter Property="Template">
-        <ControlTemplate>
-          <Border Background="Transparent" Padding="0" ClipToBounds="True">
-            <ContentPresenter Content="{TemplateBinding Content}"
-                              HorizontalAlignment="Center"
-                              VerticalAlignment="Center" />
-          </Border>
-        </ControlTemplate>
-      </Setter>
-    </Style>
-    <Style Selector="Button.file-chip-action:pointerover > Border.file-chip">
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderHover}" />
-    </Style>
-    <!-- Written out for the inline chip rather than left to the rule above: that one names one class on the target
-         node and this rest state names two, and which of them Avalonia ranks higher is not worth guessing at when
-         the whole point is that the frame comes back under the pointer. -->
-    <Style Selector="Button.file-chip-action:pointerover > Border.file-chip.inline-chip">
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.BorderHover}" />
     </Style>
     <!-- The tally above the composer is the run's chip grown into its own row, so it wears the same classes and
         inherits the same green and red rather than being handed a copy of them. What differs is the plate: a thing

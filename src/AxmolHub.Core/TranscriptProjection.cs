@@ -59,7 +59,8 @@ public sealed record TranscriptSnapshot(IReadOnlyList<TranscriptEntry> Entries, 
 /// <item>A tool result's name has two different sources: the conversation-wide lookup takes the <b>first</b>
 /// assistant call carrying an id, while a piece's result pairing takes the <b>last</b> call inside that piece.
 /// With duplicate ids those disagree, so neither is "the" answer and both are kept.</item>
-/// <item>A <c>file_write</c> result draws no exchange row — its call's write record already speaks for it.</item>
+/// <item>A <c>file_write</c> result draws no exchange row — its call's write record already speaks for it, and the
+/// turn's files are reached through the run's own diff list rather than through a tool fold.</item>
 /// </list>
 /// </summary>
 public static class TranscriptProjection

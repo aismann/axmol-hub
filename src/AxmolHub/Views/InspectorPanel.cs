@@ -607,7 +607,7 @@ internal sealed partial class InspectorPanel : UserControl
             return;
         }
         foreach (var entry in repository.Entries)
-            _repoBody.Children.Add(BuildRepositoryRow(entry, repository, TouchedBySession(repository, changes)));
+            _repoBody.Children.Add(BuildRepositoryRow(entry, repository));
         if (repository.Truncated)
         {
             _repoBody.Children.Add(EmptyLine(string.Format(System.Globalization.CultureInfo.CurrentCulture,
@@ -675,27 +675,7 @@ internal sealed partial class InspectorPanel : UserControl
         return row;
     }
 
-    /// <summary>Which of these dirty paths this conversation also wrote. The two lists use different anchors —
-    /// git speaks from the repository root, <see cref="ChatChanges"/> from the session's folder — so a workspace
-    /// that is a subfolder matches by suffix rather than never matching at all. The mark is the one place the two
-    /// tabs are allowed to talk to each other, and it adds no claim: it says a file is in both lists.</summary>
-    private static HashSet<string> TouchedBySession(GitRepositoryState state, IReadOnlyList<ChangedFile> changes)
-    {
-        var touched = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var change in changes)
-        {
-            var relative = change.RelativePath.Replace('\\', '/');
-            foreach (var entry in state.Entries)
-            {
-                if (string.Equals(entry.RelativePath, relative, StringComparison.Ordinal)
-                    || entry.RelativePath.EndsWith("/" + relative, StringComparison.Ordinal))
-                    touched.Add(entry.RelativePath);
-            }
-        }
-        return touched;
-    }
-
-    private Control BuildRepositoryRow(GitStatusEntry entry, GitRepositoryState state, HashSet<string> touched)
+    private Control BuildRepositoryRow(GitStatusEntry entry, GitRepositoryState state)
     {
         var container = new StackPanel { Spacing = 0, Classes = { "inspector-change" } };
         var header = new Button { Classes = { "inspector-change-header" }, Tag = entry.RelativePath };
@@ -712,22 +692,13 @@ internal sealed partial class InspectorPanel : UserControl
         mark.Classes.Add(entry.Untracked ? "created" : "edited");
         grid.Children.Add(mark);
 
-        var nameColumn = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center };
-        nameColumn.Children.Add(Themed(new TextBlock
+        var nameColumn = Themed(new TextBlock
         {
             Text = entry.RelativePath,
             TextTrimming = TextTrimming.CharacterEllipsis,
             Classes = { "inspector-path" },
-        }, "Hub.TextPrimary"));
-        if (touched.Contains(entry.RelativePath))
-        {
-            nameColumn.Children.Add(Themed(new TextBlock
-            {
-                Text = HubStrings.Get("InspectorRepoSessionAlsoTouched"),
-                TextWrapping = TextWrapping.Wrap,
-                Classes = { "inspector-note" },
-            }, "Hub.TextTertiary"));
-        }
+            VerticalAlignment = VerticalAlignment.Center,
+        }, "Hub.TextPrimary");
         Grid.SetColumn(nameColumn, 1);
         nameColumn.Margin = new Thickness(6, 0, 6, 0);
         grid.Children.Add(nameColumn);
@@ -1084,7 +1055,7 @@ internal sealed partial class InspectorPanel : UserControl
         return new ChangesDiffEditView(buffer, _splitDiff, UpdateEditActions);
     }
 
-    private static string DiffUnavailableKey(ChangedFile change, UndoCopyState state) => state switch
+    internal static string DiffUnavailableKey(ChangedFile change, UndoCopyState state) => state switch
     {
         UndoCopyState.CreatedFile => "InspectorDiffCreatedFile",
         UndoCopyState.PendingSnapshot => "InspectorDiffPendingSnapshot",
@@ -1151,7 +1122,12 @@ internal sealed partial class InspectorPanel : UserControl
         return text;
     }
 
-    private static Control BuildUnifiedDiffBlock(string diff, ChangesDiffSyntax syntax)
+    /// <summary>Renders a unified diff with separate old/new line-number gutters and an explicit change marker.
+    /// A horizontal scroller rather than wrapping: code that wraps loses the column alignment a diff is read by.
+    /// <para>Also the renderer the transcript folds a patch edit open with, which is why the gutters can be left
+    /// out: a patch envelope anchors its hunks on context instead of positions, so numbers beside it would be
+    /// invented here rather than read from anywhere.</para></summary>
+    internal static Control BuildUnifiedDiffBlock(string diff, ChangesDiffSyntax syntax, bool numbered = true)
     {
         var lines = new StackPanel { Spacing = 0 };
         var viewer = DiffViewport();
@@ -1162,7 +1138,7 @@ internal sealed partial class InspectorPanel : UserControl
             var line = raw.TrimEnd('\r');
             var lineClass = DiffLineClass(line);
             var sourceLine = lineClass == "diff-del" ? oldLine : newLine;
-            var numbers = DiffLineNumbers(line, lineClass, ref oldLine, ref newLine);
+            var numbers = numbered ? DiffLineNumbers(line, lineClass, ref oldLine, ref newLine) : "";
             var block = new Border();
             block.Classes.Add("inspector-diff-line");
             if (lineClass.Length > 0) block.Classes.Add(lineClass);
@@ -1171,16 +1147,19 @@ internal sealed partial class InspectorPanel : UserControl
                 (oldLine, newLine) = ParseHunkLineNumbers(line);
 
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*") };
-            var gutter = Themed(new TextBlock
+            if (numbered)
             {
-                Text = numbers,
-                FontFamily = ThemedFont("Hub.Font.Mono"),
-                FontSize = 10,
-                TextAlignment = TextAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Center,
-                Classes = { "inspector-diff-gutter" },
-            }, "Hub.TextTertiary");
-            row.Children.Add(gutter);
+                var gutter = Themed(new TextBlock
+                {
+                    Text = numbers,
+                    FontFamily = ThemedFont("Hub.Font.Mono"),
+                    FontSize = 10,
+                    TextAlignment = TextAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Classes = { "inspector-diff-gutter" },
+                }, "Hub.TextTertiary");
+                row.Children.Add(gutter);
+            }
 
             var marker = Themed(new TextBlock
             {
@@ -1195,7 +1174,7 @@ internal sealed partial class InspectorPanel : UserControl
 
             var displayLine = lineClass is "diff-add" or "diff-del"
                 ? line[1..]
-                : line.StartsWith(' ') && numbers.Length > 0
+                : line.StartsWith(' ') && numbered
                     ? line[1..]
                     : line;
             var codeText = line.StartsWith('+') || line.StartsWith('-') || line.StartsWith(' ')

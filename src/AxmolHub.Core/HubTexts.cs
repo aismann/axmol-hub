@@ -790,8 +790,8 @@ public static class HubTexts
         ["ChatToolProjects"] = ("项目", "projects"),
         ["ChatToolEngines"] = ("引擎", "engines"),
         ["ChatToolchains"] = ("工具链状态", "toolchain status"),
-        ["ChatToolRunningFormat"] = ("正在读取{0}", "Reading {0}"),
-        ["ChatToolCompletedFormat"] = ("已读取{0}，正在继续", "Read {0}; continuing"),
+        ["ChatToolRunningFormat"] = ("正在读取{0}", "Viewing {0}"),
+        ["ChatToolCompletedFormat"] = ("已读取{0}，正在继续", "Viewed {0}; continuing"),
         ["Provider"] = ("模型提供商", "Provider"),
         // Title and description of the AI model provider management card on the Settings page.
         ["ModelProviders"] = ("模型提供商", "Model providers"),
@@ -935,7 +935,7 @@ public static class HubTexts
         // The write's own record and its one exit. A call that never had to ask still changed the file, so the
         // line names the file; the button only rides along while there is a copy to go back to — and it stays
         // visible instead of waiting for a hover, because an undo nobody can find is a mistake that cannot be fixed.
-        ["ChatWriteRecordFormat"] = ("写入 {0}", "wrote {0}"),
+        ["ChatWriteRecordFormat"] = ("写入 {0}", "Edit {0}"),
         ["ChatUndoButton"] = ("撤销", "Undo"),
         ["ChatUndoTip"] = ("把 {0} 恢复到这次写入之前的内容", "Put {0} back to what it held before this write"),
         // The one line a long session opens with instead of its whole history: the transcript paints its newest
@@ -1120,20 +1120,21 @@ public static class HubTexts
         ["ActivityGroupRunningFormat"] = ("正在执行中 · {0}", "Running · {0}"),
         ["ActivityGroupThoughtFormat"] = ("已思考 {0}", "Thought for {0}"),
         ["ActivityRowThought"] = ("已思考", "Thought"),
-        ["ActivityRowRead"] = ("读取 {0}", "read {0}"),
-        ["ActivityRowSearch"] = ("搜索 {0}", "search {0}"),
-        ["ActivityRowList"] = ("列出 {0}", "list {0}"),
-        ["ActivityRowFind"] = ("查找 {0}", "find {0}"),
-        ["ActivityRowEditFile"] = ("编辑文件 {0}", "edit {0}"),
-        ["ActivityRowRunCommand"] = ("执行命令", "run command"),
-        ["ActivityRowFetch"] = ("抓取 {0}", "fetch {0}"),
-        ["ActivityRowGeneric"] = ("调用 {0}", "call {0}"),
+        ["ActivityRowRead"] = ("读取 {0}", "View {0}"),
+        ["ActivityRowSearch"] = ("搜索 {0}", "Search {0}"),
+        ["ActivityRowList"] = ("列出 {0}", "List {0}"),
+        ["ActivityRowFind"] = ("查找 {0}", "Find {0}"),
+        ["ActivityRowEditFile"] = ("编辑文件 {0}", "Edit {0}"),
+        ["ActivityRowEditFilesFormat"] = ("编辑 {0} 个文件", "Edit {0} files"),
+        ["ActivityRowRunCommand"] = ("执行命令", "Run command"),
+        ["ActivityRowFetch"] = ("抓取 {0}", "Fetch {0}"),
+        ["ActivityRowGeneric"] = ("调用 {0}", "Call {0}"),
         // A search the endpoint ran for itself, drawn as one live status line. It has no card and no result turn,
         // so this is the only place the person learns the answer came from outside — and "searching" is a state of
         // its own here rather than a variation of "search xxx", because the queries often are not known yet: the
         // start event arrives with nothing in it.
-        ["ActivityRowWebSearching"] = ("正在联网搜索…", "searching the web…"),
-        ["ActivityRowWebSearched"] = ("联网搜索：{0}", "searched the web for {0}"),
+        ["ActivityRowWebSearching"] = ("正在联网搜索…", "Searching the web…"),
+        ["ActivityRowWebSearched"] = ("联网搜索：{0}", "Searched the web for {0}"),
         // Under the reply, the addresses it read. Named "Sources" rather than "References" because a model that searched
         // and cited nothing has to read as unread, and a softer word would let that pass for an answer.
         ["MessageSources"] = ("来源", "Sources"),
@@ -1145,6 +1146,9 @@ public static class HubTexts
         ["ActivityDetailOutput"] = ("输出", "Output"),
         ["ActivityDetailEmpty"] = ("无内容", "Nothing"),
         ["ActivityDetailTruncated"] = ("…（已截断）", "… (truncated)"),
+        // A patch that deletes a file carries no lines for it — the envelope only names the path — so the fold says
+        // in words what a diff would otherwise have to show as the whole file going red.
+        ["PatchDeletedFile"] = ("整个文件被删除", "the whole file was deleted"),
         // ── the command that is running right now ──
         // The call is recorded before it runs, so this card exists while the command prints rather than after it
         // comes back — which is the whole point of it: a build that says nothing for five minutes used to say

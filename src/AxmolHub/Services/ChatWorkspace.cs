@@ -174,6 +174,8 @@ public sealed partial class ChatWorkspace : IDisposable
     /// <returns>The unified diff, or null with <paramref name = "state"/> saying which honest way it stopped.</returns>
     public string? DiffForChange(ChangedFile file, string conversationId, out UndoCopyState state, bool wholeFile = false) => _execution.DiffForChange(file, conversationId, out state, wholeFile);
     public IReadOnlyList<ChangedFile> ChangesFor(Conversation? conversation) => _execution.ChangesFor(conversation);
+    public IReadOnlyList<ChangedFile> ChangesForCalls(Conversation? conversation, IReadOnlySet<string> callIds)
+        => ChatChanges.ForCalls(conversation, callIds);
     public ChatFileSnapshot? SnapshotForChange(ChangedFile file, string? revisionId, out UndoCopyState state) => _execution.SnapshotForChange(file, revisionId, out state);
     /// <summary>What a session is called, for a surface that has to name a session other than the one on screen —
     /// a peer message says who wrote it. Null when the session is gone, which the view words for itself.</summary>
