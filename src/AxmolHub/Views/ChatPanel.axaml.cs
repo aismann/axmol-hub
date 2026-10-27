@@ -366,6 +366,7 @@ public partial class ChatPanel : UserControl
         ModelSettingsPopup.Placement = PlacementMode.TopEdgeAlignedRight;
         AutoReasoningSwitch.IsCheckedChanged += (_, _) =>
         {
+            if (_updatingReasoningControls) return;
             _chat.SetRouting(_chat.ActiveConversation?.Id ?? "", AutoReasoningSwitch.IsChecked == true
                 ? ChatRouting.Auto : ChatRouting.Manual);
             RefreshModelPicker();
@@ -769,12 +770,12 @@ public partial class ChatPanel : UserControl
         var efforts = selected is null
             ? Array.Empty<string>()
             : ModelCatalog.SelectableReasoningEfforts(selected.Provider, selected.ModelName).ToArray();
-        AutoReasoningSwitch.IsEnabled = supportsReasoning;
-        AutoReasoningSwitch.IsChecked = _chat.ActiveRouting == ChatRouting.Auto;
-        ReasoningLevelSlider.IsEnabled = supportsReasoning && AutoReasoningSwitch.IsChecked != true;
         _updatingReasoningControls = true;
         try
         {
+            AutoReasoningSwitch.IsEnabled = supportsReasoning;
+            AutoReasoningSwitch.IsChecked = _chat.ActiveRouting == ChatRouting.Auto;
+            ReasoningLevelSlider.IsEnabled = supportsReasoning && AutoReasoningSwitch.IsChecked != true;
             ReasoningLevelSlider.Minimum = 0;
             ReasoningLevelSlider.Maximum = Math.Max(0, efforts.Length - 1);
             ReasoningLevelSlider.TickFrequency = 1;

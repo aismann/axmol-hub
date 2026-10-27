@@ -101,6 +101,7 @@ internal sealed partial class ChatProviderCoordinator
         var choice = FindChatModel(providerId, modelName);
         if (choice is null) return false;
 
+        var reasoningEffort = Sessions.SelectModelReasoningEffort(choice);
         _selectedProviderId = choice.Provider.Id;
         _selectedModelName = choice.ModelName;
         if (Sessions.Active is not null)
@@ -117,6 +118,7 @@ internal sealed partial class ChatProviderCoordinator
                                    StringComparison.OrdinalIgnoreCase);
                 conversation.ProviderId = choice.Provider.Id;
                 conversation.ModelName = choice.ModelName;
+                conversation.ReasoningEffort = reasoningEffort;
                 if (switched)
                     conversation.Append(ChatTurn.Notice(string.Format(
                         System.Globalization.CultureInfo.CurrentCulture,

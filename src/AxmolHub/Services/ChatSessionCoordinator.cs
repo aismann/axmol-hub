@@ -90,6 +90,24 @@ internal sealed partial class ChatSessionCoordinator
         return effort is not null && SelectReasoningEffort(effort);
     }
 
+    internal string SelectModelReasoningEffort(ChatModelOption choice)
+    {
+        var current = ActiveReasoningEffort;
+        var efforts = ModelCatalog.SelectableReasoningEfforts(choice.Provider, choice.ModelName);
+        if (current == ChatReasoningEfforts.Default
+            || efforts.Contains(current, StringComparer.OrdinalIgnoreCase))
+            return _selectedReasoningEffort = current;
+
+        // A tier belongs to the model's ladder. Carry a compatible choice across a switch; otherwise use the
+        // new model's default, or the same middle tier the slider uses when no default was declared.
+        var effort = ModelCatalog.DefaultReasoningEffort(choice.Provider, choice.ModelName);
+        if (!efforts.Contains(effort, StringComparer.OrdinalIgnoreCase))
+            effort = efforts.Contains(ChatReasoningEfforts.Medium, StringComparer.OrdinalIgnoreCase)
+                ? ChatReasoningEfforts.Medium
+                : efforts.Count > 0 ? efforts[efforts.Count / 2] : ChatReasoningEfforts.Default;
+        return _selectedReasoningEffort = effort;
+    }
+
     internal bool SelectReasoningEffort(string effort)
     {
         if (effort is not (ChatReasoningEfforts.Default or ChatReasoningEfforts.Low

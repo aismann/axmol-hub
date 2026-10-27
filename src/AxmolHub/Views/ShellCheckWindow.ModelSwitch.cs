@@ -62,9 +62,56 @@ internal sealed class ShellModelSwitchChecks
               && backRows[^1].Children.OfType<TextBlock>().FirstOrDefault()?.Text == expected,
             "整段重画之后提示行跟着会话回到原处，仍然居中（实际 " + backRows.Count + " 行）");
 
+        CheckReasoningOnModelSwitch(shell, panel, first, second, session.Id, model);
+
         shell.Chat.DeleteConversation(session.Id);
         shell.Chat.RemoveProvider(first.Id);
         shell.Chat.RemoveProvider(second.Id);
         Relayout(shell, panel);
+    }
+
+    private void CheckReasoningOnModelSwitch(MainWindow shell, ChatPanel panel,
+        ModelProvider first, ModelProvider second, string sessionId, string sourceModel)
+    {
+        const string targetModel = "gpt-shell-luna";
+        first.ReasoningModels[sourceModel] = new AiModelReasoning
+        {
+            Efforts = [ChatReasoningEfforts.High, ChatReasoningEfforts.Max],
+        };
+        shell.Chat.AddModel(second.Id, targetModel);
+        second.ReasoningModels[targetModel] = new AiModelReasoning
+        {
+            Efforts = [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium,
+                ChatReasoningEfforts.High, ChatReasoningEfforts.XHigh],
+            DefaultEffort = ChatReasoningEfforts.Medium,
+        };
+
+        // Existing notice checks never select a tier. Exercise the incompatible Max choice that otherwise
+        // leaves the chip, slider and durable request setting describing different levels of reasoning.
+        var observations = new List<string>();
+        var consistent = true;
+        foreach (var (picked, expected) in new[]
+                 {
+                     (ChatReasoningEfforts.Max, ChatReasoningEfforts.Medium),
+                     (ChatReasoningEfforts.High, ChatReasoningEfforts.High),
+                     (ChatReasoningEfforts.Default, ChatReasoningEfforts.Default),
+                 })
+        {
+            var switched = panel.SelectModelForCheck(first.Id, sourceModel)
+                && shell.Chat.SelectReasoningEffort(picked)
+                && panel.SelectModelForCheck(second.Id, targetModel);
+            Relayout(shell, panel);
+            var stored = shell.Chat.StoredCopyForCheck(sessionId)?.ReasoningEffort;
+            var slider = ToolTip.GetTip(panel.FindControl<Slider>("ReasoningLevelSlider")!)?.ToString();
+            var expectedSlider = expected == ChatReasoningEfforts.Default ? ChatReasoningEfforts.Medium : expected;
+            var expectedChip = expected == ChatReasoningEfforts.Default ? ""
+                : HubStrings.Get(expected == ChatReasoningEfforts.High ? "ChatReasoningHigh" : "ChatReasoningMedium");
+            consistent &= switched && panel.SelectedReasoningForCheck == expected && stored == expected
+                && slider == expectedSlider && panel.ReasoningChipTextForCheck == expectedChip;
+            observations.Add($"{picked} → {panel.SelectedReasoningForCheck}, saved={stored}, slider={slider}, chip={panel.ReasoningChipTextForCheck}");
+        }
+        Check(consistent,
+            "跨模型切换保留兼容档位、不兼容时落到目标默认档位，芯片、滑块与落盘一致（实际 "
+            + string.Join("; ", observations) + "）");
     }
 }
