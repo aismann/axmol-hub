@@ -103,6 +103,15 @@ public partial class ChatPanel : UserControl
     internal string EditRowDiffTotalForCheck(int index) => EditRowCountsPanel(index) is { } panel
         ? string.Join(" ", panel.GetLogicalDescendants().OfType<TextBlock>().Select(text => text.Text))
         : "";
+    internal bool EditRowInlineCountsAndNoUndoForCheck(int index)
+    {
+        var row = EditRowGrids.ElementAtOrDefault(index);
+        var counts = EditRowCountsPanel(index);
+        return row is not null && counts?.Parent is Grid face && Grid.GetColumn(counts) == 1
+            && face.ColumnDefinitions[0].Width.IsAuto && face.ColumnDefinitions[1].Width.IsAuto
+            && counts.Children.OfType<TextBlock>().All(text => text.FontSize == 11)
+            && !row.GetLogicalDescendants().OfType<Button>().Any(button => Equals(button.Tag, "ChatUndoButton"));
+    }
     /// <summary>Whether the Nth edit row's unfold is holding a diff. This is the fact the reader acts on: the row
     /// is the only place a write's diff can be opened from, so a row that unfolds to counts and no diff is a dead
     /// end dressed as a fold.</summary>
@@ -127,22 +136,6 @@ public partial class ChatPanel : UserControl
         .OfType<Border>().FirstOrDefault(border => border.Classes.Contains("activity-row-shell"))?
         .GetLogicalDescendants().OfType<Border>().FirstOrDefault(border => border.Classes.Contains("activity-detail"));
 
-    /// <summary>Whether the band above the composer is showing its tally at all. A plate that is present in the
-    /// tree but never made visible would satisfy a scan of the transcript and tell nobody anything on screen.</summary>
-    internal bool ChangesPillVisibleForCheck => ChangesPillHost.IsVisible;
-    /// <summary>The whole line on the plate: the file count and the two numbers, joined as they read.</summary>
-    internal string ChangesPillTextForCheck => ChangesPillHost.Child is Button { Content: Border chip } ? string.Join(" ", chip.GetLogicalDescendants().OfType<TextBlock>().Select(text => text.Text)) : "";
-
-    /// <summary>Presses the plate through its own click event. Like the run's chip, the fact being asserted is that
-    /// a press reaches the pane rather than that a pane could be opened by hand.</summary>
-    internal bool ClickChangesPillForCheck()
-    {
-        if (ChangesPillHost.Child is not Button pill)
-            return false;
-        pill.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        return true;
-    }
-
     /// <summary>Whether the transcript holds more than one screen at all. A fixture that wants the way back down to
     /// rise has to be able to say it overflowed the page first: every condition that reads "at the bottom and no
     /// plate" is also true of a transcript that never needed a plate, and a check built on that passes in silence.</summary>
@@ -164,49 +157,12 @@ public partial class ChatPanel : UserControl
     /// <summary>How tall the band's row actually is. Zero is the claim that an empty thing does not take a row;
     /// the plate's own height is the claim that a reserved row is what stopped the composer from jumping.</summary>
     internal double ChangesPillRowHeightForCheck => ComposerBand.Bounds.Height;
-    /// <summary>The plate's bottom edge in the input frame's own coordinates, or null when it is not showing. The
-    /// same measurement <see cref = "DecisionHostPlacementForCheck"/> makes for a question: a number at or above the
-    /// frame's top edge would mean the band had moved into the box it is supposed to sit above.</summary>
-    internal double? ChangesPillBottomForCheck => !ChangesPillHost.IsVisible ? null : ChangesPillHost.TranslatePoint(new Point(0, ChangesPillHost.Bounds.Height), ComposerFrame)?.Y;
     internal double ComposerBandGapForCheck => -(ComposerBand.TranslatePoint(new Point(0, ComposerBand.Bounds.Height), ComposerFrame)?.Y ?? double.NaN);
     internal string ComposerLayoutForCheck => string.Join("; ", new Control[] { ComposerBand, PlanTasksHost, DecisionHost, SteerConfirmHost, ComposerFrame }.Select(control => $"{control.Name}: visible={control.IsVisible}, bounds={control.Bounds}, desired={control.DesiredSize}"));
     /// <summary>Where the top edge of the input frame sits in the panel's own coordinates. Read before and after a
     /// scroll, this is the only way to assert that scrolling leaves the composer where it was: a bounds check on
     /// the band would pass while the frame still moved, because both are laid out by the same grid.</summary>
     internal double ComposerFrameTopForCheck => ComposerFrame.TranslatePoint(new Point(0, 0), this)is { } top ? top.Y : double.NaN;
-
-    /// <summary>The band's two plates measured as arranged rather than as intended: the tally's bottom edge in the
-    /// input frame's coordinates, the vertical centre of each plate, the horizontal centre of the <i>pair</i>
-    /// against the centre of the column the box is centered in, and the gap between them. Null unless both are up,
-    /// because a claim about their arrangement is not a claim about one of them alone.</summary>
-    internal (double PillBottom, double PillCenterY, double PlateCenterY, double BandCenterX, double FrameCenterX, double Gap)? BandPlatesForCheck
-    {
-        get
-        {
-            if (!ChangesPillHost.IsVisible || !ScrollToBottomButton.IsVisible)
-                return null;
-            // Each edge translated into the frame's own coordinates, the way the decision host is measured: Bounds
-            // are relative to whatever panel laid the control out, and the two plates do not share the frame the
-            // claim is about. The gap is the one measurement that may stay in the row's own coordinates, because
-            // both plates are laid out by the same StackPanel.
-            if (ChangesPillHost.TranslatePoint(new Point(0, ChangesPillHost.Bounds.Height), ComposerFrame)is not { } pillBottom)
-                return null;
-            if (ChangesPillHost.TranslatePoint(new Point(ChangesPillHost.Bounds.Width / 2, ChangesPillHost.Bounds.Height / 2), ComposerFrame)is not { } pillCentre)
-                return null;
-            if (ScrollToBottomButton.TranslatePoint(new Point(ScrollToBottomButton.Bounds.Width / 2, ScrollToBottomButton.Bounds.Height / 2), ComposerFrame)is not { } plateCentre)
-                return null;
-            if (ComposerBand.TranslatePoint(new Point(ComposerBand.Bounds.Width / 2, 0), ComposerFrame)is not { } bandCentre)
-                return null;
-            return (pillBottom.Y, pillCentre.Y, plateCentre.Y, bandCentre.X, ComposerFrame.Bounds.Width / 2, ScrollToBottomButton.Bounds.Left - ChangesPillHost.Bounds.Right);
-        }
-    }
-
-    /// <summary>The plate as painted, for the frame that proves it is not a layout that produced nothing.</summary>
-    internal Control? ChangesPillForCheck => ChangesPillHost.IsVisible ? ChangesPillHost : null;
-    /// <summary>The plate's own frame, reached through the class the pill is identified by rather than by a name —
-    /// the two colour tokens at stake differ by one hex digit, and a check that found the wrong Border would say
-    /// nothing about which one is drawn.</summary>
-    internal Border? ChangesPillBorderForCheck => ChangesPillHost.GetLogicalDescendants().OfType<Border>().FirstOrDefault(border => border.Classes.Contains("changes-pill"));
 
     /// <summary>Which group control the Nth fold is painted from, as an instance token. A run that grows its own
     /// group leaves the token alone; a run that tears the flow down and rebuilds it hands back a fresh number even

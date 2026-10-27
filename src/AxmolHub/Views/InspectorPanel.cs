@@ -785,11 +785,18 @@ internal sealed partial class InspectorPanel : UserControl
             header.Classes.Set("expanded", true);
         };
 
-        var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         repositoryRow.Children.Add(header);
+        if (state.Diffs.TryGetValue(entry.RelativePath, out var cachedDiff)
+            && !state.Truncated && PatchCounts(cachedDiff) is { } counts)
+        {
+            var numbers = CountLabels(counts.Added, counts.Removed);
+            Grid.SetColumn(numbers, 1);
+            repositoryRow.Children.Add(numbers);
+        }
         var repositoryFileActions = FileActions(state.Root is { Length: > 0 } root
             ? System.IO.Path.Combine(root, entry.RelativePath) : entry.RelativePath);
-        Grid.SetColumn(repositoryFileActions, 1);
+        Grid.SetColumn(repositoryFileActions, 2);
         repositoryRow.Children.Add(repositoryFileActions);
         container.Children.Add(repositoryRow);
         container.Children.Add(detail);
@@ -870,17 +877,7 @@ internal sealed partial class InspectorPanel : UserControl
         name.Margin = new Thickness(6, 0, 6, 0);
         grid.Children.Add(name);
 
-        var counts = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        if (added > 0) counts.Children.Add(Themed(new TextBlock
-        {
-            Text = string.Format(HubStrings.Get("InspectorAddedFormat"), added),
-            Classes = { "inspector-count-added" },
-        }, "Hub.Success"));
-        if (removed > 0) counts.Children.Add(Themed(new TextBlock
-        {
-            Text = string.Format(HubStrings.Get("InspectorRemovedFormat"), removed),
-            Classes = { "inspector-count-removed" },
-        }, "Hub.Danger"));
+        var counts = CountLabels(added, removed);
         Grid.SetColumn(counts, 2);
         grid.Children.Add(counts);
 
@@ -931,6 +928,38 @@ internal sealed partial class InspectorPanel : UserControl
         container.Children.Add(row);
         container.Children.Add(detail);
         return container;
+    }
+
+    private static StackPanel CountLabels(int added, int removed)
+    {
+        var counts = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        if (added > 0) counts.Children.Add(Themed(new TextBlock
+        {
+            Text = string.Format(HubStrings.Get("InspectorAddedFormat"), added),
+            Classes = { "inspector-count-added" },
+        }, "Hub.Success"));
+        if (removed > 0) counts.Children.Add(Themed(new TextBlock
+        {
+            Text = string.Format(HubStrings.Get("InspectorRemovedFormat"), removed),
+            Classes = { "inspector-count-removed" },
+        }, "Hub.Danger"));
+        return counts;
+    }
+
+    internal static (int Added, int Removed)? PatchCounts(string diff)
+    {
+        var added = 0;
+        var removed = 0;
+        var inHunk = false;
+        foreach (var raw in diff.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.StartsWith("@@ ", StringComparison.Ordinal)) { inHunk = true; continue; }
+            if (!inHunk) continue;
+            if (line.StartsWith('+')) added++;
+            else if (line.StartsWith('-')) removed++;
+        }
+        return inHunk ? (added, removed) : null;
     }
 
     /// <summary>The row's <c>+N −M</c> comes from the selected latest revision, with the transcript's recorded
@@ -1071,7 +1100,7 @@ internal sealed partial class InspectorPanel : UserControl
     private Control BuildDiffBlock(string path, string diff, ChatFileSnapshot? snapshot = null)
     {
         using var syntax = new ChangesDiffSyntax(path, diff, snapshot);
-        return _splitDiff ? BuildSplitDiffBlock(diff, syntax) : BuildUnifiedDiffBlock(diff, syntax);
+        return _splitDiff ? BuildSplitDiffBlock(diff, syntax) : BuildUnifiedDiffBlock(diff, syntax, compact: true);
     }
 
     private static ScrollViewer DiffViewport() => new()
@@ -1137,16 +1166,25 @@ internal sealed partial class InspectorPanel : UserControl
     /// <para>Also the renderer the transcript folds a patch edit open with, which is why the gutters can be left
     /// out: a patch envelope anchors its hunks on context instead of positions, so numbers beside it would be
     /// invented here rather than read from anywhere.</para></summary>
-    internal static Control BuildUnifiedDiffBlock(string diff, ChangesDiffSyntax syntax, bool numbered = true)
+    internal static Control BuildUnifiedDiffBlock(string diff, ChangesDiffSyntax syntax, bool numbered = true, bool compact = false)
     {
         var lines = new StackPanel { Spacing = 0 };
         var viewer = DiffViewport();
         var oldLine = 0;
         var newLine = 0;
+        var inHunk = false;
         foreach (var raw in diff.Split('\n'))
         {
             var line = raw.TrimEnd('\r');
-            var lineClass = DiffLineClass(line);
+            var lineClass = inHunk && line.StartsWith('+') ? "diff-add"
+                : inHunk && line.StartsWith('-') ? "diff-del" : DiffLineClass(line);
+            if (lineClass == "diff-hunk") inHunk = true;
+            if (compact && lineClass == "diff-hunk")
+            {
+                (oldLine, newLine) = ParseHunkLineNumbers(line);
+                continue;
+            }
+            if (compact && !inHunk && lineClass == "diff-header") continue;
             var sourceLine = lineClass == "diff-del" ? oldLine : newLine;
             var numbers = numbered ? DiffLineNumbers(line, lineClass, ref oldLine, ref newLine) : "";
             var block = new Border();
@@ -1215,7 +1253,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// line up — a grid per row would size each row's halves to that row's own text. A hunk's removals are held
     /// until the insertions that follow them have been read, so pair n of each lands on one row; a context line
     /// carries both numbers and appears in both halves, and a line with no counterpart leaves its half blank.</summary>
-    private static Control BuildSplitDiffBlock(string diff, ChangesDiffSyntax syntax)
+    internal static Control BuildSplitDiffBlock(string diff, ChangesDiffSyntax syntax)
     {
         var viewer = DiffViewport();
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*") };
@@ -1251,10 +1289,12 @@ internal sealed partial class InspectorPanel : UserControl
             added.Clear();
         }
 
+        var inHunk = false;
         foreach (var raw in diff.Split('\n'))
         {
             var line = raw.TrimEnd('\r');
-            var lineClass = DiffLineClass(line);
+            var lineClass = inHunk && line.StartsWith('+') ? "diff-add"
+                : inHunk && line.StartsWith('-') ? "diff-del" : DiffLineClass(line);
             if (lineClass == "diff-add")
             {
                 added.Add(new DiffHalf($"{newLine++}", line[1..], lineClass));
@@ -1269,7 +1309,13 @@ internal sealed partial class InspectorPanel : UserControl
                 continue;
             }
             FlushPair();
-            if (lineClass == "diff-hunk") (oldLine, newLine) = ParseHunkLineNumbers(line);
+            if (lineClass == "diff-hunk")
+            {
+                (oldLine, newLine) = ParseHunkLineNumbers(line);
+                inHunk = true;
+                continue;
+            }
+            if (!inHunk && lineClass == "diff-header") continue;
             if (lineClass.Length == 0 && line.Length == 0) continue;
             if (line.StartsWith(' ') && oldLine > 0)
             {

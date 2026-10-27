@@ -582,7 +582,8 @@ internal sealed class ShellDecisionsChecks
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             Check(panel.EditRowCountForCheck == 1
-                  && panel.EditRowDiffTotalForCheck(0).Contains("+1", StringComparison.Ordinal),
+                  && panel.EditRowDiffTotalForCheck(0).Contains("+1", StringComparison.Ordinal)
+                  && panel.EditRowInlineCountsAndNoUndoForCheck(0),
                 "展开工具组后那次写入是一行改动，行内自带 +N −M（实际 " + panel.EditRowCountForCheck + " 行，「"
                 + panel.EditRowDiffTotalForCheck(0) + "」）");
             var chipTokenBefore = panel.ActivityGroupInstanceTokenForCheck(0);
@@ -590,7 +591,9 @@ internal sealed class ShellDecisionsChecks
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             Check(panel.EditRowDiffExpandedForCheck(0)
-                  && panel.EditRowDetailTextForCheck(0).Contains("chip-note.txt", StringComparison.Ordinal)
+                  && panel.EditRowDetailTextForCheck(0).Contains("第一", StringComparison.Ordinal)
+                  && !panel.EditRowDetailTextForCheck(0).Contains("chip-note.txt", StringComparison.Ordinal)
+                  && !panel.EditRowDetailTextForCheck(0).Contains("@@", StringComparison.Ordinal)
                   && !shell.InspectorVisibleForCheck
                   && panel.ActivityGroupInstanceTokenForCheck(0) == chipTokenBefore,
                 "展开那行改动直接在行内显示该文件的历史 diff，不打开右侧 Changes，且虚拟列表组控件保持不变"
@@ -606,7 +609,7 @@ internal sealed class ShellDecisionsChecks
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             Check(panel.EditRowCountForCheck == 1 && panel.EditRowDiffExpandedForCheck(0)
-                  && panel.EditRowDetailTextForCheck(0).Contains("chip-note.txt", StringComparison.Ordinal),
+                  && panel.EditRowDetailTextForCheck(0).Contains("第一", StringComparison.Ordinal),
                 "收起再展开工具组后，那行改动仍记得自己展开过，diff 还在行内（行 "
                 + panel.EditRowCountForCheck + "，展开 " + panel.EditRowDiffExpandedForCheck(0) + "）");
             // The detailed historical diff remains attached to its turn; it is not duplicated as a session-wide
@@ -635,7 +638,7 @@ internal sealed class ShellDecisionsChecks
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             Check(panel.EditRowCountForCheck >= 1 && panel.EditRowDiffExpandedForCheck(0)
-                  && panel.EditRowDetailTextForCheck(0).Contains("chip-note.txt", StringComparison.Ordinal),
+                  && panel.EditRowDetailTextForCheck(0).Contains("第一", StringComparison.Ordinal),
                 "虚拟转录在后续轮次写入后仍保留先前那行改动展开的 diff");
             // ── the same number in the tier that never asked ──
             // This is the premise the recorded tally exists for. A write only freezes a preview when it parks for a
@@ -681,40 +684,8 @@ internal sealed class ShellDecisionsChecks
                 + silentTotal + "」，调用轮 "
                 + (silentTurn is null ? "不存在" : "在") + "，预览 "
                 + (silentTurn?.ApprovalPreview is null ? "没有" : "有") + "）");
-            // ── the repository pill above the composer ──
-            // Unlike the turn chip above, this is a current workspace snapshot: it includes edits from any source
-            // and is intentionally independent of the active conversation's history.
-            panel.Reload();
-            shell.UpdateLayout();
-            Dispatcher.UIThread.RunJobs();
-            var pillRepository = chat.RepositoryFor(workspace)?.State;
-            var pillLine = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatChangesPillFormat"), pillRepository?.Entries.Count ?? 0);
-            Check(panel.ChangesPillVisibleForCheck
-                  && pillRepository is { IsReadable: true, Entries.Count: > 0 }
-                  && panel.ChangesPillTextForCheck.Contains(pillLine, StringComparison.Ordinal)
-                  && !panel.ChangesPillTextForCheck.Contains("+5", StringComparison.Ordinal)
-                  && !panel.ChangesPillTextForCheck.Contains("−3", StringComparison.Ordinal),
-                "输入框上方胶囊显示仓库快照文件数，不重复轮次增删行数（实际「" + panel.ChangesPillTextForCheck + "」）");
-            Check(panel.ChangesPillBottomForCheck is { } pillBottom && pillBottom <= 0.5,
-                "没有待批准问题时，胶囊就是贴在输入框上方的那一条，没有盖到输入区（下沿相对输入框上边 "
-                + (panel.ChangesPillBottomForCheck ?? double.NaN).ToString("F1", CultureInfo.InvariantCulture) + "）");
-            var pressedPill = panel.ClickChangesPillForCheck();
-            shell.UpdateLayout();
-            Dispatcher.UIThread.RunJobs();
+            shell.OpenInspector("repo", -1);
             var bandPane = shell.InspectorPaneForCheck ?? new InspectorPanel();
-            Check(pressedPill && shell.InspectorVisibleForCheck && bandPane.RepoTabVisibleForCheck
-                  && bandPane.RepoRowCountForCheck == (pillRepository?.Entries.Count ?? -1),
-                "点胶囊打开仓库 Changes，仓库行数与胶囊的快照文件数一致（页 "
-                + bandPane.RepoRowCountForCheck + " 行，胶囊 " + (pillRepository?.Entries.Count ?? -1) + "）");
-            // The plate is a thing the eye is sent to on purpose, so it has to be drawn, not merely laid out, and
-            // framed with the token that separates from the raised surface — Hub.BorderSubtle is that same grey in
-            // the dark variant and would draw no edge at all.
-            var pillBorder = panel.ChangesPillBorderForCheck;
-            Check(pillBorder is not null
-                  && ThemeProbe.IsToken(pillBorder.BorderBrush, "Hub.Border")
-                  && pillBorder.CornerRadius.TopLeft > 0,
-                "胶囊描的是 Hub.Border 的圆角框，不是与抬起面同色的 BorderSubtle（圆角 "
-                + (pillBorder?.CornerRadius.TopLeft ?? 0) + "）");
             // ── one response asking for six writes: each number belongs to its own call ──
             // The tally is handed from the tool to the turn through a queue keyed by conversation, so a batch that
             // lands several writes in one response is exactly the shape that could pair them wrongly. Each fixture
@@ -759,11 +730,8 @@ internal sealed class ShellDecisionsChecks
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             var bandRepository = chat.RepositoryFor(workspace)?.State;
-            var bandPillLine = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatChangesPillFormat"), bandRepository?.Entries.Count ?? 0);
-            Check(bandRepository is { IsReadable: true, Entries.Count: >= 6 }
-                  && panel.ChangesPillTextForCheck.Contains(bandPillLine, StringComparison.Ordinal)
-                  && !panel.ChangesPillTextForCheck.Contains("+27", StringComparison.Ordinal),
-                "仓库扫描刷新后胶囊显示整个工作区的改动数，而不是本会话六次写入的行数（实际「" + panel.ChangesPillTextForCheck + "」）");
+            Check(bandRepository is { IsReadable: true, Entries.Count: >= 6 },
+                "仓库扫描包含六次写入的文件");
             bandPane = shell.InspectorPaneForCheck ?? bandPane;
             Check(bandPane.RepoRowCountForCheck == bandRepository?.Entries.Count,
                 "Repo Changes 文件行数与胶囊共享同一仓库快照（页 " + bandPane.RepoRowCountForCheck + " 行）");
@@ -825,18 +793,16 @@ internal sealed class ShellDecisionsChecks
             var frameAtBottom = panel.ComposerFrameTopForCheck;
             var bandAtBottom = panel.ChangesPillRowHeightForCheck;
             Check(panel.TranscriptScrollableForCheck && panel.ViewAtBottomForCheck
-                  && !panel.ScrollToBottomVisible && panel.ChangesPillVisibleForCheck,
-                "夹具：这六个文件摊开之后转录确实超出一屏，停在最底时横排里只有胶囊（组 "
+                  && !panel.ScrollToBottomVisible,
+                "夹具：这六个文件摊开之后转录确实超出一屏，停在最底时不显示回底按钮（组 "
                 + panel.ActivityGroupCountForCheck + "，行 " + panel.ActivityRowsForCheck.Length
                 + "，可滚 " + panel.TranscriptScrollableForCheck + "）");
             panel.ScrollTranscriptForCheck(panel.TranscriptScrollRangeForCheck / 2);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var plates = panel.BandPlatesForCheck;
-            Check(!panel.ViewAtBottomForCheck && panel.ScrollToBottomVisible && plates is not null,
-                "往上读到中间，回底板升起来了，两个板子同时在这条横排里（offset "
-                + Fmt(panel.FlowOffsetForCheck) + " / 可滚 " + Fmt(panel.TranscriptScrollRangeForCheck) + "，"
-                + (plates is null ? "只有一个板子" : "两个都在") + "）");
+            Check(!panel.ViewAtBottomForCheck && panel.ScrollToBottomVisible,
+                "往上读到中间时显示回底按钮（offset "
+                + Fmt(panel.FlowOffsetForCheck) + " / 可滚 " + Fmt(panel.TranscriptScrollRangeForCheck) + "）");
             Check(Math.Abs(panel.ComposerFrameTopForCheck - frameAtBottom) <= 0.5
                   && Math.Abs(panel.ChangesPillRowHeightForCheck - bandAtBottom) <= 0.5,
                 "回底板升起来没有把输入框推走，也没有把横排撑高：滚动位置变了，输入框上沿还在 "
@@ -844,15 +810,7 @@ internal sealed class ShellDecisionsChecks
                 + panel.ComposerFrameTopForCheck.ToString("F1", CultureInfo.InvariantCulture) + "），行高还在 "
                 + bandAtBottom.ToString("F1", CultureInfo.InvariantCulture) + "（现在 "
                 + panel.ChangesPillRowHeightForCheck.ToString("F1", CultureInfo.InvariantCulture) + "）");
-            Check(plates is { } pair2 && Math.Abs(pair2.PillCenterY - pair2.PlateCenterY) <= 0.5
-                  && pair2.Gap >= 6 && pair2.Gap <= 12
-                  && Math.Abs(pair2.BandCenterX - pair2.FrameCenterX) <= 1.5,
-                "两个板子中心线一致、中间隔着那 8 个像素，整组与输入框同轴居中（中心线差 "
-                + (plates is { } a ? (a.PillCenterY - a.PlateCenterY).ToString("F1", CultureInfo.InvariantCulture) : "?")
-                + "，间隙 " + (plates is { } b ? b.Gap.ToString("F1", CultureInfo.InvariantCulture) : "?")
-                + "，整组中心与列中心差 "
-                + (plates is { } c ? (c.BandCenterX - c.FrameCenterX).ToString("F1", CultureInfo.InvariantCulture) : "?")
-                + "）");
+
             // ── a question and the tally up at the same time: which one is nearest the box ──
             // The band was put above the decision host rather than below it for this one cell, and the existing
             // placement assertion cannot see the difference on its own: with the band hidden the card is flush with
@@ -894,15 +852,10 @@ internal sealed class ShellDecisionsChecks
             var rankedPending = await WaitForPendingCallAsync(rankedSession);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var rankedPillBottom = panel.ChangesPillBottomForCheck;
             var rankedCardBottom = panel.DecisionHostPlacementForCheck;
-            Check(panel.ChangesPillVisibleForCheck && rankedPending is not null
-                  && rankedCardBottom is { } card && card.BottomRelativeToFrame <= 0.5
-                  && rankedPillBottom is { } pill && pill < card.BottomRelativeToFrame - 1,
-                "有待批准问题时，问题卡才是贴着输入框的那一行，胶囊排在它上面（卡片下沿 "
-                + (rankedCardBottom?.BottomRelativeToFrame.ToString("F1", CultureInfo.InvariantCulture) ?? "?")
-                + "，胶囊下沿 " + (rankedPillBottom ?? double.NaN).ToString("F1", CultureInfo.InvariantCulture)
-                + $"，显示 {panel.ChangesPillVisibleForCheck}，等待 {rankedPending}，文件 {ChatChanges.Of(rankedSession).Count}）");
+            Check(rankedPending is not null && rankedCardBottom is { } card && card.BottomRelativeToFrame <= 0.5,
+                "有待批准问题时，问题卡贴着输入框（卡片下沿 "
+                + (rankedCardBottom?.BottomRelativeToFrame.ToString("F1", CultureInfo.InvariantCulture) ?? "?") + "）");
             chat.DeleteConversation(rankedSession.Id);
             // A row that fits is the other half of the same claim: nothing is owed a row that holds nothing.
             var bareSession = chat.StartConversation();
@@ -910,8 +863,7 @@ internal sealed class ShellDecisionsChecks
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            Check(!panel.ChangesPillVisibleForCheck && !panel.ScrollToBottomVisible
-                  && panel.ChangesPillRowHeightForCheck <= 0.5,
+            Check(!panel.ScrollToBottomVisible && panel.ChangesPillRowHeightForCheck <= 0.5,
                 "一个还没改过文件、也装得下的会话不占输入框上方的一行（行高 "
                 + panel.ChangesPillRowHeightForCheck.ToString("F1", CultureInfo.InvariantCulture) + "）");
             chat.DeleteConversation(bareSession.Id);

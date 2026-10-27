@@ -276,22 +276,6 @@
       <Setter Property="VerticalAlignment" Value="Center" />
       <Setter Property="TextTrimming" Value="CharacterEllipsis" />
     </Style>
-    <!-- The one exit a write has. It stays visible instead of waiting for a hover, because an undo nobody can
-         find is a mistake that cannot be fixed — and because the row it rides on is otherwise muted text with
-         nothing clickable on it at all. Accent colour, no plate: the action is small on purpose. -->
-    <Style Selector="Button.undo-action">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Padding" Value="4,0" />
-      <Setter Property="CornerRadius" Value="4" />
-      <Setter Property="FontSize" Value="12" />
-      <Setter Property="Foreground" Value="{DynamicResource Hub.Accent}" />
-      <Setter Property="VerticalAlignment" Value="Center" />
-    </Style>
-    <Style Selector="Button.undo-action:pointerover">
-      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
-    </Style>
-
     <!-- ── The decision host: a pending call or a pending plan, asked above the input box ──
          Both kinds of decision used to be a card in a transcript row a person had scrolled away from, while
          the composer sat there offering to send a message as if nothing were owed. The card then took the
@@ -791,19 +775,6 @@
          slide the digits sideways on hover. Declared after Border.file-chip so the later rule is the one that wins. -->
     <Style Selector="Border.file-chip.inline-chip">
       <Setter Property="BorderBrush" Value="Transparent" />
-    </Style>
-    <!-- The tally above the composer is the run's chip grown into its own row, so it wears the same classes and
-        inherits the same green and red rather than being handed a copy of them. What differs is the plate: a thing
-        the eye is sent to on purpose needs a frame it can find, and Hub.BorderSubtle is the same colour as
-        Hub.SurfaceRaised in the dark variant — a raised card framed with it draws no frame at all. Declared after
-        Border.file-chip because at equal specificity the later rule is the one that wins, and Avalonia will not
-        say so. -->
-    <Style Selector="Border.changes-pill">
-      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
-      <Setter Property="CornerRadius" Value="{DynamicResource Hub.Radius.Pill}" />
-      <Setter Property="Padding" Value="10,3" />
-      <Setter Property="Margin" Value="0" />
-      <Setter Property="ClipToBounds" Value="True" />
     </Style>
     <!-- One folded tool exchange, and the detail it reveals when clicked. The collapsed row names the action; the
          toggle underneath it lays the whole exchange out (arguments in, payload back) so the concrete operation is
@@ -1388,7 +1359,7 @@
            moment the plate rises, which retakes height from the transcript under whoever is reading it. -->
       <Panel x:Name="ComposerBand" Grid.Row="0" HorizontalAlignment="Center" Margin="0,0,0,6">
         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-          <Border x:Name="ChangesPillHost" IsVisible="False" />
+
           <Button x:Name="ScrollToBottomButton" Classes="scroll-bottom" IsVisible="False">
             <Grid Width="26" Height="26">
               <Path Width="14" Height="14" Stretch="Uniform" Data="{StaticResource Hub.Icon.ArrowDown}" />

@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
@@ -30,6 +31,19 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
                 check(false, "夹具：diff 拖选检查没有审阅面板");
                 return;
             }
+
+            var sample = "--- a/file\n+++ b/file\n@@ -4,2 +4,2 @@\n--- actual removed\n+++ actual added\n@@ -20 +20 @@\n-old\n+new\n";
+            var counts = InspectorPanel.PatchCounts(sample);
+            using var syntax = new ChangesDiffSyntax("file.cpp", sample, null);
+            var compact = InspectorPanel.BuildUnifiedDiffBlock(sample, syntax, compact: true);
+            var split = InspectorPanel.BuildSplitDiffBlock(sample, syntax);
+            var compactText = string.Join("|", compact.GetLogicalDescendants().OfType<SelectableTextBlock>().Select(InspectorPanel.TextForCheck));
+            var splitText = string.Join("|", split.GetLogicalDescendants().OfType<SelectableTextBlock>().Select(InspectorPanel.TextForCheck));
+            check(counts == (2, 2) && compactText.Contains("-- actual removed") && compactText.Contains("++ actual added")
+                  && !compactText.Contains("@@") && !compactText.Contains("a/file")
+                  && splitText.Contains("-- actual removed") && splitText.Contains("++ actual added")
+                  && !splitText.Contains("@@") && !splitText.Contains("a/file"),
+                "精简 diff 正确隐藏元数据并保留多段变更及类似头部的代码行");
 
             var line = string.Concat(Enumerable.Repeat("0123456789 abcdefghij ", 20));
             var diff = "@@ -1 +1 @@\n-old\n+" + line;

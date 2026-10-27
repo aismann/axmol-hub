@@ -314,7 +314,6 @@ public partial class ChatPanel
     /// <summary>The session and the three numbers the band above the composer is currently showing. Same purpose as
     /// <see cref="_decisionCallId"/>: a repaint has to be able to tell "nothing moved" from "another file changed",
     /// and the transcript's length cannot tell them apart because a write is recorded by replacing a turn.</summary>
-    private string _changesPillStamp = "";
 
     // A draft keeps the document it was written against, not whatever happens to be pending at send time.
     private (string ConversationId, string Token)? _planDraftTarget;
@@ -497,7 +496,6 @@ public partial class ChatPanel
     /// tab is visible. The cached snapshot is also what the next visit will use.</summary>
     private void OnRepositoryChanged()
     {
-        RefreshChangesPill();
         if (_inspector is not { IsRepositoryTabVisible: true }) return;
         // Repaint rather than re-open, because a repaint never starts another read — which is what keeps this
         // from turning into a loop when the snapshot cannot satisfy the question the pane is asking.
@@ -665,54 +663,6 @@ public partial class ChatPanel
         // panel's route. Never on top of a draft — taking that focus is the interruption this whole strip exists to
         // avoid. And never on a repaint, which must not move a caret somebody is using.
         if (!same && (planIndex >= 0 || asks) && (InputBox.Text ?? "").Length == 0) DecisionHost.Focus();
-    }
-
-    /// <summary>Shows the cached repository-wide dirty-file count above the composer. It is deliberately not a
-    /// session total: edits made by the user, other tools, or another conversation are part of the same repository
-    /// state. A repository read updates this pill through <see cref="OnRepositoryChanged"/>.</summary>
-    private void RefreshChangesPill()
-    {
-        var conversation = _chat?.ActiveConversation;
-        var repository = _chat?.RepositoryFor(conversation?.WorkspaceRoot)?.State;
-        var files = repository is { IsReadable: true } ? repository.Entries.Count : 0;
-        var stamp = $"{conversation?.WorkspaceRoot}:{files}";
-        if (stamp == _changesPillStamp) return;
-        _changesPillStamp = stamp;
-        if (conversation is null || files == 0)
-        {
-            ChangesPillHost.IsVisible = false;
-            ChangesPillHost.Child = null;
-            return;
-        }
-
-        ChangesPillHost.Child = BuildChangesPill(files);
-        ChangesPillHost.IsVisible = true;
-    }
-
-    /// <summary>One compact repository-wide entry point; the right-hand Changes view owns the file list and diffs.</summary>
-    private Control BuildChangesPill(int files)
-    {
-        var row = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        row.Children.Add(new TextBlock
-        {
-            Text = string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ChatChangesPillFormat"), files),
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-        var pill = new Button
-        {
-            Classes = { "file-chip-action" },
-            Tag = "ComposerOpenRepoChanges",
-            Content = new Border { Classes = { "file-chip", "changes-pill" }, Child = row },
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        ToolTip.SetTip(pill, HubStrings.Get("InspectorOpenChanges"));
-        pill.Click += (_, _) => OpenInspector?.Invoke("repo", -1);
-        return pill;
     }
 
     /// <summary>Escape on the host answers it the quiet way: a pending call is refused (one Denied result, the

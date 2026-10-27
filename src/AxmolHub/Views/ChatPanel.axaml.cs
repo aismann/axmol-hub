@@ -607,7 +607,6 @@ public partial class ChatPanel : UserControl
         // And the band above them, which outlives the round that filled it: a tally somebody can click has to keep
         // telling the truth after the run ends and after a restart, so it reads the transcript here too rather than
         // being driven from a run event that stops firing.
-        RefreshChangesPill();
         // The right-hand column is the third surface that reads the transcript rather than the run registry. It
         // repaints only when the transcript grew, so a reply streaming text costs no pane rebuild.
         RefreshInspectorIfTranscriptMoved();
@@ -3685,8 +3684,6 @@ public partial class ChatPanel : UserControl
         {
             if (filled) return;
             filled = true;
-            var counts = DiffOf(call);
-            if (counts.Added > 0 || counts.Removed > 0) body.Children.Add(DiffCounts(counts.Added, counts.Removed));
             body.Children.Add(BuildEditDiff(conversationId, call));
         }
 
@@ -3727,12 +3724,6 @@ public partial class ChatPanel : UserControl
             return body;
         }
 
-        body.Children.Add(new TextBlock
-        {
-            Classes = { "activity-detail-label" },
-            Text = change.RelativePath,
-        });
-
         var diff = (string?)null;
         var state = UndoCopyState.Unreadable;
         if (_chat is not null) diff = _chat.DiffForChange(change, conversationId, out state);
@@ -3748,7 +3739,7 @@ public partial class ChatPanel : UserControl
 
         var snapshot = _chat?.SnapshotForChange(change, change.SelectedRevisionId, out _);
         using var syntax = new ChangesDiffSyntax(change.RelativePath, diff, snapshot);
-        var block = InspectorPanel.BuildUnifiedDiffBlock(diff, syntax);
+        var block = InspectorPanel.BuildUnifiedDiffBlock(diff, syntax, compact: true);
         // The bound is the fold's, not the diff's: a six-hundred-line change inside a transcript row would push
         // every row after it off the screen, and the box already scrolls both ways.
         block.MaxHeight = 320;
@@ -4187,12 +4178,6 @@ public partial class ChatPanel : UserControl
             Text = line,
             VerticalAlignment = VerticalAlignment.Center,
         });
-        if (!turn.UndoConsumed && (turn.ChangeId is { Length: > 0 } || turn.UndoName is { Length: > 0 }))
-        {
-            row.Children.Add(BuildUndoButton(conversationId, callId,
-                ChatUndoStore.WritePathOf(turn.ToolArguments)));
-        }
-
         return BuildEditRecord(conversationId, callId, turn, RowKey(index, "write"), row);
     }
 
@@ -4210,7 +4195,7 @@ public partial class ChatPanel : UserControl
                 .Count == 0)
             return record;
 
-        var face = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var face = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*") };
         face.Classes.Add("activity-row");
         face.Classes.Add("edit");
         face.Children.Add(record);
@@ -4219,6 +4204,7 @@ public partial class ChatPanel : UserControl
         {
             var numbers = DiffCounts(counts.Added, counts.Removed);
             numbers.Margin = CountsGap;
+            foreach (var label in numbers.Children.OfType<TextBlock>()) label.FontSize = 11;
             Grid.SetColumn(numbers, 1);
             face.Children.Add(numbers);
         }
@@ -4240,42 +4226,6 @@ public partial class ChatPanel : UserControl
             Classes = { "activity-row-shell" },
             Child = new StackPanel { Spacing = 0, Children = { toggle, detail } },
         };
-    }
-
-    private Button BuildUndoButton(string conversationId, string callId, string path)
-    {
-        var button = new Button
-        {
-            Classes = { "undo-action" },
-            Content = HubStrings.Get("ChatUndoButton"),
-            Tag = "ChatUndoButton",
-        };
-        ToolTip.SetTip(button, string.Format(System.Globalization.CultureInfo.CurrentCulture,
-            HubStrings.Get("ChatUndoTip"), path));
-        button.Click += (_, _) => RevertWrite(conversationId, callId, button);
-        return button;
-    }
-
-    /// <summary>One click, one file back. A refusal is a line in the notice row rather than a dialog: the reason
-    /// nothing moved has to be readable while the transcript stays exactly where it was.</summary>
-    private async void RevertWrite(string conversationId, string callId, Button source)
-    {
-        source.IsEnabled = false;
-        var outcome = await _chat.RevertWriteAsync(conversationId, callId);
-        // A revert that worked raises Changed on its way out, and the rebuild that drops the spent button comes
-        // with it — so only a refusal has anything left to re-enable.
-        if (outcome.Succeeded) return;
-        source.IsEnabled = true;
-        var key = outcome.RefusalKey ?? outcome.Verdict switch
-        {
-            UndoVerdict.CopyMissing => "ChatUndoCopyMissing",
-            UndoVerdict.ChangedSince => "ChatUndoChangedSince",
-            UndoVerdict.TargetMissing => "ChatUndoTargetMissing",
-            UndoVerdict.NotText => "ChatUndoNotText",
-            UndoVerdict.RefusedPath => "ChatUndoRefusedPath",
-            _ => "ChatUndoWriteFailed",
-        };
-        AppendNotice(HubStrings.Get(key), danger: key is "ChatUndoWriteFailed" or "ChatUndoRefusedPath");
     }
 
     /// <summary>Hands one decision to the workspace. A refusal is spoken out loud rather than swallowed: the card

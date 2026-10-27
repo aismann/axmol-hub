@@ -1079,7 +1079,6 @@ public static class HubTexts
         ["InspectorOpenChanges"] = ("看这些改动", "See these changes"),
         // The band above the composer. The count is the sentence and the two diffs are the numbers, so the one
         // thing the person is being asked to trust is the one thing said once.
-        ["ChatChangesPillFormat"] = ("{0} 个文件已更改", "{0} file(s) changed"),
         ["InspectorRepoCaveat"] = ("仓库相对 HEAD 的全部改动，不只是本会话做的",
             "Every change the repository holds against HEAD, not only this session's"),
         ["InspectorRepoAheadBehindFormat"] = ("领先 {0} · 落后 {1}", "{0} ahead · {1} behind"),

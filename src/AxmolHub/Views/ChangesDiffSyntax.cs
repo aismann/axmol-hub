@@ -22,11 +22,13 @@ internal sealed class ChangesDiffSyntax : IDisposable
         var after = new List<string>();
         if (snapshot is null)
         {
+            var inHunk = false;
             foreach (var raw in diff.Split('\n'))
             {
                 var line = raw.TrimEnd('\r');
                 if (line.StartsWith("@@", StringComparison.Ordinal))
                 {
+                    inHunk = true;
                     var match = System.Text.RegularExpressions.Regex.Match(line, "^@@ -(\\d+)(?:,\\d+)? \\+(\\d+)");
                     if (match.Success)
                     {
@@ -36,7 +38,7 @@ internal sealed class ChangesDiffSyntax : IDisposable
                         while (after.Count < newLine - 1) after.Add("");
                     }
                 }
-                else if (!line.StartsWith("---", StringComparison.Ordinal) && !line.StartsWith("+++", StringComparison.Ordinal))
+                else if (inHunk)
                 {
                     if (line.StartsWith('-') || line.StartsWith(' ')) before.Add(line[1..]);
                     if (line.StartsWith('+') || line.StartsWith(' ')) after.Add(line[1..]);
