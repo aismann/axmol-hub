@@ -30,6 +30,10 @@ internal sealed partial class InspectorPanel : UserControl
     /// it has no session, no log and no thread to wait on, and a pane that goes and does I/O is a pane a check
     /// cannot drive from a fixture.</summary>
     public event Action? RepoRefreshRequested;
+
+    /// <summary>Raised after the scope under the picker changed, so the shell can re-read the repository if it
+    /// wants to. The pane has already repainted from what it had when this fires.</summary>
+    public event Action<GitReviewScope>? ScopeChanged;
     internal Func<GitRepositoryState, GitStatusEntry, GitFileRange, Task<ChatFileSnapshot?>>? ReadComparisonRequested { get; set; }
     internal Func<string, string, string, ChangesEditBuffer?>? OpenEditBuffer { get; set; }
     internal event Action? FilesSaved;
@@ -68,6 +72,28 @@ internal sealed partial class InspectorPanel : UserControl
     private readonly StackPanel _changesList;
     private readonly ScrollViewer _repoScroll;
     private readonly StackPanel _repoBody;
+    private readonly Grid _changesHost;
+    private Button _scopeButton = null!;
+    private TextBlock _scopeName = null!;
+    private TextBlock _scopeCounts = null!;
+    private GitReviewScope _scope = GitReviewScope.Uncommitted;
+    private TurnReview _review = TurnReview.Empty;
+    private GitRepositoryState? _repository;
+    private GitCommitList _commits = GitCommitList.Stopped(GitCommitListOutcome.NoUpstream);
+    private GitChangedPaths _commitPaths = GitChangedPaths.Stopped(GitCommitListOutcome.Ok);
+    private IReadOnlyList<GitBranchInfo> _branches = [];
+    private string? _commit;
+    private string? _base;
+    private GitChangedPaths _branchPaths = GitChangedPaths.Stopped(GitCommitListOutcome.Ok);
+    private string? _root;
+    // Which repository the commit list came from, and which commit or base the path list came from. They are what
+    // stops a read that already landed from being taken again on every repaint.
+    private string? _commitsFor;
+    private string? _branchesFor;
+    private string? _pathsFor;
+    // Every read that can land late carries the generation it started in; a result from an older one is dropped
+    // rather than drawn over the scope the person has since chosen.
+    private int _reviewGeneration;
     private readonly Grid _body;
     private bool _expanded;
 
@@ -294,7 +320,6 @@ internal sealed partial class InspectorPanel : UserControl
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
         _changesScroll.IsVisible = false;
-        _body.Children.Add(_changesScroll);
 
         _repoBody = new StackPanel { Spacing = 6 };
         _repoScroll = new ScrollViewer
@@ -305,7 +330,16 @@ internal sealed partial class InspectorPanel : UserControl
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
         _repoScroll.IsVisible = false;
-        _body.Children.Add(_repoScroll);
+
+        // One Changes surface: the scope picker stays pinned above whichever list it governs, so the list below is
+        // always the scope named above it and switching scope never moves the control that switched it.
+        _changesHost = new Grid { RowDefinitions = new RowDefinitions("Auto,*"), IsVisible = false };
+        _changesHost.Children.Add(BuildScopeBar());
+        Grid.SetRow(_changesScroll, 1);
+        _changesHost.Children.Add(_changesScroll);
+        Grid.SetRow(_repoScroll, 1);
+        _changesHost.Children.Add(_repoScroll);
+        _body.Children.Add(_changesHost);
 
         root.Children.Add(_body);
         Content = root;
@@ -511,21 +545,34 @@ internal sealed partial class InspectorPanel : UserControl
 
     private void SelectTab(string tab)
     {
-        // Changes is always the repository-wide view. Map the legacy session scope to the same tab so an old
-        // saved shell state or an in-flight jump cannot resurrect the session-only list.
-        var plan = !string.Equals(tab, "changes", StringComparison.Ordinal)
-            && !string.Equals(tab, "repo", StringComparison.Ordinal);
+        // "changes" and "repo" are both the Changes tab: the older name for it stays a way in, and it lands on
+        // whichever scope the picker is showing rather than resetting it behind the reader's back. Choosing a
+        // scope is the picker's job, and Last turn is one of its answers.
+        var plan = tab is not ("changes" or "repo");
         var selected = plan ? "plan" : "repo";
         _planTab.Classes.Set("selected", plan);
         _changesTab.Classes.Set("selected", !plan);
         _planScroll.IsVisible = plan;
-        _changesScroll.IsVisible = false;
-        _repoScroll.IsVisible = !plan;
-        _viewSettings.IsVisible = !plan;
+        _changesHost.IsVisible = !plan;
+        ApplyScopeVisibility();
         _planCopyButton.IsVisible = plan && _planHost.Content is MarkdownScrollViewer;
         UpdateEditActions();
         TabSelected?.Invoke(selected);
     }
+
+    /// <summary>A row list that came without a turn — the check fixtures, and any caller holding changed files but
+    /// no transcript. It delegates, so there is one implementation of what a Changes surface is.</summary>
+    public void Reload(
+        string? planMarkdown,
+        IReadOnlyList<ChangedFile> changes,
+        Func<ChangedFile, bool, (string? Diff, UndoCopyState State)> resolveDiff,
+        GitRepositoryState? repository,
+        string tab,
+        Action<string>? quote = null,
+        Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot = null,
+        string conversationId = "")
+        => Reload(planMarkdown, TurnReview.FromRows(changes), resolveDiff, repository, tab, quote, resolveSnapshot,
+            conversationId);
 
     /// <summary>Paints the three tabs from a snapshot and lands on the asked-for one. The diff resolver is lazy
     /// per file: a session of twelve writes must not read twelve files to show a list, only the one a person
@@ -533,7 +580,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// caller owns when to take it and this only lays out what it got.</summary>
     public void Reload(
         string? planMarkdown,
-        IReadOnlyList<ChangedFile> changes,
+        TurnReview review,
         Func<ChangedFile, bool, (string? Diff, UndoCopyState State)> resolveDiff,
         GitRepositoryState? repository,
         string tab,
@@ -566,48 +613,100 @@ internal sealed partial class InspectorPanel : UserControl
         // here would redraw a control that no longer has a parent.
         _diffRebuilds.Clear();
         _changesList.Children.Clear();
-        if (changes.Count == 0)
+        _review = review;
+        if (review.IsEmpty)
         {
             _changesList.Children.Add(EmptyLine("InspectorChangesEmpty"));
         }
         else
         {
-            foreach (var change in changes)
+            foreach (var change in review.Rows)
                 _changesList.Children.Add(BuildChangeRow(change, resolveDiff, resolveSnapshot));
+            // Attribution stops where the record does: a command in the same turn can edit files and leaves no
+            // snapshot that names the turn, so this says where those files are instead of counting them in.
+            if (review.RanCommands) _changesList.Children.Add(Note("InspectorTurnCommands"));
         }
 
-        ReloadRepository(repository, changes);
+        ReloadRepository(repository);
         SelectTab(tab);
     }
 
-    private void ReloadRepository(GitRepositoryState? repository, IReadOnlyList<ChangedFile> changes)
+    /// <summary>What the history scopes need from git, and what came back. One request and one answer because the
+    /// scopes are two questions — "which commits are unpushed" and "which branches can I compare against" — whose
+    /// answers are consumed the same way, and a per-capability family of delegates would be five properties the
+    /// shell has to remember to wire.</summary>
+    public sealed record ReviewReadRequest(GitReviewScope Scope, string Root, string? Commit, string? Base,
+        string? Fork, string? Path, bool Whole);
+
+    public sealed record ReviewRead(GitCommitList? Commits, GitChangedPaths? Paths,
+        IReadOnlyList<GitBranchInfo>? Branches, GitFileComparison? File);
+
+    /// <summary>Reads the history scopes. The pane owns the scope and the selection; the shell owns the process,
+    /// because git reads belong with the wire log and the cancellation the shell already keeps.</summary>
+    internal Func<ReviewReadRequest, Task<ReviewRead>>? ReadReviewRequested { get; set; }
+
+    /// <summary>The scope in force. Set through <see cref="SetScope"/> so the list, the picker and the read that
+    /// follows always change together.</summary>
+    public GitReviewScope Scope => _scope;
+
+    /// <summary>
+    /// Lay out whichever list the chosen scope governs. The two history scopes need a read of their own and show
+    /// what the last one left until it lands; the three status scopes are a filter over the state the shell already
+    /// took, so they never wait for anything.
+    /// </summary>
+    private void ReloadRepository(GitRepositoryState? repository)
+    {
+        _repository = repository;
+        _root = repository is { IsReadable: true, Root.Length: > 0 } readable ? readable.Root : null;
+        RenderCurrentScope();
+        ApplyScopeVisibility();
+        RenderScopeChrome();
+        EnsureReviewRead();
+    }
+
+    private void RenderCurrentScope()
     {
         _repoBody.Children.Clear();
-        // The caveat is the tab's first line and it is never conditional. This list is the repository's, not the
-        // session's, and a reader who assumes otherwise will mis-credit a week of their own work to the assistant
-        // — which is exactly the confusion the separate tab exists to avoid, so it has to be said even when the
-        // repository is empty and the sentence looks like decoration.
-        _repoBody.Children.Add(Note("InspectorRepoCaveat"));
+        switch (_scope)
+        {
+            case GitReviewScope.Committed:
+                RenderCommitted();
+                break;
+            case GitReviewScope.Branch:
+                RenderBranch();
+                break;
+            default:
+                RenderStatusScope(_repository);
+                break;
+        }
+    }
 
+    /// <summary>
+    /// One status read, cut to the scope. Uncommitted keeps the whole reading — staged, unstaged and untracked —
+    /// which is what "not in a commit yet" means; Staged and Unstaged are the two halves git itself splits it
+    /// into. The list is the only thing the scope changes: every row still expands to the range its scope names.
+    /// </summary>
+    private void RenderStatusScope(GitRepositoryState? repository)
+    {
         if (repository is null)
         {
             _repoBody.Children.Add(EmptyLine("InspectorRepoReading"));
             _repoBody.Children.Add(RepositoryHead(null));
             return;
         }
-
         _repoBody.Children.Add(RepositoryHead(repository));
         if (!repository.IsReadable)
         {
             _repoBody.Children.Add(EmptyLine(RepositoryWhyKey(repository.Outcome)));
             return;
         }
-        if (repository.Entries.Count == 0)
+        var entries = repository.Entries.Where(entry => GitReviewScopes.Applies(_scope, entry)).ToList();
+        if (entries.Count == 0)
         {
-            _repoBody.Children.Add(EmptyLine("InspectorRepoEmpty"));
+            _repoBody.Children.Add(EmptyLine(ScopeEmptyKey(_scope)));
             return;
         }
-        foreach (var entry in repository.Entries)
+        foreach (var entry in entries)
             _repoBody.Children.Add(BuildRepositoryRow(entry, repository));
         if (repository.Truncated)
         {
@@ -615,6 +714,576 @@ internal sealed partial class InspectorPanel : UserControl
                 HubStrings.Get("InspectorRepoTruncatedFormat"), repository.Entries.Count)));
         }
     }
+
+    /// <summary>The Committed scope: the branch's own commits that have not been pushed, newest first, and the one
+    /// picked among them. Nothing is picked until the list lands, and a list that cannot be read says which of the
+    /// four reasons it was rather than showing an empty pane.</summary>
+    private void RenderCommitted()
+    {
+        switch (_commits.Outcome)
+        {
+            case GitCommitListOutcome.Ok:
+                break;
+            case GitCommitListOutcome.NoCommits:
+                _repoBody.Children.Add(EmptyLine("InspectorCommitsNone"));
+                return;
+            case GitCommitListOutcome.NoUpstream:
+                _repoBody.Children.Add(EmptyLine("InspectorCommitsNoUpstream"));
+                return;
+            case GitCommitListOutcome.NoWorkspace:
+            case GitCommitListOutcome.NotARepository:
+            case GitCommitListOutcome.GitMissing:
+            case GitCommitListOutcome.UnsafeRepository:
+                _repoBody.Children.Add(EmptyLine(RepositoryWhyKey(_commits.Outcome)));
+                return;
+            default:
+                _repoBody.Children.Add(EmptyLine("InspectorCommitsFailed"));
+                if (_commits.Detail is { Length: > 0 } detail) _repoBody.Children.Add(Prose(detail));
+                return;
+        }
+
+        if (_commit is not { Length: > 0 } selected)
+        {
+            _repoBody.Children.Add(EmptyLine("InspectorCommitsPick"));
+            return;
+        }
+        var commit = _commits.Commits.FirstOrDefault(item => string.Equals(item.Id, selected, StringComparison.Ordinal));
+        _repoBody.Children.Add(ComparisonHead(commit is { IsMerge: true }
+            ? string.Format(System.Globalization.CultureInfo.CurrentCulture, HubStrings.Get("InspectorCommitMergeFormat"),
+                commit.ShortId, commit.Subject)
+            : string.Format(System.Globalization.CultureInfo.CurrentCulture, HubStrings.Get("InspectorCommitHeadFormat"),
+                commit?.ShortId ?? selected[..Math.Min(7, selected.Length)], commit?.Subject ?? ""),
+            commit?.At));
+        RenderPaths(_commitPaths, "InspectorCommitEmpty", (path, whole) => ReadRangeAsync(path, whole));
+    }
+
+    /// <summary>The Branch scope: this branch against a base, measured from where they parted. The fork point is
+    /// named in the head because "since main" is only true relative to a commit a reader can go and look at.</summary>
+    private void RenderBranch()
+    {
+        if (_branches.Count == 0)
+        {
+            _repoBody.Children.Add(EmptyLine("InspectorBranchesReading"));
+            return;
+        }
+        if (_base is not { Length: > 0 } chosen)
+        {
+            _repoBody.Children.Add(EmptyLine("InspectorBranchesPick"));
+            return;
+        }
+        _repoBody.Children.Add(ComparisonHead(string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get("InspectorBranchHeadFormat"), chosen,
+            _branchPaths.MergeBase is { Length: > 7 } fork ? fork[..7] : _branchPaths.MergeBase ?? "—"), null));
+        RenderPaths(_branchPaths, "InspectorBranchEmpty", (path, whole) => ReadRangeAsync(path, whole));
+    }
+
+    private void RenderPaths(GitChangedPaths paths, string emptyKey, Func<GitChangedPath, bool, Task<GitFileComparison?>> read)
+    {
+        if (!paths.IsReadable)
+        {
+            _repoBody.Children.Add(EmptyLine("InspectorCommitsFailed"));
+            if (paths.Detail is { Length: > 0 } detail) _repoBody.Children.Add(Prose(detail));
+            return;
+        }
+        if (paths.Paths.Count == 0)
+        {
+            _repoBody.Children.Add(EmptyLine(emptyKey));
+            return;
+        }
+        foreach (var path in paths.Paths)
+            _repoBody.Children.Add(BuildPathRow(path, read));
+    }
+
+    /// <summary>One path of a commit or a branch range, with git's status letter for it. Opening it reads the two
+    /// versions the head named — the commit's parent and the commit, or the merge base and HEAD — so the row can
+    /// never show a comparison the list was not built from.</summary>
+    private Control BuildPathRow(GitChangedPath path, Func<GitChangedPath, bool, Task<GitFileComparison?>> read)
+    {
+        var container = new StackPanel { Spacing = 0, Classes = { "inspector-change" } };
+        var header = new Button { Classes = { "inspector-change-header" }, Tag = path.RelativePath };
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+        var mark = new TextBlock
+        {
+            Text = path.Status,
+            Classes = { "inspector-verdict" },
+            FontFamily = ThemedFont("Hub.Font.Mono"),
+        };
+        mark.Classes.Add(path.Status == "A" ? "created" : "edited");
+        grid.Children.Add(mark);
+        var nameColumn = Themed(new TextBlock
+        {
+            Text = path.OriginalPath is { Length: > 0 } origin ? origin + " → " + path.RelativePath : path.RelativePath,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Classes = { "inspector-path" },
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(6, 0, 6, 0),
+        }, "Hub.TextPrimary");
+        Grid.SetColumn(nameColumn, 1);
+        grid.Children.Add(nameColumn);
+        header.Content = grid;
+
+        var detail = new ContentControl { IsVisible = false, Margin = new Thickness(0, 4, 0, 6) };
+        var generation = 0;
+        void Load(bool whole)
+        {
+            var request = ++generation;
+            detail.Content = EmptyLine("InspectorRepoReading");
+            _ = Fill();
+            async Task Fill()
+            {
+                try
+                {
+                    var comparison = await read(path, whole);
+                    if (request != generation) return;
+                    var body = new StackPanel { Spacing = 5 };
+                    if (comparison is null || !comparison.IsReadable)
+                    {
+                        if (comparison?.Detail is { Length: > 0 } why) body.Children.Add(Prose(why));
+                        body.Children.Add(EmptyLine("InspectorRepoNoDiff"));
+                        detail.Content = body;
+                        return;
+                    }
+                    if (comparison.ComparisonNote is { Length: > 0 } note) body.Children.Add(Prose(note));
+                    var diff = FileDiff.Unified(comparison.Old.Snapshot.Text ?? "",
+                        comparison.New.Snapshot.Text ?? "", path.RelativePath,
+                        whole ? ChatChanges.InspectorLimits.Expanded() : ChatChanges.InspectorLimits);
+                    body.Children.Add(BuildDiffBlock(path.RelativePath, diff));
+                    detail.Content = body;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                {
+                    if (request == generation) detail.Content = new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap };
+                }
+            }
+        }
+        _diffRebuilds.Add(() =>
+        {
+            if (detail.Content is not null) Load(_expandedFiles.Contains(path.RelativePath));
+        });
+        header.Click += (_, _) =>
+        {
+            if (detail.IsVisible)
+            {
+                detail.IsVisible = false;
+                header.Classes.Set("expanded", false);
+                return;
+            }
+            Load(_expandedFiles.Contains(path.RelativePath));
+            detail.IsVisible = true;
+            header.Classes.Set("expanded", true);
+        };
+
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        row.Children.Add(header);
+        if (_root is { Length: > 0 } root)
+        {
+            var actions = FileActions(System.IO.Path.Combine(root, path.RelativePath));
+            Grid.SetColumn(actions, 1);
+            row.Children.Add(actions);
+        }
+        container.Children.Add(row);
+        container.Children.Add(detail);
+        return container;
+    }
+
+    /// <summary>The line above a comparison: what is being compared and, for a commit, when it landed. The time is
+    /// formatted from the commit's own timestamp in the local zone, so it cannot disagree with the list.</summary>
+    private Control ComparisonHead(string text, DateTimeOffset? at)
+    {
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var head = Themed(new TextBlock
+        {
+            Text = text,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "inspector-note" },
+        }, "Hub.TextSecondary");
+        row.Children.Add(head);
+        if (at is { } time)
+        {
+            var when = Themed(new TextBlock
+            {
+                Text = time.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.CurrentCulture),
+                Classes = { "inspector-note" },
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(12, 0, 0, 0),
+            }, "Hub.TextSecondary");
+            Grid.SetColumn(when, 1);
+            row.Children.Add(when);
+        }
+        return row;
+    }
+
+    private Task<GitFileComparison?> ReadRangeAsync(GitChangedPath path, bool whole)
+    {
+        if (ReadReviewRequested is not { } read) return Task.FromResult<GitFileComparison?>(null);
+        var scope = _scope;
+        var request = new ReviewReadRequest(scope, _root ?? "", _commit, _base, _branchPaths.MergeBase,
+            path.RelativePath, whole);
+        return ReadFile(read);
+
+        async Task<GitFileComparison?> ReadFile(Func<ReviewReadRequest, Task<ReviewRead>> reader)
+            => (await reader(request)) is { File: { } file } && string.Equals(file.Path, path.RelativePath, StringComparison.Ordinal)
+                ? file
+                : null;
+    }
+
+    /// <summary>
+    /// Start the one read the current scope is missing, and only that one: a list already in hand is not read
+    /// again, and a read whose answer arrives after the scope, the commit or the base changed is dropped. That
+    /// guard is what keeps a slow <c>git log</c> from painting over the scope somebody has since picked.
+    /// </summary>
+    private void EnsureReviewRead()
+    {
+        if (ReadReviewRequested is not { } read || _root is not { Length: > 0 } root) return;
+        ReviewReadRequest? request = _scope switch
+        {
+            GitReviewScope.Committed when !string.Equals(_commitsFor, root) =>
+                new ReviewReadRequest(_scope, root, null, null, null, null, false),
+            GitReviewScope.Committed when _commit is { Length: > 0 } commit
+                                        && !string.Equals(_pathsFor, commit, StringComparison.Ordinal) =>
+                new ReviewReadRequest(_scope, root, commit, _base, null, null, false),
+            GitReviewScope.Committed when _commit is null && _commits.Outcome == GitCommitListOutcome.Ok
+                                        && _commits.Commits.Count > 0 =>
+                // The list landed with nothing picked: the newest commit is what "the last thing committed" means,
+                // and it is the row a person would have clicked first.
+                null,
+            GitReviewScope.Branch when !string.Equals(_branchesFor, root) =>
+                new ReviewReadRequest(_scope, root, null, _base, null, null, false),
+            GitReviewScope.Branch when _base is { Length: > 0 } branch
+                                       && !string.Equals(_pathsFor, branch, StringComparison.Ordinal) =>
+                new ReviewReadRequest(_scope, root, null, branch, null, null, false),
+            _ => null,
+        };
+        if (request is not { } ask) return;
+
+        var generation = ++_reviewGeneration;
+        var scope = _scope;
+        _ = Fill();
+
+        async Task Fill()
+        {
+            try
+            {
+                var answer = await read(ask);
+                if (generation != _reviewGeneration || scope != _scope) return;
+                if (answer.Commits is { } commits)
+                {
+                    _commits = commits;
+                    _commitsFor = root;
+                    if (_commit is null && commits.Commits.Count > 0) _commit = commits.Commits[0].Id;
+                }
+                if (answer.Branches is { Count: > 0 } branches)
+                {
+                    _branches = branches;
+                    _branchesFor = root;
+                    if (_base is null)
+                    {
+                        _base = DefaultBase(branches);
+                        // A base that was chosen by default has no range behind it yet, so the next pass reads it.
+                        _pathsFor = null;
+                    }
+                }
+                if (answer.Paths is { } paths)
+                {
+                    if (scope == GitReviewScope.Branch) _branchPaths = paths;
+                    else _commitPaths = paths;
+                    _pathsFor = scope == GitReviewScope.Branch ? _base : _commit;
+                }
+                RenderCurrentScope();
+                RenderScopeChrome();
+                EnsureReviewRead();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (generation != _reviewGeneration) return;
+                if (scope == GitReviewScope.Branch) _branchPaths = GitChangedPaths.Stopped(GitCommitListOutcome.Failed, ex.Message);
+                else _commits = GitCommitList.Stopped(GitCommitListOutcome.Failed, ex.Message);
+                RenderCurrentScope();
+                RenderScopeChrome();
+            }
+        }
+    }
+
+    /// <summary>The branch to compare against when nothing has been picked: the first local branch that is not this
+    /// one. Not <c>main</c> by name — a repository that calls it <c>develop</c> would get a range about nothing.</summary>
+    private static string? DefaultBase(IReadOnlyList<GitBranchInfo> branches)
+        => branches.FirstOrDefault(branch => !branch.IsCurrent)?.Name;
+
+    private int CountIn(GitReviewScope scope) => _repository is { IsReadable: true } repository
+        ? repository.Entries.Count(entry => GitReviewScopes.Applies(scope, entry))
+        : 0;
+
+    private static string ScopeNameKey(GitReviewScope scope) => scope switch
+    {
+        GitReviewScope.LastTurn => "InspectorScopeLastTurn",
+        GitReviewScope.Uncommitted => "InspectorScopeUncommitted",
+        GitReviewScope.Unstaged => "InspectorScopeUnstaged",
+        GitReviewScope.Staged => "InspectorScopeStaged",
+        GitReviewScope.Committed => "InspectorScopeCommitted",
+        _ => "InspectorScopeBranch",
+    };
+
+    private static string ScopeEmptyKey(GitReviewScope scope) => scope switch
+    {
+        GitReviewScope.Unstaged => "InspectorScopeUnstagedEmpty",
+        GitReviewScope.Staged => "InspectorScopeStagedEmpty",
+        _ => "InspectorScopeUncommittedEmpty",
+    };
+
+    /// <summary>Switches the list under the picker. A scope is a way of reading one repository, so the tab does
+    /// not change; only what the list means does, and the picker says which.</summary>
+    public void SetScope(GitReviewScope scope)
+    {
+        if (_scope == scope)
+        {
+            ShowScopeMenu();
+            return;
+        }
+        _scope = scope;
+        // A folded file stays folded only while it is the same file in the same comparison; a scope change is a
+        // new comparison, so rows start closed rather than pretending the old folds meant something.
+        _expandedFiles.Clear();
+        RenderCurrentScope();
+        ApplyScopeVisibility();
+        RenderScopeChrome();
+        EnsureReviewRead();
+        ScopeChanged?.Invoke(scope);
+    }
+
+    /// <summary>Which of the two lists stands for the scope, and that both are gone while the tab is not the one
+    /// on screen — a hidden host that still has its inner scroller visible reads as "the changes page is showing"
+    /// to anything that asks the scroller, which is how a plan tab once looked like two tabs at once.</summary>
+    private void ApplyScopeVisibility()
+    {
+        var changes = _changesHost.IsVisible;
+        _changesScroll.IsVisible = changes && _scope == GitReviewScope.LastTurn;
+        _repoScroll.IsVisible = changes && _scope != GitReviewScope.LastTurn;
+        _viewSettings.IsVisible = changes;
+    }
+
+    /// <summary>Paints the picker: the scope's name, the counts that go with it, and the note for a scope whose
+    /// answer is "there is no such set here" rather than "there is nothing in it".</summary>
+    private void RenderScopeChrome()
+    {
+        if (_scopeName.Text is null || !string.Equals(_scopeName.Text, HubStrings.Get(ScopeNameKey(_scope)), StringComparison.Ordinal))
+            _scopeName.Text = HubStrings.Get(ScopeNameKey(_scope));
+        _scopeCounts.Text = _scope switch
+        {
+            GitReviewScope.LastTurn when !_review.IsEmpty => string.Format(
+                System.Globalization.CultureInfo.CurrentCulture, HubStrings.Get("InspectorScopeCountsFormat"),
+                _review.Files.Count, _review.Added, _review.Removed),
+            GitReviewScope.LastTurn => "",
+            _ when _scope is GitReviewScope.Uncommitted or GitReviewScope.Unstaged or GitReviewScope.Staged =>
+                CountIn(_scope).ToString(System.Globalization.CultureInfo.CurrentCulture),
+            _ => "",
+        };
+        _scopeCounts.IsVisible = _scopeCounts.Text is { Length: > 0 };
+    }
+
+    private Control BuildScopeBar()
+    {
+        var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*"), Margin = new Thickness(12, 8, 6, 2) };
+        _scopeName = new TextBlock
+        {
+            Text = HubStrings.Get("InspectorScopeUncommitted"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Name = "InspectorScopeName",
+        };
+        var chevron = new Avalonia.Controls.Shapes.Path
+        {
+            Width = 12,
+            Height = 12,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.7,
+            StrokeLineCap = PenLineCap.Round,
+            VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "chip-caret" },
+        };
+        chevron.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Caret"));
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        content.Children.Add(_scopeName);
+        content.Children.Add(chevron);
+        _scopeButton = new Button
+        {
+            Classes = { "inspector-scope" },
+            Tag = "InspectorScopeButton",
+            Content = content,
+        };
+        ToolTip.SetTip(_scopeButton, HubStrings.Get("InspectorScopeTip"));
+        _scopeButton.Click += (_, _) => ShowScopeMenu();
+        bar.Children.Add(_scopeButton);
+
+        _scopeCounts = new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 0, 0),
+            Classes = { "inspector-note" },
+            Name = "InspectorScopeCounts",
+            IsVisible = false,
+        };
+        Grid.SetColumn(_scopeCounts, 1);
+        bar.Children.Add(_scopeCounts);
+        return bar;
+    }
+
+    /// <summary>
+    /// The scope menu, rebuilt on every open: the counts in it are the tree's state now, and a menu built once would
+    /// keep offering yesterday's numbers. The two history rows open submenus because their answer is a list, not a
+    /// choice — Last turn, Uncommitted, Unstaged and Staged are the four scopes that are just a place to look.
+    /// </summary>
+    private void ShowScopeMenu()
+    {
+        var menu = new MenuFlyout();
+        menu.Items.Add(ScopeChoice(GitReviewScope.LastTurn, menu));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(ScopeChoice(GitReviewScope.Uncommitted, menu));
+        menu.Items.Add(ScopeChoice(GitReviewScope.Unstaged, menu));
+        menu.Items.Add(ScopeChoice(GitReviewScope.Staged, menu));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(ScopeGroup(GitReviewScope.Committed, CommitChoices()));
+        menu.Items.Add(ScopeGroup(GitReviewScope.Branch, BranchChoices()));
+        menu.ShowAt(_scopeButton);
+    }
+
+    private MenuItem ScopeChoice(GitReviewScope scope, MenuFlyout menu)
+    {
+        var badge = scope == GitReviewScope.LastTurn
+            ? _review.IsEmpty ? null : _review.Files.Count.ToString(System.Globalization.CultureInfo.CurrentCulture)
+            : CountIn(scope).ToString(System.Globalization.CultureInfo.CurrentCulture);
+        var item = new MenuItem
+        {
+            Header = MenuRow.Build(null, HubStrings.Get(ScopeNameKey(scope)), _scope == scope, badge),
+            Tag = ScopeNameKey(scope),
+            IsChecked = _scope == scope,
+        };
+        item.Click += (_, _) =>
+        {
+            menu.Hide();
+            SetScope(scope);
+        };
+        return item;
+    }
+
+    private MenuItem ScopeGroup(GitReviewScope scope, IReadOnlyList<MenuItem> children)
+    {
+        var item = new MenuItem
+        {
+            Header = MenuRow.Build(null, HubStrings.Get(ScopeNameKey(scope)), _scope == scope, null, chevron: true),
+            Tag = ScopeNameKey(scope),
+            ItemsSource = children,
+            IsChecked = _scope == scope,
+        };
+        return item;
+    }
+
+    /// <summary>The commits the submenu offers, or the one sentence saying why it is empty. Picking one opens that
+    /// commit's own comparison; the list stays newest first because that is the order the picker showed.</summary>
+    private IReadOnlyList<MenuItem> CommitChoices()
+    {
+        switch (_commits.Outcome)
+        {
+            case GitCommitListOutcome.Ok when _commits.Commits.Count > 0:
+                var list = new List<MenuItem>(_commits.Commits.Count);
+                foreach (var commit in _commits.Commits)
+                {
+                    var item = new MenuItem
+                    {
+                        Header = CommitRow(commit),
+                        Tag = commit.Id,
+                        IsChecked = string.Equals(commit.Id, _commit, StringComparison.Ordinal),
+                    };
+                    var id = commit.Id;
+                    item.Click += (_, _) =>
+                    {
+                        _commit = id;
+                        _commitPaths = GitChangedPaths.Stopped(GitCommitListOutcome.Ok);
+                        _pathsFor = null;
+                        SetScope(GitReviewScope.Committed);
+                    };
+                    list.Add(item);
+                }
+                return list;
+            case GitCommitListOutcome.NoCommits:
+                return [Hint("InspectorCommitsNone")];
+            case GitCommitListOutcome.NoUpstream:
+                return [Hint("InspectorCommitsNoUpstream")];
+            case GitCommitListOutcome.Ok:
+                return [Hint("InspectorCommitsPick")];
+            default:
+                return [Hint("InspectorCommitsFailed")];
+        }
+    }
+
+    private IReadOnlyList<MenuItem> BranchChoices()
+    {
+        if (_branches.Count == 0) return [Hint("InspectorBranchesReading")];
+        var list = new List<MenuItem>(_branches.Count);
+        foreach (var branch in _branches)
+        {
+            if (branch.IsCurrent) continue;
+            var item = new MenuItem
+            {
+                Header = MenuRow.Build(null, branch.Name, string.Equals(branch.Name, _base, StringComparison.Ordinal)),
+                Tag = branch.Name,
+            };
+            var name = branch.Name;
+            item.Click += (_, _) =>
+            {
+                _base = name;
+                _branchPaths = GitChangedPaths.Stopped(GitCommitListOutcome.Ok);
+                _pathsFor = null;
+                SetScope(GitReviewScope.Branch);
+            };
+            list.Add(item);
+        }
+        return list.Count == 0 ? [Hint("InspectorBranchesNone")] : list;
+    }
+
+    /// <summary>A commit row: the subject, then the time with the gap the reference client did not leave. The
+    /// subject takes the room that is left and the time keeps its width, so a long message truncates instead of
+    /// running into the timestamp.</summary>
+    private static Control CommitRow(GitCommitInfo commit)
+    {
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), MinWidth = 260 };
+        var subject = new TextBlock
+        {
+            Text = commit.Subject,
+            FontSize = 13,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 0, 0),
+        };
+        Grid.SetColumn(subject, 0);
+        row.Children.Add(subject);
+        var when = new TextBlock
+        {
+            Text = commit.At.ToString("MM-dd HH:mm", System.Globalization.CultureInfo.CurrentCulture),
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(16, 0, 0, 0),
+        };
+        when.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        Grid.SetColumn(when, 1);
+        row.Children.Add(when);
+        ToolTip.SetTip(row, commit.ShortId + " · " + commit.Subject);
+        return row;
+    }
+
+    private static MenuItem Hint(string textKey) => new()
+    {
+        Header = new TextBlock
+        {
+            Text = HubStrings.Get(textKey),
+            FontSize = 12,
+            Margin = new Thickness(12, 0, 0, 0),
+        },
+        Tag = textKey,
+        Classes = { "menu-caption" },
+        IsHitTestVisible = false,
+        Focusable = false,
+    };
 
     /// <summary>Why the tab cannot answer, in one of six sentences. Kept as a table rather than a default arm so
     /// a new outcome has to be given words here before it can show an empty list somewhere.</summary>
@@ -626,6 +1295,15 @@ internal sealed partial class InspectorPanel : UserControl
         GitReadOutcome.UnsafeRepository => "InspectorRepoUnsafe",
         GitReadOutcome.Failed => "InspectorRepoFailed",
         _ => "InspectorRepoEmpty",
+    };
+
+    private static string RepositoryWhyKey(GitCommitListOutcome outcome) => outcome switch
+    {
+        GitCommitListOutcome.NoWorkspace => "InspectorRepoNoWorkspace",
+        GitCommitListOutcome.NotARepository => "InspectorRepoNotGit",
+        GitCommitListOutcome.GitMissing => "InspectorRepoGitMissing",
+        GitCommitListOutcome.UnsafeRepository => "InspectorRepoUnsafe",
+        _ => "InspectorRepoFailed",
     };
 
     /// <summary>The branch line and the one way to ask for the read again. The glyph is git's own idea — a
@@ -713,7 +1391,7 @@ internal sealed partial class InspectorPanel : UserControl
             detailBody.Children.Add(diff is { Length: > 0 } ? BuildDiffBlock(entry.RelativePath, diff) : EmptyLine("InspectorRepoNoDiff"));
             detail.Content = detailBody;
         }
-        var selectedRange = GitFileRange.WorkingTreeAgainstHead;
+        var selectedRange = GitReviewScopes.RangeFor(_scope);
         var generation = 0;
         void BuildRepoDetail(bool whole)
         {
@@ -828,6 +1506,15 @@ internal sealed partial class InspectorPanel : UserControl
     private static Control Note(string textKey) => Themed(new TextBlock
     {
         Text = HubStrings.Get(textKey),
+        TextWrapping = TextWrapping.Wrap,
+        Classes = { "inspector-note" },
+    }, "Hub.TextTertiary");
+
+    /// <summary>A muted line whose words came from git rather than the string table — the reason a read failed, or
+    /// the note a commit carries. Kept apart from <see cref="Note"/> so a message can never be looked up as a key.</summary>
+    private static Control Prose(string text) => Themed(new TextBlock
+    {
+        Text = text,
         TextWrapping = TextWrapping.Wrap,
         Classes = { "inspector-note" },
     }, "Hub.TextTertiary");

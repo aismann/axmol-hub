@@ -408,6 +408,17 @@ public partial class ChatPanel
             // The pane asks; this is where the ask turns into a git read, because the panel has no session, no
             // log and no thread to wait on — and a pane that did its own I/O could not be fed a fixture by a check.
             _inspector.RepoRefreshRequested += RequestRepositoryRead;
+            // The history scopes ask the same way: the pane owns which scope and which commit, the workspace owns
+            // the process, and a check can feed the pane an answer without a repository.
+            _inspector.ReadReviewRequested = request => _chat is null
+                ? Task.FromResult(new InspectorPanel.ReviewRead(null, null, null, null))
+                : _chat.ReadReviewAsync(request);
+            // A scope that reads history is the moment to be sure the tree is current: the commit list is only as
+            // good as the status read that sits beside it, and the two tabs share one refresh.
+            _inspector.ScopeChanged += scope =>
+            {
+                if (scope is GitReviewScope.Committed or GitReviewScope.Branch) RequestRepositoryRead();
+            };
             // Repository file rows ask for a single HEAD-to-working-tree snapshot, including staged and unstaged edits.
             _inspector.WholeDiffRequested = async (state, entry) =>
             {
@@ -456,7 +467,9 @@ public partial class ChatPanel
 
         var planText = PlanTextFor(conversation, turnIndex);
         var conversationId = conversation?.Id ?? "";
-        var changes = _chat?.ChangesFor(conversation) ?? ChatChanges.Of(conversation);
+        // The first scope of the tab is the turn itself: the rows come from the transcript and the revisions it
+        // points at, so they say what the assistant did rather than what the tree happens to hold.
+        var review = _chat?.TurnReviewFor(conversation) ?? TurnReview.Empty;
         var repository = _chat?.RepositoryFor(conversation?.WorkspaceRoot);
         // Entering the tab with nothing read for this directory is the moment to read it. Not before, and not on
         // a repaint: a session that never goes looking for repository state never pays for a git run, and the
@@ -465,7 +478,7 @@ public partial class ChatPanel
             RequestRepositoryRead();
         _inspector.Reload(
             planText,
-            changes,
+            review,
             (change, wholeFile) => _chat is null
                 ? (null, UndoCopyState.Unreadable)
                 : (_chat.DiffForChange(change, conversationId, out var state, wholeFile), state),

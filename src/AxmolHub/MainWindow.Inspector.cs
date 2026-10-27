@@ -78,9 +78,6 @@ public partial class MainWindow
         _inspectorOpen = _preferences.InspectorOpen;
         SetInspectorColumnVisible();
 
-        // The status strip is the entry to repository-scoped changes; the inspector owns rendering both sources.
-        UpdateRepoIndicator();
-
         // The title bar's two right-hand buttons. The drawer is the column's way in and out that does not depend on
         // the pane being built, which is the difference between a drawer and a dead end; the arrow beside it is the
         // same pane's "give me the window" control, which used to be drawn inside the pane itself — where it was

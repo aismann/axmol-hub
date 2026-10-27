@@ -1419,8 +1419,10 @@ internal sealed class ShellDecisionsChecks
             "仓库文件行提供单一的 Open file 图标入口，直接打开整份文件编辑");
         Check(inspector.RepoCommitComparisonControlsAbsentForCheck && inspector.RepoComparisonRangeButtonsAbsentForCheck,
             "仓库文件行不显示提交引用、暂存区或工作区比较按钮");
-        Check(inspector.RepoCaveatForCheck == HubStrings.Get("InspectorRepoCaveat"),
-            "仓库页第一句就讲清这是仓库的全部改动，不只是本会话做的（实际「" + inspector.RepoCaveatForCheck + "」）");
+        // The tab's standing first line is the scope picker now, and it names the range instead of apologising for
+        // the list: "未提交" says the same thing the caveat used to and says it in one word.
+        Check(inspector.ScopePickerForCheck && inspector.ScopeNameForCheck == HubStrings.Get("InspectorScopeUncommitted"),
+            "Changes 顶部那枚范围选择器写着当前范围（实际「" + inspector.ScopeNameForCheck + "」）");
         Check(inspector.RepoRowTextForCheck(1).Contains("note.txt", StringComparison.Ordinal)
               && !inspector.RepoRowTextForCheck(1).Contains(HubStrings.Get("InspectorRepoSessionAlsoTouched"),
                   StringComparison.Ordinal)
@@ -1490,8 +1492,13 @@ internal sealed class ShellDecisionsChecks
               && !inspector.SessionChangesSurfaceVisibleForCheck && !inspector.RepoJumpPresentForCheck,
             "Changes 默认 Repo 并列出全部仓库更改，session 历史仍保留在模型中但不作为独立范围展示");
         inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), cleanTree, "changes");
-        Check(inspector.RepoRowCountForCheck == 0 && inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorRepoEmpty"), StringComparison.Ordinal),
-            "Changes 的空状态来自仓库，而不是 session 历史列表");
+        // The empty sentence answers the scope that is showing: "nothing is uncommitted" is a fact about the tree,
+        // while a bare "no changes" would leave the reader wondering which of the five scopes was talking.
+        Check(inspector.RepoRowCountForCheck == 0
+              && inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorScopeUncommittedEmpty"),
+                  StringComparison.Ordinal),
+            "Changes 的空状态来自仓库当前范围，而不是 session 历史列表（实际「"
+            + inspector.RepoNoticeForCheck + "」）");
         inspector.Reload(null, [], (_, _) => ((string?)null, UndoCopyState.Read), null, "repo");
         Check(inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorRepoReading"), StringComparison.Ordinal),
             "默认 Changes 的 Repo 数据读取中显示明确状态");
@@ -1543,127 +1550,65 @@ internal sealed class ShellDecisionsChecks
         // Session changes are retained in the underlying chat data; the user-facing Changes surface stays repository-wide.
 
 
-        // ── the status strip's repository slot ──
-        // The mapping is asserted as a table before anything live, because four of these states have to stay
-        // silent — and a strip that lit on every session from first launch would be indistinguishable from a
-        // correct one in a live cell, since a live cell only ever sees one state at a time.
-        var silentNames = "";
-        foreach (var (name, state) in new (string, GitRepositoryState?)[]
-        {
-            ("还没读过", null),
-            ("干净工作树", cleanTree),
-            ("没有工作目录", GitRepositoryState.Stopped(GitReadOutcome.NoWorkspace, "probe")),
-            ("这个目录不是仓库", GitRepositoryState.Stopped(GitReadOutcome.NotARepository, "probe")),
-        })
-        {
-            var (visible, text) = MainWindow.RepoIndicatorStateFor(state);
-            if (visible || text.Length > 0) silentNames += (silentNames.Length == 0 ? "" : "、") + name;
-        }
-        Check(silentNames.Length == 0,
-            "状态条的仓库指示只在有事可说时开口：还没读、干净、没有工作目录、不是仓库这四种都闭嘴（多嘴的："
-            + silentNames + "）");
-        var (_, dirtyLine) = MainWindow.RepoIndicatorStateFor(dirtyThree);
-        var noBranch = new GitRepositoryState(GitReadOutcome.Ok, @"D:\dev\probe", "", 0, 0,
-            [new GitStatusEntry("note.txt", " ", "M", false)],
-            new Dictionary<string, string>(StringComparer.Ordinal), false, null);
-        var (_, detachedLine) = MainWindow.RepoIndicatorStateFor(noBranch);
-        var cutShort = new GitRepositoryState(GitReadOutcome.Ok, @"D:\dev\probe", "master", 0, 0,
-            [
-                new GitStatusEntry("note.txt", " ", "M", false),
-                new GitStatusEntry("src/main.cpp", "M", " ", false),
-            ],
-            new Dictionary<string, string>(StringComparer.Ordinal), true, null);
-        var (_, cutLine) = MainWindow.RepoIndicatorStateFor(cutShort);
-        Check(dirtyLine == string.Format(CultureInfo.CurrentCulture,
-                  HubStrings.Get("StatusRepoDirtyFormat"), dirtyThree.Entries.Count, "master")
-              && detachedLine.Contains("—", StringComparison.Ordinal)
-              && cutLine == string.Format(CultureInfo.CurrentCulture,
-                  HubStrings.Get("StatusRepoDirtyTruncatedFormat"), cutShort.Entries.Count, "master"),
-            "脏工作树那一行报的是读到的个数和分支名，没有分支名时用仓库页同一个破折号，被截断的说「2+」而不是把上限"
-            + "报成确数（实际「" + dirtyLine + "」/「" + detachedLine + "」/「" + cutLine + "」）");
-        var wrongFailure = "";
-        foreach (var outcome in new[] { GitReadOutcome.GitMissing, GitReadOutcome.UnsafeRepository,
-                GitReadOutcome.Failed })
-        {
-            var (visible, text) = MainWindow.RepoIndicatorStateFor(GitRepositoryState.Stopped(outcome, "probe"));
-            if (!visible || text != HubStrings.Get("StatusRepoFailed"))
-                wrongFailure += (wrongFailure.Length == 0 ? "" : "、") + outcome;
-        }
-        Check(wrongFailure.Length == 0,
-            "真读不到的那三种在状态条合成一句短话——五种理由各说各的归仓库页，那才是读理由的地方（不合规的："
-            + wrongFailure + "）");
-        // Live. The snapshot is seeded rather than read, because a check machine has no dirty repository to point
-        // a session at; seeding goes through the same tail a landing uses, so what the cells below actually measure
-        // is the wiring from that landing to the strip — and that no git ran on the way.
-        var stripWorkspace = ScratchDirectory.Resolve("review-strip-workspace");
-        Directory.CreateDirectory(stripWorkspace);
-        var stripSession = chat.StartConversation();
-        chat.OpenConversation(stripSession.Id);
-        chat.SetWorkspaceRoot(stripSession.Id, stripWorkspace);
-        panel.Reload();
+        // ── the status strip no longer offers a door to the repository ──
+        // The entry was removed on purpose: the Changes column is where repository state is read, and a strip
+        // that repeated a dirty count in 28 pixels was a second door onto the same tab. Asked of the live strip,
+        // so putting it back fails here rather than passing on a memory of how it used to look.
         shell.NavigateTo("Assistant");
-        Dispatcher.UIThread.RunJobs();
-        Check(!shell.RepoIndicatorVisibleForCheck,
-            "这个目录一次都没读过时状态条那颗指示是灭的，而不是先猜一个数");
-        var readsBeforeLight = chat.RepositoryReadsForCheck;
-        chat.SeedRepositoryForCheck(chat.WorkspaceRootFor(stripSession.Id) ?? stripWorkspace, dirtyThree);
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.RepoIndicatorVisibleForCheck
-              && shell.RepoIndicatorTextForCheck.Contains("master", StringComparison.Ordinal)
-              && chat.RepositoryReadsForCheck == readsBeforeLight,
-            "一次读落地就把分支和未提交数写进状态条，而这一趟自己没跑 git（实际「"
-            + shell.RepoIndicatorTextForCheck + "」，读了 "
-            + (chat.RepositoryReadsForCheck - readsBeforeLight) + " 次）");
-        // A session pointed somewhere else must not keep reporting the directory it left, and the slot belongs to
-        // the window rather than to the assistant page — it stays while a person is on another page, because that
-        // is when they need the reminder.
-        var awaySession = chat.StartConversation();
-        chat.OpenConversation(awaySession.Id);
-        panel.Reload();
-        Dispatcher.UIThread.RunJobs();
-        Check(!shell.RepoIndicatorVisibleForCheck,
-            "换到一个没有工作目录的会话时指示跟着闭嘴，而不是继续报上一个目录的数");
-        chat.OpenConversation(stripSession.Id);
-        panel.Reload();
-        shell.NavigateTo("Projects");
-        shell.UpdateLayout();
-        Dispatcher.UIThread.RunJobs();
-        Check(shell.RepoIndicatorVisibleForCheck && !shell.AssistantVisible,
-            "指示条是窗口自己的东西，离开助手页它还在（当前页 " + shell.AssistantVisible + "）");
-        // Pressing it is a way into the tab, not a second read: the only way it was reachable at all is a read
-        // that already landed, so the tab has to open onto what is already known.
-        var readsBeforePress = chat.RepositoryReadsForCheck;
-        shell.ClickRepoIndicatorForCheck();
-        shell.UpdateLayout();
-        Dispatcher.UIThread.RunJobs();
-        Check(shell.AssistantVisible && shell.InspectorVisibleForCheck
-              && shell.InspectorTabForCheck == "repo"
-              && shell.InspectorPaneForCheck?.RepoTabVisibleForCheck == true,
-            "从项目页点状态条的仓库指示：先回到助手页，再把右列开到仓库页，而不是把列开在看不见的地方");
-        Check(chat.RepositoryReadsForCheck == readsBeforePress,
-            "从指示条进仓库页一次 git 都不多跑，用的是已经读到的那一份（两次之间读了 "
-            + (chat.RepositoryReadsForCheck - readsBeforePress) + " 次）");
-        // And the row itself: a sixth column in a 28-pixel strip may not grow the strip, square the log glyph
-        // into a rectangle, or squeeze the operation text out.
-        var (plateWidth, plateHeight) = shell.LogTogglePlateForCheck;
+        Check(!shell.RepoChangesEntryInStripForCheck,
+            "底部状态条不再有仓库改动入口，仓库状态只在 Changes 列里读");
+        var (stripWidth, stripHeight) = shell.LogTogglePlateForCheck;
         Check(shell.StatusStripHeightForCheck <= 28.5
-              && Math.Abs(plateWidth - plateHeight) <= 1.5
-              && shell.StatusWidthForCheck > 40
-              && shell.RepoIndicatorWidthForCheck > 0,
-            "指示条亮着的时候状态栏还是那 28 高、日志底板还是正方形、左边的状态文字没被挤没（列高 "
-            + Fmt(shell.StatusStripHeightForCheck) + "，底板 " + Fmt(plateWidth) + "×" + Fmt(plateHeight)
+              && Math.Abs(stripWidth - stripHeight) <= 1.5
+              && shell.StatusWidthForCheck > 40,
+            "拿掉那一格之后状态条还是 28 高、日志底板还是正方形、状态文字没被挤没（列高 "
+            + Fmt(shell.StatusStripHeightForCheck) + "，底板 " + Fmt(stripWidth) + "×" + Fmt(stripHeight)
             + "，状态宽 " + Fmt(shell.StatusWidthForCheck) + "）");
-        chat.ClearRepositoryForCheck();
-        panel.Reload();
-        Dispatcher.UIThread.RunJobs();
-        Check(!shell.RepoIndicatorVisibleForCheck,
-            "把那份读回收走之后指示跟着灭，而不是留着一个已经没有对象的数字");
-        shell.CloseInspector();
-        chat.DeleteConversation(stripSession.Id);
-        chat.DeleteConversation(awaySession.Id);
-        panel.Reload();
-        Dispatcher.UIThread.RunJobs();
+
+        // ── one Changes list, five ranges, each cut from the same reading ──
+        // The picker is the answer to "what am I looking at": every scope comes from the one status read, and the
+        // cut is asserted per scope because a filter that quietly included everything would look right in the
+        // default scope and be wrong in the other two.
+        inspector.ReadReviewRequested = request => Task.FromResult(new InspectorPanel.ReviewRead(
+            GitCommitList.Stopped(GitCommitListOutcome.NoUpstream, "no upstream configured"), null, null, null));
+        inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), repoState, "repo");
+        Check(inspector.ScopePickerForCheck
+              && inspector.ScopeNameForCheck == HubStrings.Get("InspectorScopeUncommitted")
+              && inspector.RepoRowCountForCheck == 3,
+            "Changes 默认读未提交，选择器写着「未提交」并列全三条（实际「" + inspector.ScopeNameForCheck + "」/ "
+            + inspector.RepoRowCountForCheck + " 行）");
+        inspector.SetScope(GitReviewScope.Staged);
+        Check(inspector.ScopeNameForCheck == HubStrings.Get("InspectorScopeStaged")
+              && inspector.RepoRowCountForCheck == 1
+              && inspector.RepoFirstPathForCheck.Contains("main.cpp", StringComparison.Ordinal),
+            "选「已暂存」只剩暂存区相对 HEAD 的那一条，不把工作区的改动也算进来（实际 "
+            + inspector.RepoRowCountForCheck + " 行「" + inspector.RepoFirstPathForCheck + "」）");
+        inspector.SetScope(GitReviewScope.Unstaged);
+        Check(inspector.RepoRowCountForCheck == 2
+              && inspector.RepoFirstPathForCheck.Contains("note.txt", StringComparison.Ordinal),
+            "选「未暂存」剩下工作区相对暂存区的那条，和本来就不在索引里的未跟踪那条（实际 "
+            + inspector.RepoRowCountForCheck + " 行）");
+        // The two history scopes read for themselves. A branch with no upstream says so rather than listing every
+        // commit it has as if they were all unpushed — the one sentence that keeps the scope honest.
+        inspector.SetScope(GitReviewScope.Committed);
+        await WaitUntilAsync(() => inspector.RepoNoticeForCheck.Contains(
+            HubStrings.Get("InspectorCommitsNoUpstream"), StringComparison.Ordinal));
+        Check(inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorCommitsNoUpstream"), StringComparison.Ordinal),
+            "选「已提交」去读未推送的提交，没有 upstream 时说清无从判断（实际「"
+            + inspector.RepoNoticeForCheck + "」）");
+        // A row list without a transcript still folds into one turn, and the fold keeps both ends of the chain:
+        // the first write is what the diff starts from, the last is what the undo has to find on disk.
+        var netReview = TurnReview.FromRows(
+        [
+            new ChangedFile("src/main.cpp", ChangeVerdict.Edited, "", 0, null, null, null, "", true,
+                new ChangeLineCounts(3, 1), ChangeId: "a", SelectedRevisionId: "a", LastRevisionId: "b"),
+        ]);
+        Check(netReview.Files.Count == 1 && netReview.Added == 3 && netReview.Removed == 1
+              && netReview.Files[0].FirstRevisionId == "a" && netReview.Files[0].LastRevisionId == "b",
+            "一行改动折成本轮评审时，链条两头都记得：diff 从第一次写入之前算起，撤销要知道最后一次写成了什么");
+        inspector.SetScope(GitReviewScope.Uncommitted);
 
         // ── the steer strip: a second tap before an interjection spends a request ──
         var session = chat.StartConversation();

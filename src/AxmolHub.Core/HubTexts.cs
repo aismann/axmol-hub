@@ -1041,7 +1041,7 @@ public static class HubTexts
         ["InspectorEditSaveFailed"] = ("保存失败，未保存的编辑已保留。", "Save failed; unsaved edits have been retained."),
         ["InspectorEditUnsupported"] = ("此文件不可编辑；可能已删除、为二进制、超出大小限制或没有写入权限。", "This file cannot be edited: it may be deleted, binary, too large, or outside writable scope."),
         ["InspectorEditSnapshotRequired"] = ("历史版本或缺少原文快照的差异只读。请使用打开文件编辑当前文件。", "Historical revisions and diffs without source snapshots are read-only. Use Open file to edit the current file."),
-        ["InspectorChangesEmpty"] = ("这个会话还没改动任何文件", "This session has not touched any file yet"),
+        ["InspectorChangesEmpty"] = ("这一轮没有改动文件", "This turn did not change any file"),
         ["InspectorPlanEmpty"] = ("还没有生成计划", "No plan yet"),
         // The plan exists and its document does not. "No plan yet" would be the wrong sentence to show somebody
         // who has one on the transcript, so the pane names the file it looked for and how long the plan was.
@@ -1096,6 +1096,55 @@ public static class HubTexts
         ["InspectorRepoUnsafe"] = ("git 不信任这个目录的归属，要你亲自认下来它才让读",
             "git does not trust who owns this repository; it needs your own decision before Hub may read it"),
         ["InspectorRepoFailed"] = ("git 没能回答", "git did not answer"),
+        // ── The Changes scope picker ──
+        // The scope names the question the list below answers. They are short because the picker sits above the
+        // list it governs and a sentence there would be read as the list's title rather than its question.
+        ["InspectorScopeLastTurn"] = ("本轮修改", "Last turn"),
+        ["InspectorScopeUncommitted"] = ("未提交", "Uncommitted"),
+        ["InspectorScopeUnstaged"] = ("未暂存", "Unstaged"),
+        ["InspectorScopeStaged"] = ("已暂存", "Staged"),
+        ["InspectorScopeCommitted"] = ("已提交", "Committed"),
+        ["InspectorScopeBranch"] = ("分支", "Branch"),
+        ["InspectorScopeTip"] = ("选一处改动来看", "Choose which changes to read"),
+        ["InspectorScopeCountsFormat"] = ("{0} 个文件  +{1} −{2}", "{0} files  +{1} −{2}"),
+        ["InspectorScopeUncommittedEmpty"] = ("没有未提交的改动", "Nothing is uncommitted"),
+        ["InspectorScopeUnstagedEmpty"] = ("没有未暂存的改动", "Nothing is unstaged"),
+        ["InspectorScopeStagedEmpty"] = ("没有已暂存的改动", "Nothing is staged"),
+        // A command that edited files leaves no snapshot naming the turn, so those files are not counted under the
+        // assistant's name — this is the sentence that points at the list they are in instead.
+        ["InspectorTurnCommands"] = ("本轮还运行过命令，它改的文件在下方的 Git 范围里",
+            "A command ran in this turn too; the files it changed are under the Git scopes below"),
+        // The Committed scope reads the branch's own unpushed commits: after a push they belong to the remote, and
+        // with no upstream there is no such set — the four sentences below are the four honest answers.
+        ["InspectorCommitsNone"] = ("没有未推送的提交", "No unpushed commits"),
+        ["InspectorCommitsNoUpstream"] = ("这个分支没有 upstream，无从判断哪些提交还没推送",
+            "This branch has no upstream, so there is no way to tell which commits are unpushed"),
+        ["InspectorCommitsPick"] = ("在菜单里选一个提交", "Pick a commit from the menu"),
+        ["InspectorCommitsFailed"] = ("读不到提交列表", "The commit list could not be read"),
+        ["InspectorCommitHeadFormat"] = ("{0} · {1}", "{0} · {1}"),
+        ["InspectorCommitMergeFormat"] = ("合并提交 {0} · {1}（按第一父提交比较）",
+            "Merge commit {0} · {1} (compared with its first parent)"),
+        ["InspectorCommitEmpty"] = ("这个提交没有改动任何文件", "This commit changed no files"),
+        ["InspectorBranchesReading"] = ("正在读分支…", "Reading branches…"),
+        ["InspectorBranchesPick"] = ("选一个分支作基准", "Pick a branch to compare against"),
+        ["InspectorBranchesNone"] = ("没有别的本地分支可以与它比较",
+            "There is no other local branch to compare against"),
+        ["InspectorBranchHeadFormat"] = ("与 {0} 自 {1} 分叉以来的差别", "Since {0} forked at {1}"),
+        // ── The card a finished turn leaves in the transcript ──
+        // It answers "what did that just do to my tree", so the count is the headline and the two numbers are the
+        // detail. The fold names how many are still hidden: "show more" alone makes a reader open it to find out
+        // whether it was worth opening.
+        ["ChatReviewEditedFormat"] = ("编辑了 {0} 个文件", "Edited {0} files"),
+        ["ChatReviewEditedOne"] = ("编辑了 1 个文件", "Edited 1 file"),
+        ["ChatReviewUndo"] = ("撤销", "Undo"),
+        ["ChatReviewReview"] = ("审阅", "Review"),
+        ["ChatReviewMoreFormat"] = ("再显示 {0} 个文件", "Show {0} more files"),
+        ["ChatReviewFewer"] = ("收起文件列表", "Show fewer files"),
+        // Both sentences are in the user's voice: the undo is their own act, and the assistant has to read that the
+        // tree moved back before it anchors another edit on what it believes is still there.
+        ["ChatReviewUndoneFormat"] = ("已把这一轮改动的 {0} 个文件还原", "Restored the {0} files this turn changed"),
+        ["ChatReviewUndonePartialFormat"] = ("还原了 {0} 个文件；{1} 个在那之后又被改过，没有动",
+            "Restored {0} files; {1} changed since and were left alone"),
         // The two empty-scope jumps. A list that is empty because the *other* scope is not leaves the reader at a
         // dead end, so the empty sentence offers the way across — and only ever with a number it has actually
         // verified: the changes tab offers this when a read has said the tree is dirty, the repository tab when
@@ -1258,13 +1307,6 @@ public static class HubTexts
         // which one it takes back.
         ["TrustedCommandsTitle"] = ("以后都不问的命令动词", "Command verbs it stops asking about"),
         ["RunningSessionsFormat"] = ("{0} 个会话运行中", "{0} sessions running"),
-        // The strip's repository slot. It speaks in two states only: something uncommitted, and a read that could
-        // not answer. A clean tree, a directory that is not a repository and a directory nobody has read yet all
-        // stay silent, because the strip is where the app says what needs acting on — and those three do not.
-        ["StatusRepoDirtyFormat"] = ("仓库 {0} 处未提交 · {1}", "repository: {0} uncommitted · {1}"),
-        ["StatusRepoDirtyTruncatedFormat"] = ("仓库 {0}+ 处未提交 · {1}", "repository: {0}+ uncommitted · {1}"),
-        ["StatusRepoFailed"] = ("仓库状态读不到", "the repository state could not be read"),
-        ["StatusRepoOpenHint"] = ("看仓库里有什么改动", "see what the repository holds"),
         ["ChatPreparing"] = ("思考中...", "Thinking..."),
         ["ChatGenerating"] = ("正在生成...", "Generating..."),
         ["You"] = ("你", "You"),

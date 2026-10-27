@@ -23,6 +23,14 @@ public sealed record TurnReviewFile(
 /// answers with, because it is the same question asked once per file.</summary>
 public sealed record TurnUndoOutcome(string RelativePath, UndoVerdict Verdict);
 
+/// <summary>One batch undo: the verdict per file, and the inverses it left so the act itself can be undone.</summary>
+public sealed record TurnUndo(IReadOnlyList<TurnUndoOutcome> Outcomes, IReadOnlyList<string> InverseIds)
+{
+    public int Restored => Outcomes.Count(outcome => outcome.Verdict == UndoVerdict.Reverted);
+
+    public bool AnyRestored => Restored > 0;
+}
+
 /// <summary>
 /// What one assistant turn did to the workspace, derived from the transcript plus the durable revisions it points
 /// at — no new state on disk, so a conversation reopened a week later answers the same question the same way.
@@ -41,6 +49,25 @@ public sealed record TurnReview(
     bool RanCommands)
 {
     public static TurnReview Empty { get; } = new([], [], false);
+
+    /// <summary>
+    /// A review built from rows that were gathered without a turn — the shell's fixtures, and any caller holding a
+    /// list of changed files rather than a transcript. The rows become the list and the totals come from the counts
+    /// they already carry, so a row list and a transcript answer the same question the same way.
+    /// </summary>
+    public static TurnReview FromRows(IReadOnlyList<ChangedFile> rows, bool ranCommands = false)
+    {
+        var files = rows
+            .Where(row => row.SelectedRevisionId is { Length: > 0 } || row.ChangeId is { Length: > 0 })
+            .Select(row =>
+            {
+                var first = row.SelectedRevisionId ?? row.ChangeId!;
+                return new TurnReviewFile(row.RelativePath, row.RelativePath, row.Verdict, first,
+                    row.LastRevisionId ?? first, [], row.Lines);
+            })
+            .ToArray();
+        return new TurnReview(files, rows, ranCommands);
+    }
 
     public bool IsEmpty => Files.Count == 0;
 
@@ -138,20 +165,19 @@ public sealed record TurnReview(
     /// overwritten. One file failing never stops the others: the outcome list is the report, and the caller says
     /// which files moved back and which did not.
     /// </summary>
-    public IReadOnlyList<TurnUndoOutcome> Undo(string conversationId, string? dataRoot,
-        WorkspaceSandbox sandbox, WorkspaceGuards guards, out IReadOnlyList<string> inverseIds)
+    public TurnUndo Undo(string conversationId, string? dataRoot,
+        WorkspaceSandbox sandbox, WorkspaceGuards guards)
     {
         var outcomes = new List<TurnUndoOutcome>(Files.Count);
         var inverses = new List<string>(Files.Count);
         foreach (var file in Enumerable.Reverse(Files))
         {
             var verdict = ChatChangeStore.RestoreChain(dataRoot, conversationId, file.FirstRevisionId,
-                file.LastRevisionId, sandbox, guards, out var path, out var inverseId);
+                file.LastRevisionId, sandbox, guards, out _, out var inverseId);
             if (verdict == UndoVerdict.Reverted && inverseId is { Length: > 0 }) inverses.Add(inverseId);
-            outcomes.Add(new TurnUndoOutcome(path.Length > 0 ? path : file.RelativePath, verdict));
+            outcomes.Add(new TurnUndoOutcome(file.RelativePath, verdict));
         }
-        inverseIds = inverses;
-        return outcomes;
+        return new TurnUndo(outcomes, inverses);
     }
 
     private static ChangeLineCounts? Measure(string? dataRoot, ChatFileRevision first, ChatFileRevision last)

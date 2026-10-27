@@ -4,6 +4,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.VisualTree;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.LogicalTree;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using System.Runtime.InteropServices;
@@ -75,8 +76,12 @@ public partial class MainWindow
     internal void RaiseAttentionForCheck(ChatAttentionKind kind) => OnChatAttentionRequired(_chat.ViewedConversationId ?? "", kind);
     /// <summary>The category the page is showing, read off the page rather than the shell's copy.</summary>
     internal string SettingsSelectedCategoryForCheck => _settings?.SelectedCategory ?? "";
-    internal bool RepoIndicatorVisibleForCheck => RepoIndicator.IsVisible;
-    internal string RepoIndicatorTextForCheck => RepoIndicatorText.Text ?? "";
+    /// <summary>Whether the strip still offers the repository entry. It must not: the Changes column is the one
+    /// place repository state is read, and a second entry in the strip was a duplicate door onto the same tab.
+    /// Asked of the live strip rather than a constant, so undoing the removal fails this check.</summary>
+    internal bool RepoChangesEntryInStripForCheck => StatusStrip.GetLogicalDescendants()
+        .OfType<Control>()
+        .Any(control => control.Tag is "RepoChangesEntry" || control.Name == "RepoIndicator");
 
     /// <summary>
     /// A close hides the window instead of ending the process whenever the host has a way back to it:
@@ -208,9 +213,6 @@ public partial class MainWindow
     internal double UpdateActionRadiusForCheck => UpdateActionButton.CornerRadius.TopLeft;
     internal double SettingsRadiusForCheck => SettingsButton.CornerRadius.TopLeft;
 
-    /// <summary>Presses the strip's own button, so a check drives the wiring rather than the shell method the
-    /// button happens to end up calling.</summary>
-    internal void ClickRepoIndicatorForCheck() => RepoIndicator.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     internal MenuFlyout? LogActionsMenuForCheck => LogActionsFlyout;
 
     /// <summary>
@@ -470,11 +472,9 @@ public partial class MainWindow
     /// <summary>The strip's background-reply counter, read as the user sees it.</summary>
     internal bool ChatRunsVisibleForCheck => ChatRuns.IsVisible;
     internal string ChatRunsTextForCheck => ChatRuns.Text ?? "";
-    /// <summary>The strip row and the log button's own plate, measured while the repository slot is lit. Adding a
-    /// sixth column to a 28-pixel row is only safe if the row did not grow and the square glyph did not become a
-    /// rectangle, and neither of those is visible in an assertion that only reads strings.</summary>
+    /// <summary>The strip row and the log button's own plate: a 28-pixel row may not grow and the square glyph may
+    /// not become a rectangle, and neither is visible in an assertion that only reads strings.</summary>
     internal double StatusStripHeightForCheck => StatusStrip.Bounds.Height;
-    internal double RepoIndicatorWidthForCheck => RepoIndicator.Bounds.Width;
     internal (double Width, double Height) LogTogglePlateForCheck => (LogToggle.Bounds.Width, LogToggle.Bounds.Height);
     /// <summary>The drawer's own caption. A task row points here, so the surface it lands on has to say what
     /// it holds rather than leaving the text at the top of a box.</summary>

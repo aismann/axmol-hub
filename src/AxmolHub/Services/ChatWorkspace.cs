@@ -174,6 +174,14 @@ public sealed partial class ChatWorkspace : IDisposable
     /// <returns>The unified diff, or null with <paramref name = "state"/> saying which honest way it stopped.</returns>
     public string? DiffForChange(ChangedFile file, string conversationId, out UndoCopyState state, bool wholeFile = false) => _execution.DiffForChange(file, conversationId, out state, wholeFile);
     public IReadOnlyList<ChangedFile> ChangesFor(Conversation? conversation) => _execution.ChangesFor(conversation);
+
+    /// <summary>The last turn's own edits, net per file. See <see cref="TurnReview"/> for what "the turn" and
+    /// "net" mean and where attribution stops.</summary>
+    public TurnReview TurnReviewFor(Conversation? conversation) => _execution.TurnReviewFor(conversation);
+
+    /// <summary>One read of a Changes scope's history, on the workspace's own process plumbing.</summary>
+    internal Task<InspectorPanel.ReviewRead> ReadReviewAsync(InspectorPanel.ReviewReadRequest request,
+        CancellationToken cancellation = default) => _execution.ReadReviewAsync(request, cancellation);
     public IReadOnlyList<ChangedFile> ChangesForCalls(Conversation? conversation, IReadOnlySet<string> callIds)
         => ChatChanges.ForCalls(conversation, callIds);
     public ChatFileSnapshot? SnapshotForChange(ChangedFile file, string? revisionId, out UndoCopyState state) => _execution.SnapshotForChange(file, revisionId, out state);
@@ -858,6 +866,11 @@ public sealed partial class ChatWorkspace : IDisposable
     /// deleted, which is what takes the button away — the second click would be a different, worse undo.
     /// </summary>
     public Task<UndoOutcome> RevertWriteAsync(string conversationId, string callId) => _execution.RevertWriteAsync(conversationId, callId);
+
+    /// <summary>Undo every file the last turn's writes ended on. Null when there is no turn to undo or a reply is
+    /// running — the card's Undo is only offered when a turn is on screen and nothing is streaming.</summary>
+    public Task<TurnUndo?> RevertTurnAsync(string conversationId, CancellationToken cancellation = default)
+        => _execution.RevertTurnAsync(conversationId, cancellation);
     /// <summary>
     /// Replaces the user turn at <paramref name = "index"/> with <paramref name = "text"/>. Everything after the
     /// edited turn is dropped: that text was answered once already, so the reply and any later turns are stale

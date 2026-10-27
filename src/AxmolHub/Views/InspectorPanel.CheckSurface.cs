@@ -204,9 +204,12 @@ internal sealed partial class InspectorPanel : UserControl
     internal int RepoBodyCountForCheck => _repoBody.Children.Count;
     /// <summary>The head line's text: the branch, and the ahead/behind pair only when it is off its upstream.</summary>
     internal string RepoHeadlineForCheck => _repoBody.Children.OfType<Grid>().SelectMany(grid => grid.Children).OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("inspector-note"))?.Text ?? "";
-    /// <summary>The caveat, read apart from the why-sentences: it is the tab's standing first line, present in
-    /// every state, while a why-sentence is what the tab ends on instead of a list.</summary>
-    internal string RepoCaveatForCheck => _repoBody.Children.OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("inspector-note"))?.Text ?? "";
+    /// <summary>The scope the picker names. The tab's standing first line used to be a caveat saying the list was
+    /// the repository's; that job belongs to the picker now, which names the range instead of apologising for it.</summary>
+    internal string ScopeNameForCheck => _scopeName.Text ?? "";
+    internal bool ScopePickerForCheck => _changesHost.Children.OfType<Grid>().FirstOrDefault()?
+        .Children.OfType<Button>().Any(button => button.Tag as string == "InspectorScopeButton") == true;
+    internal int TurnRowCountForCheck => ChangeRows().Count;
     /// <summary>The sentences the tab ends on instead of a list, joined. Each outcome owns its own string, and
     /// this is how that is proven rather than inferred from a row count.</summary>
     internal string RepoNoticeForCheck => string.Join(" ~ ", _repoBody.GetLogicalDescendants().OfType<TextBlock>().Where(block => block.Classes.Contains("inspector-empty")).Select(block => block.Text ?? ""));

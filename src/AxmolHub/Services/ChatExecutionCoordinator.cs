@@ -547,6 +547,71 @@ internal sealed partial class ChatExecutionCoordinator
             wholeFile);
     }
 
+    /// <summary>
+    /// The last turn's own edits: what the assistant changed, not what the tree happens to hold. Same source as
+    /// <see cref="ChangesFor"/> — the transcript and the revisions it points at — but cut to one turn and net per
+    /// file, so a file written three times is one row and the totals are what the turn left behind.
+    /// </summary>
+    internal TurnReview TurnReviewFor(Conversation? conversation)
+        => TurnReview.Of(conversation, conversation?.Messages.Count - 1 ?? -1, _dataRoot);
+
+    /// <summary>
+    /// One read of a Changes scope's history. The pane asks for exactly what it is missing — the commit list, one
+    /// commit's paths, the branch list, one branch range, or one file out of any of those — so a scope nobody opens
+    /// never costs a git run, and a file nobody expands never costs one either.
+    /// </summary>
+    internal async Task<InspectorPanel.ReviewRead> ReadReviewAsync(InspectorPanel.ReviewReadRequest request,
+        CancellationToken cancellation = default)
+    {
+        var runner = new ProcessRunner(line => LogProvider?.Invoke()?.Write(line));
+        var sensitive = Providers.SensitiveValues();
+        try
+        {
+            if (request.Path is { Length: > 0 } path)
+            {
+                var comparison = request.Scope == GitReviewScope.Branch
+                    ? request.Fork is { Length: > 0 } fork
+                        ? await GitRepository.ReadRangeFileAsync(request.Root, path, fork, "HEAD", runner,
+                            cancellation: cancellation).ConfigureAwait(false)
+                        : null
+                    : request.Commit is { Length: > 0 } commit
+                        ? await GitRepository.ReadCommitFileAsync(request.Root, path, commit, runner,
+                            cancellation: cancellation).ConfigureAwait(false)
+                        : null;
+                return new InspectorPanel.ReviewRead(null, null, null, comparison);
+            }
+            if (request.Scope == GitReviewScope.Committed)
+            {
+                if (request.Commit is not { Length: > 0 } commit)
+                    return new InspectorPanel.ReviewRead(
+                        await GitRepository.ReadUnpushedCommitsAsync(request.Root, runner, sensitive, cancellation)
+                            .ConfigureAwait(false), null, null, null);
+                return new InspectorPanel.ReviewRead(null,
+                    await GitRepository.ReadCommitPathsAsync(request.Root, commit, runner, sensitive, cancellation)
+                        .ConfigureAwait(false), null, null);
+            }
+            if (request.Base is not { Length: > 0 } branch)
+                return new InspectorPanel.ReviewRead(null, null,
+                    await GitRepository.ReadBranchesAsync(request.Root, runner, sensitive, cancellation)
+                        .ConfigureAwait(false), null);
+            return new InspectorPanel.ReviewRead(null,
+                await GitRepository.ReadBranchRangePathsAsync(request.Root, branch, runner, sensitive, cancellation)
+                    .ConfigureAwait(false), null, null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return request.Scope == GitReviewScope.Committed
+                ? new InspectorPanel.ReviewRead(GitCommitList.Stopped(GitCommitListOutcome.Failed, ex.Message),
+                    null, null, null)
+                : new InspectorPanel.ReviewRead(null,
+                    GitChangedPaths.Stopped(GitCommitListOutcome.Failed, ex.Message), null, null);
+        }
+    }
+
     internal IReadOnlyList<ChangedFile> ChangesFor(Conversation? conversation)
     {
         var changes = ChatChanges.Of(conversation);
@@ -2390,6 +2455,76 @@ internal sealed partial class ChatExecutionCoordinator
             Changed?.Invoke();
         }).ConfigureAwait(false);
         return new UndoOutcome(attempt.verdict, attempt.relative, null);
+    }
+
+    /// <summary>
+    /// Undo a whole turn: every file the turn's writes ended on goes back to what the turn found, each one guarded
+    /// by that turn's own last post-image so a file edited since is left alone instead of overwritten. One file
+    /// refusing never stops the rest — the outcome list is the report.
+    ///
+    /// <para>The writes are marked consumed and the inverses kept exactly as a single write's undo does, because
+    /// this is the same act repeated per file: an undo is an edit, and undoing it has to stay possible.</para>
+    /// </summary>
+    internal async Task<TurnUndo?> RevertTurnAsync(string conversationId, CancellationToken cancellation = default)
+    {
+        if (await ReadOnUiAsync(() => RunFor(conversationId) is not null).ConfigureAwait(false))
+            return null;
+
+        var plan = await ReadOnUiAsync<(TurnReview Review, string DataRoot, string ConversationId,
+            WorkspaceSandbox Sandbox, WorkspaceGuards Guards)?>(() =>
+        {
+            var conversation = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);
+            if (conversation is null) return null;
+            var review = TurnReviewFor(conversation);
+            if (review.IsEmpty) return null;
+            var scope = ScopeFor(conversationId).Workspace;
+            return (review, scope.DataRoot, scope.ConversationId, scope.Sandbox, scope.Guards);
+        }).ConfigureAwait(false);
+        if (plan is not { } work) return null;
+
+        // Off the UI thread: this is one guarded read-and-write per file, the same work a single undo does.
+        var undo = await Task.Run(() => work.Review.Undo(work.ConversationId, work.DataRoot, work.Sandbox,
+            work.Guards), cancellation).ConfigureAwait(false);
+        if (!undo.AnyRestored)
+        {
+            Audit(conversationId, "Undo refused for every file of the turn");
+            return undo;
+        }
+
+        await ApplyOnUiAsync(() =>
+        {
+            Sessions.Registry.TryUpdate(conversationId, opened =>
+            {
+                var restored = undo.Outcomes
+                    .Where(outcome => outcome.Verdict == UndoVerdict.Reverted)
+                    .Select(outcome => outcome.RelativePath)
+                    .ToHashSet(StringComparer.Ordinal);
+                foreach (var file in work.Review.Files.Where(file => restored.Contains(file.RelativePath)))
+                foreach (var index in file.TurnIndices)
+                    if (index >= 0 && index < opened.Messages.Count)
+                        opened.Messages[index] = opened.Messages[index] with { UndoName = null, UndoConsumed = true };
+                foreach (var inverse in undo.InverseIds)
+                    if (!opened.ChangeHistoryIds.Contains(inverse, StringComparer.Ordinal))
+                        opened.ChangeHistoryIds.Add(inverse);
+                // In the user's voice, because it is their own act: the assistant has to read that the tree moved
+                // back before it anchors another edit on content it believes is still there.
+                opened.Append(ChatTurn.User(UndoTurnNotice(undo)));
+            });
+            Audit(conversationId, $"Undo turn: {undo.Restored} of {undo.Outcomes.Count} files restored");
+            Changed?.Invoke();
+        }).ConfigureAwait(false);
+        return undo;
+    }
+
+    /// <summary>The one sentence the turn's undo leaves in the transcript: what moved back, and how many did not.</summary>
+    private static string UndoTurnNotice(TurnUndo undo)
+    {
+        var refused = undo.Outcomes.Count - undo.Restored;
+        return refused == 0
+            ? string.Format(System.Globalization.CultureInfo.CurrentCulture, HubStrings.Get("ChatReviewUndoneFormat"),
+                undo.Restored)
+            : string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatReviewUndonePartialFormat"), undo.Restored, refused);
     }
 
     internal bool EditAndResend(string conversationId, int index, string text)

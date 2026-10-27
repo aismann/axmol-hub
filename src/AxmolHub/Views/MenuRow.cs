@@ -15,9 +15,10 @@ namespace AxmolHub;
 /// and the diff viewer's view menu draw the same row, so a tick means the same thing in both.</summary>
 internal static class MenuRow
 {
-    internal static Control Build(string? iconKey, string title, bool current)
+    internal static Control Build(string? iconKey, string title, bool current, string? badge = null,
+        bool chevron = false)
     {
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), MinWidth = 200 };
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), MinWidth = 200 };
 
         var hasGlyph = iconKey is { Length: > 0 };
         if (hasGlyph)
@@ -54,6 +55,47 @@ internal static class MenuRow
         Grid.SetColumn(text, 1);
         header.Children.Add(text);
 
+        // A badge is a count of what the row would show, so it sits where the eye looks for a number and the tick
+        // keeps the column it has always had. A row that opens a submenu gets the chevron instead: it is not an
+        // answer to this question, it is another question.
+        if (badge is { Length: > 0 })
+        {
+            var count = new TextBlock
+            {
+                Name = "MenuRowBadge",
+                Text = badge,
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(12, 0, 0, 0),
+            };
+            count.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+            Grid.SetColumn(count, 2);
+            header.Children.Add(count);
+        }
+
+        if (chevron)
+        {
+            var arrow = new Avalonia.Controls.Shapes.Path
+            {
+                Name = "MenuRowChevron",
+                Width = 12,
+                Height = 12,
+                Stretch = Stretch.Uniform,
+                Fill = Brushes.Transparent,
+                StrokeThickness = 1.7,
+                StrokeLineCap = PenLineCap.Round,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(12, 0, 0, 0),
+                IsVisible = true,
+            };
+            arrow.Bind(Avalonia.Controls.Shapes.Path.DataProperty,
+                new DynamicResourceExtension("Hub.Icon.ChevronRight"));
+            arrow.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty,
+                new DynamicResourceExtension("Hub.TextSecondary"));
+            Grid.SetColumn(arrow, 2);
+            header.Children.Add(arrow);
+        }
+
         var tick = new Avalonia.Controls.Shapes.Path
         {
             Name = "MenuRowTick",
@@ -70,7 +112,7 @@ internal static class MenuRow
         };
         tick.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Tick"));
         tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-        Grid.SetColumn(tick, 2);
+        Grid.SetColumn(tick, 3);
         header.Children.Add(tick);
         return header;
     }

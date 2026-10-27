@@ -471,6 +471,9 @@ public partial class ChatPanel
             SyncRunningCommandRow(conversation.Id, currentRun);
             if (currentRun is { IsStreaming: true }) AttachLive(currentRun);
             RenderNotice();
+            // The turn's own card is a tail: it belongs under the last row and nowhere else, and a fold inside it
+            // repaints the tails without a full transcript pass.
+            ReviewCardFor(conversation);
             AddVirtualTails(items);
         }
         var itemsMs = phase.Elapsed.TotalMilliseconds;
@@ -502,6 +505,7 @@ public partial class ChatPanel
     private void AddVirtualTails(List<VirtualTranscriptItem> items)
     {
         var session = _renderedConversationId ?? "";
+        if (_reviewCard is { } review) items.Add(new() { Key = "review", Session = session, Special = review });
         if (_runningCommand is { } command) items.Add(new() { Key = "command", Session = session, Special = command.Shell });
         if (_live is { } live) items.Add(new() { Key = "live", Session = session, Special = live.Row });
         if (NoticeHost.Children.Count > 0) items.Add(new() { Key = "status", Session = session, Special = NoticeHost });
