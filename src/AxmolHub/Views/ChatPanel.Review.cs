@@ -130,7 +130,7 @@ public partial class ChatPanel
         {
             // The card is about this turn, so it opens the column on the scope that reads this turn — named
             // explicitly rather than left to whichever scope the reader last had the picker on.
-            _inspector.SetScope(GitReviewScope.LastTurn);
+            _inspector?.SetScope(GitReviewScope.LastTurn);
             OpenInspector?.Invoke("repo", conversation.Messages.Count - 1);
         }, primary: true));
         Grid.SetColumn(actions, 1);

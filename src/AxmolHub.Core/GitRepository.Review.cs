@@ -152,7 +152,7 @@ public static partial class GitRepository
             var log = await runner.RunAsync(git,
                 ["--no-pager", "log", "-n", MaxCommits.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     "--format=%H" + FieldSeparator + "%h" + FieldSeparator + "%ct" + FieldSeparator + "%P" +
-                    FieldSeparator + "%s", "-z", $"HEAD..{upstreamName}", "--"],
+                    FieldSeparator + "%s", "-z", $"{upstreamName}..HEAD", "--"],
                 root, timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation)
                 .ConfigureAwait(false);
             if (log.ExitCode != 0)

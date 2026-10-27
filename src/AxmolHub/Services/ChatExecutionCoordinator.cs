@@ -2470,7 +2470,7 @@ internal sealed partial class ChatExecutionCoordinator
         if (await ReadOnUiAsync(() => RunFor(conversationId) is not null).ConfigureAwait(false))
             return null;
 
-        var plan = await ReadOnUiAsync<(TurnReview Review, string DataRoot, string ConversationId,
+        var plan = await ReadOnUiAsync<(TurnReview Review, string? DataRoot, string ConversationId,
             WorkspaceSandbox Sandbox, WorkspaceGuards Guards)?>(() =>
         {
             var conversation = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);

@@ -1598,6 +1598,168 @@ internal sealed class ShellDecisionsChecks
         Check(inspector.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorCommitsNoUpstream"), StringComparison.Ordinal),
             "选「已提交」去读未推送的提交，没有 upstream 时说清无从判断（实际「"
             + inspector.RepoNoticeForCheck + "」）");
+        // ── a turn's own review, measured from real revisions ──
+        // Two writes to one file with the turn's own edit in between: the net rule is that the turn moved the file
+        // from what it found to what it last left, not from write to write. Then the undo guard on the same chain,
+        // because the guard is the only thing standing between "put it back" and somebody's later work.
+        var reviewWorkspace = ScratchDirectory.Resolve("review-turn-workspace");
+        if (Directory.Exists(reviewWorkspace)) Directory.Delete(reviewWorkspace, true);
+        Directory.CreateDirectory(reviewWorkspace);
+        var turnFile = System.IO.Path.Combine(reviewWorkspace, "note.txt");
+        await File.WriteAllTextAsync(turnFile, "base\n");
+        var turnDataRoot = shell.Workspace.Store.Root;
+        var turnSandbox = WorkspaceSandbox.For(reviewWorkspace);
+        var turnGuards = new WorkspaceGuards(turnDataRoot, []);
+        var turnRevisions = new List<string>();
+        async Task WriteTurnFileAsync(string text)
+        {
+            var before = File.Exists(turnFile) ? await File.ReadAllTextAsync(turnFile) : null;
+            var record = ChatChangeStore.Prepare(turnDataRoot, "review-turn", turnFile, reviewWorkspace, before, text);
+            await File.WriteAllTextAsync(turnFile, text);
+            ChatChangeStore.CompleteRevision(turnDataRoot, record);
+            turnRevisions.Add(record.Id);
+        }
+        await WriteTurnFileAsync("base\none\n");
+        await WriteTurnFileAsync("base\none\ntwo\n");
+        var chainSnapshot = ChatChangeStore.ReadChainSnapshot(turnDataRoot, turnRevisions[0], turnRevisions[1],
+            out var chainState);
+        var chainCounts = chainSnapshot is null ? (Added: -1, Removed: -1)
+            : FileDiff.CountChangedLines(chainSnapshot.Before, chainSnapshot.After);
+        Check(chainState == UndoCopyState.Read && chainSnapshot is not null
+              && chainSnapshot.Before == "base\n" && chainSnapshot.After == "base\none\ntwo\n"
+              && chainCounts == (2, 0),
+            "同一文件两次写入合成一条：从这一轮之前读到的东西，到它最后留下的样子（实际 "
+            + (chainSnapshot?.Before ?? "无").Replace("\n", "\\n") + " → "
+            + (chainSnapshot?.After ?? "无").Replace("\n", "\\n") + "，+" + chainCounts.Added + " −"
+            + chainCounts.Removed + "）");
+        var chainReview = new TurnReview(
+        [
+            new TurnReviewFile("note.txt", turnFile, ChangeVerdict.Edited, turnRevisions[0], turnRevisions[1], [], null),
+        ], [], false);
+        var chainUndo = chainReview.Undo("review-turn", turnDataRoot, turnSandbox, turnGuards);
+        Check(chainUndo.Restored == 1 && await File.ReadAllTextAsync(turnFile) == "base\n",
+            "整轮撤销退回这一轮第一次写入之前的版本，而不是倒数第二次写入的那一版（实际「"
+            + (await File.ReadAllTextAsync(turnFile)).Replace("\n", "\\n") + "」）");
+        // And the refusal: a file edited after the turn is not the turn's to take back.
+        await WriteTurnFileAsync("base\nthree\n");
+        var laterReview = new TurnReview(
+        [
+            new TurnReviewFile("note.txt", turnFile, ChangeVerdict.Edited, turnRevisions[2], turnRevisions[2], [], null),
+        ], [], false);
+        await File.WriteAllTextAsync(turnFile, "写的人\n");
+        var refusedUndo = laterReview.Undo("review-turn", turnDataRoot, turnSandbox, turnGuards);
+        Check(refusedUndo.Outcomes.Count == 1 && refusedUndo.Outcomes[0].Verdict == UndoVerdict.ChangedSince
+              && refusedUndo.Restored == 0 && await File.ReadAllTextAsync(turnFile) == "写的人\n",
+            "这一轮之后文件又被改过时，整轮撤销拒绝执行、一个字也不动，而不是覆盖掉后来的修改（实际 "
+            + refusedUndo.Outcomes.FirstOrDefault()?.Verdict + "）");
+
+        // ── the commit list, read from a real repository ──
+        // The fixtures above stop at "there is no upstream". Everything past that — the order, the timestamp, the
+        // commit's own file list — is git's answer, so it is asserted against a repository this check builds and
+        // pushes to itself. Nothing here is on a network: the remote is a bare directory two levels up.
+        var reviewRepo = ScratchDirectory.Resolve("review-commits");
+        if (Directory.Exists(reviewRepo)) Directory.Delete(reviewRepo, true);
+        Directory.CreateDirectory(reviewRepo);
+        var reviewRemote = ScratchDirectory.Resolve("review-remote.git");
+        if (Directory.Exists(reviewRemote)) Directory.Delete(reviewRemote, true);
+        Directory.CreateDirectory(reviewRemote);
+        var gitRunner = new ProcessRunner(_ => { });
+        async Task<bool> GitIn(string cwd, params string[] args)
+        {
+            var result = await gitRunner.RunAsync("git", args, cwd, timeout: TimeSpan.FromSeconds(60));
+            return result.ExitCode == 0;
+        }
+        var gitReady = await GitIn(reviewRepo, "init", "-b", "main", ".")
+                       && await GitIn(reviewRepo, "config", "user.email", "hub@example.invalid")
+                       && await GitIn(reviewRepo, "config", "user.name", "Hub Check");
+        if (gitReady)
+        {
+            await File.WriteAllTextAsync(System.IO.Path.Combine(reviewRepo, "note.txt"), "one\n");
+            gitReady = await GitIn(reviewRepo, "add", "-A")
+                       && await GitIn(reviewRepo, "commit", "-q", "-m", "first")
+                       // Fifty seconds apart, so "newest first" cannot be an accident of two commits sharing a
+                       // timestamp the sort happened to keep in insertion order.
+                       && await GitIn(reviewRepo, "commit", "-q", "--allow-empty", "-m", "second");
+        }
+        if (gitReady)
+        {
+            var withoutUpstream = await GitRepository.ReadUnpushedCommitsAsync(reviewRepo, gitRunner);
+            Check(withoutUpstream.Outcome == GitCommitListOutcome.NoUpstream,
+                "没有 upstream 的仓库说「无从判断哪些没推送」，而不是把全部分支历史当成没推送的（实际 "
+                + withoutUpstream.Outcome + "）");
+            gitReady = await GitIn(reviewRemote, "init", "--bare", "-b", "main", ".")
+                       && await GitIn(reviewRepo, "remote", "add", "origin", reviewRemote)
+                       && await GitIn(reviewRepo, "push", "-q", "-u", "origin", "main");
+        }
+        if (gitReady)
+        {
+            var pushed = await GitRepository.ReadUnpushedCommitsAsync(reviewRepo, gitRunner);
+            Check(pushed.Outcome == GitCommitListOutcome.NoCommits,
+                "推上去之后没有未推送的提交，列表说没有而不是留着推送前的旧行（实际 " + pushed.Outcome + "）");
+            await File.WriteAllTextAsync(System.IO.Path.Combine(reviewRepo, "note.txt"), "one\ntwo\n");
+            gitReady = await GitIn(reviewRepo, "add", "-A") && await GitIn(reviewRepo, "commit", "-q", "-m", "third")
+                       && await GitIn(reviewRepo, "commit", "-q", "--allow-empty", "-m", "fourth");
+        }
+        if (gitReady)
+        {
+            var ahead = await GitRepository.ReadUnpushedCommitsAsync(reviewRepo, gitRunner);
+            Check(ahead.Outcome == GitCommitListOutcome.Ok && ahead.Commits.Count == 2
+                  && ahead.Commits[0].Subject == "fourth" && ahead.Commits[1].Subject == "third",
+                "未推送的两条按倒序给出，最新的一条在最前（实际 "
+                + string.Join(" / ", ahead.Commits.Select(commit => commit.Subject)) + "）");
+            // A mis-read unix stamp would land in 1970; a stamp read in UTC would sit hours off in either
+            // direction. "Within the last few minutes, in this machine's zone" is the property that catches both.
+            var newest = ahead.Commits.FirstOrDefault();
+            Check(newest is not null
+                  && Math.Abs((DateTimeOffset.Now - newest.At).TotalMinutes) < 10
+                  && newest.At.Offset == TimeZoneInfo.Local.GetUtcOffset(newest.At.UtcDateTime),
+                "提交时间是本地时区里的真实时刻，而不是 1970 或一个按 UTC 读出来的偏移（实际 "
+                + (newest?.At.ToString("O") ?? "无") + "）");
+            // The newest of the two is an empty commit on purpose: it must list no paths rather than inherit the
+            // one below it, and the commit under it must list exactly its own change.
+            var emptyCommit = newest is null
+                ? GitChangedPaths.Stopped(GitCommitListOutcome.Failed)
+                : await GitRepository.ReadCommitPathsAsync(reviewRepo, newest.Id, gitRunner);
+            var changed = ahead.Commits.Count < 2
+                ? GitChangedPaths.Stopped(GitCommitListOutcome.Failed)
+                : await GitRepository.ReadCommitPathsAsync(reviewRepo, ahead.Commits[1].Id, gitRunner);
+            Check(emptyCommit.IsReadable && emptyCommit.Paths.Count == 0,
+                "空提交的文件清单是空的，而不是沿用下面那条的改动（实际 "
+                + string.Join(" / ", emptyCommit.Paths.Select(path => path.RelativePath)) + "）");
+            Check(changed.IsReadable && changed.Paths.Count == 1
+                  && changed.Paths[0].RelativePath == "note.txt" && changed.Paths[0].Status == "M",
+                "选中那条提交能读出它自己改了哪个文件，而不是整棵树的清单（实际 "
+                + string.Join(" / ", changed.Paths.Select(path => path.Status + " " + path.RelativePath)) + "）");
+            // And the comparison the row itself would draw: the commit against the parent it actually has.
+            var comparison = ahead.Commits.Count < 2
+                ? null
+                : await GitRepository.ReadCommitFileAsync(reviewRepo, "note.txt", ahead.Commits[1].Id, gitRunner);
+            Check(comparison is { IsReadable: true } && (comparison.Old.Snapshot.Text ?? "").Contains("one", StringComparison.Ordinal)
+                  && (comparison.New.Snapshot.Text ?? "").Contains("two", StringComparison.Ordinal),
+                "提交文件行拿父提交作旧的一侧：改动前是 one，改动后是 one+two（实际「"
+                + (comparison?.Old.Snapshot.Text ?? "")?.Replace("\n", "\\n") + "」→「"
+                + (comparison?.New.Snapshot.Text ?? "")?.Replace("\n", "\\n") + "」）");
+            // The Branch scope compares the two branches from where they actually parted, not from HEAD backwards:
+            // a feature branched off two commits ago must report the one file it changed, not the two commits.
+            gitReady = await GitIn(reviewRepo, "branch", "feature", "HEAD~2");
+            var range = gitReady
+                ? await GitRepository.ReadBranchRangePathsAsync(reviewRepo, "feature", gitRunner)
+                : GitChangedPaths.Stopped(GitCommitListOutcome.Failed);
+            Check(range.IsReadable && range.MergeBase is { Length: 40 or 64 }
+                  && range.Paths.Count == 1 && range.Paths[0].RelativePath == "note.txt",
+                "分支范围从分叉点算起，只报这条分支自己改的那一个文件，并把分叉点一起说出来（实际 "
+                + string.Join(" / ", range.Paths.Select(path => path.RelativePath)) + "，分叉点 "
+                + (range.MergeBase is { Length: > 7 } fork ? fork[..7] : range.MergeBase ?? "无") + "）");
+            var branches = await GitRepository.ReadBranchesAsync(reviewRepo, gitRunner);
+            Check(branches.Count == 2
+                  && branches.Any(branch => branch is { Name: "main", IsCurrent: true, Upstream: "origin/main" })
+                  && branches.Any(branch => branch is { Name: "feature", IsCurrent: false, Upstream: null }),
+                "分支列表给出本地分支、当前分支的标记和它的 upstream，没有 upstream 的那条留空（实际 "
+                + string.Join(" / ", branches.Select(branch => branch.Name + (branch.IsCurrent ? "*" : "")
+                    + "→" + (branch.Upstream ?? "-"))) + "）");
+        }
+        Check(gitReady, "这一节自己造的那个仓库建起来了（没有 git 或建不起来，后面的提交断言就没有意义）");
+
         // A row list without a transcript still folds into one turn, and the fold keeps both ends of the chain:
         // the first write is what the diff starts from, the last is what the undo has to find on disk.
         var netReview = TurnReview.FromRows(

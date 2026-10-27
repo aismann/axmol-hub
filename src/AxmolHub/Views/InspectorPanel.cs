@@ -1466,7 +1466,10 @@ internal sealed partial class InspectorPanel : UserControl
 
         var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         repositoryRow.Children.Add(header);
-        if (state.Diffs.TryGetValue(entry.RelativePath, out var cachedDiff)
+        // The cached patch is the HEAD-to-worktree one, so its numbers belong to Uncommitted alone: beside a staged
+        // or unstaged row they would count a different pair of versions than the diff the row opens.
+        if (_scope == GitReviewScope.Uncommitted
+            && state.Diffs.TryGetValue(entry.RelativePath, out var cachedDiff)
             && !state.Truncated && PatchCounts(cachedDiff) is { } counts)
         {
             var numbers = CountLabels(counts.Added, counts.Removed);
