@@ -54,6 +54,23 @@ public partial class ChatPanel
         }
     }
 
+    /// <summary>The colours the card's two numbers resolve to right now. Read off the rendered control, so a
+    /// hard-coded colour would show up as a value that cannot follow the theme at all.</summary>
+    internal (Color Plus, Color Minus) ReviewCountColorsForCheck
+    {
+        get
+        {
+            var card = ReviewCardFor(_chat?.ActiveConversation);
+            Color Find(string prefix)
+            {
+                var block = card?.GetLogicalDescendants().OfType<TextBlock>()
+                    .FirstOrDefault(text => (text.Text ?? "").StartsWith(prefix, StringComparison.Ordinal));
+                return block?.Foreground is ISolidColorBrush brush ? brush.Color : default;
+            }
+            return (Find("+"), Find("−"));
+        }
+    }
+
     /// <summary>The card for the current turn, built at most once per identity.</summary>
     private Control? ReviewCardFor(Conversation? conversation)
     {

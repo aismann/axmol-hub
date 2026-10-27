@@ -207,6 +207,10 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>The scope the picker names. The tab's standing first line used to be a caveat saying the list was
     /// the repository's; that job belongs to the picker now, which names the range instead of apologising for it.</summary>
     internal string ScopeNameForCheck => _scopeName.Text ?? "";
+    /// <summary>Whether the picker is the host's first row. Both lists share row 1, so this is what "the picker is
+    /// above the list it governs" means without a window to measure in.</summary>
+    internal bool ScopePickerFirstForCheck => _changesHost.Children.Count > 1
+        && ReferenceEquals(_changesHost.Children[0], _changesHost.Children.OfType<Grid>().FirstOrDefault());
     internal bool ScopePickerForCheck => _changesHost.Children.OfType<Grid>().FirstOrDefault()?
         .Children.OfType<Button>().Any(button => button.Tag as string == "InspectorScopeButton") == true;
     internal int TurnRowCountForCheck => ChangeRows().Count;

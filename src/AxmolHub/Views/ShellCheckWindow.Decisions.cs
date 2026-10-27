@@ -1,5 +1,8 @@
 using System.Globalization;
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Media;
+using Avalonia.Styling;
 using Avalonia.Input;
 using Avalonia.Threading;
 using AxmolHub.Core;
@@ -1663,13 +1666,16 @@ internal sealed class ShellDecisionsChecks
         Check(panel.ReviewCardTextForCheck == "",
             "还没改过文件的会话不画审阅卡片（实际「" + panel.ReviewCardTextForCheck + "」）");
         var cardRevision = turnRevisions.Count;
-        await WriteTurnFileAsync("写的人\n又一行\n");
+        // One line out, one line in, so the card has both numbers to colour: a card of pure additions would have
+        // no minus to check, and the theme assertion below would be reading a control that was never built.
+        await WriteTurnFileAsync("改成别的\n");
         chat.SeedTurnForCheck(cardSession.Id, "把 note.txt 改一下");
-        chat.SeedWriteTurnForCheck(cardSession.Id, turnRevisions[cardRevision], new ChangeLineCounts(1, 0));
+        chat.SeedWriteTurnForCheck(cardSession.Id, turnRevisions[cardRevision], new ChangeLineCounts(1, 1));
         panel.Reload();
         var cardText = panel.ReviewCardTextForCheck;
         Check(cardText.Contains(HubStrings.Get("ChatReviewEditedOne"), StringComparison.Ordinal)
               && cardText.Contains("+1", StringComparison.Ordinal)
+              && cardText.Contains("−1", StringComparison.Ordinal)
               && cardText.Contains("note.txt", StringComparison.Ordinal)
               && cardText.Contains(HubStrings.Get("ChatReviewReview"), StringComparison.Ordinal)
               && cardText.Contains(HubStrings.Get("ChatReviewUndo"), StringComparison.Ordinal),
@@ -1681,6 +1687,32 @@ internal sealed class ShellDecisionsChecks
             "卡片的审阅把 Changes 切到「本轮修改」，而不是读者上次停下的那个范围（实际「"
             + inspector.ScopeNameForCheck + "」）");
         inspector.SetScope(GitReviewScope.Uncommitted);
+        // Both themes, because the card's two numbers are the one place in it where colour carries meaning: in
+        // either theme the plus and the minus must resolve to two different opaque colours, which is also how a
+        // hard-coded pair that ignores the theme would be caught.
+        Check(inspector.ScopePickerFirstForCheck,
+            "范围选择器在列表上方，所以下面那张表就是它写着的那个范围");
+        if (Application.Current is { } themes)
+        {
+            var previousTheme = themes.RequestedThemeVariant;
+            try
+            {
+                foreach (var variant in new[] { ThemeVariant.Dark, ThemeVariant.Light })
+                {
+                    themes.RequestedThemeVariant = variant;
+                    Dispatcher.UIThread.RunJobs();
+                    var (plus, minus) = panel.ReviewCountColorsForCheck;
+                    Check(plus.A > 0 && minus.A > 0 && plus != minus,
+                        "卡片里的加号减号在 " + variant + " 主题下是两个不透明、且彼此不同的颜色（实际 "
+                        + plus + " / " + minus + "）");
+                }
+            }
+            finally
+            {
+                themes.RequestedThemeVariant = previousTheme;
+                Dispatcher.UIThread.RunJobs();
+            }
+        }
         chat.DeleteConversation(cardSession.Id);
 
         // ── the commit list, read from a real repository ──
