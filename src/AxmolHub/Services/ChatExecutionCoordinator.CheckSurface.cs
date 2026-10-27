@@ -38,6 +38,22 @@ internal sealed partial class ChatExecutionCoordinator
         return (used, room);
     }
     internal bool SeedTurnForCheck(string conversationId, string text) => Sessions.Registry.TryUpdate(conversationId, opened => opened.Append(ChatTurn.User(text)));
+
+    /// <summary>Append a landed file-write turn, the way the file tool leaves one: a turn's review is read out of
+    /// the transcript, so a check that covers the card needs a transcript that says a write landed.</summary>
+    internal bool SeedWriteTurnForCheck(string conversationId, string changeId, ChangeLineCounts? lines)
+        => Sessions.Registry.TryUpdate(conversationId, opened =>
+        {
+            opened.Append(ChatTurn.Assistant("") with
+            {
+                ToolName = FileWriteTool,
+                ToolCallId = "check-" + changeId[..Math.Min(8, changeId.Length)],
+                ChangeId = changeId,
+                ChangeLines = lines,
+            });
+            if (!opened.ChangeHistoryIds.Contains(changeId, StringComparer.Ordinal))
+                opened.ChangeHistoryIds.Add(changeId);
+        });
     internal bool SeedGoalForCheck(string conversationId, string text)
     {
         var turn = ChatTurn.User(text, isGoal: true);

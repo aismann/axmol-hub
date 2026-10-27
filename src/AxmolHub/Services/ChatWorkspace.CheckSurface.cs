@@ -37,6 +37,8 @@ public sealed partial class ChatWorkspace : IDisposable
     /// earns its place in the history list with its first message, so a check that needs a long list has to
     /// give those sessions something in them rather than just starting them.</summary>
     internal bool SeedTurnForCheck(string conversationId, string text) => _execution.SeedTurnForCheck(conversationId, text);
+    internal bool SeedWriteTurnForCheck(string conversationId, string changeId, ChangeLineCounts? lines = null)
+        => _execution.SeedWriteTurnForCheck(conversationId, changeId, lines);
     internal bool SeedGoalForCheck(string conversationId, string text) => _execution.SeedGoalForCheck(conversationId, text);
     /// <summary>Appends one assistant turn through the real write path without scripting a run. For the
     /// self-check only: it stands in for a reply landing in a background conversation while a different one

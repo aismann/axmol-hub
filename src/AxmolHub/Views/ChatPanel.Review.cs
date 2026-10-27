@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
+using Avalonia.LogicalTree;
 using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using AxmolHub.Core;
@@ -37,6 +38,21 @@ public partial class ChatPanel
     /// is still arriving, and whether the file list is open. Anything else changing leaves the same card standing —
     /// rebuilding it on every repaint would throw away the focus inside it and make the fold impossible to click.</summary>
     private string? _reviewCardKey;
+
+    /// <summary>The card's own words, for the check that covers it: every line it renders, joined. Empty when no
+    /// card is drawn — which is itself the answer for a turn that changed nothing, and for one still arriving.</summary>
+    internal string ReviewCardTextForCheck
+    {
+        get
+        {
+            var card = ReviewCardFor(_chat?.ActiveConversation);
+            return card is null
+                ? ""
+                : string.Join(" / ", card.GetLogicalDescendants().OfType<TextBlock>()
+                    .Select(block => block.Text ?? "")
+                    .Where(text => text.Length > 0));
+        }
+    }
 
     /// <summary>The card for the current turn, built at most once per identity.</summary>
     private Control? ReviewCardFor(Conversation? conversation)

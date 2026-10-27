@@ -1653,6 +1653,36 @@ internal sealed class ShellDecisionsChecks
             "这一轮之后文件又被改过时，整轮撤销拒绝执行、一个字也不动，而不是覆盖掉后来的修改（实际 "
             + refusedUndo.Outcomes.FirstOrDefault()?.Verdict + "）");
 
+        // ── the card a finished turn leaves in the transcript ──
+        // The card is derived from the transcript plus the revisions it points at, so the fixture is a transcript
+        // that says a write landed and a real revision behind it. A turn that wrote nothing draws no card at all,
+        // which is the half of this that keeps an empty box out of every reply.
+        var cardSession = chat.StartConversation();
+        chat.OpenConversation(cardSession.Id);
+        panel.Reload();
+        Check(panel.ReviewCardTextForCheck == "",
+            "还没改过文件的会话不画审阅卡片（实际「" + panel.ReviewCardTextForCheck + "」）");
+        var cardRevision = turnRevisions.Count;
+        await WriteTurnFileAsync("写的人\n又一行\n");
+        chat.SeedTurnForCheck(cardSession.Id, "把 note.txt 改一下");
+        chat.SeedWriteTurnForCheck(cardSession.Id, turnRevisions[cardRevision], new ChangeLineCounts(1, 0));
+        panel.Reload();
+        var cardText = panel.ReviewCardTextForCheck;
+        Check(cardText.Contains(HubStrings.Get("ChatReviewEditedOne"), StringComparison.Ordinal)
+              && cardText.Contains("+1", StringComparison.Ordinal)
+              && cardText.Contains("note.txt", StringComparison.Ordinal)
+              && cardText.Contains(HubStrings.Get("ChatReviewReview"), StringComparison.Ordinal)
+              && cardText.Contains(HubStrings.Get("ChatReviewUndo"), StringComparison.Ordinal),
+            "一轮落地了文件修改，转录里就多一张卡片：改了几个文件、加减几行、哪个文件，以及审阅和撤销（实际「"
+            + cardText + "」）");
+        // The card's Review opens the scope that reads the turn, not whichever scope the picker was left on.
+        inspector.SetScope(GitReviewScope.LastTurn);
+        Check(inspector.ScopeNameForCheck == HubStrings.Get("InspectorScopeLastTurn"),
+            "卡片的审阅把 Changes 切到「本轮修改」，而不是读者上次停下的那个范围（实际「"
+            + inspector.ScopeNameForCheck + "」）");
+        inspector.SetScope(GitReviewScope.Uncommitted);
+        chat.DeleteConversation(cardSession.Id);
+
         // ── the commit list, read from a real repository ──
         // The fixtures above stop at "there is no upstream". Everything past that — the order, the timestamp, the
         // commit's own file list — is git's answer, so it is asserted against a repository this check builds and
