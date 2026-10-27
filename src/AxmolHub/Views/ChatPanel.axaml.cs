@@ -4163,6 +4163,24 @@ public partial class ChatPanel : UserControl
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        if (turn.ToolName == ToolNames.FileWrite && turn.ApprovalState != ChatApprovalStates.Denied
+            && (turn.ChangeId is { Length: > 0 } || turn.UndoName is { Length: > 0 }))
+        {
+            var completed = new Avalonia.Controls.Shapes.Path
+            {
+                Data = ThemeGeometry("Hub.Icon.CopySuccess"),
+                Width = 10,
+                Height = 10,
+                Stretch = Stretch.Uniform,
+                Fill = Brushes.Transparent,
+                StrokeThickness = 1.5,
+                StrokeLineCap = PenLineCap.Round,
+                StrokeJoin = PenLineJoin.Round,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            completed.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.Success"));
+            row.Children.Add(completed);
+        }
         row.Children.Add(new TextBlock
         {
             Classes = { "approval-record-text" },
