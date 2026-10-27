@@ -22,7 +22,7 @@ namespace AxmolHub;
 /// <para>This panel keeps one cumulative offset per item, so the index↔pixel mapping is a single array that
 /// every measure, arrange and jump agrees on. Unmeasured rows use a fixed estimate; a measured height is cached
 /// by the item object (the same object the panel already reuses across reconciles) and the suffix is shifted in
-/// place. Realization covers the viewport plus one viewport of overscan, and nothing else.</para>
+/// place. Realization covers the viewport and one extra row on each side.</para>
 /// </summary>
 public sealed class TranscriptRowsPanel : VirtualizingPanel
 {
@@ -117,19 +117,22 @@ public sealed class TranscriptRowsPanel : VirtualizingPanel
             container.Measure(new Size(width, double.PositiveInfinity));
             maxWidth = Math.Max(maxWidth, container.DesiredSize.Width);
             var height = container.DesiredSize.Height;
-            if (_heights.TryGetValue(item, out var known) && Math.Abs(known - height) <= HeightEpsilon) continue;
-            _heights[item] = height;
-            var delta = height - (_offsets[index + 1] - _offsets[index]);
-            if (Math.Abs(delta) > HeightEpsilon)
+            if (!_heights.TryGetValue(item, out var known) || Math.Abs(known - height) > HeightEpsilon)
             {
-                for (var at = index + 1; at < _offsets.Length; at++) _offsets[at] += delta;
-                // A row above the reading position growing or shrinking must not move the words under the
-                // pointer; move the offset with it. The rows below only extend the extent.
-                // Do not move the offset from inside MeasureOverride. A height change above the viewport would
-                // shift the offset, realize a different range, measure it, shift again — a cascade the layout
-                // manager correctly calls an infinite loop. The reading position is owned by ChatPanel's anchor
-                // restore and follow, which run after the layout, not during it.
+                _heights[item] = height;
+                var delta = height - (_offsets[index + 1] - _offsets[index]);
+                if (Math.Abs(delta) > HeightEpsilon)
+                {
+                    for (var at = index + 1; at < _offsets.Length; at++) _offsets[at] += delta;
+                    // Do not move the offset here: that can cascade into an infinite layout loop. The reading
+                    // position is owned by ChatPanel's anchor restore and follow after layout.
+                }
             }
+
+            // Shorter-than-estimated rows can move the viewport's bottom beyond the original range. Extend
+            // this pass using the corrected offsets rather than waiting for a scroll that may never occur.
+            // The bound only moves forward and is capped by the item count, so this cannot cycle.
+            last = Math.Max(last, Math.Min(items.Count - 1, FirstIndexAtOrAfter(offset + viewport + overscan) + 1));
         }
 
         if (_scrollTarget is >= 0 && _scrollTarget < items.Count && _scroll is { } targetScroll)

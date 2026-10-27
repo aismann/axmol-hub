@@ -17,6 +17,32 @@ internal sealed class ShellVirtualScrollChecks
         Check = check;
     }
 
+    internal void CheckShortRowsCoverViewport(MainWindow shell, ChatPanel panel)
+    {
+        var chat = shell.Chat;
+        var before = chat.ActiveConversation?.Id;
+        var session = chat.StartConversation();
+        try
+        {
+            for (var i = 0; i < 100; i++) session.Messages.Add(ChatTurn.Notice("Short notice " + i));
+            panel.Reload();
+            SettleTranscript(shell, panel, rounds: 4);
+            panel.ScrollTranscriptForCheck(0);
+            shell.UpdateLayout();
+            var coverage = panel.TranscriptCoverageForCheck;
+            Check(coverage.Covered, "短行首次测量后无需再次滚动即可覆盖视口（"
+                + panel.TranscriptCoverageDetailForCheck + "）");
+        }
+        finally
+        {
+            chat.DeleteConversation(session.Id);
+            if (before is not null && chat.Conversations.Any(summary => summary.Id == before))
+                chat.OpenConversation(before);
+            panel.Reload();
+            Dispatcher.UIThread.RunJobs();
+        }
+    }
+
     internal void CheckLongToolDenseTranscript(MainWindow shell, ChatPanel panel)
     {
         var chat = shell.Chat;

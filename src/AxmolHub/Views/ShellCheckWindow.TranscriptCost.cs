@@ -185,6 +185,7 @@ internal sealed class ShellTranscriptCostChecks
             "收起大型组后子行和详情控件退出列表");
         chat.DeleteConversation(machine.Id);
         VirtualScroll.CheckVariableTranscriptScroll(shell, panel);
+        VirtualScroll.CheckShortRowsCoverViewport(shell, panel);
         VirtualScroll.CheckLongToolDenseTranscript(shell, panel);
         VirtualScroll.CheckRealSessionIfRequested(shell, panel);
         CheckRetainedContext(shell);
