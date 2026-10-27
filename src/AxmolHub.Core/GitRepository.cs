@@ -102,6 +102,11 @@ public enum GitFileRange
     Index,
     Commit,
     WorkingTreeAgainstHead,
+
+    /// <summary>Two versions the caller read out of git — a merge base and HEAD for the Branch scope. The range
+    /// carries no ref of its own on purpose: re-resolving a ref while drawing the diff could compare a HEAD the
+    /// list was not built from.</summary>
+    Range,
 }
 
 /// <summary>One side of a comparison: whether it exists at all, the bounded snapshot of its bytes, and the version
@@ -126,7 +131,7 @@ public sealed record GitFileComparison(string Path, string? OldPath, GitFileRang
     public (GitFileVersion Left, GitFileVersion Right) Sides => (Old, New);
 }
 
-public static class GitRepository
+public static partial class GitRepository
 {
     /// <summary>How many dirty paths one snapshot carries. Past it the pane says the list was cut rather than
     /// showing a page of a repository and implying it was the whole of it.</summary>
