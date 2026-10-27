@@ -1,0 +1,17 @@
+name: trigger-site-build
+on:
+  workflow_run:
+    workflows: [dist]
+    types: [completed]
+
+jobs:
+  trigger-site-build:
+    if: ${{ github.repository == 'axmolengine/axmol-hub' && github.event.workflow_run.conclusion == 'success'}}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Trigger site build
+      uses: peter-evans/repository-dispatch@v4
+      with:
+        token: ${{ secrets.AXMOL_SITE_BUILD_TOKEN }}
+        repository: axmolengine/axmol.dev
+        event-type: forward-push
