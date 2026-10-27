@@ -114,6 +114,37 @@ public static class ChatChangeStore
         return new ChatFileSnapshot(before!, after!);
     }
 
+    /// <summary>
+    /// The net snapshot of one file's chain of writes: the pre-image that opened it and the post-image that closed
+    /// it. Two writes to one file in one turn are one before and one after, not two diffs added together — a line
+    /// the turn added and then removed again is not part of what the turn did.
+    ///
+    /// <para>State comes from the closing revision, because that is the one whose content has to be readable for
+    /// the pair to mean anything. A chain whose ends belong to different files is not a chain: it answers null
+    /// rather than drawing a diff across two paths.</para>
+    /// </summary>
+    public static ChatFileSnapshot? ReadChainSnapshot(string? dataRoot, string firstId, string lastId,
+        out UndoCopyState state)
+    {
+        state = UndoCopyState.MissingSnapshot;
+        if (Read(dataRoot, firstId) is not { } first || Read(dataRoot, lastId) is not { } last) return null;
+        if (!string.Equals(first.Path, last.Path, StringComparison.Ordinal)) return null;
+        if (first.State != Complete || last.State != Complete)
+        {
+            state = UndoCopyState.PendingSnapshot;
+            return null;
+        }
+        var before = first.BeforeHash is null ? "" : ReadContent(dataRoot, first.BeforeHash);
+        var after = last.AfterHash is null ? "" : ReadContent(dataRoot, last.AfterHash);
+        if ((first.BeforeHash is not null && before is null) || (last.AfterHash is not null && after is null))
+        {
+            state = UndoCopyState.Unreadable;
+            return null;
+        }
+        state = UndoCopyState.Read;
+        return new ChatFileSnapshot(before!, after!);
+    }
+
     /// <summary>Prepare both full LF snapshots and the pending record. Throws when any durable prerequisite fails;
     /// callers must leave the source untouched on that road.</summary>
     public static ChatFileRevision Prepare(string? dataRoot, string conversationId, string path, string rootPath,
@@ -178,24 +209,54 @@ public static class ChatChangeStore
         inverseId = null;
         if (Read(dataRoot, id) is not { } revision)
             return UndoVerdict.CopyMissing;
-        if (revision.AfterHash is null) return UndoVerdict.CopyMissing;
+        return RestoreRange(dataRoot, conversationId, revision, revision, sandbox, guards, out path, out inverseId);
+    }
 
-        var resolved = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
+    /// <summary>
+    /// Undo one file's whole chain of writes inside one turn: <paramref name="firstId"/> opened the chain and
+    /// <paramref name="lastId"/> closed it. The guard is still the last write's after-image — the file has to hold
+    /// exactly what the turn left there — while what goes back is the first write's pre-image, the only state the
+    /// turn as a whole may claim to undo.
+    ///
+    /// <para>Undoing the last revision instead would revert one edit of a sequence and leave the file in a state
+    /// nobody produced, which is why the pair is the unit. A chain that spans two turns is two calls of this, in
+    /// reverse order, and each one's guard is what makes that safe.</para>
+    /// </summary>
+    public static UndoVerdict RestoreChain(string? dataRoot, string conversationId, string firstId, string lastId,
+        WorkspaceSandbox sandbox, WorkspaceGuards guards, out string path, out string? inverseId)
+    {
+        path = "";
+        inverseId = null;
+        if (Read(dataRoot, firstId) is not { } first) return UndoVerdict.CopyMissing;
+        if (Read(dataRoot, lastId) is not { } last) return UndoVerdict.CopyMissing;
+        if (!string.Equals(first.Path, last.Path, StringComparison.Ordinal)) return UndoVerdict.CopyMissing;
+        return RestoreRange(dataRoot, conversationId, first, last, sandbox, guards, out path, out inverseId);
+    }
+
+    private static UndoVerdict RestoreRange(string? dataRoot, string conversationId,
+        ChatFileRevision first, ChatFileRevision last, WorkspaceSandbox sandbox, WorkspaceGuards guards,
+        out string path, out string? inverseId)
+    {
+        path = "";
+        inverseId = null;
+        if (last.AfterHash is null) return UndoVerdict.CopyMissing;
+
+        var resolved = WorkspacePaths.ResolveWrite(sandbox, last.Path, guards);
         if (!resolved.IsAllowed) return UndoVerdict.RefusedPath;
         path = resolved.Display;
         using var write = TextFile.AcquireWrite(resolved.Full);
-        var permitted = WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards);
+        var permitted = WorkspacePaths.ResolveWrite(sandbox, last.Path, guards);
         if (!permitted.IsAllowed || permitted.Full != resolved.Full) return UndoVerdict.RefusedPath;
         // Keep the existing whole-revision contract; the editor's smaller opening budget is not an undo limit.
         var baseline = TextFile.Read(resolved.Full, int.MaxValue);
         if (baseline.State == TextFileState.Missing) return UndoVerdict.TargetMissing;
         if (baseline.State != TextFileState.Text) return UndoVerdict.NotText;
         var current = baseline.Text;
-        if (Hash(Encoding.UTF8.GetBytes(TextEol.ToLf(current))) != revision.AfterHash)
+        if (Hash(Encoding.UTF8.GetBytes(TextEol.ToLf(current))) != last.AfterHash)
             return UndoVerdict.ChangedSince;
 
-        var before = revision.BeforeHash is null ? null : ReadContent(dataRoot, revision.BeforeHash);
-        if (revision.BeforeHash is not null && before is null) return UndoVerdict.CopyMissing;
+        var before = first.BeforeHash is null ? null : ReadContent(dataRoot, first.BeforeHash);
+        if (first.BeforeHash is not null && before is null) return UndoVerdict.CopyMissing;
         ChatFileRevision inverse;
         try { inverse = Prepare(dataRoot, conversationId, resolved.Full, resolved.Root, current, before); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
@@ -203,7 +264,7 @@ public static class ChatChangeStore
             return UndoVerdict.WriteFailed;
         }
 
-        var replaced = write.Replace(() => WorkspacePaths.ResolveWrite(sandbox, revision.Path, guards),
+        var replaced = write.Replace(() => WorkspacePaths.ResolveWrite(sandbox, last.Path, guards),
             baseline.Bytes, before);
         if (replaced.Verdict != TextReplaceVerdict.Written)
         {

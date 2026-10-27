@@ -45,7 +45,11 @@ public sealed record ChangedFile(
     ChangeLineCounts? Lines = null,
     string? ChangeId = null,
     IReadOnlyList<ChatFileRevision>? History = null,
-    string? SelectedRevisionId = null);
+    string? SelectedRevisionId = null,
+    // The write that closed a row's chain. Set only on a row that stands for a whole turn's edits to one file, in
+    // which case SelectedRevisionId is the write that opened it and the diff between the two is the net movement.
+    // A row derived from a single call leaves this null and keeps comparing that call's own before and after.
+    string? LastRevisionId = null);
 
 public static class ChatChanges
 {
@@ -201,7 +205,13 @@ public static class ChatChanges
                 state = UndoCopyState.MissingSnapshot;
                 return null;
             }
-            var snapshot = ChatChangeStore.ReadSnapshot(dataRoot, id, out state);
+            // A turn row spans a chain of writes to one file. Its net movement is the pre-image the chain opened
+            // on and the post-image it closed on; reading only the opening revision would draw one write and
+            // label it the turn.
+            var snapshot = file.LastRevisionId is { Length: > 0 } lastId
+                           && !string.Equals(lastId, id, StringComparison.Ordinal)
+                ? ChatChangeStore.ReadChainSnapshot(dataRoot, id, lastId, out state)
+                : ChatChangeStore.ReadSnapshot(dataRoot, id, out state);
             if (snapshot is null) return null;
             var shownPath = Path.GetRelativePath(revision.Root, revision.Path);
             if (shownPath == ".." || shownPath.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
