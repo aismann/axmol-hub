@@ -157,14 +157,24 @@ internal sealed class ShellInlineCodeChecks
 
                 // One click, two claims: the keyboard stays where the reader already had it, and a document with
                 // nothing selected does not eat the key it was given — the composer beside it still has something
-                // to answer with.
-                var holder = inspector.GetVisualDescendants().OfType<Button>().First();
-                holder.Focus();
+                // to answer with. The bystander is only a place for the keyboard to live, so it has to be a
+                // control this tab really shows: the first button in the inspector tree is the gear the Changes
+                // tab hides, and a hidden button never takes focus, which left the document holding the keyboard
+                // and the claim failing on its own fixture.
+                var holder = inspector.GetVisualDescendants().OfType<Button>()
+                    .First(button => button.IsEffectivelyVisible && button.Focusable);
+                if (!holder.Focus())
+                {
+                    Check(false, name + "：夹具：旁边没有能拿到键盘焦点的控件（实际「"
+                        + (holder.Content as string ?? holder.Content?.GetType().Name) + "」，类 "
+                        + string.Join(".", holder.Classes) + "）");
+                    return Task.CompletedTask;
+                }
                 Dispatcher.UIThread.RunJobs();
                 Drag(2, 2);
                 Check(Selected() == "" && block.Cursor?.ToString() == "Ibeam", name + "：再次单击清除选区，代码光标为文本选择形态");
-                Check(holder.IsFocused, name + "：只清除选区的单击不会把键盘焦点抢走（现在 旁人=" + holder.IsFocused
-                    + " 文档=" + viewer.IsFocused + "）");
+                Check(holder.IsFocused, name + "：只清除选区的单击不会把键盘焦点抢走（实际 旁人=" + holder.IsFocused
+                    + "，文档=" + viewer.IsFocused + "）");
                 var swallowed = CopyKey();
                 Check(!swallowed, name + "：没有选区时文档不吞掉 Ctrl+C（实际 handled=" + swallowed + "）");
 

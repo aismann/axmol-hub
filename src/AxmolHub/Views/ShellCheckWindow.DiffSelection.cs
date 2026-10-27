@@ -19,6 +19,7 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
         var wasOpen = shell.InspectorVisibleForCheck;
         var savedTab = shell.InspectorTabForCheck;
         var savedWidth = shell.InspectorWidthForCheck;
+        Func<GitRepositoryState, GitStatusEntry, GitFileRange, Task<ChatFileSnapshot?>>? savedRead = null;
         var pointer = new Pointer(Pointer.GetNextFreeId(), PointerType.Mouse, true);
         try
         {
@@ -46,21 +47,23 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
                 "精简 diff 正确隐藏元数据并保留多段变更及类似头部的代码行");
 
             var line = string.Concat(Enumerable.Repeat("0123456789 abcdefghij ", 20));
-            var diff = "@@ -1 +1 @@\n-old\n+" + line;
-            pane.Reload(null,
-                [new ChangedFile("selection.cpp", ChangeVerdict.Edited, "selection", 0,
-                    diff, null, null, "Edited selection.cpp", true)
-                {
-                    History =
-                    [
-                        new ChatFileRevision("selection-1", "session", "/workspace/selection.cpp", "/workspace",
-                            DateTimeOffset.UnixEpoch, "before-1", "after-1", ChatChangeStore.Complete),
-                        new ChatFileRevision("selection-2", "session", "/workspace/selection.cpp", "/workspace",
-                            DateTimeOffset.UnixEpoch.AddSeconds(1), "before-2", "after-2", ChatChangeStore.Complete),
-                    ],
-                }],
-                (_, _) => (diff, UndoCopyState.Read), null, "changes");
-            pane.ClickChangeRowForCheck(0);
+            var oldText = "old\n";
+            var newText = "old\n" + line + "\n";
+            // The Changes tab lists the repository, so its diff is opened through a repository row. A session
+            // change row still exists in the panel but sits in a list the pane keeps hidden — nothing inside a
+            // hidden list is measured or hit-tested, which is why this fixture could only ever see an empty pane.
+            var readDirectory = ScratchDirectory.Resolve("diff-selection");
+            var repository = new GitRepositoryState(GitReadOutcome.Ok,
+                System.IO.Path.Combine(readDirectory, "workspace"), "main", 0, 0,
+                [new GitStatusEntry("selection.cpp", "M", "M", false)],
+                new Dictionary<string, string>(StringComparer.Ordinal), false, null);
+            savedRead = pane.ReadComparisonRequested;
+            pane.ReadComparisonRequested = (_, _, _) => Task.FromResult<ChatFileSnapshot?>(new(oldText, newText));
+            pane.Reload(null, [],
+                (_, _) => (FileDiff.Unified(oldText, newText, "selection.cpp"), UndoCopyState.Read),
+                repository, "changes");
+            Dispatcher.UIThread.RunJobs();
+            if (!pane.RepoRowExpandedForCheck(0)) pane.ClickRepoRowForCheck(0);
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             await Task.Delay(30);
@@ -70,57 +73,25 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
             var viewer = text?.GetVisualAncestors().OfType<ScrollViewer>().FirstOrDefault();
             if (text is null || viewer is null || viewer.Extent.Width <= viewer.Viewport.Width)
             {
-                check(false, "夹具：diff 长行没有形成可横向滚动的文本视口");
+                var observed = text is null
+                    ? "正文块 0 个，仓库行 " + pane.GetVisualDescendants().OfType<Button>()
+                        .Count(button => button.Classes.Contains("inspector-change-header")) + " 行"
+                    : "文本宽 " + InspectorPanel.TextForCheck(text).Length + "，最近视口 "
+                      + string.Join("/", text.GetVisualAncestors().OfType<ScrollViewer>()
+                          .Select(ancestor => ancestor.Extent.Width.ToString("0.0") + " 对 "
+                              + ancestor.Viewport.Width.ToString("0.0")));
+                check(false, "夹具：diff 长行没有形成可横向滚动的文本视口（" + observed + "）");
                 return;
             }
 
-            // The revision picker is secondary to the path: verify rendered content and popup rows, not only
-            // ComboBox.FontSize, because the selection presenter can otherwise keep its larger inherited font.
-            var selector = pane.GetVisualDescendants().OfType<ComboBox>()
-                .Single(control => Equals(control.Tag, "InspectorHistorySelector"));
-            var pathFont = pane.GetVisualDescendants().OfType<TextBlock>()
-                .First(block => block.Classes.Contains("inspector-path")).FontSize;
-            TextBlock SelectedLabel() => selector.GetVisualDescendants().OfType<TextBlock>()
-                .Single(block => block.Classes.Contains("inspector-history-text"));
-            TextBlock ItemLabel(ComboBoxItem item) => item.GetVisualDescendants().OfType<TextBlock>()
-                .Single(block => block.Classes.Contains("inspector-history-text"));
-            // Read the closed surface before the popup has ever attached. Inspecting only item.Content missed
-            // the stale, black VisualBrush snapshot in the selected surface.
-            var firstLabel = SelectedLabel();
-            var firstColor = firstLabel.Foreground;
-            var firstThemed = MarkdownMessageRenderer.MatchesToken(firstColor, "Hub.TextPrimary");
-            selector.IsDropDownOpen = true;
-            Dispatcher.UIThread.RunJobs();
-            shell.UpdateLayout();
-            await Task.Delay(30);
-            var items = selector.Items.Cast<ComboBoxItem>().ToArray();
-            var fonts = items.Select(item => ItemLabel(item).FontSize).ToArray();
-            check(selector.FontSize <= pathFont && fonts.All(size => size <= pathFont)
-                  && selector.Bounds.Height <= 28 && items.All(item => item.Bounds.Height is > 0 and <= 28),
-                "修订时间及弹出菜单字号不超过文件路径，使用紧凑行高（路径 " + pathFont
-                + "，时间 " + selector.FontSize + "，菜单 " + string.Join("/", fonts)
-                + "，高度 " + selector.Bounds.Height + "/" + string.Join("/", items.Select(item => item.Bounds.Height)) + "）");
-            // Half a DIP allows layout rounding to put an odd-height label on an even-height frame.
-            double CenterError(Control label, Control frame) => label.TranslatePoint(
-                new Point(0, label.Bounds.Height / 2), frame) is { } center
-                    ? Math.Abs(center.Y - frame.Bounds.Height / 2) : double.PositiveInfinity;
-            var closedCenterError = CenterError(SelectedLabel(), selector);
-            var menuCenterErrors = items.Select(item => CenterError(ItemLabel(item), item)).ToArray();
-            check(closedCenterError <= 0.5 && menuCenterErrors.All(error => error <= 0.5),
-                "修订时间在收起框和菜单行内垂直居中（中心偏差 " + closedCenterError.ToString("0.00")
-                + "/" + string.Join("/", menuCenterErrors.Select(error => error.ToString("0.00"))) + " DIP）");
-            SmokeCapture.Capture(pane, System.IO.Path.Combine(ScratchDirectory.Resolve("diff-selection"), "compact-history.png"));
-            selector.IsDropDownOpen = false;
-            Dispatcher.UIThread.RunJobs();
-
-            // Explicit content bypassed the presenter's foreground inheritance and painted black in dark mode.
-            // Check both the selected label and popup labels after a live theme change, without rebuilding them.
+            // The revision picker this method used to size and theme lived on a session change row, and the
+            // session-only Changes list is no longer shown at all. The claim that outlived it is the diff's own
+            // selection colour, which has to follow the theme on the row that is on screen.
+            SmokeCapture.Capture(pane, System.IO.Path.Combine(readDirectory, "repository-row.png"));
             if (Application.Current is { } app)
             {
                 var previousTheme = app.RequestedThemeVariant;
-                var themedLabels = firstThemed;
                 var themedSelection = true;
-                var colors = new List<string> { "initial-closed:" + firstColor };
                 var selectionColors = new List<string>();
                 try
                 {
@@ -129,38 +100,21 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
                         app.RequestedThemeVariant = variant;
                         Dispatcher.UIThread.RunJobs();
                         shell.UpdateLayout();
-                        var closedLabel = SelectedLabel();
-                        themedLabels &= MarkdownMessageRenderer.MatchesToken(closedLabel.Foreground, "Hub.TextPrimary");
                         selectionColors.Add(variant + ":" + text.SelectionBrush);
                         themedSelection &= MarkdownMessageRenderer.MatchesToken(text.SelectionBrush, "Hub.CodeSelection");
-                        var artifacts = ScratchDirectory.Resolve("diff-selection");
-                        SmokeCapture.Capture(selector, System.IO.Path.Combine(artifacts, "history-closed-" + variant + ".png"));
                         text.SelectionStart = 2;
                         text.SelectionEnd = 7;
-                        SmokeCapture.Capture(viewer, System.IO.Path.Combine(artifacts, "diff-selection-" + variant + ".png"));
+                        SmokeCapture.Capture(viewer,
+                            System.IO.Path.Combine(ScratchDirectory.Resolve("diff-selection"), "diff-selection-" + variant + ".png"));
                         text.ClearSelection();
-                        selector.IsDropDownOpen = true;
-                        Dispatcher.UIThread.RunJobs();
-                        shell.UpdateLayout();
-                        await Task.Delay(30);
-                        var labels = items.Select(ItemLabel).ToArray();
-                        themedLabels &= labels.All(label => MarkdownMessageRenderer.MatchesToken(label.Foreground, "Hub.TextPrimary"));
-                        colors.Add(variant + ":closed=" + closedLabel.Foreground + ", menu="
-                            + string.Join("/", labels.Select(label => label.Foreground)));
-                        foreach (var (item, index) in items.Select((item, index) => (item, index)))
-                            SmokeCapture.Capture(item, System.IO.Path.Combine(artifacts, "history-menu-" + variant + "-" + index + ".png"));
-                        selector.IsDropDownOpen = false;
                     }
                 }
                 finally
                 {
-                    selector.IsDropDownOpen = false;
                     app.RequestedThemeVariant = previousTheme;
                     Dispatcher.UIThread.RunJobs();
                     shell.UpdateLayout();
                 }
-                check(themedLabels, "修订时间首次收起、切换主题与菜单文字均使用主题文字色（"
-                    + string.Join("；", colors) + "）");
                 check(themedSelection, "diff 选区使用与聊天相同的 Hub.Selection，并随深浅主题切换（"
                     + string.Join("；", selectionColors) + "）");
             }
@@ -198,9 +152,8 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
             }
 
             var hitText = ReferenceEquals(Hit(At(2)), text);
-            var directory = ScratchDirectory.Resolve("diff-selection");
-            var before = System.IO.Path.Combine(directory, "before.png");
-            var after = System.IO.Path.Combine(directory, "selected.png");
+            var before = System.IO.Path.Combine(readDirectory, "before.png");
+            var after = System.IO.Path.Combine(readDirectory, "selected.png");
             SmokeCapture.Capture(text, before);
             Press(At(2));
             Move(At(7));
@@ -254,6 +207,7 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
         finally
         {
             pointer.Capture(null);
+            if (shell.InspectorPaneForCheck is { } paneAfter) paneAfter.ReadComparisonRequested = savedRead;
             shell.SetInspectorWidthForCheck(savedWidth);
             shell.OpenInspector(savedTab);
             if (!wasOpen) shell.CloseInspector();

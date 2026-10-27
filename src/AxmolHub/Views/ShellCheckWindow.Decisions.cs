@@ -691,7 +691,16 @@ internal sealed class ShellDecisionsChecks
             // lands several writes in one response is exactly the shape that could pair them wrongly. Each fixture
             // edit moves a different number of lines, which is what makes a mispairing observable at all.
             var bandSession = chat.StartConversation();
-            chat.SetWorkspaceRoot(bandSession.Id, workspace);
+            // The scratch tree lives inside this checkout, so a plain directory under it is scanned as part of
+            // the Hub repository itself: the band then reported however many files happened to be dirty in
+            // somebody's tree, which is why this line went green on a checkout with six edits in it and red on a
+            // clean one. A repository of its own leaves the six writes as the only thing the scan can find.
+            var bandWorkspace = System.IO.Path.Combine(ScratchDirectory.Resolve("band-repository"),
+                Guid.NewGuid().ToString("N"));
+            System.IO.Directory.CreateDirectory(bandWorkspace);
+            if (CommandShells.Resolve("git") is { } bandGit)
+                await new ProcessRunner(_ => { }).RunAsync(bandGit, ["init"], bandWorkspace);
+            chat.SetWorkspaceRoot(bandSession.Id, bandWorkspace);
             chat.SetApprovalMode(bandSession.Id, ToolApprovalModes.Full);
             chat.OpenConversation(bandSession.Id);
             var bandClient = new ApprovalChatClient { CallsRemaining = 0 };
@@ -699,7 +708,7 @@ internal sealed class ShellDecisionsChecks
             for (var file = 0; file < 6; file++)
             {
                 var name = $"band-{file + 1}.txt";
-                System.IO.File.WriteAllText(System.IO.Path.Combine(workspace, name), "旧一\n旧二\n旧三\n");
+                System.IO.File.WriteAllText(System.IO.Path.Combine(bandWorkspace, name), "旧一\n旧二\n旧三\n");
                 bandBatch.Add(("file_write", new Dictionary<string, object?>
                 {
                     ["path"] = name,
@@ -729,9 +738,26 @@ internal sealed class ShellDecisionsChecks
             panel.Reload();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var bandRepository = chat.RepositoryFor(workspace)?.State;
-            Check(bandRepository is { IsReadable: true, Entries.Count: >= 6 },
-                "仓库扫描包含六次写入的文件");
+            var bandRepository = chat.RepositoryFor(bandWorkspace)?.State;
+            // Hub writes one file of its own into a session workspace — the dated note under .agents — so the six
+            // writes are what the scan reports once that note is set aside. Anything else in the list would be a
+            // path from the checkout this scratch tree sits in, which is the confusion this fixture exists for.
+            var bandWrites = bandRepository?.Entries
+                .Where(entry => !entry.RelativePath.StartsWith(".agents/", StringComparison.Ordinal))
+                .Select(entry => entry.RelativePath)
+                .Order(StringComparer.Ordinal)
+                .ToArray() ?? [];
+            Check(bandRepository is { IsReadable: true, Root: { } scanRoot }
+                  && bandWrites.SequenceEqual(Enumerable.Range(1, 6).Select(index => "band-" + index + ".txt"))
+                  && bandRepository.Entries.All(entry => entry.Untracked)
+                  && System.IO.Path.GetFullPath(scanRoot) == System.IO.Path.GetFullPath(bandWorkspace),
+                "仓库扫描只报出这个工作区自己的六个写入，不把宿主检出算成改动（实际 "
+                + (bandRepository is null
+                    ? "没有快照"
+                    : bandRepository.Outcome + " " + bandRepository.Entries.Count + " 条，工作区写入「"
+                      + string.Join("、", bandWrites) + "」，根 " + bandRepository.Root
+                      + "，详情 " + (bandRepository.Detail ?? "无"))
+                + "）");
             bandPane = shell.InspectorPaneForCheck ?? bandPane;
             Check(bandPane.RepoRowCountForCheck == bandRepository?.Entries.Count,
                 "Repo Changes 文件行数与胶囊共享同一仓库快照（页 " + bandPane.RepoRowCountForCheck + " 行）");
