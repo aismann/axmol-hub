@@ -521,6 +521,7 @@ internal sealed partial class InspectorPanel : UserControl
         _planScroll.IsVisible = plan;
         _changesScroll.IsVisible = false;
         _repoScroll.IsVisible = !plan;
+        _viewSettings.IsVisible = !plan;
         _planCopyButton.IsVisible = plan && _planHost.Content is MarkdownScrollViewer;
         UpdateEditActions();
         TabSelected?.Invoke(selected);

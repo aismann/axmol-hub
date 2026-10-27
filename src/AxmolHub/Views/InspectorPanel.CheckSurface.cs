@@ -54,6 +54,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// and a check pinned to an index goes stale the moment a column is added between them.</summary>
     internal bool PlanCopyButtonInHeaderForCheck => ReferenceEquals(_planCopyButton.Parent, _header) && Grid.GetColumn(_planCopyButton) + 1 == Grid.GetColumn(_viewSettings);
     internal bool PlanCopyButtonVisibleForCheck => _planCopyButton.IsVisible;
+    internal bool ViewSettingsVisibleForCheck => _viewSettings.IsVisible;
     /// <summary>Whether the plan tab's own document paints its selection from the Hub token. The pane is the
     /// renderer's other audience, and the colour of a selection is exactly the kind of thing a rule written for
     /// the chat half alone does not reach: asked of the plan's viewer, not of the chat's.</summary>
