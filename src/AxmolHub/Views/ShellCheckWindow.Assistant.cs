@@ -516,6 +516,8 @@ internal sealed class ShellAssistantChecks
               && CodeSyntax.ForFile("src/main.lua")?.Name == "Lua"
               && CodeSyntax.ForFile("build/CMakeLists.txt")?.Name == "CMake"
               && CodeSyntax.ForFile("main.py") is not null
+              && new[] { "xshd", "xaml", "axaml" }.All(ext =>
+                  CodeSyntax.ForFile("view." + ext)?.Name == "XML" && CodeSyntax.ForLanguage(ext)?.Name == "XML")
               && CodeSyntax.ForFile("LICENSE") is null,
             "文件名也落到同一张表上（.cpp/.lua/CMakeLists.txt/.py，无扩展名的不猜）");
         // The second consumer of that table, built without a window: the file a change row opens is read-only and
@@ -537,14 +539,11 @@ internal sealed class ShellAssistantChecks
         var landed = syntaxLanguages.Prepend("cpp")
             .Select(language => (Language: language, Reading: panel.DarkSyntaxForCheck(language)))
             .ToArray();
-        // A block is only wrong when it was handed a light-page palette: a language with no definition at all is
-        // painted as plain text and reads, and Hub's own C++ file is dark by construction, so it is expected to
-        // come back untouched rather than lifted. The names print either way, so a language that resolves to
-        // nothing says so here instead of hiding behind a passing check.
+        // Every resolved language, including Hub's C++, must use the shared palette rather than its source colors.
         Check(landed.All(x => x.Reading.Found)
-              && landed.Where(x => x.Reading.Resolved).All(x => x.Reading.Adapted || x.Language == "cpp")
+              && landed.Where(x => x.Reading.Resolved).All(x => x.Reading.Adapted)
               && landed.Count(x => x.Reading.Adapted) >= 8,
-            "暗色主题下每个能高亮的代码块都拿到抬过对比度的语法定义（实际："
+            "暗色主题下每个能高亮的代码块都拿到 Hub 语法配色（实际："
             + string.Join(" ", landed.Select(x => x.Language + "=" + x.Reading.Definition)) + "）");
         // Read over every file the editor ships, not only the ones a fence happened to ask for: a language nobody
         // pasted today is a language somebody will paste tomorrow. The count is pinned so the loop cannot pass by
@@ -565,6 +564,22 @@ internal sealed class ShellAssistantChecks
                 leftUnreadable.Add(name + " 仍自带背景色");
         }
 
+        // A token readable on the editor well must also remain legible on both diff row tints.
+        foreach (var (variant, backgrounds) in new[]
+        {
+            (ThemeVariant.Dark, new[] { "#202020", "#26342E", "#382B30", "#303A46" }),
+            (ThemeVariant.Light, new[] { "#FFFFFF", "#E4F0E8", "#F5E8EB", "#DAE7F2" }),
+        })
+        foreach (var (name, xml) in builtIns.Concat(new[] { "cpp", "lua", "cmake" }
+                     .Select(language => (language, CodeSyntax.SourceFor(CodeSyntax.ForLanguage(language)!) ?? ""))
+                     .Where(entry => entry.Item2.Length > 0)))
+        {
+            var patched = DarkSyntax.Transform(xml, DarkSyntax.Well(variant));
+            foreach (var background in backgrounds)
+                leftUnreadable.AddRange(DarkSyntax.Foregrounds(patched, Avalonia.Media.Color.Parse(background))
+                    .Where(foreground => foreground.Contrast < DarkSyntax.MinimumContrast)
+                    .Select(foreground => name + ":" + foreground.Value + " on " + background));
+        }
         var xmlFile = builtIns.FirstOrDefault(built => built.Name == "XML");
         Check(builtIns.Count == 21 && leftUnreadable.Count == 0 && lifted > 0
               && xmlFile.Xml is { Length: > 0 } xmlSource

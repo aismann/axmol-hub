@@ -31,16 +31,13 @@ internal static class CodeSyntax
 
     private static readonly Lazy<List<ShippedDefinition>> Shipped = new(LoadShipped);
 
-    /// <summary>The names of the definitions above. One Hub paints itself must never be mistaken for the library's
-    /// definition of the same name — <c>C++</c> is a name both sides use.</summary>
-    internal static IReadOnlyList<string> OwnedNames => Shipped.Value.Select(entry => entry.Definition.Name).ToList();
-
     /// <summary>The definition for a fence tag: <c>cpp</c>, <c>c++</c>, <c>lua</c>, <c>python</c>, <c>js</c>. Null
     /// means the block is plain text, which is all a tag nobody knows deserves.</summary>
     public static IHighlightingDefinition? ForLanguage(string? language)
     {
         if (string.IsNullOrWhiteSpace(language)) return null;
         var tag = language.Trim();
+        if (IsXmlAlias(tag)) return HighlightingManager.Instance.GetDefinition("XML");
         if (Shipped.Value.FirstOrDefault(entry => Matches(entry, tag)) is { } owned) return owned.Definition;
         return HighlightingManager.Instance.GetDefinition(tag)
                ?? HighlightingManager.Instance.GetDefinitionByExtension(Dotted(tag))
@@ -56,13 +53,17 @@ internal static class CodeSyntax
         // CMake's build file is named, not extensioned: mapping ".txt" to CMake would paint every plain text file.
         if (string.Equals(name, "CMakeLists.txt", StringComparison.OrdinalIgnoreCase)) return ForLanguage("cmake");
         var extension = Path.GetExtension(name);
+        if (IsXmlAlias(extension)) return HighlightingManager.Instance.GetDefinition("XML");
         if (Shipped.Value.FirstOrDefault(entry => Extends(entry, extension)) is { } owned) return owned.Definition;
         return HighlightingManager.Instance.GetDefinitionByExtension(extension) ?? ByNormalizedName(name);
     }
 
     /// <summary>A definition Hub ships, with the extensions its own file claims — the loaded definition keeps
     /// them to itself, and a file name has to be able to ask.</summary>
-    private sealed record ShippedDefinition(IHighlightingDefinition Definition, IReadOnlyList<string> Extensions);
+    private sealed record ShippedDefinition(IHighlightingDefinition Definition, IReadOnlyList<string> Extensions, string Xml);
+
+    internal static string? SourceFor(IHighlightingDefinition definition)
+        => Shipped.Value.FirstOrDefault(entry => ReferenceEquals(entry.Definition, definition))?.Xml;
 
     private static List<ShippedDefinition> LoadShipped()
     {
@@ -76,7 +77,7 @@ internal static class CodeSyntax
                 var definition = HighlightingLoader.Load(reader, HighlightingManager.Instance);
                 var extensions = XDocument.Parse(xml).Root?.Attribute("extensions")?.Value
                     .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
-                definitions.Add(new ShippedDefinition(definition, extensions));
+                definitions.Add(new ShippedDefinition(definition, extensions, xml));
             }
             catch (Exception ex) when (ex is XmlException or HighlightingDefinitionInvalidException)
             {
@@ -95,6 +96,9 @@ internal static class CodeSyntax
         using var text = new StreamReader(stream);
         return text.ReadToEnd();
     }
+
+    private static bool IsXmlAlias(string value)
+        => value.TrimStart('.').ToLowerInvariant() is "xshd" or "xaml" or "axaml";
 
     private static bool Matches(ShippedDefinition entry, string tag)
         => Normalize(entry.Definition.Name) == Normalize(tag) || Extends(entry, tag);

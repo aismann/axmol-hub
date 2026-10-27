@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Media;
+using Avalonia.Markup.Xaml.MarkupExtensions;
 using AvaloniaEdit;
 using AvaloniaEdit.Document;
 using AvaloniaEdit.Highlighting;
@@ -19,7 +20,7 @@ internal sealed class ChangesDiffEditView : Grid
     private TextEditor? _beforeEditor;
     private HashSet<int> _deletions = [];
     private readonly TextDocument _source;
-    private readonly IHighlightingDefinition? _definition;
+    private IHighlightingDefinition? _definition;
     private DocumentHighlighter? _highlighter;
     private HashSet<int> _insertions = [];
     private readonly Action _changed;
@@ -56,7 +57,7 @@ internal sealed class ChangesDiffEditView : Grid
                     var last = before.GetLineByNumber(group[^1].OriginalLine!.Value);
                     var removed = Surface(buffer.Path, before.GetText(start, last.EndOffset - start));
                     removed.IsReadOnly = true;
-                    removed.Background = new SolidColorBrush(Color.FromArgb(28, 220, 70, 70));
+                    removed.Bind(BackgroundProperty, new DynamicResourceExtension("Hub.DiffDeleteSurface"));
                     body.Children.Add(removed);
                     continue;
                 }
@@ -68,6 +69,11 @@ internal sealed class ChangesDiffEditView : Grid
             Children.Add(body);
         }
         RefreshSource();
+        ActualThemeVariantChanged += (_, _) =>
+        {
+            _definition = DarkSyntax.ForBackdrop(CodeSyntax.ForFile(_buffer.Path));
+            RefreshSource();
+        };
         DetachedFromVisualTree += (_, _) => { _highlighter?.Dispose(); _highlighter = null; };
     }
 
@@ -151,8 +157,10 @@ internal sealed class ChangesDiffEditView : Grid
                 if (!(old ? owner._deletions : owner._insertions).Contains(sourceLine)) continue;
                 foreach (var rect in BackgroundGeometryBuilder.GetRectsForSegment(textView,
                              new SimpleSegment(line.Offset, line.Length)))
-                    drawingContext.DrawRectangle(new SolidColorBrush(old ? Color.FromArgb(28, 220, 70, 70) : Color.FromArgb(28, 70, 190, 110)), null,
-                        new Rect(0, rect.Y, Math.Max(editor.Bounds.Width, rect.Width), rect.Height));
+                    if (Application.Current?.TryGetResource(old ? "Hub.DiffDeleteSurface" : "Hub.DiffAddSurface",
+                            editor.ActualThemeVariant, out var value) == true && value is IBrush brush)
+                        drawingContext.DrawRectangle(brush, null,
+                            new Rect(0, rect.Y, Math.Max(editor.Bounds.Width, rect.Width), rect.Height));
             }
         }
     }

@@ -24,6 +24,7 @@ namespace AxmolHub;
 
 internal static partial class MarkdownMessageRenderer
 {
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<TextEditor, object> SyntaxThemeHooks = new();
     private static readonly MarkdownPipeline AutoLinkPipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
         .UseAutoLinks()
@@ -280,10 +281,15 @@ internal static partial class MarkdownMessageRenderer
             editor.Classes.Add("markdown-code-editor");
             if (editor.Tag is string language)
                 editor.SyntaxHighlighting = CodeSyntax.ForLanguage(language);
-            // The table answers for Hub's own three languages first and falls to the library for the rest, and
-            // every library definition was painted for a white page. The well this block actually sits in is
-            // what says whether the palette it got can be read — the plugin's own pick is replaced, not kept.
+            // Apply the shared Hub palette to both built-in and Hub-owned language definitions.
             editor.SyntaxHighlighting = DarkSyntax.ForBackdrop(editor.SyntaxHighlighting);
+            CodeSurface.ApplySelection(editor);
+            if (!SyntaxThemeHooks.TryGetValue(editor, out _))
+            {
+                SyntaxThemeHooks.Add(editor, new object());
+                editor.ActualThemeVariantChanged += (_, _) =>
+                    editor.SyntaxHighlighting = DarkSyntax.ForBackdrop(editor.SyntaxHighlighting);
+            }
 
             InstallCodeBlockToolbar(editor);
         }

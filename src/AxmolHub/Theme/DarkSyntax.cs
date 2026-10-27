@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Xml;
 using System.Xml.Linq;
 using Avalonia;
@@ -9,21 +8,8 @@ using AvaloniaEdit.Highlighting.Xshd;
 
 namespace AxmolHub;
 
-/// <summary>
-/// The dark half of the code-block palette.
-///
-/// <para>AvalonEdit ships twenty-one built-in syntax definitions and all of them are painted for a white page:
-/// the file behind an <c>xml</c> or <c>html</c> fence uses <c>Blue</c> for a tag's value and <c>DarkMagenta</c>
-/// for the tag itself, which measure 1.9:1 and 1.9:1 against <c>Hub.SurfaceSunken</c>. Markdown.Avalonia hands
-/// those out for every language it knows, so each block that was not one of Hub's own three — C++, Lua and CMake —
-/// arrived with colours nobody could read.</para>
-///
-/// <para>Rather than keep twenty-one hand-written files, the shipped XML is rewritten: a foreground that cannot
-/// be read on the well keeps its hue and its saturation and is lifted until it can, and a background is dropped,
-/// because a span that paints its own bright plate is the same failure pointing the other way. The result is
-/// kept here rather than handed to <see cref="HighlightingManager"/>, which holds one global palette and cannot
-/// answer for both sides of a theme switch made while the window is open.</para>
-/// </summary>
+/// <summary>Applies Hub's light and dark syntax palette to shipped and built-in lexical definitions without
+/// replacing their language rules. Definitions are cached separately for each original and backdrop.</summary>
 internal static class DarkSyntax
 {
     /// <summary>The WCAG AA floor for body text, asked of code as well: a keyword nobody can read is
@@ -32,35 +18,27 @@ internal static class DarkSyntax
 
     private const string ResourcePrefix = "AvaloniaEdit.Highlighting.Resources.";
 
-    /// <summary>A definition Hub ships itself is a dark palette by construction, and its name is not enough to
-    /// tell it from the library file of the same name — the built-in is <c>C++</c> exactly like the one in
-    /// <c>CodeSyntax</c> — so ownership is asked of the table that loaded it, never of the name.</summary>
-    private static bool IsShippedByHub(IHighlightingDefinition definition)
-        => CodeSyntax.OwnedNames.Contains(definition.Name);
-
-    /// <summary>Adapted definitions, keyed by the name the resolver hands back and by the well they were fitted
-    /// to — a probe theme with a different sunken surface must not inherit the product's numbers.</summary>
-    private static readonly Dictionary<(string Name, Color Well), IHighlightingDefinition?> Cache = new();
+    /// <summary>Keep the original definition in the key: Hub and the library both define C++.</summary>
+    private static readonly Dictionary<(IHighlightingDefinition Definition, Color Well), IHighlightingDefinition?> Cache = new();
 
     private static readonly HashSet<IHighlightingDefinition> Produced = new(ReferenceEqualityComparer.Instance);
+    private static readonly Dictionary<IHighlightingDefinition, IHighlightingDefinition> Originals = new(ReferenceEqualityComparer.Instance);
 
     private static readonly XmlReaderSettings StrictReader = new() { XmlResolver = null };
 
-    /// <summary>What to paint a block with: the definition as written when the page behind it is light enough
-    /// for it, the lifted copy when it is not, and the original unchanged when there is nothing to lift — a
-    /// language with no built-in file is already rendered as plain text, which reads fine.</summary>
+    /// <summary>Return a definition recolored for the current theme, or the original if its source is unavailable.</summary>
     internal static IHighlightingDefinition? ForBackdrop(IHighlightingDefinition? definition)
     {
-        if (definition is null || IsShippedByHub(definition)) return definition;
+        if (definition is null) return null;
         var well = Well();
-        if (!IsDark(well)) return definition;
 
         lock (Cache)
         {
-            if (!Cache.TryGetValue((definition.Name, well), out var adapted))
+            if (Originals.TryGetValue(definition, out var original)) definition = original;
+            if (!Cache.TryGetValue((definition, well), out var adapted))
             {
-                adapted = Build(definition.Name, well);
-                Cache[(definition.Name, well)] = adapted;
+                adapted = Build(definition, well);
+                Cache[(definition, well)] = adapted;
             }
 
             return adapted ?? definition;
@@ -75,17 +53,18 @@ internal static class DarkSyntax
         lock (Cache) return Produced.Contains(definition);
     }
 
-    private static IHighlightingDefinition? Build(string name, Color well)
+    private static IHighlightingDefinition? Build(IHighlightingDefinition original, Color well)
     {
-        var source = BuiltIns().FirstOrDefault(built
-            => string.Equals(built.Name, name, StringComparison.OrdinalIgnoreCase));
-        if (source.Xml is not { Length: > 0 } xml) return null;
+        var xml = CodeSyntax.SourceFor(original) ?? BuiltIns().FirstOrDefault(built
+            => string.Equals(built.Name, original.Name, StringComparison.OrdinalIgnoreCase)).Xml;
+        if (xml is not { Length: > 0 }) return null;
 
         using var reader = XmlReader.Create(new StringReader(Transform(xml, well)), StrictReader);
         try
         {
             var definition = HighlightingLoader.Load(reader, HighlightingManager.Instance);
             Produced.Add(definition);
+            Originals[definition] = original;
             return definition;
         }
         catch (Exception ex) when (ex is XmlException or HighlightingDefinitionInvalidException)
@@ -140,11 +119,48 @@ internal static class DarkSyntax
             element.Attribute("background")?.Remove();
             if (element.Attribute("foreground") is not { } foreground) continue;
             if (!TryResolve(foreground.Value, out var color)) continue;
-            if (Contrast(color, well) >= MinimumContrast) continue;
-            foreground.Value = Hex(Lift(color, well));
+            foreground.Value = PaletteColor(element, color, IsDark(well));
         }
 
         return document.ToString(SaveOptions.DisableFormatting);
+    }
+
+    // Named roles take precedence; legacy unnamed rules use their original hue as a fallback. This keeps
+    // each language's lexical rules while replacing its unrelated vendor palette with Hub's shared colors.
+    private static string PaletteColor(XElement element, Color original, bool dark)
+    {
+        var name = string.Join(" ", element.AncestorsAndSelf().SelectMany(e =>
+            new[] { e.Attribute("name")?.Value, e.Attribute("color")?.Value }).Where(s => s is not null)).ToLowerInvariant();
+        string role;
+        if (name.Contains("comment") || name.Contains("documentation")) role = "comment";
+        else if (name.Contains("string") || name.Contains("charliteral") || name.Contains("attributevalue")) role = "string";
+        else if (name.Contains("number") || name.Contains("literal") || name.Contains("constant")) role = "number";
+        else if (name.Contains("type") || name.Contains("class") || name.Contains("tag")) role = "type";
+        else if (name.Contains("keyword") || name.Contains("command") || name.Contains("preprocessor")) role = "keyword";
+        else if (name.Contains("attribute") || name.Contains("variable")) role = "variable";
+        else
+        {
+            var (hue, saturation, _) = ToHsl(original);
+            role = saturation < 0.18 ? "comment" : hue < 0.13 || hue > 0.92 ? "keyword"
+                : hue < 0.42 ? "string" : hue < 0.62 ? "type" : "number";
+        }
+        var index = role switch { "comment" => 0, "string" => 1, "number" => 2, "type" => 3, "variable" => 4, _ => 5 };
+        return dark ? Palette[index].Dark : Palette[index].Light;
+    }
+
+    private static readonly (string Dark, string Light)[] Palette =
+    [
+        ("#A0AAB5", "#52616D"), ("#B4CF9A", "#426B30"), ("#D0B2E3", "#70448C"),
+        ("#8FC9D5", "#1C6575"), ("#D7C193", "#76571D"), ("#C0B4E8", "#58428B"),
+    ];
+
+    internal static IBrush? BrushForTheme(IBrush? brush, ThemeVariant theme)
+    {
+        if (brush is not ISolidColorBrush solid) return brush;
+        foreach (var (dark, light) in Palette)
+            if (solid.Color == Color.Parse(dark) || solid.Color == Color.Parse(light))
+                return new SolidColorBrush(Color.Parse(theme == ThemeVariant.Dark ? dark : light));
+        return brush;
     }
 
     /// <summary>The contrast of every foreground a file can paint with, against one backdrop. A value the parser
@@ -165,9 +181,6 @@ internal static class DarkSyntax
 
     private static bool TryResolve(string value, out Color color) => Color.TryParse(value, out color);
 
-    private static string Hex(Color color)
-        => string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", color.R, color.G, color.B);
-
     /// <summary>Relative luminance, then the WCAG ratio: the same two numbers a person's eyes apply.</summary>
     internal static double Contrast(Color foreground, Color background)
     {
@@ -187,33 +200,6 @@ internal static class DarkSyntax
                + 0.0722 * Channel(color.B / 255.0);
     }
 
-    /// <summary>The dimmest version of this colour that clears the floor. Hue and saturation are the definition's
-    /// own statement of which token is which; only the lightness was chosen for a page this reader is not
-    /// looking at, so lightness is the only thing moved, and it is moved as little as the floor allows.</summary>
-    private static Color Lift(Color color, Color well)
-    {
-        var (hue, saturation, _) = ToHsl(color);
-        var best = FromHsl(hue, saturation, 1);
-        var low = 0.0;
-        var high = 1.0;
-        for (var pass = 0; pass < 24 && high - low > 0.002; pass++)
-        {
-            var middle = (low + high) / 2;
-            var candidate = FromHsl(hue, saturation, middle);
-            if (Contrast(candidate, well) >= MinimumContrast)
-            {
-                best = candidate;
-                high = middle;
-            }
-            else
-            {
-                low = middle;
-            }
-        }
-
-        return best;
-    }
-
     private static (double Hue, double Saturation, double Lightness) ToHsl(Color color)
     {
         var r = color.R / 255.0;
@@ -231,32 +217,6 @@ internal static class DarkSyntax
         else if (max == g) hue = (b - r) / delta + 2;
         else hue = (r - g) / delta + 4;
         return (hue / 6, saturation, lightness);
-    }
-
-    private static Color FromHsl(double hue, double saturation, double lightness)
-    {
-        if (saturation <= 0) return Gray(lightness);
-        var q = lightness < 0.5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
-        var p = 2 * lightness - q;
-        return Color.FromRgb(
-            (byte)Math.Round(ChannelToRgb(p, q, hue + 1.0 / 3) * 255),
-            (byte)Math.Round(ChannelToRgb(p, q, hue) * 255),
-            (byte)Math.Round(ChannelToRgb(p, q, hue - 1.0 / 3) * 255));
-    }
-
-    private static Color Gray(double lightness)
-    {
-        var value = (byte)Math.Round(Math.Clamp(lightness, 0, 1) * 255);
-        return Color.FromRgb(value, value, value);
-    }
-
-    private static double ChannelToRgb(double p, double q, double t)
-    {
-        var wrapped = t < 0 ? t + 1 : t > 1 ? t - 1 : t;
-        if (wrapped < 1.0 / 6) return p + (q - p) * 6 * wrapped;
-        if (wrapped < 1.0 / 2) return q;
-        if (wrapped < 2.0 / 3) return p + (q - p) * (2.0 / 3 - wrapped) * 6;
-        return p;
     }
 
     /// <summary>Whether this surface is dark enough that a light-page palette fails on it.</summary>

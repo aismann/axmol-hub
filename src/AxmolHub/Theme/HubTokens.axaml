@@ -68,6 +68,7 @@
            CTextBlock.Render, which fills it with SelectionBrush and falls back to Brushes.Cyan when no brush is
            set — that cyan is what the setter in HubMarkdownStyles replaces. -->
       <SolidColorBrush x:Key="Hub.Selection" Color="#732188CF" />
+      <SolidColorBrush x:Key="Hub.CodeSelection" Color="#303A46" />
       <SolidColorBrush x:Key="Hub.SelectionChip" Color="#2C5A7A" />
 
       <SolidColorBrush x:Key="Hub.Success" Color="#70D7AF" />
@@ -98,8 +99,8 @@
            play here; these two are the row's floor. They must separate from Hub.SurfaceAlt in both variants —
            a tint that equals its surface is a tint nobody can see, which is exactly how the light-theme
            SurfaceRaised/SurfaceAlt bug looked. -->
-      <SolidColorBrush x:Key="Hub.DiffAddSurface" Color="#1F3A32" />
-      <SolidColorBrush x:Key="Hub.DiffDeleteSurface" Color="#3A2A2E" />
+      <SolidColorBrush x:Key="Hub.DiffAddSurface" Color="#26342E" />
+      <SolidColorBrush x:Key="Hub.DiffDeleteSurface" Color="#382B30" />
 
       <SolidColorBrush x:Key="Hub.GridSurface" Color="#252525" />
       <SolidColorBrush x:Key="Hub.GridAlternate" Color="#292929" />
@@ -190,6 +191,7 @@
       <!-- Light counterparts; see the Dark dictionary's note for what the pair is for. Same 45% of Hub.Accent,
            which over this page's #F4F5F7 lands on #92BBDD, and the chip's opaque mix over #F8F9FB. -->
       <SolidColorBrush x:Key="Hub.Selection" Color="#731A73BE" />
+      <SolidColorBrush x:Key="Hub.CodeSelection" Color="#DAE7F2" />
       <SolidColorBrush x:Key="Hub.SelectionChip" Color="#94BDE0" />
 
       <SolidColorBrush x:Key="Hub.Success" Color="#1E9E76" />
@@ -210,8 +212,8 @@
 
       <!-- Light counterparts of the diff row tints; see the Dark dictionary's note. Light has nowhere above
            white to go, so both sit clearly below Hub.SurfaceAlt (#EDEEF2) instead of above it. -->
-      <SolidColorBrush x:Key="Hub.DiffAddSurface" Color="#D9EFE4" />
-      <SolidColorBrush x:Key="Hub.DiffDeleteSurface" Color="#F6DFE5" />
+      <SolidColorBrush x:Key="Hub.DiffAddSurface" Color="#E4F0E8" />
+      <SolidColorBrush x:Key="Hub.DiffDeleteSurface" Color="#F5E8EB" />
 
       <SolidColorBrush x:Key="Hub.GridSurface" Color="#FFFFFF" />
       <SolidColorBrush x:Key="Hub.GridAlternate" Color="#FAFAFC" />

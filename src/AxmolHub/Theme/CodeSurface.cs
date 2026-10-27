@@ -3,6 +3,7 @@ using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
 using AvaloniaEdit;
+using AvaloniaEdit.Editing;
 
 namespace AxmolHub;
 
@@ -14,6 +15,9 @@ internal static class CodeSurface
     /// <summary>The font a project file is read in. One name for both the gutter and the text, because a gutter
     /// in a different family than the code it numbers drifts by a pixel a line.</summary>
     internal static readonly FontFamily Mono = FontFamily.Parse("Menlo,Consolas,monospace");
+
+    internal static void ApplySelection(TextEditor editor)
+        => editor.TextArea.Bind(TextArea.SelectionBrushProperty, new DynamicResourceExtension("Hub.CodeSelection"));
 
     internal static TextEditor ForFile(string? path, string text)
     {
@@ -34,9 +38,12 @@ internal static class CodeSurface
         });
         editor.Bind(TemplatedControl.ForegroundProperty, new DynamicResourceExtension("Hub.TextBody"));
         editor.Bind(TemplatedControl.BackgroundProperty, new DynamicResourceExtension("Hub.SurfaceSunken"));
+        ApplySelection(editor);
         // The file name, not the fence tag: this is the caller that makes <see cref="CodeSyntax.ForFile"/> and the
         // transcript's blocks one answer instead of two.
-        editor.SyntaxHighlighting = DarkSyntax.ForBackdrop(CodeSyntax.ForFile(path));
+        void RefreshSyntax() => editor.SyntaxHighlighting = DarkSyntax.ForBackdrop(CodeSyntax.ForFile(path));
+        editor.ActualThemeVariantChanged += (_, _) => { if (editor.IsReadOnly) RefreshSyntax(); };
+        RefreshSyntax();
         return editor;
     }
 }

@@ -118,7 +118,7 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
                         var closedLabel = SelectedLabel();
                         themedLabels &= MarkdownMessageRenderer.MatchesToken(closedLabel.Foreground, "Hub.TextPrimary");
                         selectionColors.Add(variant + ":" + text.SelectionBrush);
-                        themedSelection &= MarkdownMessageRenderer.MatchesToken(text.SelectionBrush, "Hub.Selection");
+                        themedSelection &= MarkdownMessageRenderer.MatchesToken(text.SelectionBrush, "Hub.CodeSelection");
                         var artifacts = ScratchDirectory.Resolve("diff-selection");
                         SmokeCapture.Capture(selector, System.IO.Path.Combine(artifacts, "history-closed-" + variant + ".png"));
                         text.SelectionStart = 2;

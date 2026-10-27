@@ -1096,7 +1096,7 @@ internal sealed partial class InspectorPanel : UserControl
             FontSize = 11.5,
             TextWrapping = TextWrapping.NoWrap,
         }, "Hub.TextSecondary");
-        text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.Selection"));
+        text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.CodeSelection"));
         if (displayText.Length == 0) displayText = " ";
         if (sections is null || sections.Count == 0 || codeText.Length == 0 || displayText.Length != codeText.Length)
         {
@@ -1104,6 +1104,12 @@ internal sealed partial class InspectorPanel : UserControl
             return text;
         }
 
+        var syntaxRuns = new List<(Avalonia.Controls.Documents.Run Run, IBrush? Brush)>();
+        text.ActualThemeVariantChanged += (_, _) =>
+        {
+            foreach (var (run, brush) in syntaxRuns)
+                run.Foreground = DarkSyntax.BrushForTheme(brush, text.ActualThemeVariant);
+        };
         var cursor = 0;
         foreach (var section in sections)
         {
@@ -1113,7 +1119,11 @@ internal sealed partial class InspectorPanel : UserControl
             if (end > start)
             {
                 var run = new Avalonia.Controls.Documents.Run(displayText[start..end]);
-                if (section.Brush is { } foreground) run.Foreground = foreground;
+                if (section.Brush is { } foreground)
+                {
+                    run.Foreground = DarkSyntax.BrushForTheme(foreground, text.ActualThemeVariant);
+                    syntaxRuns.Add((run, foreground));
+                }
                 text.Inlines!.Add(run);
                 cursor = end;
             }
@@ -1181,7 +1191,7 @@ internal sealed partial class InspectorPanel : UserControl
                 ? line[1..] : line;
             var text = DiffCodeText(viewer, displayLine, codeText,
                 numbers.Length > 0 ? syntax.Line(lineClass == "diff-del", sourceLine) : null);
-            text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.Selection"));
+            text.Bind(SelectableTextBlock.SelectionBrushProperty, new DynamicResourceExtension("Hub.CodeSelection"));
             Grid.SetColumn(text, 2);
             row.Children.Add(text);
             block.Child = row;
