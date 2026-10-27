@@ -54,6 +54,15 @@ public partial class ChatPanel
         }
     }
 
+    internal bool ClickReviewForCheck()
+    {
+        var button = ReviewCardFor(_chat?.ActiveConversation)?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(item => item.Tag as string == "ChatReviewReview");
+        if (button is null) return false;
+        button.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        return true;
+    }
+
     /// <summary>The colours the card's two numbers resolve to right now. Read off the rendered control, so a
     /// hard-coded colour would show up as a value that cannot follow the theme at all.</summary>
     internal (Color Plus, Color Minus) ReviewCountColorsForCheck
@@ -80,10 +89,10 @@ public partial class ChatPanel
             _reviewCardKey = null;
             return null;
         }
-        var streaming = _chat.RunFor(conversation.Id) is { IsStreaming: true };
+        var active = _chat.RunFor(conversation.Id) is { Phase: not RunPhase.Completed };
         var key = string.Join(':', conversation.Id, conversation.Messages.Count,
             conversation.Messages.Count > 0 ? conversation.Messages[^1].ChangeId ?? "" : "",
-            streaming ? "1" : "0", _reviewFilesOpen ? "1" : "0");
+            active ? "1" : "0", _reviewFilesOpen ? "1" : "0");
         if (!string.Equals(key, _reviewCardKey, StringComparison.Ordinal))
         {
             _reviewCardKey = key;
@@ -101,7 +110,7 @@ public partial class ChatPanel
     private Control? BuildReviewCard(Conversation? conversation)
     {
         if (conversation is null || _chat is null) return null;
-        if (_chat.RunFor(conversation.Id) is { IsStreaming: true }) return null;
+        if (_chat.RunFor(conversation.Id) is { Phase: not RunPhase.Completed }) return null;
         var review = _chat.TurnReviewFor(conversation);
         if (review.IsEmpty) return null;
 
@@ -158,17 +167,40 @@ public partial class ChatPanel
         grid.Children.Add(title);
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        actions.Children.Add(ReviewAction("ChatReviewUndo", () => _ = UndoTurnAsync(conversation.Id)));
-        actions.Children.Add(ReviewAction("ChatReviewReview", () =>
-        {
-            // The card is about this turn, so it opens the column on the scope that reads this turn — named
-            // explicitly rather than left to whichever scope the reader last had the picker on.
-            _inspector?.SetScope(GitReviewScope.LastTurn);
-            OpenInspector?.Invoke("repo", conversation.Messages.Count - 1);
-        }, primary: true));
+        actions.Children.Add(ReviewAction("ChatReviewUndo", () => _ = UndoTurnAsync(conversation.Id), tag: "ChatReviewUndo"));
+        actions.Children.Add(ReviewAction("ChatReviewReview", () => OpenTurnReview(conversation),
+            primary: true, tag: "ChatReviewReview"));
         Grid.SetColumn(actions, 1);
         grid.Children.Add(actions);
         return grid;
+    }
+
+    private void OpenTurnReview(Conversation? conversation)
+    {
+        if (conversation is null) return;
+        _inspector?.SetScope(GitReviewScope.LastTurn);
+        OpenInspector?.Invoke("repo", conversation.Messages.Count - 1);
+        Avalonia.Threading.Dispatcher.UIThread.Post(() => _inspector?.SetScope(GitReviewScope.LastTurn));
+    }
+
+    private void RefreshTurnChangesPill()
+    {
+        var chat = _chat;
+        var conversation = chat?.ActiveConversation;
+        var active = chat is not null && conversation is not null
+            && chat.RunFor(conversation.Id) is { Phase: not RunPhase.Completed };
+        var review = active ? chat!.TurnReviewFor(conversation) : TurnReview.Empty;
+        TurnChangesPill.IsVisible = active && !review.IsEmpty;
+        Grid.SetColumn(ScrollToBottomButton, TurnChangesPill.IsVisible ? 2 : 1);
+        ScrollToBottomButton.HorizontalAlignment = TurnChangesPill.IsVisible
+            ? HorizontalAlignment.Left : HorizontalAlignment.Center;
+        ScrollToBottomButton.Margin = TurnChangesPill.IsVisible ? new Thickness(8, 0, 0, 0) : default;
+        if (!TurnChangesPill.IsVisible) return;
+        TurnChangesLabel.Text = review.Files.Count == 1 ? HubStrings.Get("ChatTurnFilesChangedOne")
+            : string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                HubStrings.Get("ChatTurnFilesChangedFormat"), review.Files.Count);
+        TurnChangesAdded.Text = "+" + review.Added.ToString(System.Globalization.CultureInfo.CurrentCulture);
+        TurnChangesRemoved.Text = "−" + review.Removed.ToString(System.Globalization.CultureInfo.CurrentCulture);
     }
 
     /// <summary>+N −M in the two colours the diff itself uses, so the header and the rows below it speak the same
@@ -244,10 +276,11 @@ public partial class ChatPanel
         return button;
     }
 
-    private static Button ReviewAction(string textKey, Action click, bool primary = false)
+    private static Button ReviewAction(string textKey, Action click, bool primary = false, string? tag = null)
     {
         var button = new Button
         {
+            Tag = tag,
             Content = new TextBlock { Text = HubStrings.Get(textKey), FontSize = 12 },
             Padding = new Thickness(10, 4, 10, 4),
             CornerRadius = new CornerRadius(6),

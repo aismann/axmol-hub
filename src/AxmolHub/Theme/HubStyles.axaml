@@ -18,6 +18,11 @@
          give one common font per platform, all ranked before the generic family. -->
     <FontFamily x:Key="Hub.Font.Ui">Segoe UI, Microsoft YaHei UI, PingFang SC, Hiragino Sans GB, Source Han Sans SC, Noto Sans CJK SC, DejaVu Sans, sans-serif</FontFamily>
     <FontFamily x:Key="Hub.Font.Mono">Cascadia Mono, Consolas, SF Mono, Menlo, DejaVu Sans Mono, Noto Sans Mono CJK SC, monospace</FontFamily>
+    <Template x:Key="Hub.MenuTickTemplate">
+      <Path Width="11" Height="11" Stretch="Uniform" Data="{StaticResource Hub.Icon.MenuTick}"
+            Stroke="{DynamicResource Hub.TextSecondary}" StrokeThickness="1.4"
+            StrokeLineCap="Round" StrokeJoin="Round" />
+    </Template>
 
   </Styles.Resources>
 
@@ -159,6 +164,31 @@
   <Style Selector="Button.quiet">
     <Setter Property="Background" Value="Transparent" />
     <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+  </Style>
+
+  <!-- Compact actions in the Changes header. The secondary action stays quiet beside the save plate. -->
+  <Style Selector="Button.inspector-edit-action">
+    <Setter Property="MinWidth" Value="0" />
+    <Setter Property="MinHeight" Value="28" />
+    <Setter Property="Padding" Value="10,3" />
+    <Setter Property="Margin" Value="0" />
+    <Setter Property="FontSize" Value="11.5" />
+    <Setter Property="CornerRadius" Value="7" />
+    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextSecondary}" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+  <Style Selector="Button.inspector-edit-action:pointerover">
+    <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+  </Style>
+  <Style Selector="Button.inspector-edit-action.save">
+    <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
+    <Setter Property="Foreground" Value="{DynamicResource Hub.TextPrimary}" />
+  </Style>
+  <Style Selector="Button.inspector-edit-action.save:pointerover">
+    <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
   </Style>
 
   <!-- A link, for the one destination the About box points at. A Button rather than a TextBlock with a pointer
@@ -331,6 +361,14 @@
   <!-- Keep keyboard focus on the selected row without the DataGrid's bright per-cell focus frame. -->
   <Style Selector="DataGrid:focus DataGridCell:current /template/ Grid#FocusVisual">
     <Setter Property="IsVisible" Value="False" />
+  </Style>
+
+  <!-- Fluent's built-in checkbox and radio menu items use the same mark as Hub's custom menu rows. -->
+  <Style Selector="MenuItem:checked:toggle /template/ ContentControl#PART_ToggleIconPresenter">
+    <Setter Property="Content" Value="{StaticResource Hub.MenuTickTemplate}" />
+  </Style>
+  <Style Selector="MenuItem:checked:radio /template/ ContentControl#PART_ToggleIconPresenter">
+    <Setter Property="Content" Value="{StaticResource Hub.MenuTickTemplate}" />
   </Style>
 
   <!-- A caption row inside a menu — the section a set of choices belongs to. It is quiet, short, and never a

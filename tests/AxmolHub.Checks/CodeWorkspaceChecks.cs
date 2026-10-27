@@ -244,6 +244,33 @@ internal static class CodeWorkspaceChecks
             await AssertGit("mv", "from.txt", "to.txt");
             var repoRoot = repo;
 
+            await Claim("file counts follow each status range, including renames and untracked text", async () =>
+            {
+                var entries = new[] { new GitStatusEntry("untracked.txt", "?", "?", true) };
+                var staged = await GitRepository.ReadStatusStatsAsync(repoRoot, GitReviewScope.Staged, runner, entries);
+                var unstaged = await GitRepository.ReadStatusStatsAsync(repoRoot, GitReviewScope.Unstaged, runner, entries);
+                var uncommitted = await GitRepository.ReadStatusStatsAsync(repoRoot, GitReviewScope.Uncommitted, runner, entries);
+                Require(staged.Files.GetValueOrDefault("three-way.txt") == new ChangeLineCounts(1, 1)
+                    && staged.Files.GetValueOrDefault("to.txt") == new ChangeLineCounts(0, 0)
+                    && !staged.Files.ContainsKey("untracked.txt")
+                    && unstaged.Files.GetValueOrDefault("hunks.txt") == new ChangeLineCounts(2, 2)
+                    && unstaged.Files.GetValueOrDefault("untracked.txt") == new ChangeLineCounts(1, 0)
+                    && uncommitted.Files.GetValueOrDefault("three-way.txt") == new ChangeLineCounts(1, 1)
+                    && uncommitted.Files.GetValueOrDefault("untracked.txt") == new ChangeLineCounts(1, 0),
+                    "status range counts differ from the versions or omit a renamed/untracked file");
+            });
+
+            await Claim("commit and branch rows carry counts from their own comparisons", async () =>
+            {
+                var commit = await GitRepository.ReadCommitPathsAsync(repoRoot, "HEAD", runner);
+                var branch = await GitRepository.ReadBranchRangePathsAsync(repoRoot, "HEAD", runner);
+                Require(commit.IsReadable && commit.Paths.Any(path => path.RelativePath == "three-way.txt"
+                            && path.Lines == new ChangeLineCounts(1, 0))
+                    && branch.IsReadable && branch.Paths.Any(path => path.RelativePath == "hunks.txt"
+                            && path.Lines == new ChangeLineCounts(2, 2)),
+                    "commit or branch file counts do not match the selected comparison");
+            });
+
             // HEAD=A, index=B, worktree=C: each range has to read its own pair, or staging semantics leak.
             await Claim("Work Tree reads index→disk and Index reads HEAD→index for one path", async () =>
             {
@@ -355,6 +382,19 @@ internal static class CodeWorkspaceChecks
                     && text.Contains("Exit code: 0", StringComparison.Ordinal),
                     "the command log carried file content or lost its own diagnostics");
                 return Task.CompletedTask;
+            });
+
+            await Claim("a committed rename keeps the destination count and compares against its old path", async () =>
+            {
+                await AssertGit("commit", "-m", "chore: commit fixture rename");
+                var changed = await GitRepository.ReadCommitPathsAsync(repoRoot, "HEAD", runner);
+                var rename = changed.Paths.FirstOrDefault(path => path.RelativePath == "to.txt");
+                var comparison = await GitRepository.ReadCommitFileAsync(repoRoot, "to.txt", "HEAD", runner,
+                    oldPath: rename?.OriginalPath);
+                Require(changed.IsReadable && rename is { Status: "R", OriginalPath: "from.txt" }
+                    && rename.Lines == new ChangeLineCounts(0, 0)
+                    && comparison.IsReadable && comparison.Old.Snapshot.Text == "rename body\n"
+                    && comparison.New.Snapshot.Text == "rename body\n", "the renamed file lost its old side or count");
             });
 
             // A repository with no commit: the left side is genuinely empty, which is not a failure.

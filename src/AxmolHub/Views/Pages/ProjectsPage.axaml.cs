@@ -183,11 +183,12 @@ public partial class ProjectsPage : UserControl
             once.Click += async (_, _) => await _workspace.OpenEditorAsync(binding.Preset.Id, project);
             editorMenu.Items.Add(once);
 
+            var current = _workspace.State.CodeEditor?.Id == binding.Preset.Id
+                && _workspace.State.CodeEditor.Path == binding.Path;
             var makeDefault = new MenuItem
             {
-                Header = binding.Preset.DisplayName,
-                IsChecked = _workspace.State.CodeEditor?.Id == binding.Preset.Id
-                    && _workspace.State.CodeEditor.Path == binding.Path,
+                Header = MenuRow.Build(null, binding.Preset.DisplayName, current),
+                IsChecked = current,
             };
             makeDefault.Click += async (_, _) => await _workspace.SelectEditorAsync(binding.Preset.Id, binding.Path, global: true);
             defaultEditorMenu.Items.Add(makeDefault);
@@ -220,7 +221,8 @@ public partial class ProjectsPage : UserControl
             var devices = new MenuItem { Header = HubStrings.Get("AndroidDevice") };
             foreach (var device in _workspace.Devices)
             {
-                var pick = new MenuItem { Header = device.Serial + " · " + HubStrings.Get(device.State), IsChecked = _workspace.SelectedDevice?.Serial == device.Serial };
+                var selected = _workspace.SelectedDevice?.Serial == device.Serial;
+                var pick = new MenuItem { Header = MenuRow.Build(null, device.Serial + " · " + HubStrings.Get(device.State), selected), IsChecked = selected };
                 pick.Click += (_, _) => _workspace.SelectedDevice = device;
                 devices.Items.Add(pick);
             }

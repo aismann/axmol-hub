@@ -96,24 +96,30 @@ internal static class MenuRow
             header.Children.Add(arrow);
         }
 
-        var tick = new Avalonia.Controls.Shapes.Path
-        {
-            Name = "MenuRowTick",
-            Width = 14,
-            Height = 14,
-            Stretch = Stretch.Uniform,
-            Fill = Brushes.Transparent,
-            StrokeThickness = 1.8,
-            StrokeLineCap = PenLineCap.Round,
-            StrokeJoin = PenLineJoin.Round,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 0, 0),
-            IsVisible = current,
-        };
-        tick.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Tick"));
-        tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        var tick = Tick(current);
+        tick.Margin = new Thickness(12, 0, 0, 0);
         Grid.SetColumn(tick, 3);
         header.Children.Add(tick);
         return header;
+    }
+
+    internal static Avalonia.Controls.Shapes.Path Tick(bool current)
+    {
+        var tick = new Avalonia.Controls.Shapes.Path
+        {
+            Name = "MenuRowTick",
+            Width = 11,
+            Height = 11,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.4,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsVisible = current,
+        };
+        tick.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.MenuTick"));
+        tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        return tick;
     }
 }

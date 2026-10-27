@@ -477,6 +477,20 @@
     <Style Selector="TextBlock.inspector-note">
       <Setter Property="FontSize" Value="11.5" />
     </Style>
+    <Style Selector="Button.inspector-scope">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceRaised}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="15" />
+      <Setter Property="MinWidth" Value="0" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="Padding" Value="10,4" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.inspector-scope:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    </Style>
     <Style Selector="Button.inspector-git-action">
       <Setter Property="MinWidth" Value="0" />
       <Setter Property="MinHeight" Value="28" />

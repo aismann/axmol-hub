@@ -179,6 +179,13 @@ public sealed partial class ChatWorkspace : IDisposable
     /// "net" mean and where attribution stops.</summary>
     public TurnReview TurnReviewFor(Conversation? conversation) => _execution.TurnReviewFor(conversation);
 
+    /// <summary>The repository root for a conversation, resolved without a status read. See
+    /// <see cref="ChatExecutionCoordinator.ResolveRepositoryRootAsync"/> for why the pane needs it.</summary>
+    internal Task<string?> ResolveRepositoryRootAsync(string conversationId, CancellationToken cancellation = default)
+        => _execution.ResolveRepositoryRootAsync(conversationId, cancellation);
+    internal Task<string?> ResolveActiveWorkspaceRepositoryRootAsync(CancellationToken cancellation = default)
+        => _execution.ResolveWorkspaceRepositoryRootAsync(ActiveWorkspaceRoot, cancellation);
+
     /// <summary>One read of a Changes scope's history, on the workspace's own process plumbing.</summary>
     internal Task<InspectorPanel.ReviewRead> ReadReviewAsync(InspectorPanel.ReviewReadRequest request,
         CancellationToken cancellation = default) => _execution.ReadReviewAsync(request, cancellation);
@@ -196,6 +203,15 @@ public sealed partial class ChatWorkspace : IDisposable
     /// <summary>Build the current capability scope for one existing conversation. Editor saves call this again
     /// rather than retaining permissions from the moment a file was opened.</summary>
     internal WorkspaceToolScope WorkspaceScopeFor(string conversationId) => _execution.ScopeFor(conversationId).Workspace;
+    internal WorkspaceToolScope EditorScopeFor(string conversationId, string? workspaceRoot)
+    {
+        if (conversationId.Length > 0) return WorkspaceScopeFor(conversationId);
+        var expected = WorkspacePaths.CanonicalRoot(workspaceRoot);
+        var current = WorkspacePaths.CanonicalRoot(ActiveWorkspaceRoot);
+        return ActiveConversation is null && expected is not null && expected == current
+            ? _execution.WorkspaceOnlyScope(workspaceRoot)
+            : _execution.WorkspaceOnlyScope(null);
+    }
     /// <summary>
     /// The directories the user has designated as workspaces, oldest first — the list the sidebar hangs a group on.
     /// It is kept apart from the sessions that work in those directories on purpose: a group is a place somebody
@@ -815,6 +831,10 @@ public sealed partial class ChatWorkspace : IDisposable
     /// Concurrent asks share one read, because two clicks must not start two gits.
     /// </summary>
     public Task<RepositorySnapshot> RefreshRepositoryAsync(string conversationId) => _sessions.RefreshRepositoryAsync(conversationId);
+    internal Task<RepositorySnapshot> RefreshActiveWorkspaceRepositoryAsync() => _sessions.RefreshActiveWorkspaceRepositoryAsync();
+    internal Task<GitFileComparison> ReadActiveWorkspaceGitFileAsync(string repositoryRoot,
+        GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
+        => _sessions.ReadActiveWorkspaceGitFileAsync(repositoryRoot, entry, range, cancellationToken);
     internal Task<GitFileComparison> ReadGitFileAsync(string conversationId, string repositoryRoot,
         GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
         => _sessions.ReadGitFileAsync(conversationId, repositoryRoot, entry, range, cancellationToken);

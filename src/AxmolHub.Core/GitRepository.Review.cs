@@ -40,12 +40,18 @@ public sealed record GitCommitList(GitCommitListOutcome Outcome, string? Root, s
 
 /// <summary>One path a commit or a branch range touched: the name, git's own status letter, and the origin name
 /// for a rename or copy.</summary>
-public sealed record GitChangedPath(string RelativePath, string Status, string? OriginalPath = null);
+public sealed record GitChangedPath(string RelativePath, string Status, string? OriginalPath = null,
+    ChangeLineCounts? Lines = null);
 
-/// <summary>A list of paths from one comparison — a commit against its parent, or a merge base against HEAD —
-/// with the merge base kept so the pane can say what it compared.</summary>
+/// <summary>Line counts for the same Git comparison used to build a list of files.</summary>
+public sealed record GitDiffStats(int Added, int Removed, IReadOnlyDictionary<string, ChangeLineCounts> Files)
+{
+    public static GitDiffStats Empty { get; } = new(0, 0, new Dictionary<string, ChangeLineCounts>(StringComparer.Ordinal));
+}
+
+/// <summary>A list of paths from a commit or a branch comparison, with the branch's resolved base commit.</summary>
 public sealed record GitChangedPaths(GitCommitListOutcome Outcome, string? Detail,
-    IReadOnlyList<GitChangedPath> Paths, string? MergeBase = null)
+    IReadOnlyList<GitChangedPath> Paths, string? BaseCommit = null, int Added = 0, int Removed = 0)
 {
     public bool IsReadable => Outcome == GitCommitListOutcome.Ok;
 
@@ -53,8 +59,7 @@ public sealed record GitChangedPaths(GitCommitListOutcome Outcome, string? Detai
         => new(outcome, detail, []);
 }
 
-/// <summary>One local branch, as the Branch scope's picker needs it: what to compare against and whether this is
-/// the branch that is checked out.</summary>
+/// <summary>One local or remote branch and whether it is the branch currently checked out.</summary>
 public sealed record GitBranchInfo(string Name, string? Upstream, bool IsCurrent);
 
 /// <summary>
@@ -141,13 +146,13 @@ public static partial class GitRepository
                 return GitCommitList.Stopped(await ClassifyAsync(git, runner, workspace, head, sensitiveValues, cancellation)
                     .ConfigureAwait(false));
 
-            var upstream = await runner.RunAsync(git,
-                ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], root,
-                timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
-            var upstreamName = upstream.Output.Trim();
-            if (upstream.ExitCode != 0 || upstreamName.Length == 0)
-                return new GitCommitList(GitCommitListOutcome.NoUpstream, root, await ReadBranchNameAsync(git, runner, root, sensitiveValues, cancellation).ConfigureAwait(false),
-                    null, [], FirstText(upstream.Error, upstream.Output));
+            var branchName = await ReadBranchNameAsync(git, runner, root, sensitiveValues, cancellation)
+                .ConfigureAwait(false);
+            var upstreamName = await ResolveUpstreamAsync(git, runner, root, branchName, sensitiveValues, cancellation)
+                .ConfigureAwait(false);
+            if (upstreamName is not { Length: > 0 })
+                return new GitCommitList(GitCommitListOutcome.NoUpstream, root, branchName, null, [],
+                    "no upstream ref could be resolved for " + (branchName ?? "HEAD"));
 
             var log = await runner.RunAsync(git,
                 ["--no-pager", "log", "-n", MaxCommits.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -194,7 +199,7 @@ public static partial class GitRepository
         }
     }
 
-    /// <summary>The local branches, current one marked, for the Branch scope's base picker.</summary>
+    /// <summary>Local and remote branches for the Branch scope's base picker.</summary>
     public static async Task<IReadOnlyList<GitBranchInfo>> ReadBranchesAsync(string repositoryRoot, ProcessRunner runner,
         IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
     {
@@ -202,7 +207,7 @@ public static partial class GitRepository
         try
         {
             var result = await runner.RunAsync(git,
-                ["for-each-ref", "--format=%(refname:short)" + FieldSeparator + "%(upstream:short)" + FieldSeparator + "%(HEAD)", "refs/heads"],
+                ["for-each-ref", "--format=%(refname:short)" + FieldSeparator + "%(upstream:short)" + FieldSeparator + "%(HEAD)" + FieldSeparator + "%(symref)", "refs/heads", "refs/remotes"],
                 Path.GetFullPath(repositoryRoot), timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues,
                 cancellation: cancellation).ConfigureAwait(false);
             if (result.ExitCode != 0) return [];
@@ -210,7 +215,7 @@ public static partial class GitRepository
             foreach (var line in result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
                 var fields = line.Trim('\r').Split(FieldSeparator);
-                if (fields.Length < 3 || fields[0].Length == 0) continue;
+                if (fields.Length < 4 || fields[0].Length == 0 || fields[3].Length > 0) continue;
                 branches.Add(new GitBranchInfo(fields[0],
                     fields[1].Length == 0 ? null : fields[1],
                     string.Equals(fields[2].Trim(), "*", StringComparison.Ordinal)));
@@ -239,16 +244,23 @@ public static partial class GitRepository
             var resolved = await ResolveCommitAsync(git, runner, root, commit, sensitiveValues, cancellation).ConfigureAwait(false);
             if (resolved.Error is { } error) return GitChangedPaths.Stopped(GitCommitListOutcome.Failed, error);
             var (oid, parent, _) = resolved;
-            var arguments = new List<string> { "-c", "core.quotepath=false", "diff-tree", "-r", "-z", "--no-commit-id", "--name-status" };
+            var arguments = new List<string> { "-c", "core.quotepath=false", "diff-tree", "-r", "-z", "--find-renames", "--no-commit-id", "--name-status" };
             if (parent is null) arguments.Add("--root");
             else arguments.Add(parent);
             arguments.Add(oid);
             arguments.Add("--");
+            var names = new RawStdoutCapture(8 * 1024 * 1024);
             var result = await runner.RunAsync(git, arguments, root, timeout: ReadIdleTimeout,
-                sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+                sensitiveValues: sensitiveValues, cancellation: cancellation, rawStdout: names).ConfigureAwait(false);
+            if (names.Truncated) return GitChangedPaths.Stopped(GitCommitListOutcome.Failed, "The file list exceeded the read limit.");
             if (result.ExitCode != 0)
                 return GitChangedPaths.Stopped(GitCommitListOutcome.Failed, FirstText(result.Error, result.Output));
-            return new GitChangedPaths(GitCommitListOutcome.Ok, null, ParseNameStatus(result.Output));
+            var totals = await ReadNumstatAsync(git, runner, root, ["diff-tree", "-r", "-z", "--find-renames", "--no-commit-id",
+                    "--numstat", parent is null ? "--root" : parent, oid, "--"], sensitiveValues, cancellation)
+                .ConfigureAwait(false);
+            return new GitChangedPaths(GitCommitListOutcome.Ok, null,
+                WithCounts(ParseNameStatus(System.Text.Encoding.UTF8.GetString(names.Bytes())), totals),
+                null, totals.Added, totals.Removed);
         }
         catch (OperationCanceledException)
         {
@@ -262,10 +274,8 @@ public static partial class GitRepository
     }
 
     /// <summary>
-    /// The paths this branch added or changed since it left <paramref name="baseRef"/>: the merge base to HEAD, the
-    /// three-dot comparison, so a base that moved on without this branch does not read as deletions. The merge base
-    /// comes back with the list because the pane names it — "since main (abc1234) forked" is a fact the reader can
-    /// check, and an unnamed range is not.
+    /// The tracked working tree compared with the selected branch, including staged and unstaged edits. The
+    /// resolved base is retained so that opening a row uses the same commit as the list.
     /// </summary>
     public static async Task<GitChangedPaths> ReadBranchRangePathsAsync(string repositoryRoot, string baseRef,
         ProcessRunner runner, IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
@@ -277,18 +287,20 @@ public static partial class GitRepository
             var root = Path.GetFullPath(repositoryRoot);
             var baseCommit = await ResolveCommitAsync(git, runner, root, baseRef, sensitiveValues, cancellation).ConfigureAwait(false);
             if (baseCommit.Error is { } error) return GitChangedPaths.Stopped(GitCommitListOutcome.Failed, error);
-            var mergeBase = await runner.RunAsync(git, ["merge-base", baseCommit.Oid, "HEAD"], root,
-                timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
-            var fork = mergeBase.Output.Trim();
-            if (mergeBase.ExitCode != 0 || fork.Length is not (40 or 64))
-                return GitChangedPaths.Stopped(GitCommitListOutcome.Failed,
-                    FirstText(mergeBase.Error, mergeBase.Output) ?? "The branches have no common history.");
+            var names = new RawStdoutCapture(8 * 1024 * 1024);
             var result = await runner.RunAsync(git,
-                ["-c", "core.quotepath=false", "diff", "-z", "--name-status", "--no-renames", fork, "HEAD", "--"],
-                root, timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+                ["-c", "core.quotepath=false", "diff", "-z", "--name-status", "--no-renames", baseCommit.Oid, "--"],
+                root, timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation,
+                rawStdout: names).ConfigureAwait(false);
+            if (names.Truncated) return GitChangedPaths.Stopped(GitCommitListOutcome.Failed, "The file list exceeded the read limit.");
             if (result.ExitCode != 0)
                 return GitChangedPaths.Stopped(GitCommitListOutcome.Failed, FirstText(result.Error, result.Output));
-            return new GitChangedPaths(GitCommitListOutcome.Ok, null, ParseNameStatus(result.Output), fork);
+            var totals = await ReadNumstatAsync(git, runner, root,
+                    ["diff", "-z", "--numstat", "--no-renames", baseCommit.Oid, "--"], sensitiveValues, cancellation)
+                .ConfigureAwait(false);
+            return new GitChangedPaths(GitCommitListOutcome.Ok, null,
+                WithCounts(ParseNameStatus(System.Text.Encoding.UTF8.GetString(names.Bytes())), totals), baseCommit.Oid,
+                totals.Added, totals.Removed);
         }
         catch (OperationCanceledException)
         {
@@ -302,12 +314,10 @@ public static partial class GitRepository
     }
 
     /// <summary>
-    /// Both sides of one path between two named versions — the Branch scope's row. The versions are whatever the
-    /// caller read out of git (a merge base and HEAD), never refs re-resolved here: two calls could otherwise see
-    /// two different HEADs and draw a diff of a comparison nobody asked for.
+    /// The selected branch's version and the current working file, for one Branch row.
     /// </summary>
-    public static async Task<GitFileComparison> ReadRangeFileAsync(string repositoryRoot, string path,
-        string oldVersion, string newVersion, ProcessRunner runner, string? note = null,
+    public static async Task<GitFileComparison> ReadBranchFileAsync(string repositoryRoot, string path,
+        string baseCommit, ProcessRunner runner,
         IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default,
         int maxBytes = TextFile.MaxDiffBytes)
     {
@@ -317,17 +327,156 @@ public static partial class GitRepository
         try
         {
             var root = Path.GetFullPath(repositoryRoot);
-            if (FullPathInside(root, path) is null) return Failed("The path must be repository-relative.");
-            var older = await ReadTreeVersionAsync(git, runner, root, oldVersion, path, maxBytes, sensitiveValues, cancellation).ConfigureAwait(false);
-            var newer = await ReadTreeVersionAsync(git, runner, root, newVersion, path, maxBytes, sensitiveValues, cancellation).ConfigureAwait(false);
+            if (FullPathInside(root, path) is not { } full) return Failed("The path must be repository-relative.");
+            var index = await ReadIndexEntryAsync(git, runner, root, path, sensitiveValues, cancellation).ConfigureAwait(false);
+            if (index.Detail is { } indexDetail) return Failed(indexDetail);
+            if (index.Conflict) return Failed("The index has unmerged stages for this path; no side is stage 0.");
+            var older = await ReadTreeVersionAsync(git, runner, root, baseCommit, path, maxBytes, sensitiveValues, cancellation).ConfigureAwait(false);
+            var disk = TextFile.Read(full, maxBytes);
+            var newer = new GitFileVersion(disk.State != TextFileState.Missing, disk, null);
             if (older.Snapshot.State == TextFileState.Failed || newer.Snapshot.State == TextFileState.Failed)
                 return Failed(older.Snapshot.Detail ?? newer.Snapshot.Detail ?? "The version could not be read.");
-            return new GitFileComparison(path, null, GitFileRange.Range, older, newer, ComparisonNote: note);
+            var again = await ReadIndexEntryAsync(git, runner, root, path, sensitiveValues, cancellation).ConfigureAwait(false);
+            var diskAgain = TextFile.Read(full, maxBytes);
+            if (again.Detail is not null || again.Conflict || again.Oid != index.Oid || again.Exists != index.Exists
+                || diskAgain.Identity != disk.Identity || diskAgain.State != disk.State)
+                return Failed("The index or the file changed while this comparison was being read. Refresh to read it again.");
+            return new GitFileComparison(path, null, GitFileRange.Range, older, newer);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return Failed(ex is IdleTimeoutException stalled ? Stalled(stalled) : ex.Message);
         }
+    }
+
+    /// <summary>The top of the working tree a path sits in, or null when it is not inside a repository. Public
+    /// because a caller that only needs the root should not have to pay for a full status read to learn it — that
+    /// read is what used to leave the history scopes waiting for an answer they never asked for.</summary>
+    public static async Task<string?> RepositoryRootAsync(string? workspaceRoot, ProcessRunner runner,
+        IReadOnlyList<string>? sensitiveValues = null, CancellationToken cancellation = default)
+    {
+        if (string.IsNullOrWhiteSpace(workspaceRoot)) return null;
+        if (CommandShells.Resolve("git") is not { } git) return null;
+        var workspace = Path.GetFullPath(workspaceRoot);
+        if (!Directory.Exists(workspace)) return null;
+        try
+        {
+            return await ReadToplevelAsync(git, runner, workspace, sensitiveValues, cancellation).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Line counts for one status range: Uncommitted is HEAD→worktree, Staged is HEAD→index, and Unstaged is
+    /// index→worktree. Readable untracked text files are compared with an absent file in both working-tree scopes.
+    /// </summary>
+    public static async Task<GitDiffStats> ReadStatusStatsAsync(string repositoryRoot,
+        GitReviewScope scope, ProcessRunner runner, IReadOnlyList<GitStatusEntry>? entries = null,
+        IReadOnlyList<string>? sensitiveValues = null,
+        CancellationToken cancellation = default)
+    {
+        if (CommandShells.Resolve("git") is not { } git) return GitDiffStats.Empty;
+        try
+        {
+            var root = Path.GetFullPath(repositoryRoot);
+            string[] arguments = scope switch
+            {
+                GitReviewScope.Staged => ["diff", "-z", "--numstat", "--find-renames", "--cached", "HEAD", "--"],
+                GitReviewScope.Unstaged => ["diff", "-z", "--numstat", "--find-renames", "--"],
+                _ => ["diff", "-z", "--numstat", "--find-renames", "HEAD", "--"],
+            };
+            var stats = await ReadNumstatAsync(git, runner, root, arguments, sensitiveValues, cancellation)
+                .ConfigureAwait(false);
+            if (scope == GitReviewScope.Staged || entries is null) return stats;
+            var files = new Dictionary<string, ChangeLineCounts>(stats.Files, StringComparer.Ordinal);
+            var added = stats.Added;
+            foreach (var entry in entries.Where(entry => entry.Untracked))
+            {
+                var full = FullPathInside(root, entry.RelativePath);
+                if (full is null) continue;
+                try
+                {
+                    if ((File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0) continue;
+                    var snapshot = TextFile.Read(full, TextFile.MaxDiffBytes);
+                    if (snapshot.State != TextFileState.Text) continue;
+                    var text = snapshot.Text;
+                    var lines = text.Count(c => c == '\n') + (text.Length > 0 && !text.EndsWith('\n') ? 1 : 0);
+                    files[entry.RelativePath] = new ChangeLineCounts(lines, 0);
+                    added += lines;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+            return new GitDiffStats(added, stats.Removed, files);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return GitDiffStats.Empty;
+        }
+    }
+
+    /// <summary>
+    /// The ref this branch is measured against, resolved from the repository's own configuration first:
+    /// <c>branch.&lt;name&gt;.remote</c> plus <c>branch.&lt;name&gt;.merge</c>, joined into <c>remote/branch</c> and then
+    /// verified to exist.
+    ///
+    /// <para>The <c>@{upstream}</c> shorthand is kept only as a fallback. It is a convenience of git's revision parser
+    /// rather than a fact of the repository, so it can fail where the configuration it reads is perfectly good — and
+    /// when it fails the honest reading is "this branch has an upstream I could not name", not "this branch has no
+    /// upstream", which is what the pane used to say. A resolved name is verified with <c>rev-parse --verify</c> so a
+    /// configured-but-never-fetched upstream answers null instead of producing a range git cannot compute.</para>
+    /// </summary>
+    private static async Task<string?> ResolveUpstreamAsync(string git, ProcessRunner runner, string root,
+        string? branch, IReadOnlyList<string>? sensitiveValues, CancellationToken cancellation)
+    {
+        if (branch is { Length: > 0 })
+        {
+            var remote = await ReadConfigAsync(git, runner, root, "branch." + branch + ".remote", sensitiveValues,
+                cancellation).ConfigureAwait(false);
+            var merge = await ReadConfigAsync(git, runner, root, "branch." + branch + ".merge", sensitiveValues,
+                cancellation).ConfigureAwait(false);
+            if (merge is { Length: > 0 })
+            {
+                var name = merge.StartsWith("refs/heads/", StringComparison.Ordinal)
+                    ? merge["refs/heads/".Length..]
+                    : merge;
+                var candidate = remote is { Length: > 0 } && remote != "." ? remote + "/" + name : name;
+                if (await RefExistsAsync(git, runner, root, candidate, sensitiveValues, cancellation)
+                        .ConfigureAwait(false))
+                    return candidate;
+            }
+        }
+
+        var sugar = await runner.RunAsync(git, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            root, timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation)
+            .ConfigureAwait(false);
+        var shorthand = sugar.Output.Trim();
+        return sugar.ExitCode == 0 && shorthand.Length > 0
+               && await RefExistsAsync(git, runner, root, shorthand, sensitiveValues, cancellation).ConfigureAwait(false)
+            ? shorthand
+            : null;
+    }
+
+    /// <summary>One configuration value, trimmed, or null when the key is not set.</summary>
+    private static async Task<string?> ReadConfigAsync(string git, ProcessRunner runner, string root, string key,
+        IReadOnlyList<string>? sensitiveValues, CancellationToken cancellation)
+    {
+        var result = await runner.RunAsync(git, ["config", "--get", key], root, timeout: ReadIdleTimeout,
+            sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
+        var value = result.Output.Trim();
+        return result.ExitCode == 0 && value.Length > 0 ? value : null;
+    }
+
+    /// <summary>Whether a ref names a commit that is actually present in this repository.</summary>
+    private static async Task<bool> RefExistsAsync(string git, ProcessRunner runner, string root, string name,
+        IReadOnlyList<string>? sensitiveValues, CancellationToken cancellation)
+    {
+        var result = await runner.RunAsync(git, ["rev-parse", "--verify", "--quiet", "--end-of-options",
+            name + "^{commit}"], root, timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues,
+            cancellation: cancellation).ConfigureAwait(false);
+        return result.ExitCode == 0 && result.Output.Trim().Length > 0;
     }
 
     /// <summary>The current branch name, or null on a detached HEAD where there is no branch to name.</summary>
@@ -360,8 +509,54 @@ public static partial class GitRepository
         return (oid, fields.Length > 1 ? fields[1] : null, null);
     }
 
-    /// <summary><c>--name-status -z</c> records: a status letter, then the path, and for a rename or copy the
-    /// origin after the destination.</summary>
+    /// <summary>The two totals over one diff: what the scope button says in its summary. Read with a second pass
+    /// because <c>--name-status</c> carries the letters the rows need and <c>--numstat</c> carries the counts, and
+    /// nobody prints both in one well-formed record.</summary>
+    private static async Task<GitDiffStats> ReadNumstatAsync(string git, ProcessRunner runner,
+        string root, string[] arguments, IReadOnlyList<string>? sensitiveValues, CancellationToken cancellation)
+    {
+        var raw = new RawStdoutCapture(8 * 1024 * 1024);
+        var result = await runner.RunAsync(git, arguments, root, timeout: ReadIdleTimeout,
+            sensitiveValues: sensitiveValues, cancellation: cancellation, rawStdout: raw).ConfigureAwait(false);
+        return result.ExitCode == 0 && !raw.Truncated
+            ? ParseNumstat(System.Text.Encoding.UTF8.GetString(raw.Bytes())) : GitDiffStats.Empty;
+    }
+
+    /// <summary><c>--numstat -z</c>: added, removed, path — with a binary file's two counts spelled as dashes,
+    /// which are skipped rather than counted as zero lines changed.</summary>
+    private static GitDiffStats ParseNumstat(string output)
+    {
+        var added = 0;
+        var removed = 0;
+        var files = new Dictionary<string, ChangeLineCounts>(StringComparer.Ordinal);
+        var records = output.Split('\0');
+        for (var i = 0; i < records.Length; i++)
+        {
+            var fields = records[i].Split('\t', 3);
+            if (fields.Length < 3) continue;
+            var path = fields[2];
+            if (path.Length == 0)
+            {
+                if (i + 2 >= records.Length) break;
+                path = records[i + 2];
+                i += 2;
+            }
+            if (!int.TryParse(fields[0], System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out var plus)
+                || !int.TryParse(fields[1], System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out var minus)) continue;
+            files[path] = new ChangeLineCounts(plus, minus);
+            added += plus;
+            removed += minus;
+        }
+        return new GitDiffStats(added, removed, files);
+    }
+
+    private static IReadOnlyList<GitChangedPath> WithCounts(IReadOnlyList<GitChangedPath> paths, GitDiffStats stats)
+        => paths.Select(path => path with { Lines = stats.Files.GetValueOrDefault(path.RelativePath) }).ToList();
+
+    /// <summary><c>--name-status -z</c> records: a status letter, then the path, and for a rename the origin followed
+    /// by the destination.</summary>
     private static IReadOnlyList<GitChangedPath> ParseNameStatus(string output)
     {
         var fields = output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
@@ -373,7 +568,7 @@ public static partial class GitRepository
             if (status[0] is 'R' or 'C')
             {
                 if (index + 2 >= fields.Length) break;
-                paths.Add(new GitChangedPath(fields[index + 1], status[..1], fields[index + 2]));
+                paths.Add(new GitChangedPath(fields[index + 2], status[..1], fields[index + 1]));
                 index += 2;
                 continue;
             }

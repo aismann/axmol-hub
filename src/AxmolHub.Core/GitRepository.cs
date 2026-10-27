@@ -103,9 +103,7 @@ public enum GitFileRange
     Commit,
     WorkingTreeAgainstHead,
 
-    /// <summary>Two versions the caller read out of git — a merge base and HEAD for the Branch scope. The range
-    /// carries no ref of its own on purpose: re-resolving a ref while drawing the diff could compare a HEAD the
-    /// list was not built from.</summary>
+    /// <summary>The selected branch's resolved commit against the working tree.</summary>
     Range,
 }
 
@@ -295,7 +293,7 @@ public static partial class GitRepository
     /// explicitly identify the first parent so the UI never implies an unspecified merge-base comparison.</summary>
     public static async Task<GitFileComparison> ReadCommitFileAsync(string repositoryRoot, string path, string commit,
         ProcessRunner runner, IReadOnlyList<string>? sensitiveValues = null,
-        CancellationToken cancellation = default, int maxBytes = TextFile.MaxDiffBytes)
+        CancellationToken cancellation = default, int maxBytes = TextFile.MaxDiffBytes, string? oldPath = null)
     {
         GitFileComparison Failed(string detail) => new(path, null, GitFileRange.Commit,
             GitFileVersion.Absent(), GitFileVersion.Absent(), detail);
@@ -304,7 +302,8 @@ public static partial class GitRepository
         {
             var root = Path.GetFullPath(repositoryRoot);
             var full = FullPathInside(root, path);
-            if (full is null) return Failed("The path must be repository-relative.");
+            if (full is null || (oldPath is not null && FullPathInside(root, oldPath) is null))
+                return Failed("The path must be repository-relative.");
             var resolved = await runner.RunAsync(git, ["rev-parse", "--verify", "--quiet", "--end-of-options", commit + "^{commit}"], root,
                 timeout: ReadIdleTimeout, sensitiveValues: sensitiveValues, cancellation: cancellation).ConfigureAwait(false);
             var oid = resolved.Output.Trim();
@@ -316,12 +315,12 @@ public static partial class GitRepository
             if (fields.Length == 0 || fields[0] != oid) return Failed("Git returned an invalid commit record.");
             var newer = await ReadTreeVersionAsync(git, runner, root, oid, path, maxBytes, sensitiveValues, cancellation);
             var older = fields.Length > 1
-                ? await ReadTreeVersionAsync(git, runner, root, fields[1], path, maxBytes, sensitiveValues, cancellation)
+                ? await ReadTreeVersionAsync(git, runner, root, fields[1], oldPath ?? path, maxBytes, sensitiveValues, cancellation)
                 : GitFileVersion.Absent();
             if (older.Snapshot.State == TextFileState.Failed || newer.Snapshot.State == TextFileState.Failed)
                 return Failed(older.Snapshot.Detail ?? newer.Snapshot.Detail ?? "Commit blob could not be read.");
             var note = fields.Length > 2 ? $"Merge commit; comparing with first parent {fields[1]}." : null;
-            return new GitFileComparison(path, null, GitFileRange.Commit, older, newer, ComparisonNote: note);
+            return new GitFileComparison(path, oldPath, GitFileRange.Commit, older, newer, ComparisonNote: note);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

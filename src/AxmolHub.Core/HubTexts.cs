@@ -1034,13 +1034,14 @@ public static class HubTexts
         // ── The right-hand inspector ──
         ["InspectorTabPlan"] = ("计划", "Plan"),
         ["InspectorTabChanges"] = ("改动", "Changes"),
-        ["InspectorOpenFile"] = ("打开文件", "Open file"),
+        ["InspectorOpenFile"] = ("打开当前工作区文件", "Open current workspace file"),
+        ["InspectorCurrentFile"] = ("当前工作区文件", "Current workspace file"),
+        ["InspectorOpenFileUnavailable"] = ("无法打开当前文件：文件可能已删除、不可读取，或不是受支持的文本文件。", "Cannot open the current file: it may be deleted, unreadable, or not supported text."),
         ["InspectorEditDiff"] = ("编辑差异", "Edit diff"),
         ["InspectorCancelEdit"] = ("取消", "Cancel"),
         ["InspectorSaveEdit"] = ("保存", "Save"),
         ["InspectorEditSaveFailed"] = ("保存失败，未保存的编辑已保留。", "Save failed; unsaved edits have been retained."),
         ["InspectorEditUnsupported"] = ("此文件不可编辑；可能已删除、为二进制、超出大小限制或没有写入权限。", "This file cannot be edited: it may be deleted, binary, too large, or outside writable scope."),
-        ["InspectorEditSnapshotRequired"] = ("历史版本或缺少原文快照的差异只读。请使用打开文件编辑当前文件。", "Historical revisions and diffs without source snapshots are read-only. Use Open file to edit the current file."),
         ["InspectorChangesEmpty"] = ("这一轮没有改动文件", "This turn did not change any file"),
         ["InspectorPlanEmpty"] = ("还没有生成计划", "No plan yet"),
         // The plan exists and its document does not. "No plan yet" would be the wrong sentence to show somebody
@@ -1059,6 +1060,7 @@ public static class HubTexts
         ["InspectorDiffRefusedLine"] = ("没有改动", "No change"),
         ["InspectorAddedFormat"] = ("+{0}", "+{0}"),
         ["InspectorRemovedFormat"] = ("−{0}", "−{0}"),
+        ["InspectorCountsUnavailable"] = ("无法读取此文件的行数变化", "Line counts are unavailable for this file"),
         ["InspectorExpandFile"] = ("展开全部行", "Show all lines"),
         ["InspectorCollapseFile"] = ("只显示改动", "Show changes only"),
         // ── The inspector's third tab: the repository itself ──
@@ -1089,7 +1091,7 @@ public static class HubTexts
         ["InspectorRepoRefresh"] = ("重新读一次仓库", "Read the repository again"),
         ["InspectorRepoSessionAlsoTouched"] = ("本会话也改过这个文件", "this session touched this file too"),
         ["InspectorRepoNoDiff"] = ("读不到这个文件的改动内容", "No diff could be read for this file"),
-        ["InspectorRepoNoWorkspace"] = ("这个会话还没有工作目录", "This session has no workspace yet"),
+        ["InspectorRepoNoWorkspace"] = ("尚未选择工作目录", "No workspace selected yet"),
         ["InspectorRepoNotGit"] = ("这个目录不是 git 仓库", "This directory is not a git repository"),
         ["InspectorRepoGitMissing"] = ("这台机器上没有 git，读不了仓库状态",
             "git is not on this machine, so the repository cannot be read"),
@@ -1106,7 +1108,10 @@ public static class HubTexts
         ["InspectorScopeCommitted"] = ("已提交", "Committed"),
         ["InspectorScopeBranch"] = ("分支", "Branch"),
         ["InspectorScopeTip"] = ("选一处改动来看", "Choose which changes to read"),
-        ["InspectorScopeCountsFormat"] = ("{0} 个文件  +{1} −{2}", "{0} files  +{1} −{2}"),
+        // The pair the Branch scope compares, named exactly as git names both sides: "master → origin/master" is a
+        // sentence a reader can retype in a terminal, and "upstream" alone is not.
+        ["InspectorBranchPairFormat"] = ("{0} → {1}", "{0} → {1}"),
+        ["InspectorBranchHead"] = ("HEAD", "HEAD"),
         ["InspectorScopeUncommittedEmpty"] = ("没有未提交的改动", "Nothing is uncommitted"),
         ["InspectorScopeUnstagedEmpty"] = ("没有未暂存的改动", "Nothing is unstaged"),
         ["InspectorScopeStagedEmpty"] = ("没有已暂存的改动", "Nothing is staged"),
@@ -1127,15 +1132,16 @@ public static class HubTexts
         ["InspectorCommitEmpty"] = ("这个提交没有改动任何文件", "This commit changed no files"),
         ["InspectorBranchesReading"] = ("正在读分支…", "Reading branches…"),
         ["InspectorBranchesPick"] = ("选一个分支作基准", "Pick a branch to compare against"),
-        ["InspectorBranchesNone"] = ("没有别的本地分支可以与它比较",
-            "There is no other local branch to compare against"),
-        ["InspectorBranchHeadFormat"] = ("与 {0} 自 {1} 分叉以来的差别", "Since {0} forked at {1}"),
+        ["InspectorBranchesNone"] = ("没有别的分支可以与它比较",
+            "There is no other branch to compare against"),
         // ── The card a finished turn leaves in the transcript ──
         // It answers "what did that just do to my tree", so the count is the headline and the two numbers are the
         // detail. The fold names how many are still hidden: "show more" alone makes a reader open it to find out
         // whether it was worth opening.
         ["ChatReviewEditedFormat"] = ("编辑了 {0} 个文件", "Edited {0} files"),
         ["ChatReviewEditedOne"] = ("编辑了 1 个文件", "Edited 1 file"),
+        ["ChatTurnFilesChangedOne"] = ("1 个文件已修改", "1 file changed"),
+        ["ChatTurnFilesChangedFormat"] = ("{0} 个文件已修改", "{0} files changed"),
         ["ChatReviewUndo"] = ("撤销", "Undo"),
         ["ChatReviewReview"] = ("审阅", "Review"),
         ["ChatReviewMoreFormat"] = ("再显示 {0} 个文件", "Show {0} more files"),

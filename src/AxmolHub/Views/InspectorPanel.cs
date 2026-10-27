@@ -35,12 +35,13 @@ internal sealed partial class InspectorPanel : UserControl
     /// wants to. The pane has already repainted from what it had when this fires.</summary>
     public event Action<GitReviewScope>? ScopeChanged;
     internal Func<GitRepositoryState, GitStatusEntry, GitFileRange, Task<ChatFileSnapshot?>>? ReadComparisonRequested { get; set; }
-    internal Func<string, string, string, ChangesEditBuffer?>? OpenEditBuffer { get; set; }
+    internal Func<string, string, ChangesEditBuffer?>? OpenEditBuffer { get; set; }
     internal event Action? FilesSaved;
     private string _conversationId = "";
-    private readonly Dictionary<string, ChangesEditSession> _editSessions = new(StringComparer.Ordinal);
-    private ChangesEditSession EditSession => _editSessions.TryGetValue(_conversationId, out var session)
-        ? session : _editSessions[_conversationId] = new ChangesEditSession();
+    private string? _workspaceRoot;
+    private readonly Dictionary<(string Conversation, string? Workspace), ChangesEditSession> _editSessions = [];
+    private ChangesEditSession EditSession => _editSessions.TryGetValue((_conversationId, _workspaceRoot), out var session)
+        ? session : _editSessions[(_conversationId, _workspaceRoot)] = new ChangesEditSession();
     private readonly Button _editDiff;
     private readonly Button _cancelEdit;
     private readonly Button _saveEdit;
@@ -73,9 +74,16 @@ internal sealed partial class InspectorPanel : UserControl
     private readonly ScrollViewer _repoScroll;
     private readonly StackPanel _repoBody;
     private readonly Grid _changesHost;
+    private StackPanel _scopeBar = null!;
     private Button _scopeButton = null!;
+    private Button _scopeDetailButton = null!;
     private TextBlock _scopeName = null!;
-    private TextBlock _scopeCounts = null!;
+    private StackPanel _scopeCounts = null!;
+    private TextBlock _scopeDetail = null!;
+    // The ± totals of the three status scopes, read once per scope: the cached patch is HEAD-to-worktree, so a half
+    // of it is not a number this pane can cut out of the whole. Cleared whenever a new status reading lands.
+    private readonly Dictionary<GitReviewScope, GitDiffStats> _statusStats = new();
+    private readonly Dictionary<string, ContentControl> _statusCountSlots = new(StringComparer.Ordinal);
     private GitReviewScope _scope = GitReviewScope.Uncommitted;
     private TurnReview _review = TurnReview.Empty;
     private GitRepositoryState? _repository;
@@ -162,37 +170,19 @@ internal sealed partial class InspectorPanel : UserControl
         _tabs.Bind(Panel.BackgroundProperty, new DynamicResourceExtension("Hub.TitleBarBackground"));
         _tabs.Children.Add(_planTab);
         _tabs.Children.Add(_changesTab);
-        var settingsIcon = new Path
-        {
-            Width = 15,
-            Height = 15,
-            Stretch = Stretch.Uniform,
-            Fill = Brushes.Transparent,
-            StrokeThickness = 1.8,
-            StrokeLineCap = PenLineCap.Round,
-            StrokeJoin = PenLineJoin.Round,
-        };
-        settingsIcon.Bind(Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Settings"));
-        settingsIcon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-        // The plate matches the plan's copy button beside it — same 32px box, same empty border — because the two
-        // sit in one header and a reader should not have to work out that both are buttons.
+        var settingsIcon = HubActionIcon.Create("Hub.Icon.SettingsOutline");
+        // The edit and settings actions share the same plate and line up in the header.
         _viewSettings = new Button
         {
             Content = settingsIcon,
             Name = "InspectorViewSettings",
             Tag = "InspectorViewSettings",
-            Width = 32,
-            Height = 32,
-            MinWidth = 32,
-            Padding = new Thickness(0),
+            Classes = { "viewer-action" },
+            Width = 28,
+            Height = 28,
             Margin = new Thickness(4, 0, 0, 0),
-            CornerRadius = new CornerRadius(6),
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            HorizontalContentAlignment = HorizontalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         _viewSettings.Bind(ToolTip.TipProperty, new DynamicResourceExtension("InspectorSettingsTip"));
         // A menu rather than a context menu, built fresh on every open: that is how exactly one tick is drawn per
@@ -209,23 +199,19 @@ internal sealed partial class InspectorPanel : UserControl
             BuildViewMenu(_viewMenu);
             FlyoutBase.ShowAttachedFlyout(_viewSettings);
         };
-        Grid.SetColumn(_viewSettings, 2);
+        Grid.SetColumn(_viewSettings, 3);
         header.Children.Add(_viewSettings);
-        var editActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-        var pencil = new Path
-        {
-            Data = Geometry.Parse("M16 3 21 8 8 21 3 21 3 16ZM14 5 19 10"),
-            Width = 15, Height = 15, Stretch = Stretch.Uniform, Fill = Brushes.Transparent,
-            StrokeThickness = 1.6,
-        };
-        pencil.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
-        _editDiff = new Button { Content = pencil, Tag = "InspectorEditDiff", Classes = { "viewer-action" } };
+        var editActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var pencil = HubActionIcon.Create("Hub.Icon.Edit");
+        _editDiff = new Button { Content = pencil, Tag = "InspectorEditDiff", Classes = { "viewer-action" }, Width = 28, Height = 28,
+            Margin = new Thickness(0), VerticalAlignment = VerticalAlignment.Center };
         _editDiff.Bind(ToolTip.TipProperty, new DynamicResourceExtension("InspectorEditDiff"));
-        _cancelEdit = new Button { Content = HubStrings.Get("InspectorCancelEdit"), Tag = "InspectorCancelEdit" };
-        _saveEdit = new Button { Content = HubStrings.Get("InspectorSaveEdit"), Tag = "InspectorSaveEdit" };
+        _cancelEdit = new Button { Content = HubStrings.Get("InspectorCancelEdit"), Tag = "InspectorCancelEdit", Classes = { "inspector-edit-action" } };
+        _saveEdit = new Button { Content = HubStrings.Get("InspectorSaveEdit"), Tag = "InspectorSaveEdit", Classes = { "inspector-edit-action", "save" } };
         _editStatus = Themed(new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12, 0, 12, 6) }, "Hub.TextSecondary");
         _editDiff.Click += (_, _) =>
         {
+            _viewMenu.Hide();
             EditSession.Begin();
             _editStatus.Text = null;
             foreach (var rebuild in _diffRebuilds.ToArray()) rebuild();
@@ -259,7 +245,7 @@ internal sealed partial class InspectorPanel : UserControl
         editActions.Children.Add(_editDiff);
         editActions.Children.Add(_cancelEdit);
         editActions.Children.Add(_saveEdit);
-        Grid.SetColumn(editActions, 3);
+        Grid.SetColumn(editActions, 2);
         header.Children.Add(editActions);
         root.Children.Add(header);
         Grid.SetRow(_editStatus, 1);
@@ -276,11 +262,11 @@ internal sealed partial class InspectorPanel : UserControl
         // every line (Hub's ScrollBar is opaque, always visible, 10px). The host's margin is what clears it.
         _planCopyIcon = new Path
         {
-            Width = 15,
-            Height = 15,
+            Width = 13,
+            Height = 13,
             Stretch = Stretch.Uniform,
             Fill = Brushes.Transparent,
-            StrokeThickness = 1.8,
+            StrokeThickness = 1.4,
             StrokeLineCap = PenLineCap.Round,
             StrokeJoin = PenLineJoin.Round,
         };
@@ -289,9 +275,9 @@ internal sealed partial class InspectorPanel : UserControl
         _planCopyButton = new Button
         {
             Content = _planCopyIcon,
-            Width = 32,
-            Height = 32,
-            MinWidth = 32,
+            Width = 28,
+            Height = 28,
+            MinWidth = 28,
             Padding = new Thickness(0),
             Margin = new Thickness(4, 0, 0, 0),
             CornerRadius = new CornerRadius(6),
@@ -306,6 +292,13 @@ internal sealed partial class InspectorPanel : UserControl
         _planCopyButton.Click += async (_, _) => await CopyPlanMarkdownAsync();
         Grid.SetColumn(_planCopyButton, 1);
         header.Children.Add(_planCopyButton);
+
+        // The leading column was the spacer. The scope control goes there, left-aligned: the three buttons that were
+        // already right-aligned keep their columns and their distance from the edge, and inserting first is what
+        // makes "leading" true without renumbering a single one of them.
+        _scopeBar = (StackPanel)BuildScopeBar();
+        Grid.SetColumn(_scopeBar, 0);
+        header.Children.Insert(0, _scopeBar);
         _planScroll = new ScrollViewer
         {
             Content = _planHost,
@@ -336,11 +329,8 @@ internal sealed partial class InspectorPanel : UserControl
 
         // One Changes surface: the scope picker stays pinned above whichever list it governs, so the list below is
         // always the scope named above it and switching scope never moves the control that switched it.
-        _changesHost = new Grid { RowDefinitions = new RowDefinitions("Auto,*"), IsVisible = false };
-        _changesHost.Children.Add(BuildScopeBar());
-        Grid.SetRow(_changesScroll, 1);
+        _changesHost = new Grid { IsVisible = false };
         _changesHost.Children.Add(_changesScroll);
-        Grid.SetRow(_repoScroll, 1);
         _changesHost.Children.Add(_repoScroll);
         _body.Children.Add(_changesHost);
 
@@ -365,28 +355,16 @@ internal sealed partial class InspectorPanel : UserControl
 
     private Control FileActions(string path)
     {
-        var icon = new Path
-        {
-            Data = Geometry.Parse("M14 3h7v7M21 3 11 13M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"),
-            Width = 15,
-            Height = 15,
-            Stretch = Stretch.Uniform,
-            StrokeThickness = 1.8,
-            StrokeLineCap = PenLineCap.Round,
-            StrokeJoin = PenLineJoin.Round,
-            Fill = Brushes.Transparent,
-            IsHitTestVisible = false,
-        };
-        icon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        var icon = HubActionIcon.Create("Hub.Icon.OpenFile");
         var button = new Button
         {
             Content = icon,
             Classes = { "inspector-file-menu" },
             Tag = "InspectorOpenFile",
-            Width = 32,
-            Height = 32,
-            MinWidth = 32,
-            MinHeight = 32,
+            Width = 28,
+            Height = 28,
+            MinWidth = 28,
+            MinHeight = 28,
             Padding = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
@@ -408,7 +386,7 @@ internal sealed partial class InspectorPanel : UserControl
             Height = 13,
             Stretch = Stretch.Uniform,
             Fill = Brushes.Transparent,
-            StrokeThickness = 1.7,
+            StrokeThickness = 1.4,
             StrokeLineCap = PenLineCap.Round,
         };
         var button = new Button
@@ -416,10 +394,10 @@ internal sealed partial class InspectorPanel : UserControl
             Content = icon,
             Classes = { "inspector-file-menu" },
             Tag = "InspectorUnfoldFile",
-            Width = 32,
-            Height = 32,
-            MinWidth = 32,
-            MinHeight = 32,
+            Width = 28,
+            Height = 28,
+            MinWidth = 28,
+            MinHeight = 28,
             Padding = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
@@ -573,9 +551,9 @@ internal sealed partial class InspectorPanel : UserControl
         string tab,
         Action<string>? quote = null,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot = null,
-        string conversationId = "")
+        string conversationId = "", string? workspaceRoot = null)
         => Reload(planMarkdown, TurnReview.FromRows(changes), resolveDiff, repository, tab, quote, resolveSnapshot,
-            conversationId);
+            conversationId, workspaceRoot);
 
     /// <summary>Paints the three tabs from a snapshot and lands on the asked-for one. The diff resolver is lazy
     /// per file: a session of twelve writes must not read twelve files to show a list, only the one a person
@@ -589,11 +567,20 @@ internal sealed partial class InspectorPanel : UserControl
         string tab,
         Action<string>? quote = null,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot = null,
-        string conversationId = "")
+        string conversationId = "", string? workspaceRoot = null)
     {
-        if (_conversationId != conversationId)
+        if (_conversationId != conversationId || _workspaceRoot != workspaceRoot)
         {
             _conversationId = conversationId;
+            _workspaceRoot = workspaceRoot;
+            ++_reviewGeneration;
+            _commitsFor = null;
+            _branchesFor = null;
+            _pathsFor = null;
+            _commitsRead = false;
+            _commit = null;
+            _branches = [];
+            _base = null;
             _openedChanges.Clear();
             _selectedRevisions.Clear();
             _expandedFiles.Clear();
@@ -639,14 +626,24 @@ internal sealed partial class InspectorPanel : UserControl
     /// answers are consumed the same way, and a per-capability family of delegates would be five properties the
     /// shell has to remember to wire.</summary>
     public sealed record ReviewReadRequest(GitReviewScope Scope, string Root, string? Commit, string? Base,
-        string? Fork, string? Path, bool Whole);
+        string? BaseCommit, string? Path, bool Whole, IReadOnlyList<GitStatusEntry>? StatusEntries = null,
+        string? OriginalPath = null);
 
     public sealed record ReviewRead(GitCommitList? Commits, GitChangedPaths? Paths,
-        IReadOnlyList<GitBranchInfo>? Branches, GitFileComparison? File);
+        IReadOnlyList<GitBranchInfo>? Branches, GitFileComparison? File,
+        GitDiffStats? Stats = null);
 
     /// <summary>Reads the history scopes. The pane owns the scope and the selection; the shell owns the process,
     /// because git reads belong with the wire log and the cancellation the shell already keeps.</summary>
     internal Func<ReviewReadRequest, Task<ReviewRead>>? ReadReviewRequested { get; set; }
+
+    /// <summary>
+    /// The repository root, asked for only when this pane was never handed a readable state. That is the normal case
+    /// on a first open: the status read lands after the page is drawn, and the page's repaint is gated on a
+    /// conversation signature that a landing status read does not change. Without this the history scopes waited for
+    /// a root nothing was going to deliver.
+    /// </summary>
+    internal Func<Task<string?>>? ResolveRootRequested { get; set; }
 
     /// <summary>The scope in force. Set through <see cref="SetScope"/> so the list, the picker and the read that
     /// follows always change together.</summary>
@@ -659,17 +656,34 @@ internal sealed partial class InspectorPanel : UserControl
     /// </summary>
     private void ReloadRepository(GitRepositoryState? repository)
     {
+        // A new reading is a new tree: the totals cached per scope describe the previous one and would sit beside a
+        // list that has already moved. Dropping them makes the next paint ask again, which is the cheap direction.
+        if (!ReferenceEquals(_repository, repository))
+        {
+            _statusStats.Clear();
+            _commitsFor = null;
+            _branchesFor = null;
+            _pathsFor = null;
+        }
         _repository = repository;
         _root = repository is { IsReadable: true, Root.Length: > 0 } readable ? readable.Root : null;
         RenderCurrentScope();
         ApplyScopeVisibility();
         RenderScopeChrome();
         EnsureReviewRead();
+        UpdateEditActions();
     }
 
     private void RenderCurrentScope()
     {
+        _statusCountSlots.Clear();
         _repoBody.Children.Clear();
+        if (_scope is GitReviewScope.Committed or GitReviewScope.Branch
+            && _repository is { IsReadable: false } unavailable)
+        {
+            _repoBody.Children.Add(EmptyLine(RepositoryWhyKey(unavailable.Outcome)));
+            return;
+        }
         switch (_scope)
         {
             case GitReviewScope.Committed:
@@ -765,13 +779,12 @@ internal sealed partial class InspectorPanel : UserControl
         RenderPaths(_commitPaths, "InspectorCommitEmpty", (path, whole) => ReadRangeAsync(path, whole));
     }
 
-    /// <summary>The Branch scope: this branch against a base, measured from where they parted. The fork point is
-    /// named in the head because "since main" is only true relative to a commit a reader can go and look at.</summary>
+    /// <summary>The tracked working tree compared with the selected branch.</summary>
     private void RenderBranch()
     {
         if (_branches.Count == 0)
         {
-            _repoBody.Children.Add(EmptyLine("InspectorBranchesReading"));
+            _repoBody.Children.Add(EmptyLine(_branchesFor is null ? "InspectorBranchesReading" : "InspectorBranchesNone"));
             return;
         }
         if (_base is not { Length: > 0 } chosen)
@@ -779,9 +792,6 @@ internal sealed partial class InspectorPanel : UserControl
             _repoBody.Children.Add(EmptyLine("InspectorBranchesPick"));
             return;
         }
-        _repoBody.Children.Add(ComparisonHead(string.Format(System.Globalization.CultureInfo.CurrentCulture,
-            HubStrings.Get("InspectorBranchHeadFormat"), chosen,
-            _branchPaths.MergeBase is { Length: > 7 } fork ? fork[..7] : _branchPaths.MergeBase ?? "—"), null));
         RenderPaths(_branchPaths, "InspectorBranchEmpty", (path, whole) => ReadRangeAsync(path, whole));
     }
 
@@ -803,10 +813,11 @@ internal sealed partial class InspectorPanel : UserControl
     }
 
     /// <summary>One path of a commit or a branch range, with git's status letter for it. Opening it reads the two
-    /// versions the head named — the commit's parent and the commit, or the merge base and HEAD — so the row can
+    /// versions the head named — the commit's parent and the commit, or the selected branch and working tree — so the row can
     /// never show a comparison the list was not built from.</summary>
     private Control BuildPathRow(GitChangedPath path, Func<GitChangedPath, bool, Task<GitFileComparison?>> read)
     {
+        var editableBranch = _scope == GitReviewScope.Branch;
         var container = new StackPanel { Spacing = 0, Classes = { "inspector-change" } };
         var header = new Button { Classes = { "inspector-change-header" }, Tag = path.RelativePath };
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
@@ -852,6 +863,16 @@ internal sealed partial class InspectorPanel : UserControl
                         return;
                     }
                     if (comparison.ComparisonNote is { Length: > 0 } note) body.Children.Add(Prose(note));
+                    if (editableBranch && comparison.New is { Exists: true, IsText: true }
+                        && (!comparison.Old.Exists || comparison.Old.IsText)
+                        && EditableDiff(_root is { Length: > 0 } root ? System.IO.Path.Combine(root, path.RelativePath) : path.RelativePath,
+                            comparison.Old.Snapshot.Text ?? "") is { } editable)
+                    {
+                        body.Children.Add(editable);
+                        if (editable is ChangesDiffEditView) { detail.Content = body; return; }
+                    }
+                    else if (editableBranch && EditSession.Editing)
+                        body.Children.Add(Note("InspectorEditUnsupported"));
                     var diff = FileDiff.Unified(comparison.Old.Snapshot.Text ?? "",
                         comparison.New.Snapshot.Text ?? "", path.RelativePath,
                         whole ? ChatChanges.InspectorLimits.Expanded() : ChatChanges.InspectorLimits);
@@ -881,12 +902,17 @@ internal sealed partial class InspectorPanel : UserControl
             header.Classes.Set("expanded", true);
         };
 
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         row.Children.Add(header);
+        var numbers = path.Lines is { } counts ? CountLabels(counts.Added, counts.Removed, showZero: true)
+            : UnknownCountLabels();
+        numbers.HorizontalAlignment = HorizontalAlignment.Right;
+        Grid.SetColumn(numbers, 1);
+        row.Children.Add(numbers);
         if (_root is { Length: > 0 } root)
         {
             var actions = FileActions(System.IO.Path.Combine(root, path.RelativePath));
-            Grid.SetColumn(actions, 1);
+            Grid.SetColumn(actions, 2);
             row.Children.Add(actions);
         }
         container.Children.Add(row);
@@ -926,8 +952,8 @@ internal sealed partial class InspectorPanel : UserControl
     {
         if (ReadReviewRequested is not { } read) return Task.FromResult<GitFileComparison?>(null);
         var scope = _scope;
-        var request = new ReviewReadRequest(scope, _root ?? "", _commit, _base, _branchPaths.MergeBase,
-            path.RelativePath, whole);
+        var request = new ReviewReadRequest(scope, _root ?? "", _commit, _base, _branchPaths.BaseCommit,
+            path.RelativePath, whole, OriginalPath: path.OriginalPath);
         return ReadFile(read);
 
         async Task<GitFileComparison?> ReadFile(Func<ReviewReadRequest, Task<ReviewRead>> reader)
@@ -943,9 +969,16 @@ internal sealed partial class InspectorPanel : UserControl
     /// </summary>
     private void EnsureReviewRead()
     {
-        if (ReadReviewRequested is not { } read || _root is not { Length: > 0 } root) return;
+        if (_repository is { IsReadable: false }) return;
+        if (ReadReviewRequested is not { } read) return;
+        var root = _root ?? "";
         ReviewReadRequest? request = _scope switch
         {
+            // The three status scopes need one number each, from one numstat over the range they name; their lists
+            // come from the status reading the shell already took.
+            GitReviewScope.Uncommitted or GitReviewScope.Staged or GitReviewScope.Unstaged
+                when !_statusStats.ContainsKey(_scope) =>
+                new ReviewReadRequest(_scope, root, null, null, null, null, false, _repository?.Entries),
             GitReviewScope.Committed when !string.Equals(_commitsFor, root) =>
                 new ReviewReadRequest(_scope, root, null, null, null, null, false),
             GitReviewScope.Committed when _commit is { Length: > 0 } commit
@@ -957,7 +990,7 @@ internal sealed partial class InspectorPanel : UserControl
                 // and it is the row a person would have clicked first.
                 null,
             GitReviewScope.Branch when !string.Equals(_branchesFor, root) =>
-                new ReviewReadRequest(_scope, root, null, _base, null, null, false),
+                new ReviewReadRequest(_scope, root, null, null, null, null, false),
             GitReviewScope.Branch when _base is { Length: > 0 } branch
                                        && !string.Equals(_pathsFor, branch, StringComparison.Ordinal) =>
                 new ReviewReadRequest(_scope, root, null, branch, null, null, false),
@@ -973,19 +1006,27 @@ internal sealed partial class InspectorPanel : UserControl
         {
             try
             {
-                var answer = await read(ask);
+                var resolved = ask.Root;
+                if (resolved.Length == 0)
+                {
+                    resolved = ResolveRootRequested is { } resolve ? await resolve() : null;
+                    if (generation != _reviewGeneration || scope != _scope || string.IsNullOrEmpty(resolved)) return;
+                    _root = resolved;
+                }
+                var answer = await read(ask with { Root = resolved });
                 if (generation != _reviewGeneration || scope != _scope) return;
                 if (answer.Commits is { } commits)
                 {
                     _commits = commits;
                     _commitsRead = true;
-                    _commitsFor = root;
-                    if (_commit is null && commits.Commits.Count > 0) _commit = commits.Commits[0].Id;
+                    _commitsFor = resolved;
+                    if (_commit is null || !commits.Commits.Any(commit => commit.Id == _commit))
+                        _commit = commits.Commits.FirstOrDefault()?.Id;
                 }
-                if (answer.Branches is { Count: > 0 } branches)
+                if (answer.Branches is { } branches)
                 {
                     _branches = branches;
-                    _branchesFor = root;
+                    _branchesFor = resolved;
                     if (_base is null)
                     {
                         _base = DefaultBase(branches);
@@ -999,7 +1040,15 @@ internal sealed partial class InspectorPanel : UserControl
                     else _commitPaths = paths;
                     _pathsFor = scope == GitReviewScope.Branch ? _base : _commit;
                 }
-                RenderCurrentScope();
+                // Asked is answered, even when the answer is "nothing": a status scope's totals are one number the
+                // repository may refuse to give, and leaving the cache empty would make this read re-arm itself on
+                // every pass — which is a stack of renders, not a retry.
+                if (scope is GitReviewScope.Uncommitted or GitReviewScope.Staged or GitReviewScope.Unstaged)
+                {
+                    _statusStats[scope] = answer.Stats ?? GitDiffStats.Empty;
+                    UpdateStatusCounts();
+                }
+                else RenderCurrentScope();
                 RenderScopeChrome();
                 EnsureReviewRead();
             }
@@ -1014,10 +1063,16 @@ internal sealed partial class InspectorPanel : UserControl
         }
     }
 
-    /// <summary>The branch to compare against when nothing has been picked: the first local branch that is not this
-    /// one. Not <c>main</c> by name — a repository that calls it <c>develop</c> would get a range about nothing.</summary>
+    /// <summary>The current branch's upstream, or another available branch if it has no upstream.</summary>
     private static string? DefaultBase(IReadOnlyList<GitBranchInfo> branches)
-        => branches.FirstOrDefault(branch => !branch.IsCurrent)?.Name;
+    {
+        // The upstream is the comparison a branch is actually ahead or behind something against — the commits that
+        // have not been pushed are exactly upstream..HEAD — while a fellow local branch is a guess about somebody's
+        // workflow. Only when there is no upstream does another local branch become the useful answer.
+        var current = branches.FirstOrDefault(branch => branch.IsCurrent);
+        if (current?.Upstream is { Length: > 0 } upstream) return upstream;
+        return branches.FirstOrDefault(branch => !branch.IsCurrent)?.Name;
+    }
 
     private int CountIn(GitReviewScope scope) => _repository is { IsReadable: true } repository
         ? repository.Entries.Count(entry => GitReviewScopes.Applies(scope, entry))
@@ -1057,6 +1112,7 @@ internal sealed partial class InspectorPanel : UserControl
         ApplyScopeVisibility();
         RenderScopeChrome();
         EnsureReviewRead();
+        UpdateEditActions();
         if (changed) ScopeChanged?.Invoke(scope);
     }
 
@@ -1068,104 +1124,250 @@ internal sealed partial class InspectorPanel : UserControl
         var changes = _changesHost.IsVisible;
         _changesScroll.IsVisible = changes && _scope == GitReviewScope.LastTurn;
         _repoScroll.IsVisible = changes && _scope != GitReviewScope.LastTurn;
-        _viewSettings.IsVisible = changes;
+        _viewSettings.IsVisible = changes && !EditSession.Editing;
+        RenderScopeBarVisibility();
     }
 
     /// <summary>Paints the picker: the scope's name, the counts that go with it, and the note for a scope whose
     /// answer is "there is no such set here" rather than "there is nothing in it".</summary>
     private void RenderScopeChrome()
     {
-        if (_scopeName.Text is null || !string.Equals(_scopeName.Text, HubStrings.Get(ScopeNameKey(_scope)), StringComparison.Ordinal))
-            _scopeName.Text = HubStrings.Get(ScopeNameKey(_scope));
-        _scopeCounts.Text = _scope switch
+        var name = HubStrings.Get(ScopeNameKey(_scope));
+        if (!string.Equals(_scopeName.Text, name, StringComparison.Ordinal)) _scopeName.Text = name;
+        // The same CountLabels the changed-file rows use, so the summary and the rows it summarises are coloured by
+        // one routine: a second pair of brushes here would be a second opinion about what green means.
+        var (added, removed) = TotalsFor(_scope);
+        _scopeCounts.Children.Clear();
+        // Move the labels rather than add them where they are: a control has one visual parent, and CountLabels built
+        // them for a panel of its own.
+        var labels = CountLabels(added, removed);
+        foreach (var child in labels.Children.ToArray())
         {
-            GitReviewScope.LastTurn when !_review.IsEmpty => string.Format(
-                System.Globalization.CultureInfo.CurrentCulture, HubStrings.Get("InspectorScopeCountsFormat"),
-                _review.Files.Count, _review.Added, _review.Removed),
-            GitReviewScope.LastTurn => "",
-            _ when _scope is GitReviewScope.Uncommitted or GitReviewScope.Unstaged or GitReviewScope.Staged =>
-                CountIn(_scope).ToString(System.Globalization.CultureInfo.CurrentCulture),
-            _ => "",
-        };
-        _scopeCounts.IsVisible = _scopeCounts.Text is { Length: > 0 };
+            labels.Children.Remove(child);
+            _scopeCounts.Children.Add(child);
+        }
+        _scopeCounts.IsVisible = added > 0 || removed > 0;
+        var detail = DetailFor(_scope);
+        if (!string.Equals(_scopeDetail.Text, detail ?? "", StringComparison.Ordinal)) _scopeDetail.Text = detail ?? "";
+        _scopeDetailButton.IsVisible = detail is { Length: > 0 };
+        ToolTip.SetTip(_scopeButton, detail is { Length: > 0 } ? name + " · " + detail : name);
+        RenderScopeBarVisibility();
+    }
+
+    /// <summary>The picker belongs to the Changes page only: on the plan tab there is no scope to name.</summary>
+    private void RenderScopeBarVisibility() => _scopeBar.IsVisible = _changesHost.IsVisible;
+
+    /// <summary>
+    /// What the two numbers beside the scope name count, per scope. Last turn is measured by the review; Committed
+    /// and Branch carry the totals from the read that produced their rows; the three status scopes are asked for
+    /// once each, because the cached patch describes HEAD-to-worktree and neither half of it alone.
+    /// </summary>
+    private (int Added, int Removed) TotalsFor(GitReviewScope scope) => scope switch
+    {
+        GitReviewScope.LastTurn => (_review.Added, _review.Removed),
+        GitReviewScope.Committed => (_commitPaths.Added, _commitPaths.Removed),
+        GitReviewScope.Branch => (_branchPaths.Added, _branchPaths.Removed),
+        _ => _statusStats.TryGetValue(scope, out var stats) ? (stats.Added, stats.Removed) : (0, 0),
+    };
+
+    /// <summary>The second half of the header for the two scopes that compare two things, and nothing for the
+    /// three that compare one.</summary>
+    private string? DetailFor(GitReviewScope scope) => scope switch
+    {
+        GitReviewScope.Branch => BranchDetail(),
+        GitReviewScope.Committed => _commits.Commits
+            .FirstOrDefault(commit => string.Equals(commit.Id, _commit, StringComparison.Ordinal))?.Subject,
+        _ => null,
+    };
+
+    /// <summary>"this branch → that side", named exactly as git names it, so <c>origin/master</c> is a ref a reader
+    /// can retype in a terminal rather than a label this app invented.</summary>
+    private string? BranchDetail()
+    {
+        if (_base is not { Length: > 0 } target) return null;
+        var current = _branches.FirstOrDefault(branch => branch.IsCurrent)?.Name
+                      ?? _repository?.Branch
+                      ?? HubStrings.Get("InspectorBranchHead");
+        return string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get("InspectorBranchPairFormat"), current, target);
     }
 
     private Control BuildScopeBar()
     {
-        var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*"), Margin = new Thickness(12, 8, 6, 2) };
+        _scopeBar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            IsVisible = false,
+            ClipToBounds = true,
+        };
         _scopeName = new TextBlock
         {
             Text = HubStrings.Get("InspectorScopeUncommitted"),
             VerticalAlignment = VerticalAlignment.Center,
             Name = "InspectorScopeName",
         };
-        var chevron = new Avalonia.Controls.Shapes.Path
+        _scopeCounts = new StackPanel
         {
-            Width = 12,
-            Height = 12,
-            Stretch = Stretch.Uniform,
-            Fill = Brushes.Transparent,
-            StrokeThickness = 1.7,
-            StrokeLineCap = PenLineCap.Round,
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
-            Classes = { "chip-caret" },
-        };
-        chevron.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Caret"));
-        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        content.Children.Add(_scopeName);
-        content.Children.Add(chevron);
-        _scopeButton = new Button
-        {
-            Classes = { "inspector-scope" },
-            Tag = "InspectorScopeButton",
-            Content = content,
-        };
-        ToolTip.SetTip(_scopeButton, HubStrings.Get("InspectorScopeTip"));
-        _scopeButton.Click += (_, _) => ShowScopeMenu();
-        bar.Children.Add(_scopeButton);
-
-        _scopeCounts = new TextBlock
-        {
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(8, 0, 0, 0),
-            Classes = { "inspector-note" },
-            Name = "InspectorScopeCounts",
             IsVisible = false,
         };
-        Grid.SetColumn(_scopeCounts, 1);
-        bar.Children.Add(_scopeCounts);
-        return bar;
+        var buttonRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        buttonRow.Children.Add(_scopeName);
+        buttonRow.Children.Add(Caret());
+        var selection = new Border { CornerRadius = new CornerRadius(13), Padding = new Thickness(8, 4), Child = buttonRow };
+        selection.Bind(Border.BackgroundProperty, new DynamicResourceExtension("Hub.Surface"));
+        var summary = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        summary.Children.Add(selection);
+        _scopeCounts.Margin = new Thickness(0, 0, 8, 0);
+        summary.Children.Add(_scopeCounts);
+        _scopeButton = new Button { Classes = { "inspector-scope" }, Tag = "InspectorScopeButton",
+            Content = summary, Padding = new Thickness(2) };
+        _scopeButton.Click += (_, _) => ShowScopeMenu();
+        _scopeBar.Children.Add(_scopeButton);
+
+        // The pair being compared, and the control for the other side of it: Branch reads "master → origin/master"
+        // and Committed reads the commit it is showing, and both are pickers because the other side is a choice.
+        _scopeDetail = new TextBlock
+        {
+            Name = "InspectorScopeDetail",
+            VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "inspector-scope-detail" },
+        };
+        var detailRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        detailRow.Children.Add(_scopeDetail);
+        detailRow.Children.Add(Caret());
+        _scopeDetailButton = new Button
+        {
+            Classes = { "inspector-scope" },
+            Tag = "InspectorScopeDetail",
+            Content = detailRow,
+            IsVisible = false,
+        };
+        _scopeDetailButton.Click += (_, _) => ShowDetailMenu();
+        _scopeBar.Children.Add(_scopeDetailButton);
+        return _scopeBar;
+    }
+
+    /// <summary>The same line caret used by the composer chips.</summary>
+    private static Path Caret()
+    {
+        var chevron = new Path
+        {
+            Width = 10,
+            Height = 5,
+            Stretch = Stretch.Uniform,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.6,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        chevron.Bind(Path.DataProperty, new DynamicResourceExtension("Hub.Icon.Caret"));
+        chevron.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextTertiary"));
+        return chevron;
+    }
+
+    /// <summary>The second picker: only that scope's own choices, because a reader who clicked the pair wants the
+    /// other side of it, not the five scopes again.</summary>
+    private void ShowDetailMenu()
+    {
+        var menu = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedLeft };
+        foreach (var item in _scope == GitReviewScope.Branch ? BranchChoices() : CommitChoices()) menu.Items.Add(item);
+        menu.ShowAt(_scopeDetailButton);
     }
 
     /// <summary>
-    /// The scope menu, rebuilt on every open: the counts in it are the tree's state now, and a menu built once would
-    /// keep offering yesterday's numbers. The two history rows open submenus because their answer is a list, not a
-    /// choice — Last turn, Uncommitted, Unstaged and Staged are the four scopes that are just a place to look.
+    /// The scope menu reads the current unpushed commits as it opens. Branch is a scope choice; its comparison
+    /// target is selected in the separate picker beside the scope summary.
     /// </summary>
     private void ShowScopeMenu()
     {
-        var menu = new MenuFlyout();
+        var menu = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedLeft };
         menu.Items.Add(ScopeChoice(GitReviewScope.LastTurn, menu));
         menu.Items.Add(new Separator());
         menu.Items.Add(ScopeChoice(GitReviewScope.Uncommitted, menu));
         menu.Items.Add(ScopeChoice(GitReviewScope.Unstaged, menu));
         menu.Items.Add(ScopeChoice(GitReviewScope.Staged, menu));
         menu.Items.Add(new Separator());
-        menu.Items.Add(ScopeGroup(GitReviewScope.Committed, CommitChoices()));
-        menu.Items.Add(ScopeGroup(GitReviewScope.Branch, BranchChoices()));
+        var committed = ScopeGroup(GitReviewScope.Committed, [Hint("InspectorRepoReading")]);
+        menu.Items.Add(committed);
+        menu.Items.Add(ScopeChoice(GitReviewScope.Branch, menu));
         menu.ShowAt(_scopeButton);
+        _ = LoadCommitChoicesAsync(committed);
+    }
+
+    private async Task LoadCommitChoicesAsync(MenuItem item)
+    {
+        var conversation = _conversationId;
+        try
+        {
+            if (_repository is { IsReadable: false } unavailable)
+            {
+                item.ItemsSource = new[] { Hint(RepositoryWhyKey(unavailable.Outcome)) };
+                return;
+            }
+            var root = _root;
+            if (string.IsNullOrEmpty(root) && ResolveRootRequested is { } resolve) root = await resolve();
+            if (conversation != _conversationId) return;
+            if (root is null || ReadReviewRequested is not { } read)
+            {
+                item.ItemsSource = new[] { Hint("InspectorCommitsFailed") };
+                return;
+            }
+            var answer = await read(new ReviewReadRequest(GitReviewScope.Committed, root, null, null, null, null, false));
+            if (conversation != _conversationId || (_root is { Length: > 0 } current && current != root)) return;
+            _root = root;
+            _commits = answer.Commits ?? GitCommitList.Stopped(GitCommitListOutcome.Failed);
+            _commitsRead = true;
+            _commitsFor = root;
+            if (_commit is null || !_commits.Commits.Any(commit => commit.Id == _commit))
+            {
+                _commit = _commits.Commits.FirstOrDefault()?.Id;
+                if (_scope == GitReviewScope.Committed) _pathsFor = null;
+            }
+            item.ItemsSource = CommitChoices();
+            if (_scope == GitReviewScope.Committed)
+            {
+                RenderCurrentScope();
+                RenderScopeChrome();
+                EnsureReviewRead();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (conversation == _conversationId) item.ItemsSource = new[] { Hint("InspectorCommitsFailed") };
+        }
+    }
+
+    private static Control ScopeMenuHeader(string title, bool current)
+    {
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), MinWidth = 140 };
+        row.Children.Add(new TextBlock { Text = title, FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
+        if (current)
+        {
+            var tick = MenuRow.Tick(true);
+            Grid.SetColumn(tick, 1);
+            row.Children.Add(tick);
+        }
+        return row;
     }
 
     private MenuItem ScopeChoice(GitReviewScope scope, MenuFlyout menu)
     {
-        var badge = scope == GitReviewScope.LastTurn
-            ? _review.IsEmpty ? null : _review.Files.Count.ToString(System.Globalization.CultureInfo.CurrentCulture)
-            : CountIn(scope).ToString(System.Globalization.CultureInfo.CurrentCulture);
+        // No counts in the menu: the pill already carries the number for the scope you are on, and a menu of five
+        // numbers makes the reader compare five things to pick one. The tick is the only mark a row needs.
         var item = new MenuItem
         {
-            Header = MenuRow.Build(null, HubStrings.Get(ScopeNameKey(scope)), _scope == scope, badge),
+            Header = ScopeMenuHeader(HubStrings.Get(ScopeNameKey(scope)), _scope == scope),
             Tag = ScopeNameKey(scope),
             IsChecked = _scope == scope,
+            MinHeight = 30,
+            Padding = new Thickness(8, 3),
         };
         item.Click += (_, _) =>
         {
@@ -1179,27 +1381,30 @@ internal sealed partial class InspectorPanel : UserControl
     {
         var item = new MenuItem
         {
-            Header = MenuRow.Build(null, HubStrings.Get(ScopeNameKey(scope)), _scope == scope, null, chevron: true),
+            Header = ScopeMenuHeader(HubStrings.Get(ScopeNameKey(scope)), _scope == scope),
             Tag = ScopeNameKey(scope),
             ItemsSource = children,
             IsChecked = _scope == scope,
+            MinHeight = 30,
+            Padding = new Thickness(8, 3),
         };
         return item;
     }
 
     /// <summary>The commits the submenu offers, or the one sentence saying why it is empty. Picking one opens that
     /// commit's own comparison; the list stays newest first because that is the order the picker showed.</summary>
-    private IReadOnlyList<MenuItem> CommitChoices()
+    private IReadOnlyList<MenuItem> CommitChoices(GitCommitList? source = null)
     {
-        switch (_commits.Outcome)
+        var commits = source ?? _commits;
+        switch (commits.Outcome)
         {
-            case GitCommitListOutcome.Ok when _commits.Commits.Count > 0:
-                var list = new List<MenuItem>(_commits.Commits.Count);
-                foreach (var commit in _commits.Commits)
+            case GitCommitListOutcome.Ok when commits.Commits.Count > 0:
+                var list = new List<MenuItem>(commits.Commits.Count);
+                foreach (var commit in commits.Commits)
                 {
                     var item = new MenuItem
                     {
-                        Header = CommitRow(commit),
+                        Header = CommitRow(commit, string.Equals(commit.Id, _commit, StringComparison.Ordinal)),
                         Tag = commit.Id,
                         IsChecked = string.Equals(commit.Id, _commit, StringComparison.Ordinal),
                     };
@@ -1228,34 +1433,44 @@ internal sealed partial class InspectorPanel : UserControl
     private IReadOnlyList<MenuItem> BranchChoices()
     {
         if (_branches.Count == 0) return [Hint("InspectorBranchesReading")];
-        var list = new List<MenuItem>(_branches.Count);
+        var list = new List<MenuItem>(_branches.Count + 1);
+        // Put the current upstream first, then the other local and remote branches without a duplicate.
+        var upstream = _branches.FirstOrDefault(branch => branch.IsCurrent)?.Upstream;
+        if (upstream is { Length: > 0 })
+            list.Add(BranchChoice(upstream));
         foreach (var branch in _branches)
         {
-            if (branch.IsCurrent) continue;
-            var item = new MenuItem
-            {
-                Header = MenuRow.Build(null, branch.Name, string.Equals(branch.Name, _base, StringComparison.Ordinal)),
-                Tag = branch.Name,
-            };
-            var name = branch.Name;
-            item.Click += (_, _) =>
-            {
-                _base = name;
-                _branchPaths = GitChangedPaths.Stopped(GitCommitListOutcome.Ok);
-                _pathsFor = null;
-                SetScope(GitReviewScope.Branch);
-            };
-            list.Add(item);
+            if (branch.IsCurrent || string.Equals(branch.Name, upstream, StringComparison.Ordinal)) continue;
+            list.Add(BranchChoice(branch.Name));
         }
         return list.Count == 0 ? [Hint("InspectorBranchesNone")] : list;
+    }
+
+    /// <summary>One row of the branch picker: the ref, ticked when it is the side being compared, and a click that
+    /// moves the comparison there without changing the scope.</summary>
+    private MenuItem BranchChoice(string name)
+    {
+        var item = new MenuItem
+        {
+            Header = MenuRow.Build(null, name, string.Equals(name, _base, StringComparison.Ordinal)),
+            Tag = name,
+        };
+        item.Click += (_, _) =>
+        {
+            _base = name;
+            _branchPaths = GitChangedPaths.Stopped(GitCommitListOutcome.Ok);
+            _pathsFor = null;
+            SetScope(GitReviewScope.Branch);
+        };
+        return item;
     }
 
     /// <summary>A commit row: the subject, then the time with the gap the reference client did not leave. The
     /// subject takes the room that is left and the time keeps its width, so a long message truncates instead of
     /// running into the timestamp.</summary>
-    private static Control CommitRow(GitCommitInfo commit)
+    private static Control CommitRow(GitCommitInfo commit, bool current)
     {
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), MinWidth = 260 };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), MinWidth = 260 };
         var subject = new TextBlock
         {
             Text = commit.Subject,
@@ -1276,6 +1491,10 @@ internal sealed partial class InspectorPanel : UserControl
         when.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextSecondary"));
         Grid.SetColumn(when, 1);
         row.Children.Add(when);
+        var tick = MenuRow.Tick(current);
+        tick.Margin = new Thickness(12, 0, 0, 0);
+        Grid.SetColumn(tick, 2);
+        row.Children.Add(tick);
         ToolTip.SetTip(row, commit.ShortId + " · " + commit.Subject);
         return row;
     }
@@ -1286,6 +1505,8 @@ internal sealed partial class InspectorPanel : UserControl
         {
             Text = HubStrings.Get(textKey),
             FontSize = 12,
+            MaxWidth = 260,
+            TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(12, 0, 0, 0),
         },
         Tag = textKey,
@@ -1419,8 +1640,9 @@ internal sealed partial class InspectorPanel : UserControl
                         if (request != generation || owner != _conversationId) return;
                         if (snapshot is null) { ShowDiff(GitRepository.DiffFor(state, entry)); return; }
                         var body = new StackPanel { Spacing = 5 };
-                        if (range == GitFileRange.WorkingTreeAgainstHead
-                            && EditableDiff(entry.RelativePath, snapshot.Before) is { } editable)
+                        if (range is GitFileRange.WorkingTreeAgainstHead or GitFileRange.WorkingTree
+                            && EditableDiff(state.Root is { Length: > 0 } root ? System.IO.Path.Combine(root, entry.RelativePath) : entry.RelativePath,
+                                snapshot.Before) is { } editable)
                         {
                             body.Children.Add(editable);
                             if (editable is ChangesDiffEditView) { detail.Content = body; return; }
@@ -1475,16 +1697,12 @@ internal sealed partial class InspectorPanel : UserControl
 
         var repositoryRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         repositoryRow.Children.Add(header);
-        // The cached patch is the HEAD-to-worktree one, so its numbers belong to Uncommitted alone: beside a staged
-        // or unstaged row they would count a different pair of versions than the diff the row opens.
-        if (_scope == GitReviewScope.Uncommitted
-            && state.Diffs.TryGetValue(entry.RelativePath, out var cachedDiff)
-            && !state.Truncated && PatchCounts(cachedDiff) is { } counts)
-        {
-            var numbers = CountLabels(counts.Added, counts.Removed);
-            Grid.SetColumn(numbers, 1);
-            repositoryRow.Children.Add(numbers);
-        }
+        var numbers = new ContentControl { HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center };
+        _statusCountSlots[entry.RelativePath] = numbers;
+        SetStatusCount(numbers, entry.RelativePath, state);
+        Grid.SetColumn(numbers, 1);
+        repositoryRow.Children.Add(numbers);
         var repositoryFileActions = FileActions(state.Root is { Length: > 0 } root
             ? System.IO.Path.Combine(root, entry.RelativePath) : entry.RelativePath);
         Grid.SetColumn(repositoryFileActions, 2);
@@ -1492,6 +1710,22 @@ internal sealed partial class InspectorPanel : UserControl
         container.Children.Add(repositoryRow);
         container.Children.Add(detail);
         return container;
+    }
+
+    private void UpdateStatusCounts()
+    {
+        if (_repository is not { } state) return;
+        foreach (var (path, slot) in _statusCountSlots) SetStatusCount(slot, path, state);
+    }
+
+    private void SetStatusCount(ContentControl slot, string path, GitRepositoryState state)
+    {
+        ChangeLineCounts? counts = null;
+        if (_statusStats.TryGetValue(_scope, out var stats)) stats.Files.TryGetValue(path, out counts);
+        if (counts is null && _scope == GitReviewScope.Uncommitted && !state.Truncated
+            && state.Diffs.TryGetValue(path, out var patch) && PatchCounts(patch) is { } cached)
+            counts = new ChangeLineCounts(cached.Added, cached.Removed);
+        slot.Content = counts is null ? UnknownCountLabels() : CountLabels(counts.Added, counts.Removed, showZero: true);
     }
 
     /// <summary>Waits for the shell's whole-file answer and hands it back on the UI thread it was asked from. A
@@ -1554,10 +1788,8 @@ internal sealed partial class InspectorPanel : UserControl
     {
         var container = new StackPanel { Spacing = 0, Classes = { "inspector-change" } };
 
-        var (added, removed) = PreviewCounts(change);
-
         var header = new Button { Classes = { "inspector-change-header" }, Tag = change.RelativePath };
-        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
 
         var verdict = new TextBlock
         {
@@ -1576,10 +1808,6 @@ internal sealed partial class InspectorPanel : UserControl
         Grid.SetColumn(name, 1);
         name.Margin = new Thickness(6, 0, 6, 0);
         grid.Children.Add(name);
-
-        var counts = CountLabels(added, removed);
-        Grid.SetColumn(counts, 2);
-        grid.Children.Add(counts);
 
         header.Content = grid;
 
@@ -1606,8 +1834,13 @@ internal sealed partial class InspectorPanel : UserControl
             if (detail.Content is not null) detail.Content = BuildDiffDetail(change, resolveDiff, resolveSnapshot);
         });
 
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto") };
         row.Children.Add(header);
+        var numbers = change.Lines is { } counts ? CountLabels(counts.Added, counts.Removed, showZero: true)
+            : UnknownCountLabels();
+        numbers.HorizontalAlignment = HorizontalAlignment.Right;
+        Grid.SetColumn(numbers, 1);
+        row.Children.Add(numbers);
         var unfoldButton = UnfoldButton(change.RelativePath, whole =>
         {
             // Unfolding a row that was still folded also opens it: the click asked to see more, and a row that
@@ -1620,29 +1853,39 @@ internal sealed partial class InspectorPanel : UserControl
             }
             detail.Content = BuildDiffDetail(change, resolveDiff, resolveSnapshot);
         });
-        Grid.SetColumn(unfoldButton, 1);
+        Grid.SetColumn(unfoldButton, 2);
         row.Children.Add(unfoldButton);
         var fileMenuButton = FileActions(change.RelativePath);
-        Grid.SetColumn(fileMenuButton, 2);
+        Grid.SetColumn(fileMenuButton, 3);
         row.Children.Add(fileMenuButton);
         container.Children.Add(row);
         container.Children.Add(detail);
         return container;
     }
 
-    private static StackPanel CountLabels(int added, int removed)
+    private static StackPanel CountLabels(int added, int removed, bool showZero = false)
     {
         var counts = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        if (added > 0) counts.Children.Add(Themed(new TextBlock
+        if (showZero || added > 0) counts.Children.Add(Themed(new TextBlock
         {
             Text = string.Format(HubStrings.Get("InspectorAddedFormat"), added),
             Classes = { "inspector-count-added" },
         }, "Hub.Success"));
-        if (removed > 0) counts.Children.Add(Themed(new TextBlock
+        if (showZero || removed > 0) counts.Children.Add(Themed(new TextBlock
         {
             Text = string.Format(HubStrings.Get("InspectorRemovedFormat"), removed),
             Classes = { "inspector-count-removed" },
         }, "Hub.Danger"));
+        return counts;
+    }
+
+    private static StackPanel UnknownCountLabels()
+    {
+        var counts = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center };
+        counts.Children.Add(Themed(new TextBlock { Text = "+—", Classes = { "inspector-count-added" } }, "Hub.Success"));
+        counts.Children.Add(Themed(new TextBlock { Text = "−—", Classes = { "inspector-count-removed" } }, "Hub.Danger"));
+        ToolTip.SetTip(counts, HubStrings.Get("InspectorCountsUnavailable"));
         return counts;
     }
 
@@ -1661,13 +1904,6 @@ internal sealed partial class InspectorPanel : UserControl
         }
         return inHunk ? (added, removed) : null;
     }
-
-    /// <summary>The row's <c>+N −M</c> comes from the selected latest revision, with the transcript's recorded
-    /// count retained for older revisions that predate durable change metadata.</summary>
-    private static (int Added, int Removed) PreviewCounts(ChangedFile change)
-        => change.Lines is { } lines
-            ? (lines.Added, lines.Removed)
-            : (0, 0);
 
     private Control BuildDiffDetail(ChangedFile change, Func<ChangedFile, bool, (string? Diff, UndoCopyState State)> resolveDiff,
         Func<ChangedFile, (ChatFileSnapshot? Snapshot, UndoCopyState State)>? resolveSnapshot)
@@ -1741,22 +1977,6 @@ internal sealed partial class InspectorPanel : UserControl
 
         var body = new StackPanel { Spacing = 6 };
         var snapshot = resolveSnapshot?.Invoke(change).Snapshot;
-        var latest = change.History?.LastOrDefault()?.Id ?? change.ChangeId;
-        var historic = change.SelectedRevisionId is { Length: > 0 } id && latest is not null && id != latest;
-        if (snapshot is not null && !historic && EditableDiff(change.RelativePath, snapshot.Before) is { } editable)
-        {
-            body.Children.Add(editable);
-            if (editable is ChangesDiffEditView) return body;
-        }
-        else if (EditSession.Editing) body.Children.Add(Note("InspectorEditSnapshotRequired"));
-        if (snapshot is not null && !historic && !EditSession.Editing
-            && OpenEditBuffer?.Invoke(_conversationId, change.RelativePath, snapshot.Before) is { } current)
-        {
-            // Latest changes follow the workspace after either editor saves. Historical snapshots stay immutable.
-            snapshot = snapshot with { After = current.Text };
-            diff = FileDiff.Unified(snapshot.Before, snapshot.After, change.RelativePath,
-                _expandedFiles.Contains(change.RelativePath) ? ChatChanges.InspectorLimits.Expanded() : ChatChanges.InspectorLimits);
-        }
         body.Children.Add(BuildDiffBlock(change.RelativePath, diff, snapshot));
         return body;
     }
@@ -1764,8 +1984,10 @@ internal sealed partial class InspectorPanel : UserControl
     private void UpdateEditActions()
     {
         var changes = _repoScroll.IsVisible;
+        _viewSettings.IsVisible = _changesHost.IsVisible && !EditSession.Editing;
         _editDiff.IsVisible = changes && !EditSession.Editing;
-        _editDiff.IsEnabled = OpenEditBuffer is not null && _conversationId.Length > 0;
+        _editDiff.IsEnabled = OpenEditBuffer is not null && (_conversationId.Length > 0 || _workspaceRoot is { Length: > 0 })
+            && _scope is GitReviewScope.Uncommitted or GitReviewScope.Unstaged or GitReviewScope.Branch;
         _cancelEdit.IsVisible = changes && EditSession.Editing;
         _saveEdit.IsVisible = changes && EditSession.Editing;
         _saveEdit.IsEnabled = EditSession.IsDirty;
@@ -1777,11 +1999,11 @@ internal sealed partial class InspectorPanel : UserControl
         if (!EditSession.Editing) return null;
         if (!EditSession.Buffers.TryGetValue(path, out var buffer))
         {
-            buffer = OpenEditBuffer?.Invoke(_conversationId, path, before);
+            buffer = OpenEditBuffer?.Invoke(_conversationId, path);
             if (buffer is null) return Note("InspectorEditUnsupported");
             EditSession.Buffers.Add(path, buffer);
         }
-        return new ChangesDiffEditView(buffer, _splitDiff, UpdateEditActions);
+        return new ChangesDiffEditView(buffer, before, _splitDiff, UpdateEditActions);
     }
 
     internal static string DiffUnavailableKey(ChangedFile change, UndoCopyState state) => state switch

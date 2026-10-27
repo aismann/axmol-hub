@@ -1,6 +1,8 @@
 using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
+using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Input;
@@ -535,6 +537,8 @@ internal sealed class ShellDecisionsChecks
             chat.SetApprovalMode(chipSession.Id, ToolApprovalModes.Ask);
             chat.OpenConversation(chipSession.Id);
             System.IO.File.WriteAllText(System.IO.Path.Combine(workspace, "chip-note.txt"), "第一行\n第二行\n");
+            var chipAnswerPark = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var chipAnswerReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var chipClient = new ApprovalChatClient
             {
                 CallsRemaining = 1,
@@ -545,6 +549,8 @@ internal sealed class ShellDecisionsChecks
                     ["old_string"] = "第二行",
                     ["new_string"] = "第二行（改过）",
                 },
+                ParkBeforeFollowUp = chipAnswerPark.Task,
+                FollowUpReached = chipAnswerReached,
             };
             chat.ClientOverride = (_, _) => chipClient;
             panel.Reload();
@@ -554,9 +560,27 @@ internal sealed class ShellDecisionsChecks
             var chipCallId = await WaitForPendingCallAsync(chipSession);
             Check(chipCallId is not null, "夹具：那次写入先挂起来等批准，所以它才有一段被冻结的预览");
             chat.TryResolveApproval(chipSession.Id, chipCallId ?? "", approved: true, alwaysAllow: false, out _);
+            await WaitForSignalAsync(chipAnswerReached.Task);
+            await WaitUntilAsync(() => panel.TurnChangesPillVisibleForCheck);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            var livePill = panel.TurnChangesPillTextForCheck;
+            var pillPlacement = panel.TurnChangesPillPlacementForCheck;
+            Check(pillPlacement is { } placement && Math.Abs(placement.CenterOffset) <= 1 && placement.Bottom <= 0,
+                "修改胶囊居中位于输入框上方，不覆盖输入框（偏移 "
+                + (pillPlacement?.CenterOffset.ToString("F1", CultureInfo.InvariantCulture) ?? "无") + "）");
+            panel.ClickTurnChangesPillForCheck();
+            Dispatcher.UIThread.RunJobs();
+            Check(panel.TurnChangesPillVisibleForCheck && livePill.Contains("+1", StringComparison.Ordinal)
+                  && livePill.Contains("−1", StringComparison.Ordinal)
+                  && shell.InspectorPaneForCheck?.Scope == GitReviewScope.LastTurn,
+                "工作中的修改胶囊显示本轮文件数和净增删，点击打开 Last turn（实际「" + livePill + "」）");
+            chipAnswerPark.TrySetResult(true);
             await panel.WaitForRunToFinishForCheck();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
+            Check(!panel.TurnChangesPillVisibleForCheck && panel.ReviewCardTextForCheck.Length > 0,
+                "本轮完成后修改胶囊消失，由审阅卡片接替");
             // The aggregate stays a number and stops being a control: the run totals what its edits did, and the
             // way into a diff is the row of the edit, which is the only thing that knows which file it touched.
             // The head carries it right after the sentence — pinned to the head's right edge it became a column of
@@ -1035,10 +1059,10 @@ internal sealed class ShellDecisionsChecks
                 .Contains(HubStrings.Get("InspectorRepoNoWorkspace"), StringComparison.Ordinal) == true;
             return repoTabLanded;
         });
-        Check(chat.RepositoryReadsForCheck == repoTabReads + 1 && repoTabLanded
+        Check(chat.RepositoryReadsForCheck == repoTabReads && repoTabLanded
               && shell.InspectorPaneForCheck is { } afterRepo && afterRepo.RepoTabVisibleForCheck
               && !afterRepo.PlanTabVisibleForCheck && shell.InspectorTabForCheck == "repo",
-            "页眉点「仓库」递出那一次读取，读落回面板时人仍站在仓库页（两次之间读了 "
+            "没有工作目录时点「仓库」直接说明原因，仍停在仓库页（两次之间读了 "
             + (chat.RepositoryReadsForCheck - repoTabReads) + " 次）");
         var quietReads = chat.RepositoryReadsForCheck;
         shell.InspectorPaneForCheck?.ClickPlanTabForCheck();
@@ -1574,25 +1598,41 @@ internal sealed class ShellDecisionsChecks
         // The picker is the answer to "what am I looking at": every scope comes from the one status read, and the
         // cut is asserted per scope because a filter that quietly included everything would look right in the
         // default scope and be wrong in the other two.
-        inspector.ReadReviewRequested = request => Task.FromResult(new InspectorPanel.ReviewRead(
-            GitCommitList.Stopped(GitCommitListOutcome.NoUpstream, "no upstream configured"), null, null, null));
+        inspector.ReadReviewRequested = request => Task.FromResult(request.Scope == GitReviewScope.Committed
+            ? new InspectorPanel.ReviewRead(GitCommitList.Stopped(GitCommitListOutcome.NoUpstream,
+                "no upstream configured"), null, null, null)
+            : new InspectorPanel.ReviewRead(null, null, null, null, new GitDiffStats(3, 1,
+                new Dictionary<string, ChangeLineCounts>(StringComparer.Ordinal)
+                {
+                    ["src/main.cpp"] = new(1, 1), ["note.txt"] = new(2, 0),
+                })));
         inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), repoState, "repo");
+        var uncommittedNumbers = inspector.RepoCountsForCheck(0);
         Check(inspector.ScopePickerForCheck
               && inspector.ScopeNameForCheck == HubStrings.Get("InspectorScopeUncommitted")
               && inspector.RepoRowCountForCheck == 3,
             "Changes 默认读未提交，选择器写着「未提交」并列全三条（实际「" + inspector.ScopeNameForCheck + "」/ "
             + inspector.RepoRowCountForCheck + " 行）");
         inspector.SetScope(GitReviewScope.Staged);
+        var stagedNumbers = inspector.RepoCountsForCheck(0);
         Check(inspector.ScopeNameForCheck == HubStrings.Get("InspectorScopeStaged")
               && inspector.RepoRowCountForCheck == 1
               && inspector.RepoFirstPathForCheck.Contains("main.cpp", StringComparison.Ordinal),
             "选「已暂存」只剩暂存区相对 HEAD 的那一条，不把工作区的改动也算进来（实际 "
             + inspector.RepoRowCountForCheck + " 行「" + inspector.RepoFirstPathForCheck + "」）");
         inspector.SetScope(GitReviewScope.Unstaged);
+        var unstagedNumbers = inspector.RepoCountsForCheck(0);
         Check(inspector.RepoRowCountForCheck == 2
               && inspector.RepoFirstPathForCheck.Contains("note.txt", StringComparison.Ordinal),
             "选「未暂存」剩下工作区相对暂存区的那条，和本来就不在索引里的未跟踪那条（实际 "
             + inspector.RepoRowCountForCheck + " 行）");
+        Check(uncommittedNumbers.RightAligned && stagedNumbers.RightAligned && unstagedNumbers.RightAligned
+              && uncommittedNumbers.Text.Contains("+1", StringComparison.Ordinal)
+              && stagedNumbers.Text.Contains("−1", StringComparison.Ordinal)
+              && unstagedNumbers.Text.Contains("+2", StringComparison.Ordinal)
+              && unstagedNumbers.Text.Contains("−0", StringComparison.Ordinal),
+            "三个状态范围都把各文件的增删数放在行右侧，零值也可见（实际 "
+            + uncommittedNumbers.Text + " / " + stagedNumbers.Text + " / " + unstagedNumbers.Text + "）");
         // The two history scopes read for themselves. A branch with no upstream says so rather than listing every
         // commit it has as if they were all unpushed — the one sentence that keeps the scope honest.
         inspector.SetScope(GitReviewScope.Committed);
@@ -1682,16 +1722,18 @@ internal sealed class ShellDecisionsChecks
             "一轮落地了文件修改，转录里就多一张卡片：改了几个文件、加减几行、哪个文件，以及审阅和撤销（实际「"
             + cardText + "」）");
         // The card's Review opens the scope that reads the turn, not whichever scope the picker was left on.
-        inspector.SetScope(GitReviewScope.LastTurn);
-        Check(inspector.ScopeNameForCheck == HubStrings.Get("InspectorScopeLastTurn"),
+        shell.InspectorPaneForCheck?.SetScope(GitReviewScope.Uncommitted);
+        var clickedReview = panel.ClickReviewForCheck();
+        Dispatcher.UIThread.RunJobs();
+        Check(clickedReview && shell.InspectorPaneForCheck?.Scope == GitReviewScope.LastTurn,
             "卡片的审阅把 Changes 切到「本轮修改」，而不是读者上次停下的那个范围（实际「"
-            + inspector.ScopeNameForCheck + "」）");
+            + (shell.InspectorPaneForCheck?.Scope.ToString() ?? "无") + "」）");
         inspector.SetScope(GitReviewScope.Uncommitted);
         // Both themes, because the card's two numbers are the one place in it where colour carries meaning: in
         // either theme the plus and the minus must resolve to two different opaque colours, which is also how a
         // hard-coded pair that ignores the theme would be caught.
-        Check(inspector.ScopePickerFirstForCheck,
-            "范围选择器在列表上方，所以下面那张表就是它写着的那个范围");
+        Check(inspector.ScopePickerInToolbarForCheck,
+            "范围选择器在页面工具栏的最左端，右侧那三枚按钮不动，所以下面那张表就是它写着的那个范围");
         if (Application.Current is { } themes)
         {
             var previousTheme = themes.RequestedThemeVariant;
@@ -1769,6 +1811,13 @@ internal sealed class ShellDecisionsChecks
                   && ahead.Commits[0].Subject == "fourth" && ahead.Commits[1].Subject == "third",
                 "未推送的两条按倒序给出，最新的一条在最前（实际 "
                 + string.Join(" / ", ahead.Commits.Select(commit => commit.Subject)) + "）");
+            inspector.SetScope(GitReviewScope.Uncommitted);
+            inspector.ReadReviewRequested = async request => new InspectorPanel.ReviewRead(
+                await GitRepository.ReadUnpushedCommitsAsync(request.Root, gitRunner), null, null, null);
+            var menuCommits = await inspector.LoadCommitChoicesForCheck(reviewRepo);
+            Check(menuCommits.SequenceEqual(ahead.Commits.Select(commit => commit.Id)),
+                "未进入 Committed 时打开菜单也会读取真实的未推送提交，不能把初始占位状态当成没有 upstream（实际 "
+                + menuCommits.Count + " 条）");
             // A mis-read unix stamp would land in 1970; a stamp read in UTC would sit hours off in either
             // direction. "Within the last few minutes, in this machine's zone" is the property that catches both.
             var newest = ahead.Commits.FirstOrDefault();
@@ -1801,22 +1850,37 @@ internal sealed class ShellDecisionsChecks
                 "提交文件行拿父提交作旧的一侧：改动前是 one，改动后是 one+two（实际「"
                 + (comparison?.Old.Snapshot.Text ?? "")?.Replace("\n", "\\n") + "」→「"
                 + (comparison?.New.Snapshot.Text ?? "")?.Replace("\n", "\\n") + "」）");
-            // The Branch scope compares the two branches from where they actually parted, not from HEAD backwards:
-            // a feature branched off two commits ago must report the one file it changed, not the two commits.
-            gitReady = await GitIn(reviewRepo, "branch", "feature", "HEAD~2");
+            // The target also has its own commit, so a merge-base comparison would miss its file entirely.
+            gitReady = await GitIn(reviewRepo, "branch", "feature", "HEAD~2")
+                       && await GitIn(reviewRepo, "checkout", "-q", "feature");
+            await File.WriteAllTextAsync(System.IO.Path.Combine(reviewRepo, "other.txt"), "target\n");
+            gitReady = gitReady && await GitIn(reviewRepo, "add", "other.txt")
+                       && await GitIn(reviewRepo, "commit", "-q", "-m", "target-only")
+                       && await GitIn(reviewRepo, "checkout", "-q", "main");
+            // Branch includes the committed, staged and unstaged changes in the working tree against the target.
+            await File.WriteAllTextAsync(System.IO.Path.Combine(reviewRepo, "note.txt"), "one\ntwo\nstaged\n");
+            gitReady = gitReady && await GitIn(reviewRepo, "add", "note.txt");
+            await File.WriteAllTextAsync(System.IO.Path.Combine(reviewRepo, "note.txt"), "one\ntwo\nstaged\nunstaged\n");
             var range = gitReady
                 ? await GitRepository.ReadBranchRangePathsAsync(reviewRepo, "feature", gitRunner)
                 : GitChangedPaths.Stopped(GitCommitListOutcome.Failed);
-            Check(range.IsReadable && range.MergeBase is { Length: 40 or 64 }
-                  && range.Paths.Count == 1 && range.Paths[0].RelativePath == "note.txt",
-                "分支范围从分叉点算起，只报这条分支自己改的那一个文件，并把分叉点一起说出来（实际 "
-                + string.Join(" / ", range.Paths.Select(path => path.RelativePath)) + "，分叉点 "
-                + (range.MergeBase is { Length: > 7 } fork ? fork[..7] : range.MergeBase ?? "无") + "）");
+            var branchFile = range.BaseCommit is { Length: > 0 } baseCommit
+                ? await GitRepository.ReadBranchFileAsync(reviewRepo, "note.txt", baseCommit, gitRunner)
+                : null;
+            Check(range.IsReadable && range.Paths.Count == 2
+                  && range.Paths.Any(path => path.RelativePath == "note.txt")
+                  && range.Paths.Any(path => path.RelativePath == "other.txt" && path.Status == "D")
+                  && range.Added == 3 && range.Removed == 1 && branchFile is { IsReadable: true }
+                  && branchFile.Old.Snapshot.Text == "one\n"
+                  && branchFile.New.Snapshot.Text == "one\ntwo\nstaged\nunstaged\n",
+                "Branch 直接比较目标分支与工作区，包含目标独有提交和本地的提交、暂存及未暂存改动（实际 +"
+                + range.Added + " -" + range.Removed + "，文件 " + range.Paths.Count + "）");
             var branches = await GitRepository.ReadBranchesAsync(reviewRepo, gitRunner);
-            Check(branches.Count == 2
+            Check(branches.Count == 3
                   && branches.Any(branch => branch is { Name: "main", IsCurrent: true, Upstream: "origin/main" })
-                  && branches.Any(branch => branch is { Name: "feature", IsCurrent: false, Upstream: null }),
-                "分支列表给出本地分支、当前分支的标记和它的 upstream，没有 upstream 的那条留空（实际 "
+                  && branches.Any(branch => branch is { Name: "feature", IsCurrent: false, Upstream: null })
+                  && branches.Any(branch => branch is { Name: "origin/main", IsCurrent: false }),
+                "分支列表包含本地和远程分支，标出当前分支及其 upstream（实际 "
                 + string.Join(" / ", branches.Select(branch => branch.Name + (branch.IsCurrent ? "*" : "")
                     + "→" + (branch.Upstream ?? "-"))) + "）");
         }
@@ -1832,6 +1896,48 @@ internal sealed class ShellDecisionsChecks
         Check(netReview.Files.Count == 1 && netReview.Added == 3 && netReview.Removed == 1
               && netReview.Files[0].FirstRevisionId == "a" && netReview.Files[0].LastRevisionId == "b",
             "一行改动折成本轮评审时，链条两头都记得：diff 从第一次写入之前算起，撤销要知道最后一次写成了什么");
+
+        // Replacing the repository snapshot must ask for the branch list before the selected branch's diff.
+        // Otherwise a non-null selection is misread as a path request and repeatedly rebuilds every row.
+        var stablePanel = new InspectorPanel();
+        var stableState = repoState with { Root = reviewRepo, Entries = [new GitStatusEntry("note.txt", "M", "M", false)] };
+        var branchCalls = 0;
+        var sampleBranches = new[] { new GitBranchInfo("main", "origin/main", true) };
+        var samplePaths = new GitChangedPaths(GitCommitListOutcome.Ok, null,
+            [new GitChangedPath("note.txt", "M", Lines: new ChangeLineCounts(2, 1))], new string('a', 40), 2, 1);
+        var oldVersion = new GitFileVersion(true, TextFile.Decode(System.Text.Encoding.UTF8.GetBytes("old\n")), null);
+        var newVersion = new GitFileVersion(true, TextFile.Decode(System.Text.Encoding.UTF8.GetBytes("new\n")), null);
+        stablePanel.ReadReviewRequested = request =>
+        {
+            if (request.Scope != GitReviewScope.Branch)
+                return Task.FromResult(new InspectorPanel.ReviewRead(null, null, null, null, GitDiffStats.Empty));
+            if (request.Path is { } path)
+                return Task.FromResult(new InspectorPanel.ReviewRead(null, null, null,
+                    new GitFileComparison(path, null, GitFileRange.Range, oldVersion, newVersion)));
+            branchCalls++;
+            return Task.FromResult(request.Base is null || branchCalls > 6
+                ? new InspectorPanel.ReviewRead(null, null, sampleBranches, null)
+                : new InspectorPanel.ReviewRead(null, samplePaths, null, null));
+        };
+        stablePanel.Reload(null, TurnReview.Empty, (_, _) => ((string?)null, UndoCopyState.Read), stableState, "repo");
+        stablePanel.SetScope(GitReviewScope.Branch);
+        stablePanel.Reload(null, TurnReview.Empty, (_, _) => ((string?)null, UndoCopyState.Read), stableState with { }, "repo");
+        var stableRow = stablePanel.FirstRepoRowForCheck;
+        stablePanel.ClickRepoRowForCheck(0);
+        Dispatcher.UIThread.RunJobs();
+        Check(branchCalls == 4 && stableRow is not null
+              && ReferenceEquals(stableRow, stablePanel.FirstRepoRowForCheck) && stablePanel.RepoRowExpandedForCheck(0),
+            "刷新 Branch 后只读取分支列表和差异各一次，文件行保持稳定且可展开（实际读取 " + branchCalls + " 次）");
+        var (branchNumbers, branchAligned) = stablePanel.RepoCountsForCheck(0);
+        Check(branchAligned && branchNumbers.Contains("+2", StringComparison.Ordinal)
+              && branchNumbers.Contains("−1", StringComparison.Ordinal),
+            "Branch 文件行右侧显示该文件的增删数（实际「" + branchNumbers + "」）");
+        stablePanel.Reload(null, netReview, (_, _) => ((string?)null, UndoCopyState.Read), stableState, "repo");
+        stablePanel.SetScope(GitReviewScope.LastTurn);
+        var (turnNumbers, turnAligned) = stablePanel.TurnCountsForCheck(0);
+        Check(turnAligned && turnNumbers.Contains("+3", StringComparison.Ordinal)
+              && turnNumbers.Contains("−1", StringComparison.Ordinal),
+            "Last turn 的文件增删数在行右侧而不是紧跟路径（实际「" + turnNumbers + "」）");
         inspector.SetScope(GitReviewScope.Uncommitted);
 
         // ── the steer strip: a second tap before an interjection spends a request ──

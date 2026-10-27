@@ -16,6 +16,7 @@ namespace AxmolHub;
 internal sealed class ChangesDiffEditView : Grid
 {
     private readonly ChangesEditBuffer _buffer;
+    private readonly string _before;
     private readonly List<TextEditor> _fragments = [];
     private TextEditor? _beforeEditor;
     private HashSet<int> _deletions = [];
@@ -25,16 +26,17 @@ internal sealed class ChangesDiffEditView : Grid
     private HashSet<int> _insertions = [];
     private readonly Action _changed;
 
-    internal ChangesDiffEditView(ChangesEditBuffer buffer, bool split, Action changed)
+    internal ChangesDiffEditView(ChangesEditBuffer buffer, string beforeText, bool split, Action changed)
     {
         _buffer = buffer;
+        _before = beforeText;
         _changed = changed;
         _source = new TextDocument(buffer.Text);
         _definition = DarkSyntax.ForBackdrop(CodeSyntax.ForFile(buffer.Path));
         if (split)
         {
             ColumnDefinitions = new ColumnDefinitions("*,*");
-            var before = Surface(buffer.Path, buffer.Before);
+            var before = Surface(buffer.Path, _before);
             before.IsReadOnly = true;
             _beforeEditor = before;
             before.TextArea.TextView.BackgroundRenderers.Add(new ChangedLineBackground(this, 0, before, old: true));
@@ -46,8 +48,8 @@ internal sealed class ChangesDiffEditView : Grid
         else
         {
             var body = new StackPanel();
-            var script = FileDiff.Rows(buffer.Before, buffer.Text);
-            var before = new TextDocument(TextEol.ToLf(buffer.Before));
+            var script = FileDiff.Rows(_before, buffer.Text);
+            var before = new TextDocument(TextEol.ToLf(_before));
             var groups = script.Rows.GroupAdjacent();
             foreach (var group in groups)
             {
@@ -115,7 +117,7 @@ internal sealed class ChangesDiffEditView : Grid
         _highlighter?.Dispose();
         _source.Text = _buffer.Text;
         _highlighter = _definition is null ? null : new DocumentHighlighter(_source, _definition);
-        var rows = FileDiff.Rows(_buffer.Before, _buffer.Text).Rows;
+        var rows = FileDiff.Rows(_before, _buffer.Text).Rows;
         _insertions = rows.Where(row => row.Kind == DiffRowKind.Insert).Select(row => row.UpdatedLine!.Value).ToHashSet();
         _deletions = rows.Where(row => row.Kind == DiffRowKind.Delete).Select(row => row.OriginalLine!.Value).ToHashSet();
         _beforeEditor?.TextArea.TextView.InvalidateLayer(KnownLayer.Background);

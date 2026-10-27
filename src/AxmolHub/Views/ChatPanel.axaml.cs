@@ -334,12 +334,20 @@ public partial class ChatPanel : UserControl
         };
         _chat.RunsChanged += conversationId =>
         {
-            if (conversationId == _chat.ViewedConversationId) RenderMessages();
+            if (conversationId == _chat.ViewedConversationId)
+            {
+                RenderMessages();
+                RefreshTurnChangesPill();
+            }
         };
         _chat.RunCompleted += (conversationId, outcome) =>
         {
             var viewed = conversationId == _chat.ViewedConversationId;
-            if (viewed) RenderMessages();
+            if (viewed)
+            {
+                RenderMessages();
+                RefreshTurnChangesPill();
+            }
             // Filed for whichever session ended, ahead of the guard below: a run that finished while the person
             // was reading another conversation still owes them the reason when they come back.
             AppendRunNotice(conversationId, outcome);
@@ -352,6 +360,7 @@ public partial class ChatPanel : UserControl
             if (_chat.ActiveConversation?.Id == conversationId)
                 RequestRepositoryRead();
         };
+        TurnChangesPill.Click += (_, _) => OpenTurnReview(_chat.ActiveConversation);
         ModelPicker.Click += (_, _) => ShowModelSettings();
         ModelSettingsPopup.PlacementTarget = ModelPicker;
         ModelSettingsPopup.Placement = PlacementMode.TopEdgeAlignedRight;
@@ -604,9 +613,7 @@ public partial class ChatPanel : UserControl
         RefreshDecisionHost();
         RefreshPlanTasksHost();
         RefreshSteerConfirm();
-        // And the band above them, which outlives the round that filled it: a tally somebody can click has to keep
-        // telling the truth after the run ends and after a restart, so it reads the transcript here too rather than
-        // being driven from a run event that stops firing.
+        RefreshTurnChangesPill();
         // The right-hand column is the third surface that reads the transcript rather than the run registry. It
         // repaints only when the transcript grew, so a reply streaming text costs no pane rebuild.
         RefreshInspectorIfTranscriptMoved();
@@ -1568,21 +1575,8 @@ public partial class ChatPanel : UserControl
             title.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.WarningText"));
         }
 
-        var tick = new Avalonia.Controls.Shapes.Path
-        {
-            Width = 14,
-            Height = 14,
-            Stretch = Stretch.Uniform,
-            Data = ThemeGeometry("Hub.Icon.Tick"),
-            Fill = Brushes.Transparent,
-            StrokeThickness = 1.8,
-            StrokeLineCap = PenLineCap.Round,
-            StrokeJoin = PenLineJoin.Round,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 0, 0),
-            IsVisible = checkedItem,
-        };
-        tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        var tick = MenuRow.Tick(checkedItem);
+        tick.Margin = new Thickness(12, 0, 0, 0);
 
         // One width for every row, so the ticks land in a column rather than wherever each title happens to end.
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), MinWidth = 220 };
@@ -4460,7 +4454,7 @@ public partial class ChatPanel : UserControl
     private static Button IconActionButton(
         string textKey, string geometryKey, Action? onClick, double size = 13, double thickness = 1.7)
     {
-        var icon = new Avalonia.Controls.Shapes.Path
+        var icon = geometryKey == "Hub.Icon.Edit" ? HubActionIcon.Create(geometryKey) : new Avalonia.Controls.Shapes.Path
         {
             Width = size,
             Height = size,
@@ -4470,8 +4464,11 @@ public partial class ChatPanel : UserControl
             StrokeLineCap = PenLineCap.Round,
             StrokeJoin = PenLineJoin.Round,
         };
-        icon.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension(geometryKey));
-        icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        if (geometryKey != "Hub.Icon.Edit")
+        {
+            icon.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension(geometryKey));
+            icon.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        }
 
         var button = new Button { Content = icon, Tag = textKey };
         button.Classes.Add("message-action");

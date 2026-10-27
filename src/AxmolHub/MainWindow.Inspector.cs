@@ -163,15 +163,13 @@ public partial class MainWindow
     /// <summary>
     /// Re-derives what is already on screen, for a transcript that keeps growing while the column is open.
     ///
-    /// Two rules keep this cheap and honest. It does nothing when the column is not open or not on the assistant
-    /// page, and it never starts a repository read: a repaint rides on the transcript, and a git run behind every
-    /// streamed token would be a poll storm on the one surface the person is reading. A read belongs to the tab
-    /// being entered and to the ⟳, and nowhere else.
+    /// It does nothing when the column is closed or on another page. The pane requests a missing repository
+    /// snapshot when needed, coalesces in-flight reads, and reuses the result on subsequent repaints.
     /// </summary>
     internal void RefreshInspector()
     {
         if (!_inspectorOpen || _currentKey != "Assistant" || _chatPanel is null) return;
-        SetInspectorPane(_chatPanel.BuildInspectorContent(_inspectorTab, _inspectorTurn, mayReadRepository: false));
+        SetInspectorPane(_chatPanel.BuildInspectorContent(_inspectorTab, _inspectorTurn));
     }
 
     internal void CloseInspector()
@@ -255,15 +253,13 @@ public partial class MainWindow
 
     /// <summary>Builds the pane if nothing has yet, through the same door <see cref="OpenInspector"/> uses, and
     /// never for a column that already has one — the pane is kept for the window's life precisely so that
-    /// repainting does not fold back the diff rows a person had opened. Painted with
-    /// <c>mayReadRepository: false</c>: this runs from page navigation and from a cold start, and a read belongs
-    /// to the tab being entered and to the ⟳, nowhere else. Which tab is remembered is not persisted, so what
+    /// repainting does not fold back the diff rows a person had opened. Which tab is remembered is not persisted, so what
     /// lands here is the plan tab of whatever conversation is on screen — including the honest
     /// 「还没有生成计划」 when it has none.</summary>
     private void EnsureInspectorPane()
     {
         if (InspectorPane is not null || _chatPanel is null) return;
-        SetInspectorPane(_chatPanel.BuildInspectorContent(_inspectorTab, _inspectorTurn, mayReadRepository: false));
+        SetInspectorPane(_chatPanel.BuildInspectorContent(_inspectorTab, _inspectorTurn));
     }
 
     /// <summary>Called from <see cref="NavigateTo"/>: the inspector follows the assistant page on and off, and

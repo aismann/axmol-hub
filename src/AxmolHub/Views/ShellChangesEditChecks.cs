@@ -20,7 +20,7 @@ internal sealed class ShellChangesEditChecks(Action<bool, string> check)
         const string after = "/* start\nnew */\nint value = 2;\n";
         File.WriteAllText(path, after);
         var scope = new WorkspaceToolScope(root, new WorkspaceGuards(null, []), null, "changes-edit", [], null, null);
-        ChangesEditBuffer? Open() => ChangesEditBuffer.Open("probe.cpp", before, () => scope);
+        ChangesEditBuffer? Open() => ChangesEditBuffer.Open("probe.cpp", () => scope);
         var buffer = Open();
         if (buffer is null) { check(false, "差异编辑夹具：文本缓冲区可读取"); return Task.CompletedTask; }
         var session = new ChangesEditSession();
@@ -53,7 +53,7 @@ internal sealed class ShellChangesEditChecks(Action<bool, string> check)
         var secondPath = Path.Combine(root, "second.cpp");
         File.WriteAllText(secondPath, "int second = 1;\n");
         var firstBatch = Open()!;
-        var secondBatch = ChangesEditBuffer.Open("second.cpp", "", () => scope)!;
+        var secondBatch = ChangesEditBuffer.Open("second.cpp", () => scope)!;
         firstBatch.Text += "// first batch\n";
         secondBatch.Text += "// second batch\n";
         session.Begin();
@@ -68,7 +68,7 @@ internal sealed class ShellChangesEditChecks(Action<bool, string> check)
         File.WriteAllText(path, after);
 
         var pane = new InspectorPanel();
-        pane.OpenEditBuffer = (_, relative, original) => ChangesEditBuffer.Open(relative, original, () => scope);
+        pane.OpenEditBuffer = (_, relative) => ChangesEditBuffer.Open(relative, () => scope);
         var change = new ChangedFile("probe.cpp", ChangeVerdict.Edited, "call", 0, null, null, null, "Edited", true);
         var repository = new GitRepositoryState(GitReadOutcome.Ok, root, "main", 0, 0,
             [new GitStatusEntry("probe.cpp", "M", "M", false)],
@@ -93,12 +93,24 @@ internal sealed class ShellChangesEditChecks(Action<bool, string> check)
             Button? Button(string tag) => pane.GetVisualDescendants().OfType<Button>().FirstOrDefault(b => Equals(b.Tag, tag));
             void Click(string tag) => Button(tag)?.RaiseEvent(new RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
             window.UpdateLayout();
+            var editButton = Button("InspectorEditDiff");
+            var settingsButton = Button("InspectorViewSettings");
+            var editPosition = editButton?.TranslatePoint(default, pane);
+            var settingsPosition = settingsButton?.TranslatePoint(default, pane);
+            check(editButton is not null && settingsButton is not null
+                  && editPosition is { } editPoint && settingsPosition is { } settingsPoint
+                  && editPoint.X < settingsPoint.X
+                  && Math.Abs(editPoint.Y + editButton.Bounds.Height / 2 - settingsPoint.Y - settingsButton.Bounds.Height / 2) <= 0.5
+                  && editButton.Classes.Contains("viewer-action") && settingsButton.Classes.Contains("viewer-action"),
+                "差异编辑与设置按钮共用悬停样式，编辑在左且两者垂直居中对齐");
+            pane.PressViewSettingsForCheck();
+            pane.ClickViewMenuRowForCheck("InspectorMenuSplit");
             Click("InspectorEditDiff");
             window.UpdateLayout();
             var editors = pane.GetVisualDescendants().OfType<TextEditor>().Where(e => Equals(e.Tag, "InspectorDiffEditor")).ToArray();
             check(editors.Length > 0 && editors.All(editor => !editor.IsReadOnly)
-                && Button("InspectorCancelEdit")?.IsVisible == true,
-                $"差异编辑：页眉铅笔进入全局编辑并显示 Cancel/Save（实际 {editors.Length} 个源片段）");
+                && Button("InspectorCancelEdit")?.IsVisible == true && !pane.ViewSettingsVisibleForCheck,
+                $"差异编辑：进入编辑显示 Cancel/Save 并隐藏设置（实际 {editors.Length} 个源片段）");
             var last = editors.LastOrDefault();
             if (last is null) return Task.CompletedTask;
             last.Text += "// manual\n";
@@ -107,15 +119,10 @@ internal sealed class ShellChangesEditChecks(Action<bool, string> check)
             check(pane.GetVisualDescendants().OfType<TextEditor>().Any(e => e.Text.Contains("// manual", StringComparison.Ordinal))
                 && Button("InspectorSaveEdit")?.IsEnabled == true,
                 "差异编辑：同会话刷新保留未保存的手动缓冲");
-            pane.PressViewSettingsForCheck();
-            pane.ClickViewMenuRowForCheck("InspectorMenuSplit");
             window.UpdateLayout();
             check(pane.GetVisualDescendants().OfType<TextEditor>().Any(e => !e.IsReadOnly && e.Text.Contains("// manual", StringComparison.Ordinal))
                 && pane.GetVisualDescendants().OfType<TextEditor>().Any(e => e.IsReadOnly),
-                "差异编辑：切换双栏保留缓冲，仅新版可编辑");
-            pane.PressViewSettingsForCheck();
-            pane.ClickViewMenuRowForCheck("InspectorMenuUnified");
-            window.UpdateLayout();
+                "差异编辑：双栏刷新保留缓冲，仅新版可编辑");
             File.WriteAllText(path, "// external during edit\n");
             Click("InspectorSaveEdit");
             window.UpdateLayout();
@@ -134,8 +141,54 @@ internal sealed class ShellChangesEditChecks(Action<bool, string> check)
                 "差异编辑：返回原会话恢复未保存缓冲");
             Click("InspectorCancelEdit");
             check(!pane.GetVisualDescendants().OfType<TextEditor>().Any(e => Equals(e.Tag, "InspectorDiffEditor"))
-                && File.ReadAllText(path) == after,
-                "差异编辑：Cancel 退出编辑且不改磁盘");
+                && File.ReadAllText(path) == after && pane.ViewSettingsVisibleForCheck,
+                "差异编辑：Cancel 退出编辑、恢复设置按钮且不改磁盘");
+
+            pane.ReadReviewRequested = request =>
+            {
+                if (request.Scope != GitReviewScope.Branch)
+                    return Task.FromResult(new InspectorPanel.ReviewRead(null, null, null, null, GitDiffStats.Empty));
+                if (request.Path is not null)
+                {
+                    var older = new GitFileVersion(true, TextFile.Decode(System.Text.Encoding.UTF8.GetBytes("branch baseline\n")), null);
+                    var newer = new GitFileVersion(true, TextFile.Read(path), null);
+                    return Task.FromResult(new InspectorPanel.ReviewRead(null, null, null,
+                        new GitFileComparison(request.Path, null, GitFileRange.Range, older, newer)));
+                }
+                return Task.FromResult(request.Base is null
+                    ? new InspectorPanel.ReviewRead(null, null, [new GitBranchInfo("main", "origin/main", true)], null)
+                    : new InspectorPanel.ReviewRead(null, new GitChangedPaths(GitCommitListOutcome.Ok, null,
+                        [new GitChangedPath("probe.cpp", "M")], "base"), null, null));
+            };
+            pane.SetScope(GitReviewScope.Unstaged);
+            pane.ClickRepoRowForCheck(0);
+            Click("InspectorEditDiff");
+            window.UpdateLayout();
+            var unstagedEditor = pane.GetVisualDescendants().OfType<TextEditor>()
+                .LastOrDefault(e => Equals(e.Tag, "InspectorDiffEditor"));
+            if (unstagedEditor is not null) unstagedEditor.Text += "// retained across scopes\n";
+            check(unstagedEditor is { IsReadOnly: false } && Button("InspectorSaveEdit")?.IsEnabled == true,
+                "Unstaged 差异的当前文件一侧可编辑，编辑后可以保存");
+            pane.SetScope(GitReviewScope.Branch);
+            pane.ClickRepoRowForCheck(0);
+            window.UpdateLayout();
+            var branchEditors = pane.GetVisualDescendants().OfType<TextEditor>().ToArray();
+            check(branchEditors.Any(e => e.IsReadOnly && e.Text.Contains("branch baseline", StringComparison.Ordinal))
+                  && branchEditors.Any(e => !e.IsReadOnly && e.Text.Contains("retained across scopes", StringComparison.Ordinal)),
+                "切到 Branch 后保留工作区缓冲并使用该分支自己的只读比较基准");
+            pane.SetScope(GitReviewScope.LastTurn);
+            pane.ClickChangeRowForCheck(0);
+            window.UpdateLayout();
+            check(pane.ChangeRowExpandedForCheck(0)
+                  && !pane.GetVisualDescendants().OfType<TextEditor>().Any(e => Equals(e.Tag, "InspectorDiffEditor")),
+                "即使工作区有未保存编辑，Last turn 的原始快照仍以只读差异展示");
+            pane.SetScope(GitReviewScope.Staged);
+            pane.ClickRepoRowForCheck(0);
+            window.UpdateLayout();
+            check(!pane.GetVisualDescendants().OfType<TextEditor>().Any(e => Equals(e.Tag, "InspectorDiffEditor"))
+                  && Button("InspectorSaveEdit")?.IsEnabled == true,
+                "Staged 快照保持只读，其他范围的未保存编辑仍可保存");
+            Click("InspectorCancelEdit");
         }
         finally { window.Close(); ChangesEditSession.DiscardAll(); }
         var diffAlongside = Open()!;

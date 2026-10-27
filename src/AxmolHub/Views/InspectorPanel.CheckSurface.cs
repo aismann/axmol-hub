@@ -5,6 +5,7 @@ using Avalonia.Controls.Documents;
 using ShapePath = Avalonia.Controls.Shapes.Path;
 using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
+using AxmolHub.Core;
 using Markdown.Avalonia;
 
 namespace AxmolHub;
@@ -52,7 +53,7 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>Whether the copy sits in the header, immediately left of the page's gear. Read as "immediately
     /// left" rather than as a column number: what matters is that the two buttons share the header's right end,
     /// and a check pinned to an index goes stale the moment a column is added between them.</summary>
-    internal bool PlanCopyButtonInHeaderForCheck => ReferenceEquals(_planCopyButton.Parent, _header) && Grid.GetColumn(_planCopyButton) + 1 == Grid.GetColumn(_viewSettings);
+    internal bool PlanCopyButtonInHeaderForCheck => ReferenceEquals(_planCopyButton.Parent, _header) && Grid.GetColumn(_planCopyButton) < Grid.GetColumn(_viewSettings);
     internal bool PlanCopyButtonVisibleForCheck => _planCopyButton.IsVisible;
     internal bool ViewSettingsVisibleForCheck => _viewSettings.IsVisible;
     /// <summary>Whether the plan tab's own document paints its selection from the Hub token. The pane is the
@@ -65,7 +66,12 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>Visible header actions only: the plan page has a gear and an optional copy button. The tabs are
     /// not in this row any more — they are in the title bar (see <see cref="TabStrip"/>) — and the hidden Changes
     /// edit actions must not inflate this count or appear over a plan.</summary>
-    internal int HeaderButtonCountForCheck => _header.GetLogicalDescendants().OfType<Button>().Count(button => button.IsVisible);
+    /// <summary>The page's own buttons, without the scope picker that shares the row: the picker is a control in its
+    /// own right, and counting it as a page action would make "the gear and the copy button" a different number just
+    /// because the row has one more thing on it.</summary>
+    internal int HeaderButtonCountForCheck => _header.GetLogicalDescendants().OfType<Button>()
+        .Count(button => button.IsVisible && !_scopeBar.GetLogicalDescendants().OfType<Button>().Contains(button)
+                          && button != _scopeButton);
     internal bool ExpandedForCheck => _expanded;
     internal double PlanHostMaxWidthForCheck => _planHost.MaxWidth;
     /// <summary>The file rows, not the children of the list. An empty scope now ends on a sentence and sometimes
@@ -207,12 +213,30 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>The scope the picker names. The tab's standing first line used to be a caveat saying the list was
     /// the repository's; that job belongs to the picker now, which names the range instead of apologising for it.</summary>
     internal string ScopeNameForCheck => _scopeName.Text ?? "";
-    /// <summary>Whether the picker is the host's first row. Both lists share row 1, so this is what "the picker is
-    /// above the list it governs" means without a window to measure in.</summary>
-    internal bool ScopePickerFirstForCheck => _changesHost.Children.Count > 1
-        && ReferenceEquals(_changesHost.Children[0], _changesHost.Children.OfType<Grid>().FirstOrDefault());
-    internal bool ScopePickerForCheck => _changesHost.Children.OfType<Grid>().FirstOrDefault()?
-        .Children.OfType<Button>().Any(button => button.Tag as string == "InspectorScopeButton") == true;
+
+    /// <summary>The pair the scope compares, as the header writes it ("master → origin/master"), and the ± summary
+    /// beside the pill as the two strings a reader sees.</summary>
+    internal string ScopeDetailForCheck => _scopeDetail.Text ?? "";
+
+    internal string ScopeTotalsTextForCheck => string.Join(" ", _scopeCounts.Children.OfType<TextBlock>()
+        .Where(block => block.IsVisible).Select(block => block.Text ?? "").Where(text => text.Length > 0));
+    /// <summary>Whether the picker is the leading control of the page's toolbar. Asserted by column rather than by
+    /// position on screen: the column is the promise — left end of the row, the page's own buttons still at the right
+    /// end — and a pixel comparison would only restate it.</summary>
+    internal bool ScopePickerInToolbarForCheck => _scopeBar.Parent is Grid header
+        && header.Children.Count > 1
+        && ReferenceEquals(header.Children[0], _scopeBar)
+        && Grid.GetColumn(_scopeBar) == 0
+        && _scopeBar.HorizontalAlignment == Avalonia.Layout.HorizontalAlignment.Left;
+    internal bool ScopePickerForCheck => _scopeBar.GetLogicalDescendants().OfType<Button>()
+        .Any(button => ReferenceEquals(button, _scopeButton));
+    internal async Task<IReadOnlyList<string>> LoadCommitChoicesForCheck(string root)
+    {
+        _root = root;
+        var item = ScopeGroup(GitReviewScope.Committed, [Hint("InspectorRepoReading")]);
+        await LoadCommitChoicesAsync(item);
+        return (item.ItemsSource as IEnumerable<MenuItem> ?? []).Select(choice => choice.Tag as string ?? "").ToList();
+    }
     internal int TurnRowCountForCheck => ChangeRows().Count;
     /// <summary>The sentences the tab ends on instead of a list, joined. Each outcome owns its own string, and
     /// this is how that is proven rather than inferred from a row count.</summary>
@@ -227,6 +251,20 @@ internal sealed partial class InspectorPanel : UserControl
     /// the whole tab assertable without a repository behind it.</summary>
     internal string RepoRowTextForCheck(int index) => RepositoryRows().ElementAtOrDefault(index)is { } row ? string.Join(" ~ ", row.GetLogicalDescendants().OfType<TextBlock>().Select(TextForCheck)) : "";
     internal int RepoRowCountForCheck => RepositoryRows().Count;
+    internal Control? FirstRepoRowForCheck => RepositoryRows().FirstOrDefault();
+    internal (string Text, bool RightAligned) RepoCountsForCheck(int index)
+        => CountsForCheck(RepositoryRows().ElementAtOrDefault(index));
+    internal (string Text, bool RightAligned) TurnCountsForCheck(int index)
+        => CountsForCheck(ChangeRows().ElementAtOrDefault(index));
+    private static (string Text, bool RightAligned) CountsForCheck(Control? row)
+    {
+        var grid = (row as StackPanel)?.Children.OfType<Grid>().FirstOrDefault();
+        var cell = grid?.Children.FirstOrDefault(child => Grid.GetColumn(child) == 1);
+        var counts = cell as StackPanel ?? (cell as ContentControl)?.Content as StackPanel;
+        var text = counts is null ? "" : string.Join(" ", counts.Children.OfType<TextBlock>().Select(label => label.Text));
+        return (text, cell is not null && cell.HorizontalAlignment == Avalonia.Layout.HorizontalAlignment.Right
+            && grid!.ColumnDefinitions[0].Width.IsStar);
+    }
     internal bool RepoComparisonRangeButtonsAbsentForCheck => RepositoryRows().SelectMany(row => row.GetLogicalDescendants())
         .All(control => control is not Button button || button.Tag as string is not ("InspectorGitIndex" or "InspectorGitWorkingTree"));
 

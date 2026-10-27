@@ -360,6 +360,10 @@ internal sealed partial class ChatExecutionCoordinator
             deepSeekWebCalls);
     }
 
+    internal WorkspaceToolScope WorkspaceOnlyScope(string? root)
+        => new(root, new WorkspaceGuards(_dataRoot, EngineRootsProvider?.Invoke() ?? []), _dataRoot,
+            "", Providers.SensitiveValues(), LogProvider?.Invoke());
+
     private string UpdatePlanTaskStatus(string conversationId, int taskNumber, string status)
     {
         if (!PlanTaskStates.IsState(status))
@@ -556,6 +560,28 @@ internal sealed partial class ChatExecutionCoordinator
         => TurnReview.Of(conversation, conversation?.Messages.Count - 1 ?? -1, _dataRoot);
 
     /// <summary>
+    /// The repository root for a conversation, without paying for a status read to learn it: the cached state if a
+    /// read has landed, otherwise one <c>rev-parse</c>. The Changes pane asks for this when it was never handed a
+    /// readable state — which is the case that used to leave the Committed and Branch scopes permanently empty,
+    /// because a history read was gated on a number that only a landing status read would have set.
+    /// </summary>
+    internal async Task<string?> ResolveRepositoryRootAsync(string conversationId,
+        CancellationToken cancellation = default)
+    {
+        var session = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);
+        return await ResolveWorkspaceRepositoryRootAsync(session?.WorkspaceRoot, cancellation).ConfigureAwait(false);
+    }
+
+    internal async Task<string?> ResolveWorkspaceRepositoryRootAsync(string? workspace,
+        CancellationToken cancellation = default)
+    {
+        if (workspace is not { Length: > 0 }) return null;
+        var runner = new ProcessRunner(line => LogProvider?.Invoke()?.Write(line));
+        return await GitRepository.RepositoryRootAsync(workspace, runner, Providers.SensitiveValues(), cancellation)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// One read of a Changes scope's history. The pane asks for exactly what it is missing — the commit list, one
     /// commit's paths, the branch list, one branch range, or one file out of any of those — so a scope nobody opens
     /// never costs a git run, and a file nobody expands never costs one either.
@@ -567,16 +593,25 @@ internal sealed partial class ChatExecutionCoordinator
         var sensitive = Providers.SensitiveValues();
         try
         {
+            // The three status scopes are a filter over a reading the shell already took, and the only thing they
+            // cannot answer from it is their own ± summary: that is one numstat call over the range they name.
+            if (request.Path is null && request.Commit is null && request.Base is null
+                && request.Scope is GitReviewScope.Uncommitted or GitReviewScope.Staged or GitReviewScope.Unstaged)
+            {
+                var stats = await GitRepository.ReadStatusStatsAsync(request.Root, request.Scope, runner,
+                    request.StatusEntries, sensitive, cancellation).ConfigureAwait(false);
+                return new InspectorPanel.ReviewRead(null, null, null, null, stats);
+            }
             if (request.Path is { Length: > 0 } path)
             {
                 var comparison = request.Scope == GitReviewScope.Branch
-                    ? request.Fork is { Length: > 0 } fork
-                        ? await GitRepository.ReadRangeFileAsync(request.Root, path, fork, "HEAD", runner,
-                            cancellation: cancellation).ConfigureAwait(false)
+                    ? request.BaseCommit is { Length: > 0 } baseCommit
+                        ? await GitRepository.ReadBranchFileAsync(request.Root, path, baseCommit, runner,
+                            sensitiveValues: sensitive, cancellation: cancellation).ConfigureAwait(false)
                         : null
                     : request.Commit is { Length: > 0 } commit
                         ? await GitRepository.ReadCommitFileAsync(request.Root, path, commit, runner,
-                            cancellation: cancellation).ConfigureAwait(false)
+                            cancellation: cancellation, oldPath: request.OriginalPath).ConfigureAwait(false)
                         : null;
                 return new InspectorPanel.ReviewRead(null, null, null, comparison);
             }

@@ -919,6 +919,19 @@ internal sealed partial class ChatSessionCoordinator
             entry.OriginalPath, scope.SensitiveValues, cancellationToken).ConfigureAwait(false);
     }
 
+    internal async Task<GitFileComparison> ReadActiveWorkspaceGitFileAsync(string repositoryRoot,
+        GitStatusEntry entry, GitFileRange range, CancellationToken cancellationToken = default)
+    {
+        var workspace = WorkspacePaths.CanonicalRoot(ActiveWorkspaceRoot);
+        var root = WorkspacePaths.CanonicalRoot(repositoryRoot);
+        if (workspace is null || root is null || !IsRepositoryForWorkspace(workspace, root))
+            return new GitFileComparison(entry.RelativePath, entry.OriginalPath, range,
+                GitFileVersion.Absent(), GitFileVersion.Absent(), "Repository root is outside the current workspace.");
+        var runner = new ProcessRunner(line => Execution.LogProvider?.Invoke()?.Write(line));
+        return await GitRepository.ReadFileAsync(root, entry.RelativePath, range, runner,
+            entry.OriginalPath, Providers.SensitiveValues(), cancellationToken).ConfigureAwait(false);
+    }
+
     internal RepositorySnapshot? RepositoryFor(string? workspaceRoot)
         => _repository is { } snapshot
            && string.Equals(RepositoryKey(snapshot.WorkspaceRoot), RepositoryKey(workspaceRoot), StringComparison.Ordinal)
@@ -927,25 +940,35 @@ internal sealed partial class ChatSessionCoordinator
     internal Task<RepositorySnapshot> RefreshRepositoryAsync(string conversationId)
     {
         var scope = Execution.ScopeFor(conversationId).Workspace;
-        var root = scope.WorkspaceRoot ?? "";
+        return RefreshRepositoryAsync(scope.WorkspaceRoot ?? "", scope.Log, scope.SensitiveValues, conversationId);
+    }
+
+    internal Task<RepositorySnapshot> RefreshActiveWorkspaceRepositoryAsync()
+        => RefreshRepositoryAsync(ActiveWorkspaceRoot ?? "", Execution.LogProvider?.Invoke(),
+            Providers.SensitiveValues(), null);
+
+    private Task<RepositorySnapshot> RefreshRepositoryAsync(string root, HubLog? log,
+        IReadOnlyList<string> sensitiveValues, string? conversationId)
+    {
         if (_repositoryReading is { } inFlight
             && string.Equals(RepositoryKey(_repositoryReadingRoot), RepositoryKey(root), StringComparison.Ordinal))
             return inFlight;
-        var task = ReadRepositoryAsync(root, scope, conversationId);
+        var task = ReadRepositoryAsync(root, log, sensitiveValues, conversationId);
         _repositoryReading = task;
         _repositoryReadingRoot = root;
         return task;
     }
 
-    private async Task<RepositorySnapshot> ReadRepositoryAsync(string workspaceRoot, WorkspaceToolScope scope, string conversationId)
+    private async Task<RepositorySnapshot> ReadRepositoryAsync(string workspaceRoot, HubLog? log,
+        IReadOnlyList<string> sensitiveValues, string? conversationId)
     {
         // Counted where the read is really started, not where it is asked for: the coalesced path above never
         // gets here, so this number is the difference between a cache and a poll.
         RepositoryReadsForCheck++;
         try
         {
-            var runner = new ProcessRunner(line => scope.Log?.Write(line));
-            var state = await GitRepository.ReadAsync(workspaceRoot, runner, scope.SensitiveValues)
+            var runner = new ProcessRunner(line => log?.Write(line));
+            var state = await GitRepository.ReadAsync(workspaceRoot, runner, sensitiveValues)
                 .ConfigureAwait(false);
             var snapshot = new RepositorySnapshot(workspaceRoot, state);
             await Execution.ApplyOnUiAsync(() =>
@@ -953,7 +976,8 @@ internal sealed partial class ChatSessionCoordinator
                 _repository = snapshot;
                 RepositoryChanged?.Invoke();
             }).ConfigureAwait(false);
-            await Execution.RefreshGitPresentationAsync(conversationId, state, workspaceRoot).ConfigureAwait(false);
+            if (conversationId is not null)
+                await Execution.RefreshGitPresentationAsync(conversationId, state, workspaceRoot).ConfigureAwait(false);
             return snapshot;
         }
         finally

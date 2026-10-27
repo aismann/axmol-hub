@@ -49,20 +49,18 @@ internal sealed class ChangesEditBuffer
     private readonly Func<WorkspacePath> _resolveWrite;
     private TextFileSnapshot _baseline;
     internal string Path { get; }
-    internal string Before { get; }
     internal string Text { get; set; }
     internal bool IsDirty => Text != TextEol.ToLf(_baseline.Text);
 
-    private ChangesEditBuffer(string path, string before, TextFileSnapshot baseline, Func<WorkspacePath> resolveWrite)
+    private ChangesEditBuffer(string path, TextFileSnapshot baseline, Func<WorkspacePath> resolveWrite)
     {
         Path = path;
-        Before = before;
         Text = TextEol.ToLf(baseline.Text);
         _baseline = baseline;
         _resolveWrite = resolveWrite;
     }
 
-    internal static ChangesEditBuffer? Open(string path, string before, Func<WorkspaceToolScope> scopeFor)
+    internal static ChangesEditBuffer? Open(string path, Func<WorkspaceToolScope> scopeFor)
     {
         var scope = scopeFor();
         var read = WorkspacePaths.ResolveRead(scope.Sandbox, path, scope.Guards);
@@ -71,7 +69,7 @@ internal sealed class ChangesEditBuffer
             || !WorkspacePaths.IsWritableText(System.IO.Path.GetFileName(read.Full))) return null;
         var baseline = TextFile.Read(read.Full, TextFile.MaxDiffBytes);
         if (baseline.State != TextFileState.Text) return null;
-        return new ChangesEditBuffer(read.Full, before, baseline, () =>
+        return new ChangesEditBuffer(read.Full, baseline, () =>
         {
             var current = scopeFor();
             return WorkspacePaths.ResolveWrite(current.Sandbox, path, current.Guards);

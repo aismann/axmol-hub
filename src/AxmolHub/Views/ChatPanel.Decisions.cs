@@ -375,7 +375,8 @@ public partial class ChatPanel
     private void RefreshInspectorIfTranscriptMoved()
     {
         var conversation = _chat?.ActiveConversation;
-        var signature = conversation is null ? "" : conversation.Id + ":" + conversation.Messages.Count;
+        var signature = (conversation is null ? "" : conversation.Id + ":" + conversation.Messages.Count)
+            + ":" + (_chat?.ActiveWorkspaceRoot ?? "");
         if (signature == _inspectorSignature) return;
         // Nothing is wired yet while the constructor is still running — the shell assigns the seam after this
         // panel comes back — so nothing has been painted, and priming the signature here would promise a repaint
@@ -396,7 +397,7 @@ public partial class ChatPanel
     /// is a plan turn's own markdown, and each file's diff is resolved lazily through
     /// <see cref="ChatWorkspace.DiffForChange"/> so a list of twelve writes reads no file until one is opened.
     /// </summary>
-    internal Control? BuildInspectorContent(string tab, int turnIndex, bool mayReadRepository = true)
+    internal Control? BuildInspectorContent(string tab, int turnIndex)
     {
         var conversation = _chat?.ActiveConversation;
         if (_inspector is null)
@@ -413,18 +414,27 @@ public partial class ChatPanel
             _inspector.ReadReviewRequested = request => _chat is null
                 ? Task.FromResult(new InspectorPanel.ReviewRead(null, null, null, null))
                 : _chat.ReadReviewAsync(request);
+            // A first open draws the page before any status read has landed, so the pane may have no root yet. It asks
+            // for one instead of waiting for a repaint that only a changed conversation signature would trigger.
+            _inspector.ResolveRootRequested = () => _chat?.ResolveActiveWorkspaceRepositoryRootAsync()
+                ?? Task.FromResult<string?>(null);
             // A scope that reads history is the moment to be sure the tree is current: the commit list is only as
             // good as the status read that sits beside it, and the two tabs share one refresh.
             _inspector.ScopeChanged += scope =>
             {
+                // The repository may have landed while Last turn was visible; give the newly selected scope the
+                // cached snapshot, or request the missing one through the normal repaint path.
+                if (scope != GitReviewScope.LastTurn) RefreshInspector?.Invoke();
                 if (scope is GitReviewScope.Committed or GitReviewScope.Branch) RequestRepositoryRead();
             };
             // Repository file rows ask for a single HEAD-to-working-tree snapshot, including staged and unstaged edits.
             _inspector.WholeDiffRequested = async (state, entry) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
-                if (_chat is null || string.IsNullOrEmpty(conversationId) || state.Root is null) return null;
-                var comparison = await _chat.ReadGitFileAsync(conversationId, state.Root, entry, GitFileRange.WorkingTreeAgainstHead);
+                if (_chat is null || state.Root is null) return null;
+                var comparison = conversationId is { Length: > 0 }
+                    ? await _chat.ReadGitFileAsync(conversationId, state.Root, entry, GitFileRange.WorkingTreeAgainstHead)
+                    : await _chat.ReadActiveWorkspaceGitFileAsync(state.Root, entry, GitFileRange.WorkingTreeAgainstHead);
                 if (comparison.Old.Exists && !comparison.Old.IsText || comparison.New.Exists && !comparison.New.IsText)
                     return null;
                 return FileDiff.Unified(
@@ -436,18 +446,24 @@ public partial class ChatPanel
             _inspector.ReadComparisonRequested = async (state, entry, range) =>
             {
                 var conversationId = _chat?.ActiveConversation?.Id;
-                if (_chat is null || string.IsNullOrEmpty(conversationId) || state.Root is null) return null;
-                var comparison = await _chat.ReadGitFileAsync(conversationId, state.Root, entry, range);
+                if (_chat is null || state.Root is null) return null;
+                var comparison = conversationId is { Length: > 0 }
+                    ? await _chat.ReadGitFileAsync(conversationId, state.Root, entry, range)
+                    : await _chat.ReadActiveWorkspaceGitFileAsync(state.Root, entry, range);
                 if (!comparison.IsReadable || comparison.Old.Exists && !comparison.Old.IsText
                     || comparison.New.Exists && !comparison.New.IsText) return null;
                 return new ChatFileSnapshot(comparison.Old.Exists ? comparison.Old.Snapshot.Text ?? "" : "",
                     comparison.New.Exists ? comparison.New.Snapshot.Text ?? "" : "");
             };
-            _inspector.OpenEditBuffer = (owner, path, before) => _chat is null ? null
-                : ChangesEditBuffer.Open(path, before, () => _chat.WorkspaceScopeFor(owner));
+            _inspector.OpenEditBuffer = (owner, path) =>
+            {
+                if (_chat is null) return null;
+                var workspace = _chat.ActiveWorkspaceRoot;
+                return ChangesEditBuffer.Open(path, () => _chat.EditorScopeFor(owner, workspace));
+            };
             _inspector.FilesSaved += () =>
             {
-                if (_chat?.ActiveConversation is { } active) _ = _chat.RefreshRepositoryAsync(active.Id);
+                RequestRepositoryRead();
                 RefreshInspector?.Invoke();
             };
             // An empty scope pointing at the one that is not goes out through the same door a run's chip uses:
@@ -457,11 +473,12 @@ public partial class ChatPanel
             _inspector.TabSelected += tab => InspectorTabFollowed?.Invoke(tab);
             _inspector.OpenFileRequested += relativePath =>
             {
-                var conversationId = _chat?.ActiveConversation?.Id;
-                if (string.IsNullOrEmpty(conversationId) || _chat is null) return;
-                CodeFileWindow.ShowEditor(TopLevel.GetTopLevel(this) as Window, conversationId, relativePath,
-                    _chat.WorkspaceScopeFor,
-                    () => _ = _chat.RefreshRepositoryAsync(conversationId));
+                if (_chat is null) return;
+                var conversationId = _chat.ActiveConversation?.Id ?? "";
+                var workspace = _chat.ActiveWorkspaceRoot;
+                var failure = CodeFileWindow.ShowEditor(TopLevel.GetTopLevel(this) as Window, relativePath,
+                    () => _chat.EditorScopeFor(conversationId, workspace), RequestRepositoryRead);
+                if (failure is not null) StatusMessage?.Invoke(HubStrings.Get(failure));
             };
         }
 
@@ -470,11 +487,12 @@ public partial class ChatPanel
         // The first scope of the tab is the turn itself: the rows come from the transcript and the revisions it
         // points at, so they say what the assistant did rather than what the tree happens to hold.
         var review = _chat?.TurnReviewFor(conversation) ?? TurnReview.Empty;
-        var repository = _chat?.RepositoryFor(conversation?.WorkspaceRoot);
-        // Entering the tab with nothing read for this directory is the moment to read it. Not before, and not on
-        // a repaint: a session that never goes looking for repository state never pays for a git run, and the
-        // transcript path that ends up here fires for every turn a running reply adds.
-        if (mayReadRepository && string.Equals(tab, "repo", StringComparison.Ordinal) && repository is null)
+        var workspaceRoot = _chat?.ActiveWorkspaceRoot;
+        var repository = _chat?.RepositoryFor(workspaceRoot);
+        // A restored or repainted Changes tab can be the first view of this workspace too. A missing snapshot
+        // always needs a read; concurrent requests coalesce and a landed snapshot keeps later repaints quiet.
+        if (tab is "repo" or "changes"
+            && workspaceRoot is { Length: > 0 } && repository is null)
             RequestRepositoryRead();
         _inspector.Reload(
             planText,
@@ -482,16 +500,17 @@ public partial class ChatPanel
             (change, wholeFile) => _chat is null
                 ? (null, UndoCopyState.Unreadable)
                 : (_chat.DiffForChange(change, conversationId, out var state, wholeFile), state),
-            repository?.State,
+            workspaceRoot is { Length: > 0 } ? repository?.State : GitRepositoryState.Stopped(GitReadOutcome.NoWorkspace),
             tab,
             QuoteIntoComposer,
             change => _chat is null
                 ? (null, UndoCopyState.MissingSnapshot)
                 : (_chat.SnapshotForChange(change, change.SelectedRevisionId, out var state), state),
-            conversationId);
+            conversationId, workspaceRoot);
         // Painting by any route leaves the pane in step with the transcript, so the repaint that follows a
         // click would be a second rebuild of the same thing.
-        _inspectorSignature = conversation is null ? "" : conversation.Id + ":" + conversation.Messages.Count;
+        _inspectorSignature = (conversation is null ? "" : conversation.Id + ":" + conversation.Messages.Count)
+            + ":" + (workspaceRoot ?? "");
         return _inspector;
     }
 
@@ -501,8 +520,9 @@ public partial class ChatPanel
     private void RequestRepositoryRead()
     {
         var conversation = _chat?.ActiveConversation;
-        if (_chat is null || conversation is null) return;
-        _ = _chat.RefreshRepositoryAsync(conversation.Id);
+        if (_chat is null || _chat.ActiveWorkspaceRoot is not { Length: > 0 }) return;
+        _ = conversation is null ? _chat.RefreshActiveWorkspaceRepositoryAsync()
+            : _chat.RefreshRepositoryAsync(conversation.Id);
     }
 
     /// <summary>A read that landed refreshes the repository pill and repaints the pane only while its repository
@@ -510,8 +530,7 @@ public partial class ChatPanel
     private void OnRepositoryChanged()
     {
         if (_inspector is not { IsRepositoryTabVisible: true }) return;
-        // Repaint rather than re-open, because a repaint never starts another read — which is what keeps this
-        // from turning into a loop when the snapshot cannot satisfy the question the pane is asking.
+        // A landed snapshot, including a failure outcome, keeps the repaint from starting another read.
         RefreshInspector?.Invoke();
     }
 

@@ -888,6 +888,18 @@
     <Style Selector="Button.scroll-bottom:pointerover Path">
       <Setter Property="Stroke" Value="{DynamicResource Hub.TextPrimary}" />
     </Style>
+    <Style Selector="Button.turn-changes-pill">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceAlt}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Hub.Border}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="Padding" Value="12,5" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.turn-changes-pill:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    </Style>
 
     <!-- The composer frame. -->
     <Style Selector="Border.composer">
@@ -1352,22 +1364,24 @@
          the whole stack rather than on one card in it (see the transcript scroller's note for why the gutter
          exists at all). -->
     <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="10,0,10,0">
-      <!-- The band holds two controls that are shown together more often than not — a run that is writing while
-           the person is reading back is the ordinary state of a long task — so they share one centered row rather
-           than each taking one. The row's height is reserved by whether the transcript <i>can</i> scroll, not by
-           whether it happens to be scrolled: measured without the reservation the row grows from 22 to 28 the
-           moment the plate rises, which retakes height from the transcript under whoever is reading it. -->
-      <Panel x:Name="ComposerBand" Grid.Row="0" HorizontalAlignment="Center" Margin="0,0,0,6">
-        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-
-          <Button x:Name="ScrollToBottomButton" Classes="scroll-bottom" IsVisible="False">
+      <!-- Keep the changes pill centered over the composer; the scroll control moves to the side when both show.
+           Reserve the scrollable transcript's band height so the button does not resize the reading area. -->
+      <Grid x:Name="ComposerBand" Grid.Row="0" ColumnDefinitions="*,Auto,*" MaxWidth="820"
+            HorizontalAlignment="Stretch" Margin="0,0,0,6">
+          <Button x:Name="TurnChangesPill" Grid.Column="1" Classes="turn-changes-pill" IsVisible="False">
+            <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+              <TextBlock x:Name="TurnChangesLabel" Foreground="{DynamicResource Hub.TextSecondary}" FontSize="12" />
+              <TextBlock x:Name="TurnChangesAdded" Foreground="{DynamicResource Hub.Success}" FontSize="12" />
+              <TextBlock x:Name="TurnChangesRemoved" Foreground="{DynamicResource Hub.Danger}" FontSize="12" />
+            </StackPanel>
+          </Button>
+          <Button x:Name="ScrollToBottomButton" Grid.Column="1" Classes="scroll-bottom" IsVisible="False">
             <Grid Width="26" Height="26">
               <Path Width="14" Height="14" Stretch="Uniform" Data="{StaticResource Hub.Icon.ArrowDown}" />
               <local:ScrollAttentionMarquee x:Name="ScrollAttentionMarquee" IsActive="False" IsHitTestVisible="False" />
             </Grid>
           </Button>
-        </StackPanel>
-      </Panel>
+      </Grid>
       <Border x:Name="PlanTasksHost" Grid.Row="1" IsVisible="False" MaxWidth="820"
               ClipToBounds="True" HorizontalAlignment="Stretch" Margin="0,0,0,6"
               Background="{DynamicResource Hub.SurfaceAlt}"

@@ -74,6 +74,51 @@ internal sealed class ShellGitWorkflowChecks(CheckReport report, Action<bool, st
             };
             var beforeHead = (await Git("rev-parse", "HEAD")).Output;
             await File.WriteAllTextAsync(Path.Combine(workspace, "sentinel.txt"), "Do not stage or commit without a click.\n");
+            // A selected workspace can precede the first conversation. Its Changes list and file comparison must
+            // still read Git; otherwise the pane remains on the loading message until a session is opened.
+            chat.SelectWorkspaceRoot(workspace);
+            var emptyPanel = new ChatPanel(chat);
+            emptyPanel.RefreshInspector = () => emptyPanel.BuildInspectorContent("repo", -1);
+            var emptyInspector = (InspectorPanel?)emptyPanel.BuildInspectorContent("repo", -1);
+            await WaitForConditionAsync(() => chat.RepositoryFor(workspace)?.State.IsReadable == true);
+            Dispatcher.UIThread.RunJobs();
+            var workspaceState = chat.RepositoryFor(workspace)?.State;
+            var sentinel = workspaceState?.Entries.FirstOrDefault(entry => entry.RelativePath == "sentinel.txt");
+            var comparison = sentinel is null || workspaceState?.Root is null ? null
+                : await chat.ReadActiveWorkspaceGitFileAsync(workspaceState.Root, sentinel, GitFileRange.WorkingTreeAgainstHead);
+            check(chat.ActiveConversation is null && emptyInspector?.RepoRowTextForCheck(0).Contains("sentinel.txt") == true
+                  && comparison is { IsReadable: true } && comparison.New.Snapshot.Text?.Contains("Do not stage") == true,
+                "没有会话但选中工作目录时，改动列表和文件比较仍能读取（文件数 "
+                + (workspaceState?.Entries.Count ?? -1) + "）");
+            var emptyScope = chat.EditorScopeFor("", workspace);
+            var missingMessage = CodeFileWindow.ShowEditor(null, "missing.cpp", () => chat.EditorScopeFor("", workspace));
+            var canOpen = WorkspacePaths.ResolveRead(emptyScope.Sandbox, "sentinel.txt", emptyScope.Guards).IsAllowed;
+            var canWrite = WorkspacePaths.ResolveWrite(emptyScope.Sandbox, "sentinel.txt", emptyScope.Guards).IsAllowed;
+            chat.SelectWorkspaceRoot(null);
+            var revokedScope = chat.EditorScopeFor("", workspace);
+            check(canOpen && canWrite && !WorkspacePaths.ResolveWrite(revokedScope.Sandbox, "sentinel.txt", revokedScope.Guards).IsAllowed
+                  && missingMessage == "InspectorOpenFileUnavailable",
+                "无会话时当前文件按所选工作目录打开；文件缺失有提示，切换工作目录后不能继续写入旧目录");
+            chat.SelectWorkspaceRoot(workspace);
+
+            using (var restoredChat = new ChatWorkspace(Path.Combine(root, "restored-hub")))
+            {
+                var restoredSession = restoredChat.StartConversation();
+                restoredChat.SetWorkspaceRoot(restoredSession.Id, workspace);
+                restoredChat.OpenConversation(restoredSession.Id);
+                var restoredPanel = new ChatPanel(restoredChat);
+                restoredPanel.RefreshInspector = () => restoredPanel.BuildInspectorContent("changes", -1);
+                var restoredInspector = (InspectorPanel?)restoredPanel.BuildInspectorContent("changes", -1);
+                await WaitForConditionAsync(() => restoredChat.RepositoryFor(workspace)?.State.IsReadable == true);
+                Dispatcher.UIThread.RunJobs();
+                var reads = restoredChat.RepositoryReadsForCheck;
+                restoredPanel.BuildInspectorContent("changes", -1);
+                check(restoredInspector?.Scope == GitReviewScope.Uncommitted
+                      && restoredInspector.RepoRowTextForCheck(0).Contains("sentinel.txt")
+                      && reads == 1 && restoredChat.RepositoryReadsForCheck == reads,
+                    "打开会话时直接从 Uncommitted 加载列表，重画不重读，无需先切换 Branch（读取 "
+                    + restoredChat.RepositoryReadsForCheck + " 次）");
+            }
             Conversation? suggestion = null;
             foreach (var fixture in fixtures)
             {

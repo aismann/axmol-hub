@@ -157,6 +157,21 @@ public partial class ChatPanel : UserControl
     /// <summary>How tall the band's row actually is. Zero is the claim that an empty thing does not take a row;
     /// the plate's own height is the claim that a reserved row is what stopped the composer from jumping.</summary>
     internal double ChangesPillRowHeightForCheck => ComposerBand.Bounds.Height;
+    internal bool TurnChangesPillVisibleForCheck => TurnChangesPill.IsVisible;
+    internal string TurnChangesPillTextForCheck => string.Join(" ", new[]
+        { TurnChangesLabel.Text, TurnChangesAdded.Text, TurnChangesRemoved.Text });
+    internal (double CenterOffset, double Bottom)? TurnChangesPillPlacementForCheck
+    {
+        get
+        {
+            if (!TurnChangesPill.IsVisible || TurnChangesPill.Bounds.Width <= 0
+                || TurnChangesPill.TranslatePoint(new Point(TurnChangesPill.Bounds.Width / 2,
+                    TurnChangesPill.Bounds.Height), ComposerFrame) is not { } point) return null;
+            return (point.X - ComposerFrame.Bounds.Width / 2, point.Y);
+        }
+    }
+    internal void ClickTurnChangesPillForCheck()
+        => TurnChangesPill.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
     internal double ComposerBandGapForCheck => -(ComposerBand.TranslatePoint(new Point(0, ComposerBand.Bounds.Height), ComposerFrame)?.Y ?? double.NaN);
     internal string ComposerLayoutForCheck => string.Join("; ", new Control[] { ComposerBand, PlanTasksHost, DecisionHost, SteerConfirmHost, ComposerFrame }.Select(control => $"{control.Name}: visible={control.IsVisible}, bounds={control.Bounds}, desired={control.DesiredSize}"));
     /// <summary>Where the top edge of the input frame sits in the panel's own coordinates. Read before and after a
@@ -1300,7 +1315,7 @@ public partial class ChatPanel : UserControl
             for (var i = 0; i < items.Count; i++)
             {
                 // The row's two Paths are the tier's icon and then the tick; the text column is a panel.
-                if (items[i].Header is Grid grid && grid.Children.OfType<Avalonia.Controls.Shapes.Path>().LastOrDefault()is { IsVisible: true } tick && ReferenceEquals(tick.Data, ThemeGeometry("Hub.Icon.Tick")))
+                if (items[i].Header is Grid grid && grid.Children.OfType<Avalonia.Controls.Shapes.Path>().LastOrDefault()is { IsVisible: true } tick && ReferenceEquals(tick.Data, ThemeGeometry("Hub.Icon.MenuTick")))
                     return i;
             }
 

@@ -3,7 +3,7 @@ using AxmolHub.Core;
 
 namespace AxmolHub;
 
-/// <summary>One file from the project, opened by its path and read-only. The project is the workspace root the
+/// <summary>One current workspace file, opened by its path. The project is the workspace root the
 /// conversation runs in, and the path is the one the transcript and the inspector already name — so a row saying
 /// <c>Source/AppDelegate.cpp</c> opens what a reader expects and nothing else.
 ///
@@ -33,17 +33,18 @@ public sealed class CodeFileWindow : Window
     /// <summary>Opens <paramref name="relativePath"/> read from <paramref name="workspaceRoot"/>. A path that
     /// climbs out of the project, or a file that cannot be read, opens nothing: this is a reader, and guessing
     /// what a reader meant with <c>../../.ssh/id_rsa</c> is how a viewer becomes a way around the sandbox.</summary>
-    internal static void ShowEditor(Window? owner, string conversationId, string relativePath,
-        Func<string, WorkspaceToolScope> scopeFor, Action? saved = null)
+    internal static string? ShowEditor(Window? owner, string relativePath,
+        Func<WorkspaceToolScope> scopeFor, Action? saved = null)
     {
-        if (string.IsNullOrWhiteSpace(conversationId) || string.IsNullOrWhiteSpace(relativePath)) return;
-        var initialScope = scopeFor(conversationId);
+        if (string.IsNullOrWhiteSpace(relativePath)) return "InspectorOpenFileUnavailable";
+        var initialScope = scopeFor();
         var read = WorkspacePaths.ResolveRead(initialScope.Sandbox, relativePath, initialScope.Guards);
-        if (!read.IsAllowed) return;
+        if (!read.IsAllowed) return "InspectorOpenFileUnavailable";
         var baseline = TextFile.Read(read.Full, TextFile.MaxEditorBytes);
-        if (baseline.State != TextFileState.Text) return;
+        if (baseline.State != TextFileState.Text) return "InspectorOpenFileUnavailable";
         var write = WorkspacePaths.ResolveWrite(initialScope.Sandbox, relativePath, initialScope.Guards);
         var writable = write.IsAllowed && WorkspacePaths.IsWritableText(Path.GetFileName(read.Full));
+        var title = HubStrings.Get("InspectorCurrentFile") + " · " + relativePath;
         CodeFileWindow? window = null;
         var shell = owner as MainWindow;
         var editor = new CodeEditorView(read.Full, baseline, (snapshot, text) =>
@@ -51,7 +52,7 @@ public sealed class CodeFileWindow : Window
             using var lease = TextFile.AcquireWrite(read.Full);
             var result = lease.Save(() =>
             {
-                var currentScope = scopeFor(conversationId);
+                var currentScope = scopeFor();
                 var currentPath = WorkspacePaths.ResolveWrite(currentScope.Sandbox, relativePath, currentScope.Guards);
                 return currentPath.IsAllowed && string.Equals(currentPath.Full, read.Full, StringComparison.Ordinal)
                     ? currentPath
@@ -71,15 +72,16 @@ public sealed class CodeFileWindow : Window
         }, owner);
         if (shell is not null)
         {
-            shell.ShowCodeWorkspace(relativePath, editor, () => editor.IsDirty);
-            return;
+            shell.ShowCodeWorkspace(title, editor, () => editor.IsDirty);
+            return null;
         }
-        window = new CodeFileWindow(relativePath, editor);
+        window = new CodeFileWindow(title, editor);
         window.Closing += (_, e) =>
         {
             if (editor.IsDirty && !window._discardClose) e.Cancel = true;
         };
         if (owner is null) window.Show(); else window.Show(owner);
+        return null;
     }
 
     internal static async Task<bool> ConfirmCloseDirtyAsync(Window owner)
