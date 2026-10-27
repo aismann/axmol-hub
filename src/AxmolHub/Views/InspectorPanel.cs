@@ -1044,20 +1044,20 @@ internal sealed partial class InspectorPanel : UserControl
     /// not change; only what the list means does, and the picker says which.</summary>
     public void SetScope(GitReviewScope scope)
     {
-        if (_scope == scope)
-        {
-            ShowScopeMenu();
-            return;
-        }
+        // Re-entrant on purpose, and not a toggle: picking a different commit or base leaves the scope where it is
+        // while the comparison changes underneath it, so the list and the read both have to run again even when the
+        // scope name came in identical. The earlier version reopened the menu here instead, which made choosing a
+        // second commit from the Committed submenu do nothing at all.
+        var changed = _scope != scope;
         _scope = scope;
-        // A folded file stays folded only while it is the same file in the same comparison; a scope change is a
-        // new comparison, so rows start closed rather than pretending the old folds meant something.
-        _expandedFiles.Clear();
+        // A folded file stays folded only while it is the same file in the same comparison; a new comparison starts
+        // its rows closed rather than pretending the old folds meant something.
+        if (changed) _expandedFiles.Clear();
         RenderCurrentScope();
         ApplyScopeVisibility();
         RenderScopeChrome();
         EnsureReviewRead();
-        ScopeChanged?.Invoke(scope);
+        if (changed) ScopeChanged?.Invoke(scope);
     }
 
     /// <summary>Which of the two lists stands for the scope, and that both are gone while the tab is not the one
