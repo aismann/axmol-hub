@@ -864,6 +864,39 @@ internal sealed class ShellDecisionsChecks
                 + bandAtBottom.ToString("F1", CultureInfo.InvariantCulture) + "（现在 "
                 + panel.ChangesPillRowHeightForCheck.ToString("F1", CultureInfo.InvariantCulture) + "）");
 
+            // Opening and closing the inspector changes the message column width, not just the available height.
+            // Preserve the person's intent in both directions: an intentional mid-transcript reading must stay up
+            // there, while a tail-following reader must still see the review card after wrapped rows grow the tail.
+            var readingOffset = panel.FlowOffsetForCheck;
+            shell.CloseInspector();
+            Relayout(shell, panel, measure: true);
+            shell.OpenInspector("repo", -1);
+            Relayout(shell, panel, measure: true);
+            Dispatcher.UIThread.RunJobs();
+            Check(!panel.ViewAtBottomForCheck && panel.ScrollToBottomVisible
+                  && panel.ReviewCardTextForCheck.Length > 0,
+                "打开右侧栏重排消息列时保留中段阅读位置，不把读者强制送到底部（原 offset "
+                + Fmt(readingOffset) + "，现 " + Fmt(panel.FlowOffsetForCheck) + "，底部 "
+                + panel.ViewAtBottomForCheck + "）");
+            shell.CloseInspector();
+            Relayout(shell, panel, measure: true);
+            panel.ClickScrollToBottomForCheck();
+            Relayout(shell, panel, measure: true);
+            Check(panel.ViewAtBottomForCheck && panel.TranscriptTailVisibleForCheck
+                  && panel.ReviewCardTextForCheck.Length > 0,
+                "夹具在打开侧栏前确实贴着含审阅卡的转录底部");
+            shell.OpenInspector("repo", -1);
+            for (var pass = 0; pass < 4; pass++)
+            {
+                Relayout(shell, panel, measure: true);
+                Dispatcher.UIThread.RunJobs();
+            }
+            Check(panel.ViewAtBottomForCheck && panel.TranscriptTailVisibleForCheck
+                  && panel.ReviewCardTextForCheck.Length > 0,
+                "贴底时打开右侧栏，窄列换行重排后仍留在最底且审阅卡可见（底部 "
+                + panel.ViewAtBottomForCheck + "，尾行可见 " + panel.TranscriptTailVisibleForCheck + "，offset "
+                + Fmt(panel.FlowOffsetForCheck) + " / 范围 " + Fmt(panel.TranscriptScrollRangeForCheck) + "）");
+
             // ── a question and the tally up at the same time: which one is nearest the box ──
             // The band was put above the decision host rather than below it for this one cell, and the existing
             // placement assertion cannot see the difference on its own: with the band hidden the card is flush with

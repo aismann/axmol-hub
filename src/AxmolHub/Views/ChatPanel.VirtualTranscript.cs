@@ -129,7 +129,13 @@ public partial class ChatPanel
         MessageScroller.SizeChanged += (_, _) =>
         {
             _bottomMappingKnown = false;
-            RestoreTranscriptAnchor(CaptureTranscriptAnchor());
+            // Width changes are just as much a transcript resize as height changes: opening the inspector narrows
+            // the message column, wraps its rows, and grows the extent underneath the reader. Preserve the intent
+            // recorded by the last gesture. A reader who was at the tail follows that new extent after layout;
+            // someone reading above it keeps the visible-row anchor as before.
+            var followingTail = _stickToBottom && !_thumbDragging;
+            if (followingTail) QueueVirtualFollow();
+            else RestoreTranscriptAnchor(CaptureTranscriptAnchor());
             RequestTranscriptRepair("resize");
         };
         TranscriptScrollBar.AddHandler(PointerWheelChangedEvent, (_, change) =>

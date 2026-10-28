@@ -958,6 +958,9 @@ public partial class ChatPanel : UserControl
     /// <summary>Whether the transcript is looking at its newest line. The plate below is derived from the same
     /// three numbers, so this is the fact and the plate is the symptom.</summary>
     internal bool ViewAtBottomForCheck => MessageScroller.Offset.Y + MessageScroller.Viewport.Height >= MessageScroller.Extent.Height - StickEpsilon;
+    /// <summary>Whether the last realized transcript item — the tail, where the finished-turn review card lives —
+    /// is in the actual scroller viewport, not merely within the scroll range.</summary>
+    internal bool TranscriptTailVisibleForCheck => TranscriptTailVisible();
 
     /// <summary>Moves the transcript's reading position the way a wheel or a drag on the bar would. A check that
     /// asks where a session reopens has to be able to leave it somewhere first.</summary>
