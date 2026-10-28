@@ -139,7 +139,22 @@ public sealed record PlanReference(string? File, string Title, int Chars, int To
 /// a write allowed by 自动审批 or 完全访问 froze nothing, so a tally read off previews is blank for most sessions.
 /// When one does exist it is also capped — see <see cref="FileDiff.CountChangedLines"/>.</para>
 /// </summary>
-public sealed record ChangeLineCounts(int Added, int Removed);
+public sealed record ChangeLineCounts(int Added, int Removed, bool Exact = true)
+{
+    public static ChangeLineCounts Sum(IEnumerable<ChangeLineCounts?> counts)
+    {
+        var added = 0;
+        var removed = 0;
+        var exact = true;
+        foreach (var count in counts)
+        {
+            added += count?.Added ?? 0;
+            removed += count?.Removed ?? 0;
+            exact &= count is { Exact: true };
+        }
+        return new(added, removed, exact);
+    }
+}
 
 /// <summary>How the command behind a tool result ended, as facts rather than as the tail of a sentence: the exit
 /// code the shell gave back, and how long the run's tool bracket was open.

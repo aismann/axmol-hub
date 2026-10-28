@@ -910,7 +910,7 @@ internal sealed partial class InspectorPanel : UserControl
 
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
         row.Children.Add(header);
-        var numbers = path.Lines is { } counts ? CountLabels(counts.Added, counts.Removed, showZero: true)
+        var numbers = path.Lines is { } counts ? CountLabels(counts)
             : UnknownCountLabels();
         numbers.HorizontalAlignment = HorizontalAlignment.Right;
         Grid.SetColumn(numbers, 1);
@@ -1158,13 +1158,16 @@ internal sealed partial class InspectorPanel : UserControl
         _scopeCounts.Children.Clear();
         // Move the labels rather than add them where they are: a control has one visual parent, and CountLabels built
         // them for a panel of its own.
-        var labels = CountLabels(added, removed);
+        var labels = _scope == GitReviewScope.LastTurn && !_review.CountsExact
+            ? UnknownCountLabels(budgetExceeded: _review.CountsBudgetExceeded) : CountLabels(added, removed);
         foreach (var child in labels.Children.ToArray())
         {
             labels.Children.Remove(child);
             _scopeCounts.Children.Add(child);
         }
-        _scopeCounts.IsVisible = added > 0 || removed > 0;
+        _scopeCounts.IsVisible = added > 0 || removed > 0
+            || (_scope == GitReviewScope.LastTurn && !_review.CountsExact);
+        ToolTip.SetTip(_scopeCounts, ToolTip.GetTip(labels));
         var detail = DetailFor(_scope);
         if (!string.Equals(_scopeDetail.Text, detail ?? "", StringComparison.Ordinal)) _scopeDetail.Text = detail ?? "";
         _scopeDetailButton.IsVisible = detail is { Length: > 0 };
@@ -1743,7 +1746,7 @@ internal sealed partial class InspectorPanel : UserControl
         if (counts is null && _scope == GitReviewScope.Uncommitted && !state.Truncated
             && state.Diffs.TryGetValue(path, out var patch) && PatchCounts(patch) is { } cached)
             counts = new ChangeLineCounts(cached.Added, cached.Removed);
-        slot.Content = counts is null ? UnknownCountLabels() : CountLabels(counts.Added, counts.Removed, showZero: true);
+        slot.Content = counts is null ? UnknownCountLabels() : CountLabels(counts);
     }
 
     /// <summary>Waits for the shell's whole-file answer and hands it back on the UI thread it was asked from. A
@@ -1854,7 +1857,7 @@ internal sealed partial class InspectorPanel : UserControl
 
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto") };
         row.Children.Add(header);
-        var numbers = change.Lines is { } counts ? CountLabels(counts.Added, counts.Removed, showZero: true)
+        var numbers = change.Lines is { } counts ? CountLabels(counts)
             : UnknownCountLabels();
         numbers.HorizontalAlignment = HorizontalAlignment.Right;
         Grid.SetColumn(numbers, 1);
@@ -1881,6 +1884,10 @@ internal sealed partial class InspectorPanel : UserControl
         return container;
     }
 
+    private static StackPanel CountLabels(ChangeLineCounts counts)
+        => counts.Exact ? CountLabels(counts.Added, counts.Removed, showZero: true)
+            : UnknownCountLabels(budgetExceeded: true);
+
     private static StackPanel CountLabels(int added, int removed, bool showZero = false)
     {
         var counts = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
@@ -1897,13 +1904,18 @@ internal sealed partial class InspectorPanel : UserControl
         return counts;
     }
 
-    private static StackPanel UnknownCountLabels()
+    private static StackPanel UnknownCountLabels(bool budgetExceeded = false)
     {
         var counts = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center };
-        counts.Children.Add(Themed(new TextBlock { Text = "+—", Classes = { "inspector-count-added" } }, "Hub.Success"));
-        counts.Children.Add(Themed(new TextBlock { Text = "−—", Classes = { "inspector-count-removed" } }, "Hub.Danger"));
-        ToolTip.SetTip(counts, HubStrings.Get("InspectorCountsUnavailable"));
+        if (budgetExceeded)
+            counts.Children.Add(Themed(new TextBlock { Text = HubStrings.Get("ChangeCountsBudgetExceeded") }, "Hub.TextSecondary"));
+        else
+        {
+            counts.Children.Add(Themed(new TextBlock { Text = "+—", Classes = { "inspector-count-added" } }, "Hub.Success"));
+            counts.Children.Add(Themed(new TextBlock { Text = "−—", Classes = { "inspector-count-removed" } }, "Hub.Danger"));
+        }
+        ToolTip.SetTip(counts, HubStrings.Get(budgetExceeded ? "ChangeCountsBudgetDetail" : "InspectorCountsUnavailable"));
         return counts;
     }
 

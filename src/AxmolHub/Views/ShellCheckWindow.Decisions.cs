@@ -576,6 +576,41 @@ internal sealed class ShellDecisionsChecks
                   && livePill.Contains("−1", StringComparison.Ordinal)
                   && shell.InspectorPaneForCheck?.Scope == GitReviewScope.LastTurn,
                 "工作中的修改胶囊显示本轮文件数和净增删，点击打开 Last turn（实际「" + livePill + "」）");
+            // The ordinary +1/-1 scene cannot catch losing Exact=false at the composer boundary. Temporarily
+            // point the parked call at an over-budget synthetic revision, without changing the fixture's file.
+            var chipIndex = chipSession.IndexOfToolCall(chipCallId ?? "");
+            if (chipIndex >= 0)
+            {
+                var savedChip = chipSession.Messages[chipIndex];
+                var budgetBefore = string.Join('\n', Enumerable.Range(0, 5000).Select(i => "old " + i));
+                var budgetAfter = string.Join('\n', Enumerable.Range(0, 5000).Select(i => "new " + i));
+                var budgetRevision = ChatChangeStore.Prepare(shell.Workspace.Store.Root, chipSession.Id,
+                    Path.Combine(workspace, "chip-note.txt"), workspace, budgetBefore, budgetAfter);
+                ChatChangeStore.CompleteRevision(shell.Workspace.Store.Root, budgetRevision);
+                try
+                {
+                    chipSession.Messages[chipIndex] = savedChip with
+                    {
+                        ChangeId = budgetRevision.Id, ChangeRefs = [], ChangeLines = budgetRevision.Lines,
+                    };
+                    panel.Reload();
+                    shell.UpdateLayout();
+                    Dispatcher.UIThread.RunJobs();
+                    var limitedPill = panel.TurnChangesPillTextForCheck;
+                    Check(panel.TurnChangesPillVisibleForCheck
+                        && limitedPill.Contains(HubStrings.Get("ChangeCountsBudgetExceeded"), StringComparison.Ordinal)
+                        && !limitedPill.Contains("5000", StringComparison.Ordinal),
+                        "比较超限的本轮胶囊明确提示计数不可用，不把替代脚本的整段增删当成精确值（实际「"
+                        + limitedPill + "」）");
+                }
+                finally
+                {
+                    chipSession.Messages[chipIndex] = savedChip;
+                    panel.Reload();
+                    Dispatcher.UIThread.RunJobs();
+                }
+            }
+            else Check(false, "夹具：修改胶囊的已完成写入仍在会话中");
             chipAnswerPark.TrySetResult(true);
             await panel.WaitForRunToFinishForCheck();
             shell.UpdateLayout();
@@ -1710,11 +1745,11 @@ internal sealed class ShellDecisionsChecks
         await WriteTurnFileAsync("base\none\ntwo\n");
         var chainSnapshot = ChatChangeStore.ReadChainSnapshot(turnDataRoot, turnRevisions[0], turnRevisions[1],
             out var chainState);
-        var chainCounts = chainSnapshot is null ? (Added: -1, Removed: -1)
+        var chainCounts = chainSnapshot is null ? new ChangeLineCounts(-1, -1, false)
             : FileDiff.CountChangedLines(chainSnapshot.Before, chainSnapshot.After);
         Check(chainState == UndoCopyState.Read && chainSnapshot is not null
               && chainSnapshot.Before == "base\n" && chainSnapshot.After == "base\none\ntwo\n"
-              && chainCounts == (2, 0),
+              && chainCounts == new ChangeLineCounts(2, 0),
             "同一文件两次写入合成一条：从这一轮之前读到的东西，到它最后留下的样子（实际 "
             + (chainSnapshot?.Before ?? "无").Replace("\n", "\\n") + " → "
             + (chainSnapshot?.After ?? "无").Replace("\n", "\\n") + "，+" + chainCounts.Added + " −"

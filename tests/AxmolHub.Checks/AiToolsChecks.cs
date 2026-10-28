@@ -388,10 +388,16 @@ internal static class AiToolsChecks
             ChangeLines = new ChangeLineCounts(200, 50),
             ApprovalPreview = ladderPreview,
         };
-        if (ChatChanges.LinesOf(ladderBoth)is not { Added: 200, Removed: 50 })
+        if (ChatChanges.LinesOf(ladderBoth)is not { Added: 200, Removed: 50, Exact: true }
+            || ChatChanges.LinesOf(ladderBoth with { ChangeLines = new ChangeLineCounts(200, 50, false) }).Exact)
             throw new Exception("A turn that knows its own tally was still read off its capped preview.");
         var ladderPreviewOnly = ChatChanges.LinesOf(ladderBoth with { ChangeLines = null });
-        if (ladderPreviewOnly.Added <= 0)
+        if (ladderPreviewOnly.Added <= 0
+            || ChatChanges.LinesOf(ladderBoth with
+            {
+                ChangeLines = null,
+                ApprovalPreview = FileDiff.Unified("a\nb\nc\n", "x\nb\ny\n", "limit.txt", new DiffLimits(MaxEditScript: 1)),
+            }).Exact)
             throw new Exception("With no recorded tally the preview is the only thing left, and it counted " + $"{ladderPreviewOnly.Added}+ — a session written before this field existed would lose its numbers entirely.");
         if (ChatChanges.LinesOf(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch) { ToolName = "read_file", ToolCallId = "r-1" })is not { Added: 0, Removed: 0 })
             throw new Exception("A turn that wrote no lines claimed some.");
@@ -406,7 +412,9 @@ internal static class AiToolsChecks
         };
         tallyStored.Append(new ChatTurn(ChatRoles.Assistant, "", DateTimeOffset.UnixEpoch) { ToolName = "file_write", ToolCallId = "s-1", ToolArguments = ladderArgs, ChangeLines = new ChangeLineCounts(7, 3) });
         new ConversationStore(tallyStoreRoot).Save(tallyStored);
-        if (new ConversationStore(tallyStoreRoot).Load("tally-stored")?.Messages[0].ChangeLines is not { Added: 7, Removed: 3 })
+        if (new ConversationStore(tallyStoreRoot).Load("tally-stored")?.Messages[0].ChangeLines is not { Added: 7, Removed: 3, Exact: true }
+            || System.Text.Json.JsonSerializer.Deserialize<ChangeLineCounts>("{\"Added\":7,\"Removed\":3}")
+                is not { Added: 7, Removed: 3, Exact: true })
             throw new Exception("A recorded tally did not survive the session file, so it would vanish on restart.");
         // An older session file has no such key at all. It has to load, and it must not be handed a tally it never earned.
         var tallyLegacyFile = Path.Combine(tallyStoreRoot, "ai", "sessions", "tally-legacy.json");

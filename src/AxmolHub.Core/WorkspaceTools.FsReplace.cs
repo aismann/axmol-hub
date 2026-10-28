@@ -159,8 +159,7 @@ public sealed partial class WorkspaceTools
                 ChatChangeStore.CompleteRevision(context.DataRoot, revisions[i]);
             }
             ChatChangeStore.CompleteBatch(context.DataRoot, batch, ChatChangeStore.Complete);
-            context.RecordChangeLines?.Invoke(new ChangeLineCounts(revisions.Sum(revision => revision.Lines?.Added ?? 0),
-                revisions.Sum(revision => revision.Lines?.Removed ?? 0)));
+            context.RecordChangeLines?.Invoke(ChangeLineCounts.Sum(revisions.Select(revision => revision.Lines)));
             return $"Edited {plan.Changes.Count} file(s)." + ChatChangeStore.BatchMarker + batch.Id;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)

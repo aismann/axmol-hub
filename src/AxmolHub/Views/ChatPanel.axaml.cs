@@ -3017,7 +3017,7 @@ public partial class ChatPanel : UserControl
         // the aggregate count. The slack goes to the last column, after the count.
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*") };
 
-        var (text, added, removed) = GroupSummary(turns, callCount);
+        var (text, added, removed, exact) = GroupSummary(turns, callCount);
         // The sentence embeds the first call's description, so its length is not bounded — and an Auto column is
         // measured against the whole row, where trimming could never bite. The cap is what makes the ellipsis
         // reachable, the same way tool-result-line carries one.
@@ -3030,9 +3030,9 @@ public partial class ChatPanel : UserControl
         Grid.SetColumn(label, 0);
         grid.Children.Add(label);
 
-        if (added + removed > 0)
+        if (!exact || added + removed > 0)
         {
-            var total = DiffCounts(added, removed);
+            var total = DiffCounts(added, removed, exact);
             total.Margin = CountsGap;
             Grid.SetColumn(total, 1);
             grid.Children.Add(total);
@@ -3041,7 +3041,7 @@ public partial class ChatPanel : UserControl
         return grid;
     }
 
-    private static (string Text, int Added, int Removed) GroupSummary(
+    private static (string Text, int Added, int Removed, bool Exact) GroupSummary(
         List<(int Index, ChatTurn Turn, string? ToolName)> turns, int callCount)
     {
         if (callCount == 0)
@@ -3049,7 +3049,7 @@ public partial class ChatPanel : UserControl
             var first = turns[0].Turn.At;
             var last = turns[^1].Turn.At;
             return (string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                HubStrings.Get("ActivityGroupThoughtFormat"), FormatDuration(last - first)), 0, 0);
+                HubStrings.Get("ActivityGroupThoughtFormat"), FormatDuration(last - first)), 0, 0, true);
         }
 
         var calls = turns
@@ -3064,8 +3064,8 @@ public partial class ChatPanel : UserControl
             ? string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("ActivityGroupToolCountFormat"), calls.Count)
             : DescribeToolCall(calls[0].Turn);
-        var (added, removed) = AggregateDiff(calls);
-        return (text, added, removed);
+        var counts = AggregateDiff(calls);
+        return (text, counts.Added, counts.Removed, counts.Exact);
     }
 
     /// <summary>The aggregate line count of the run's edits. It reads <see cref="ChatChanges.LinesOf"/> per call
@@ -3073,30 +3073,20 @@ public partial class ChatPanel : UserControl
     /// still moved the file — totalling only the previews made this head go silent for exactly the runs that never
     /// interrupted anybody. Nothing is opened to work it out: reading the disk to total a header would be the whole
     /// list paying for one line. When no call moved anything, the header simply carries no chip.</summary>
-    private static (int Added, int Removed) AggregateDiff(
+    private static ChangeLineCounts AggregateDiff(
         List<(int Index, ChatTurn Turn, string? ToolName)> calls)
-    {
-        var added = 0;
-        var removed = 0;
-        foreach (var call in calls)
-        {
-            var lines = DiffOf(call.Turn);
-            added += lines.Added;
-            removed += lines.Removed;
-        }
-        return (added, removed);
-    }
+        => ChangeLineCounts.Sum(calls.Select(call => DiffOf(call.Turn)));
 
     /// <summary>What one call moved, wherever it moved it. A file the tool wrote carries its counts in the changes
     /// ledger; a patch reaches the disk through a command, and its counts are the lines its own envelope spells. Both
     /// are asked here so a run of patches totals like a run of writes, and so a row's number cannot disagree with the
     /// head above it.</summary>
-    private static (int Added, int Removed) DiffOf(ChatTurn call)
+    private static ChangeLineCounts DiffOf(ChatTurn call)
     {
         var lines = ChatChanges.LinesOf(call);
-        if (lines.Added + lines.Removed > 0) return (lines.Added, lines.Removed);
+        if (!lines.Exact || lines.Added + lines.Removed > 0) return lines;
         var patch = PatchText.ForCall(call);
-        return patch is null ? (0, 0) : (patch.Added, patch.Removed);
+        return patch is null ? new(0, 0) : new(patch.Added, patch.Removed);
     }
 
     /// <summary>The gap between a sentence and the numbers that follow it, and the reason it is a measurement
@@ -3112,8 +3102,22 @@ public partial class ChatPanel : UserControl
     /// <para>It is a label, not a button. The number is the thing being read, the way into a diff is the row of the
     /// edit itself where the fold already lives, and a plate on the head of a folded run is exactly the chrome the
     /// transcript has no room for.</para></summary>
-    private static StackPanel DiffCounts(int added, int removed)
+    private static StackPanel UnavailableDiffCounts(bool budgetExceeded = true)
     {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var label = new TextBlock
+        {
+            Text = HubStrings.Get(budgetExceeded ? "ChangeCountsBudgetExceeded" : "ChangeCountsUnavailable"), FontSize = 12,
+        };
+        label.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextSecondary"));
+        row.Children.Add(label);
+        ToolTip.SetTip(row, HubStrings.Get(budgetExceeded ? "ChangeCountsBudgetDetail" : "InspectorCountsUnavailable"));
+        return row;
+    }
+
+    private static StackPanel DiffCounts(int added, int removed, bool exact = true)
+    {
+        if (!exact) return UnavailableDiffCounts();
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -3877,8 +3881,8 @@ public partial class ChatPanel : UserControl
         // What this call moved, wherever it moved it: a write keeps its counts in the changes ledger and a patch
         // spells them in its own envelope. Reading both through one function is what keeps a row's number and the
         // total of the run above it from disagreeing about the same call.
-        var (movedIn, movedOut) = call is null ? (0, 0) : DiffOf(call);
-        var showsCounts = movedIn + movedOut > 0;
+        var moved = call is null ? new ChangeLineCounts(0, 0) : DiffOf(call);
+        var showsCounts = !moved.Exact || moved.Added + moved.Removed > 0;
         // What a command ended with, when anything recorded it: the exit code and how long it ran. They trail the
         // preview rather than replacing it — one line still reads in order — and they are absent for every other
         // tool, because a read has no exit code and a duration for one answers nothing anybody asked.
@@ -3943,7 +3947,7 @@ public partial class ChatPanel : UserControl
         // numbers are what tells an edit of three lines from an edit of three hundred without opening either.
         if (showsCounts)
         {
-            var counts = DiffCounts(movedIn, movedOut);
+            var counts = DiffCounts(moved.Added, moved.Removed, moved.Exact);
             counts.Margin = CountsGap;
             Grid.SetColumn(counts, 2);
             grid.Children.Add(counts);
@@ -4243,9 +4247,9 @@ public partial class ChatPanel : UserControl
         face.Classes.Add("edit");
         face.Children.Add(record);
         var counts = DiffOf(turn);
-        if (counts.Added > 0 || counts.Removed > 0)
+        if (!counts.Exact || counts.Added > 0 || counts.Removed > 0)
         {
-            var numbers = DiffCounts(counts.Added, counts.Removed);
+            var numbers = DiffCounts(counts.Added, counts.Removed, counts.Exact);
             numbers.Margin = CountsGap;
             foreach (var label in numbers.Children.OfType<TextBlock>()) label.FontSize = 11;
             Grid.SetColumn(numbers, 1);

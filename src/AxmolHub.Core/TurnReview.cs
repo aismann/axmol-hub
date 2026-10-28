@@ -84,9 +84,15 @@ public sealed record TurnReview(
     /// between rows and an empty sentence.</summary>
     public bool HasRows => Rows.Count > 0;
 
-    public int Added => Files.Sum(file => file.Lines?.Added ?? 0);
+    public ChangeLineCounts Lines => ChangeLineCounts.Sum(Files.Select(file => file.Lines));
 
-    public int Removed => Files.Sum(file => file.Lines?.Removed ?? 0);
+    public int Added => Lines.Added;
+
+    public int Removed => Lines.Removed;
+
+    public bool CountsExact => Lines.Exact;
+
+    public bool CountsBudgetExceeded => Files.Any(file => file.Lines is { Exact: false });
 
     /// <summary>Measured pairs, keyed by the hashes the numbers came from. Content-addressed, so an entry can
     /// never go stale, and capped so a long session cannot grow it without bound.</summary>
@@ -252,8 +258,7 @@ public sealed record TurnReview(
         var before = first.BeforeHash is null ? "" : ChatChangeStore.ReadContent(dataRoot, first.BeforeHash);
         var after = last.AfterHash is null ? "" : ChatChangeStore.ReadContent(dataRoot, last.AfterHash);
         if (before is null || after is null) return null;
-        var counts = FileDiff.CountChangedLines(before, after);
-        var value = new ChangeLineCounts(counts.Added, counts.Removed);
+        var value = FileDiff.CountChangedLines(before, after);
         if (Measured.Count >= MeasureCap) Measured.Clear();
         Measured[key] = value;
         return value;

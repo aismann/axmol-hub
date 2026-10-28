@@ -8,11 +8,13 @@ namespace AxmolHub.Core;
 /// </summary>
 public sealed record DiffLimits(
     int ContextLines = 3,
-    int MaxLinesPerSide = 4000,
+    int MaxLinesPerSide = int.MaxValue,
     int MaxEditScript = 2000,
     int MaxOutputLines = 60,
     int MaxOutputCharacters = 8000,
-    int MaxTotalCharacters = 4 * 1024 * 1024)
+    int MaxTotalCharacters = 4 * 1024 * 1024,
+    int MaxTraceCells = 4 * 1024 * 1024,
+    int MaxComparisonSteps = 8 * 1024 * 1024)
 {
     /// <summary>The same caps with the preview's own output budget removed: every line of the file becomes
     /// context and nothing is cut off the end. What stays is the budget that bounds the *comparison*
@@ -60,7 +62,7 @@ public static class FileDiff
         if (original.SequenceEqual(updated, StringComparer.Ordinal)) return "";
 
         var capped = limits ?? new DiffLimits();
-        var edits = Diff(original, updated, capped, out _);
+        var edits = Diff(original, updated, capped, out var exact);
 
         // Forward slashes in the header whatever the host: a unified diff is a text format with its own
         // convention, and `--- a/src\main.cpp` would not apply with patch(1) or read as a path anywhere else.
@@ -89,6 +91,7 @@ public static class FileDiff
 
         // The count is of changed lines, not of context: what a reader needs to know is how much of the edit
         // they are approving without seeing.
+        if (!exact) output.Append("… (comparison budget exceeded; changed-line counts unavailable)").Append('\n');
         var omitted = totalChanges - emittedChanges;
         if (omitted > 0) output.Append($"… (+{omitted} more changed lines)");
         return output.ToString().TrimEnd('\n');
@@ -106,12 +109,6 @@ public static class FileDiff
         List<Edit> edits;
         if (original.SequenceEqual(updated, StringComparer.Ordinal))
             edits = original.Select(line => new Edit(Kind.Equal, line)).ToList();
-        else if ((long)(originalText?.Length ?? 0) + (updatedText?.Length ?? 0) > capped.MaxTotalCharacters)
-        {
-            // Reading the bytes was already capped; this cap is about the cost of comparing what was read.
-            edits = ReplaceAll(original, updated);
-            exact = false;
-        }
         else edits = Diff(original, updated, capped, out exact);
 
         var rows = new List<DiffRow>(edits.Count);
@@ -140,16 +137,14 @@ public static class FileDiff
     /// has to fit on screen, and a tally that inherited that cap would report a 200-line rewrite as 60 — which is
     /// what the counts derived from a frozen preview do today.
     ///
-    /// <para>The bounds on <i>which</i> script is computed are shared with the renderer on purpose: past
-    /// <see cref="DiffLimits.MaxLinesPerSide"/> or beyond <see cref="DiffLimits.MaxEditScript"/> both sides answer
-    /// "everything changed", so a count and a rendering of the same pair cannot disagree about a file too large to
-    /// diff honestly. Only the output caps differ, and those are a fact about the card, not about the edit.</para></summary>
-    public static (int Added, int Removed) CountChangedLines(string? beforeText, string? afterText)
+    /// <para>Exact=false means the returned numbers describe fallback rows, not a measured change; summaries
+    /// must display an unavailable count rather than presenting those numbers as an exact tally.</para></summary>
+    public static ChangeLineCounts CountChangedLines(string? beforeText, string? afterText, DiffLimits? limits = null)
     {
         var original = SplitLines(beforeText ?? "");
         var updated = SplitLines(afterText ?? "");
-        if (original.SequenceEqual(updated, StringComparer.Ordinal)) return (0, 0);
-        var edits = Diff(original, updated, new DiffLimits(), out _);
+        if (original.SequenceEqual(updated, StringComparer.Ordinal)) return new(0, 0);
+        var edits = Diff(original, updated, limits ?? new DiffLimits(), out var exact);
         var added = 0;
         var removed = 0;
         foreach (var edit in edits)
@@ -157,7 +152,7 @@ public static class FileDiff
             if (edit.Kind == Kind.Insert) added++;
             else if (edit.Kind == Kind.Delete) removed++;
         }
-        return (added, removed);
+        return new(added, removed, exact);
     }
 
     /// <summary>Split into lines for comparison: newline style is normalized away so a CRLF file diffed against
@@ -181,6 +176,14 @@ public static class FileDiff
     private static List<Edit> Diff(string[] original, string[] updated, DiffLimits limits, out bool exact)
     {
         exact = true;
+        // Bound input work consistently for previews, alignment and counts. Sparse changes are bounded by
+        // search work and trace storage below, not by the distance between their first and last changed lines.
+        if (original.Sum(line => (long)line.Length + 1) + updated.Sum(line => (long)line.Length + 1)
+            > limits.MaxTotalCharacters)
+        {
+            exact = false;
+            return ReplaceAll(original, updated);
+        }
         // The common prefix and suffix are not part of the edit script; trimming them is what keeps D small.
         var start = 0;
         while (start < original.Length && start < updated.Length
@@ -204,7 +207,7 @@ public static class FileDiff
             middle = ReplaceAll(middleOriginal, middleUpdated);
             exact = false;
         }
-        else if (Myers(middleOriginal, middleUpdated, limits.MaxEditScript) is { } scripted) middle = scripted;
+        else if (Myers(middleOriginal, middleUpdated, limits) is { } scripted) middle = scripted;
         else
         {
             middle = ReplaceAll(middleOriginal, middleUpdated);
@@ -219,28 +222,41 @@ public static class FileDiff
     }
 
     /// <summary>Greedy Myers with the V array snapshotted per D so the edit script can be backtracked. Returns
-    /// null when the edit script would exceed <paramref name="maxEditScript"/>, which the caller treats as
-    /// "too different to be worth an exact script".</summary>
-    private static List<Edit>? Myers(string[] a, string[] b, int maxEditScript)
+    /// null when actual edit depth, search work or retained trace storage exceeds its budget. N+M is not D:
+    /// two far-apart replacements still have an edit depth of four.</summary>
+    private static List<Edit>? Myers(string[] a, string[] b, DiffLimits limits)
     {
         var n = a.Length;
         var m = b.Length;
-        if (n + m > maxEditScript) return null;
-        if (n + m == 0) return [];
+        if (n == 0 || m == 0) return ReplaceAll(a, b);
+        var depth = Math.Min(n + m, Math.Max(0, limits.MaxEditScript));
+        if (Math.Abs(n - m) > depth) return null;
 
-        var offset = n + m;
-        var v = new int[2 * offset + 1];
-        var trace = new List<int[]>(offset + 1);
-        for (var d = 0; d <= offset; d++)
+        // Only diagonals reachable within the permitted depth need storage, with a sentinel on either edge.
+        var offset = depth + 1;
+        var width = 2 * offset + 1;
+        if (width > limits.MaxTraceCells) return null;
+        var v = new int[width];
+        var trace = new List<int[]>();
+        var work = 0;
+        for (var d = 0; d <= depth; d++)
         {
+            if ((long)(trace.Count + 1) * width > limits.MaxTraceCells) return null;
             trace.Add((int[])v.Clone());
             for (var k = -d; k <= d; k += 2)
             {
+                if (++work > limits.MaxComparisonSteps) return null;
                 int x;
                 if (k == -d || (k != d && v[offset + k - 1] < v[offset + k + 1])) x = v[offset + k + 1];
                 else x = v[offset + k - 1] + 1;
                 var y = x - k;
-                while (x < n && y < m && string.Equals(a[x], b[y], StringComparison.Ordinal)) { x++; y++; }
+                while (x < n && y < m)
+                {
+                    if (++work > limits.MaxComparisonSteps) return null;
+                    if (!string.Equals(a[x], b[y], StringComparison.Ordinal)) break;
+                    x++;
+                    y++;
+                }
                 v[offset + k] = x;
                 if (x >= n && y >= m) return Backtrack(trace, a, b, offset);
             }

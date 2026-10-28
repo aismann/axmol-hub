@@ -181,7 +181,7 @@ public partial class ChatPanel
         };
         name.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextPrimary"));
         title.Children.Add(name);
-        title.Children.Add(ReviewCounts(review.Added, review.Removed));
+        title.Children.Add(ReviewCounts(review.Added, review.Removed, review.CountsExact, review.CountsBudgetExceeded));
         grid.Children.Add(title);
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
@@ -225,14 +225,20 @@ public partial class ChatPanel
         TurnChangesLabel.Text = review.Files.Count == 1 ? HubStrings.Get("ChatTurnFilesChangedOne")
             : string.Format(System.Globalization.CultureInfo.CurrentCulture,
                 HubStrings.Get("ChatTurnFilesChangedFormat"), review.Files.Count);
-        TurnChangesAdded.Text = "+" + review.Added.ToString(System.Globalization.CultureInfo.CurrentCulture);
-        TurnChangesRemoved.Text = "−" + review.Removed.ToString(System.Globalization.CultureInfo.CurrentCulture);
+        TurnChangesAdded.Text = review.CountsExact
+            ? "+" + review.Added.ToString(System.Globalization.CultureInfo.CurrentCulture)
+            : HubStrings.Get(review.CountsBudgetExceeded ? "ChangeCountsBudgetExceeded" : "ChangeCountsUnavailable");
+        TurnChangesRemoved.Text = review.CountsExact
+            ? "−" + review.Removed.ToString(System.Globalization.CultureInfo.CurrentCulture) : "";
+        ToolTip.SetTip(TurnChangesPill, review.CountsExact ? null : HubStrings.Get(
+            review.CountsBudgetExceeded ? "ChangeCountsBudgetDetail" : "InspectorCountsUnavailable"));
     }
 
     /// <summary>+N −M in the two colours the diff itself uses, so the header and the rows below it speak the same
     /// vocabulary. The minus is a real minus sign, not a hyphen: it is a count, and a hyphen reads as punctuation.</summary>
-    private static Control ReviewCounts(int added, int removed)
+    private static Control ReviewCounts(int added, int removed, bool exact = true, bool budgetExceeded = true)
     {
+        if (!exact) return UnavailableDiffCounts(budgetExceeded);
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         if (added != 0)
         {
@@ -279,7 +285,7 @@ public partial class ChatPanel
         row.Children.Add(fileButton);
         if (file.Lines is { } lines)
         {
-            var counts = ReviewCounts(lines.Added, lines.Removed);
+            var counts = ReviewCounts(lines.Added, lines.Removed, lines.Exact);
             Grid.SetColumn(counts, 1);
             row.Children.Add(counts);
         }

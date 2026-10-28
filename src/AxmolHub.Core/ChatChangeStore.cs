@@ -224,8 +224,7 @@ public static class ChatChangeStore
             {
                 ChangeId = references.FirstOrDefault()?.RevisionId,
                 ChangeRefs = references,
-                ChangeLines = references.Length == 0 ? null : new ChangeLineCounts(
-                    records.Sum(record => record.Lines?.Added ?? 0), records.Sum(record => record.Lines?.Removed ?? 0)),
+                ChangeLines = references.Length == 0 ? null : ChangeLineCounts.Sum(records.Select(record => record.Lines)),
             };
             foreach (var reference in references)
                 if (!conversation.ChangeHistoryIds.Contains(reference.RevisionId, StringComparer.Ordinal))
@@ -388,7 +387,7 @@ public static class ChatChangeStore
         var afterHash = after is null ? null : SaveContent(root, TextEol.ToLf(after));
         var record = new ChatFileRevision(Guid.NewGuid().ToString("N"), conversationId,
             System.IO.Path.GetFullPath(path), System.IO.Path.GetFullPath(rootPath), DateTimeOffset.UtcNow,
-            beforeHash, afterHash, Pending, ToLineCounts(FileDiff.CountChangedLines(before, after)),
+            beforeHash, afterHash, Pending, FileDiff.CountChangedLines(before, after),
             beforeBytes is null ? null : SaveBytes(root, beforeBytes));
         WriteRecord(root, record);
         return record;
@@ -643,7 +642,4 @@ public static class ChatChangeStore
     private static string RecordPath(string root, string id) => System.IO.Path.Combine(root, "records", id + ".json");
     private static string ObjectPath(string root, string hash) => System.IO.Path.Combine(root, "objects", hash[..2], hash + ".txt");
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
-    private static ChangeLineCounts ToLineCounts((int Added, int Removed) lines)
-        => new(lines.Added, lines.Removed);
 }

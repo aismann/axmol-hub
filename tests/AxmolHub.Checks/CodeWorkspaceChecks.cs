@@ -530,22 +530,107 @@ internal static class CodeWorkspaceChecks
                 && script.Rows.All(row => row.Kind != DiffRowKind.Equal),
                 $"past the size bound: exact={script.Exact} rows={script.Rows.Count}");
             // The tally and the view share the bound, so neither can call a file too large to align "unchanged".
-            Require(FileDiff.CountChangedLines(large, other) == (5000, 5000), "tally disagreed with the degraded script");
-            var budgeted = FileDiff.Rows("x\ny\n", "x\nz\n", new DiffLimits(MaxTotalCharacters: 1));
-            Require(!budgeted.Exact && budgeted.Rows.Count == 4, "the character budget did not degrade the script");
+            Require(FileDiff.CountChangedLines(large, other) == new ChangeLineCounts(5000, 5000, false),
+                "tally lost the degraded script's uncertainty");
+            // A failed comparison must stay visibly unknown, not become a confident count in a header.
+            foreach (var limits in new[]
+            {
+                new DiffLimits(MaxTotalCharacters: 1), new DiffLimits(MaxLinesPerSide: 1),
+                new DiffLimits(MaxEditScript: 1), new DiffLimits(MaxTraceCells: 1),
+                new DiffLimits(MaxComparisonSteps: 1),
+            })
+            {
+                const string left = "a\nb\nc\n";
+                const string right = "x\nb\ny\n";
+                var budgeted = FileDiff.Rows(left, right, limits);
+                var counts = FileDiff.CountChangedLines(left, right, limits);
+                var preview = FileDiff.Unified(left, right, "budget.txt", limits);
+                Require(!budgeted.Exact && !counts.Exact
+                    && counts.Added == budgeted.Rows.Count(row => row.Kind == DiffRowKind.Insert)
+                    && counts.Removed == budgeted.Rows.Count(row => row.Kind == DiffRowKind.Delete)
+                    && preview.Contains("counts unavailable", StringComparison.Ordinal),
+                    $"budget {limits}: rows exact={budgeted.Exact}, counts={counts}, preview={preview}");
+            }
             return Task.CompletedTask;
         });
-        await Claim("a one-line edit in a large file aligns quickly and exactly", () =>
+        // The old single edit always trimmed to a one-line middle. It could not catch the false rewrite of
+        // thousands of untouched lines between two edits, which silently inflated the turn's summary.
+        await Claim("sparse changes in large files count edits, not the distance between them", () =>
         {
-            var before = string.Join('\n', Enumerable.Range(0, 20000).Select(i => "line " + i));
-            var after = before.Replace("line 19999", "line 19999 changed");
-            var watch = System.Diagnostics.Stopwatch.StartNew();
-            var script = FileDiff.Rows(before, after);
-            watch.Stop();
-            Console.WriteLine($"  rows: 20000-line pair aligned in {watch.Elapsed.TotalMilliseconds:F1} ms, "
-                + $"{script.Rows.Count} rows, exact={script.Exact}");
-            Require(script.Exact && script.Rows.Count(row => row.Kind != DiffRowKind.Equal) == 2,
-                $"large edit: exact={script.Exact} changed={script.Rows.Count(row => row.Kind != DiffRowKind.Equal)}");
+            foreach (var (size, positions) in new[]
+            {
+                (20000, new[] { 19999 }), (5000, new[] { 99, 3099 }),
+                (20000, new[] { 99, 19099 }),
+            })
+            {
+                var lines = Enumerable.Range(0, size).Select(i => "line " + i).ToArray();
+                var before = string.Join('\n', lines);
+                foreach (var position in positions) lines[position] += " changed";
+                var after = string.Join('\n', lines);
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var script = FileDiff.Rows(before, after);
+                var counts = FileDiff.CountChangedLines(before, after);
+                var depthBounded = FileDiff.CountChangedLines(before, after,
+                    new DiffLimits(MaxEditScript: 2 * positions.Length));
+                var tooShallow = FileDiff.CountChangedLines(before, after,
+                    new DiffLimits(MaxEditScript: 2 * positions.Length - 1));
+                var previewCounts = ChatChanges.CountChanges(FileDiff.Unified(before, after, "sparse.txt"));
+                watch.Stop();
+                Console.WriteLine($"  sparse: {size} lines, {positions.Length} replacements, "
+                    + $"{watch.Elapsed.TotalMilliseconds:F1} ms, {counts}");
+                Require(script.Exact && counts == new ChangeLineCounts(positions.Length, positions.Length)
+                    && depthBounded == counts && !tooShallow.Exact
+                    && previewCounts == (counts.Added, counts.Removed)
+                    && script.Rows.Count(row => row.Kind != DiffRowKind.Equal) == 2 * positions.Length,
+                    $"sparse edit: exact={script.Exact}, counts={counts}, depthBounded={depthBounded}, "
+                    + $"tooShallow={tooShallow}, preview={previewCounts}");
+            }
+            return Task.CompletedTask;
+        });
+        // Per-call tests cannot detect charging a turn for a transient edit it subsequently reverted, or
+        // losing uncertainty when snapshot metadata is persisted and re-read by the review cache.
+        await Claim("turn snapshot chains measure net changes and retain budget uncertainty after reload", () =>
+        {
+            var original = string.Join('\n', Enumerable.Range(0, 5000).Select(i => "line " + i));
+            var first = original.Replace("line 99\n", "first change\n");
+            var second = first.Replace("line 3099\n", "second change\n");
+            var transient = second.Replace("line 199\n", "temporary change\n");
+            var rewritten = string.Join('\n', Enumerable.Range(0, 5000).Select(i => "new " + i));
+            foreach (var (versions, expected) in new[]
+            {
+                (new[] { original, first, second, transient, second }, new ChangeLineCounts(2, 2)),
+                (new[] { original, first, original }, new ChangeLineCounts(0, 0)),
+                (new[] { original, first, rewritten }, new ChangeLineCounts(5000, 5000, false)),
+            })
+            {
+                var data = Path.Combine(folder, "chain-data");
+                var conversation = new Conversation { Id = Guid.NewGuid().ToString("N"), WorkspaceRoot = workspace };
+                conversation.Append(ChatTurn.User("edit the file"));
+                for (var i = 1; i < versions.Length; i++)
+                {
+                    var revision = ChatChangeStore.Prepare(data, conversation.Id, Path.Combine(workspace, "chain.txt"),
+                        workspace, versions[i - 1], versions[i]);
+                    ChatChangeStore.CompleteRevision(data, revision);
+                    var loaded = ChatChangeStore.Read(data, revision.Id)!;
+                    Require(loaded.Lines == revision.Lines, $"persisted counts: {revision.Lines} -> {loaded.Lines}");
+                    conversation.Append(ChatTurn.FunctionCall("chain-" + i, ToolNames.FsReplace, "{}") with
+                    {
+                        ChangeId = loaded.Id,
+                        ChangeRefs = [new ChatChangeReference("chain.txt", loaded.Id, loaded.Lines)],
+                        ChangeLines = ChangeLineCounts.Sum([loaded.Lines]),
+                    });
+                    conversation.Append(ChatTurn.FunctionResult("chain-" + i, "Edited 1 file(s)."));
+                }
+                conversation.Append(ChatTurn.Assistant("done"));
+                for (var read = 0; read < 2; read++)
+                {
+                    var review = TurnReview.Of(conversation, conversation.Messages.Count - 1, data);
+                    Console.WriteLine($"  chain read {read}: {review.Files.Count} file(s), {review.Lines}");
+                    Require(review.Files.Count == 1 && review.Lines == expected
+                        && review.CountsExact == expected.Exact && review.Rows[0].Lines == expected,
+                        $"net review: expected={expected}, actual={review.Lines}");
+                }
+            }
             return Task.CompletedTask;
         });
         Console.WriteLine($"RESULT: {passed}/{total} code workspace checks passed");

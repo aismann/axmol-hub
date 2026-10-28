@@ -377,7 +377,7 @@ public static class ChatChanges
     /// row in the pane, the head of its run and the tally above the composer cannot quote three numbers for it.
     ///
     /// <para>Three rungs, and they are ordered by how much they actually know. The count recorded when the edit was
-    /// applied is exact. Failing that, a frozen approval preview counted with <see cref="CountChanges"/> is what a
+    /// applied carries its exactness flag. Failing that, a frozen approval preview counted with <see cref="CountChanges"/> is what a
     /// session written before the record existed can still offer, and it is the same number that session showed
     /// then — a downgrade would be the regression. Failing that, nothing is known, and zero is rendered as nothing
     /// rather than as a confident <c>+0</c>.</para>
@@ -388,7 +388,10 @@ public static class ChatChanges
     public static ChangeLineCounts LinesOf(ChatTurn turn)
         => turn.ChangeLines
             ?? (turn.ApprovalPreview is { Length: > 0 } frozen
-                ? ToCounts(CountChanges(frozen))
+                ? ToCounts(CountChanges(frozen)) with
+                {
+                    Exact = !frozen.Contains("comparison budget exceeded", StringComparison.Ordinal),
+                }
                 : new ChangeLineCounts(0, 0));
 
     private static ChangeLineCounts ToCounts((int Added, int Removed) counts)

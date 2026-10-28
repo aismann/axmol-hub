@@ -346,10 +346,9 @@ public sealed partial class WorkspaceTools(WorkspaceToolScope context)
 
         // After the bytes are on disk and nowhere earlier: a refused anchor, a sandbox refusal and a failed write
         // all changed nothing, and a tally reported for one of them would be a number for a change that never
-        // happened. Both sides are still in memory here, which is the only moment this is free — the pre-image
-        // copy is gone by the next turn, and the rendered diff is capped.
-        var moved = FileDiff.CountChangedLines(original, edit.Updated);
-        context.RecordChangeLines?.Invoke(new ChangeLineCounts(moved.Added, moved.Removed));
+        // happened. Reuse the revision's complete measurement, including its uncertainty; counting again would
+        // duplicate the comparison, and reading the capped preview would lose changes.
+        context.RecordChangeLines?.Invoke(revision.Lines!);
 
         context.Log?.Write($"Assistant wrote {resolved.Full} ({edit.Verdict}, {edit.Matches} place(s))");
         return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display)
