@@ -107,7 +107,7 @@ internal static class ShellCheckSupport
     internal const string Bars = "\uFF5C\uFF5CDSML\uFF5C\uFF5C";
     internal static string LeakedCall { get; } = string.Join("\n",
         $"<{Bars} calls>",
-        $"<{Bars} invoke name=\"search_text\">",
+        $"<{Bars} invoke name=\"fs_grep\">",
         $"<{Bars} parameter name=\"path\" string=\"true\">.agents/memory</{Bars} parameter>",
         $"</{Bars} invoke>",
         $"</{Bars} calls>");
@@ -183,6 +183,15 @@ internal static class ShellCheckSupport
         /// <summary>The call the fixture asks for. A real write by default: the gate is what is under test, and a
         /// read-only call would sail through it without proving anything.</summary>
         public string ToolName { get; set; } = "file_write";
+        private static (string Name, Dictionary<string, object?> Arguments) CurrentFileCall(
+            string name, Dictionary<string, object?> arguments)
+        {
+            if (name != "file_write" || !arguments.TryGetValue("old_string", out var old)) return (name, arguments);
+            if (old is string { Length: 0 })
+                return ("fs_write", new Dictionary<string, object?>
+                { ["path"] = arguments.GetValueOrDefault("path"), ["content"] = arguments.GetValueOrDefault("new_string") });
+            return ("fs_replace", new Dictionary<string, object?> { ["edits"] = new[] { arguments } });
+        }
         public Dictionary<string, object?> Arguments { get; set; } = new();
         /// <summary>The arguments of the call about to be filed, asked instead of <see cref = "Arguments"/> when
         /// set. A fixture that needs several results out of one tool has to vary its signature: the spin guard
@@ -256,14 +265,18 @@ internal static class ShellCheckSupport
             {
                 var batch = new List<Microsoft.Extensions.AI.AIContent>();
                 for (var index = 0; index < Batch.Count; index++)
-                    batch.Add(new Microsoft.Extensions.AI.FunctionCallContent(NextCallId($"call-{Requests}-{index}"), Batch[index].Name, Batch[index].Arguments));
+                {
+                    var item = CurrentFileCall(Batch[index].Name, Batch[index].Arguments);
+                    batch.Add(new Microsoft.Extensions.AI.FunctionCallContent(NextCallId($"call-{Requests}-{index}"), item.Name, item.Arguments));
+                }
                 Batch.Clear();
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, batch);
             }
             else if (CallsRemaining > 0)
             {
                 CallsRemaining--;
-                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, [new Microsoft.Extensions.AI.FunctionCallContent(NextCallId("call-" + Requests), ToolName, ArgumentsByCall is { } byCall ? byCall(Requests) : Arguments)]);
+                var item = CurrentFileCall(ToolName, ArgumentsByCall is { } byCall ? byCall(Requests) : Arguments);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, [new Microsoft.Extensions.AI.FunctionCallContent(NextCallId("call-" + Requests), item.Name, item.Arguments)]);
             }
             else
             {
@@ -429,7 +442,7 @@ internal static class ShellCheckSupport
             if (_calls == 1)
             {
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, "先说的话");
-                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, [new Microsoft.Extensions.AI.FunctionCallContent(NextCallId("call-ui"), "get_projects", new Dictionary<string, object?>())]);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, [new Microsoft.Extensions.AI.FunctionCallContent(NextCallId("call-ui"), "project_list", new Dictionary<string, object?>())]);
             }
             else
             {
@@ -486,7 +499,7 @@ internal static class ShellCheckSupport
             if (_calls == 1)
             {
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, narration);
-                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, [new Microsoft.Extensions.AI.FunctionCallContent(NextCallId("call-handoff"), "get_projects", new Dictionary<string, object?>())]);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, [new Microsoft.Extensions.AI.FunctionCallContent(NextCallId("call-handoff"), "project_list", new Dictionary<string, object?>())]);
             }
             else
             {
@@ -516,7 +529,7 @@ internal static class ShellCheckSupport
                 yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, "先查一下工程列表");
                 firstRoundReady.TrySetResult(true);
                 await releaseFirstRound.WaitAsync(cancellationToken).ConfigureAwait(false);
-                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, [new Microsoft.Extensions.AI.FunctionCallContent(NextCallId("call-duration"), "get_projects", new Dictionary<string, object?>())]);
+                yield return new Microsoft.Extensions.AI.ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, [new Microsoft.Extensions.AI.FunctionCallContent(NextCallId("call-duration"), "project_list", new Dictionary<string, object?>())]);
             }
             else
             {
@@ -1186,7 +1199,7 @@ internal static class ShellCheckSupport
             if (Executed < 8)
             {
                 var part = Executed++;
-                yield return new ChatResponseUpdate(ChatRole.Assistant, [new FunctionCallContent("boundary-" + part, "read_file", new Dictionary<string, object?> { ["path"] = $"part-{part}.txt" })])
+                yield return new ChatResponseUpdate(ChatRole.Assistant, [new FunctionCallContent("boundary-" + part, "fs_read", new Dictionary<string, object?> { ["path"] = $"part-{part}.txt" })])
                 {
                     ResponseId = "boundary-response-" + part,
                     FinishReason = ChatFinishReason.ToolCalls

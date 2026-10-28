@@ -44,8 +44,9 @@ public static class ToolSpinGuard
     /// state a repeat would be asking for twice, and the answer to the second ask is "already granted". Its
     /// one-file sibling <c>request_file</c> lands the same record, so it belongs here for the same reason.</summary>
     private static readonly string[] StateChangingTools =
-        [Core.ToolNames.FileWrite, Core.ToolNames.RunCommand, Core.ToolNames.RequestDirectory,
-         Core.ToolNames.RequestFile, Core.ToolNames.MemoryWrite];
+        [Core.LegacyFileToolNames.FileWrite, Core.ToolNames.FsWrite, Core.ToolNames.FsReplace, Core.ToolNames.FsDelete,
+         Core.ToolNames.FsMove, Core.ToolNames.RunCommand, Core.LegacyFileToolNames.RequestDirectory,
+         Core.LegacyFileToolNames.RequestFile, Core.ToolNames.FsRequestAccess, Core.ToolNames.MemoryWrite];
 
     /// <summary>The sentence a refused repeat hands back to the model. Matched on itself by the checks.</summary>
     public const string RefusalMarker = "has already run";
@@ -135,12 +136,14 @@ public static class ToolSpinGuard
         // refusals are nonempty, and treating them as progress lets repeated bad anchors reset the spin guard.
         return toolName switch
         {
-            Core.ToolNames.FileWrite => result.StartsWith("Created ", StringComparison.Ordinal)
+            Core.LegacyFileToolNames.FileWrite or Core.ToolNames.FsWrite or Core.ToolNames.FsReplace => result.StartsWith("Created ", StringComparison.Ordinal)
                             || result.StartsWith("Edited ", StringComparison.Ordinal),
-            Core.ToolNames.RequestDirectory => result.StartsWith("Granted", StringComparison.Ordinal),
+            Core.ToolNames.FsDelete => result.StartsWith("Deleted ", StringComparison.Ordinal),
+            Core.ToolNames.FsMove => result.StartsWith("Moved ", StringComparison.Ordinal),
+            Core.LegacyFileToolNames.RequestDirectory or Core.ToolNames.FsRequestAccess => result.StartsWith("Granted", StringComparison.Ordinal),
             // One file is the same fact at another width: the second ask is answered "already granted", so a repeat
             // after a landed card is a request for state that already moved.
-            Core.ToolNames.RequestFile => result.StartsWith("Granted", StringComparison.Ordinal),
+            Core.LegacyFileToolNames.RequestFile => result.StartsWith("Granted", StringComparison.Ordinal),
             Core.ToolNames.MemoryWrite => result.StartsWith("Saved ", StringComparison.Ordinal),
             // A command may have changed files before returning a nonzero exit code, so its exit status is not
             // evidence that no state changed. Tool failures above are the cases where execution never completed.

@@ -992,7 +992,7 @@ internal sealed class ShellSessionsChecks
         var transcript = chat.StoredCopyForCheck(ordered.Id)?.Messages;
         Check(transcript is not null && transcript.Count == 4
               && transcript[0].Role == ChatRoles.User
-              && transcript[1].ToolName == "get_projects" && transcript[1].Text == "先说的话"
+              && transcript[1].ToolName == "project_list" && transcript[1].Text == "先说的话"
               && transcript[2].Role == ChatRoles.Tool && transcript[3].Text == "后说的话",
             "工具调用前说的话随调用一起落库，顺序不乱（实际 "
             + (transcript?.Count ?? -1) + " 条：" + string.Join(" / ", transcript?.Select(turn => turn.Role + ":" + turn.Text) ?? []));

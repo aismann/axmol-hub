@@ -217,12 +217,12 @@ internal static class AiToolPolicyChecks
         {
             ToolApprovalMode = ToolApprovalModes.Auto
         };
-        trusting.TrustedTools.AddRange(["run_command", " run_command ", "", "FILE_WRITE", "run_command"]);
+        trusting.TrustedTools.AddRange(["run_command", " run_command ", "", "FS_WRITE", "run_command"]);
         trustStore.Save(trusting);
         var trusted = trustStore.Load();
         // Five names written, two left: the padded and repeated spellings of `run_command` fold into one, the blank
-        // goes, and `FILE_WRITE` survives as its own entry — because the dedupe is forgiving while the match is not.
-        if (trusted.TrustedTools.Count != 2 || !ToolTrust.Contains(trusted.TrustedTools, "run_command") || !ToolTrust.Contains(trusted.TrustedTools, "FILE_WRITE") || ToolTrust.Contains(trusted.TrustedTools, "file_write") || ToolTrust.Contains(trusted.TrustedTools, " "))
+        // goes, and `FS_WRITE` survives as its own entry — because the dedupe is forgiving while the match is not.
+        if (trusted.TrustedTools.Count != 2 || !ToolTrust.Contains(trusted.TrustedTools, "run_command") || !ToolTrust.Contains(trusted.TrustedTools, "FS_WRITE") || ToolTrust.Contains(trusted.TrustedTools, "fs_write") || ToolTrust.Contains(trusted.TrustedTools, " "))
             throw new Exception($"The trust list did not round-trip as written: [{string.Join(",", trusted.TrustedTools)}]");
         // A name this build has never heard is kept rather than dropped: the app's table decides what matches a call,
         // and a reader that "cleaned" the list would silently revoke a grant a newer Hub wrote down.
@@ -250,14 +250,14 @@ internal static class AiToolPolicyChecks
         policyConversation.Append(ChatTurn.User("写一个文件"));
         policyConversation.ApprovalMode = ToolApprovalModes.Auto;
         policyConversation.WorkspaceRoot = workspaceRoot;
-        policyConversation.AutoApprovedTools.Add("file_write");
-        policyConversation.Messages.Add(ChatTurn.FunctionCall("c1", "file_write", """{"path":"x.cpp"}""")with { ApprovalState = ChatApprovalStates.Pending, ApprovalPreview = "--- a/x.cpp\n+++ b/x.cpp\n+hi", });
+        policyConversation.AutoApprovedTools.Add("fs_replace");
+        policyConversation.Messages.Add(ChatTurn.FunctionCall("c1", "fs_replace", """{"edits":[]}""")with { ApprovalState = ChatApprovalStates.Pending, ApprovalPreview = "--- a/x.cpp\n+++ b/x.cpp\n+hi", });
         policyStore.Save(policyConversation);
         var policyReloaded = policyStore.Load(policyConversation.Id) ?? throw new Exception("Session with approval settings did not reload.");
-        if (policyReloaded.ApprovalMode != ToolApprovalModes.Auto || policyReloaded.WorkspaceRoot != workspaceRoot || policyReloaded.AutoApprovedTools.Count != 1 || policyReloaded.AutoApprovedTools[0] != "file_write")
+        if (policyReloaded.ApprovalMode != ToolApprovalModes.Auto || policyReloaded.WorkspaceRoot != workspaceRoot || policyReloaded.AutoApprovedTools.Count != 1 || policyReloaded.AutoApprovedTools[0] != "fs_replace")
             throw new Exception("The session's approval settings did not round-trip.");
         var pendingCall = policyReloaded.Messages[^1];
-        if (pendingCall.ApprovalState != ChatApprovalStates.Pending || pendingCall.ApprovalPreview is not { Length: > 0 } || pendingCall.ToolName != "file_write")
+        if (pendingCall.ApprovalState != ChatApprovalStates.Pending || pendingCall.ApprovalPreview is not { Length: > 0 } || pendingCall.ToolName != "fs_replace")
             throw new Exception("A pending tool call lost its state, its preview, or its name.");
         var pendingSummary = policyStore.List().First(summary => summary.Id == policyConversation.Id);
         if (pendingSummary.PendingApprovals != 1)
@@ -305,7 +305,7 @@ internal static class AiToolPolicyChecks
             BaseUrl = "https://api.orcarouter.ai/v1"
         };
         // A function that objects to being run: every gate answer other than Allow has to keep it from executing.
-        var gatedFunction = AIFunctionFactory.Create((Func<string>)(() => throw new Exception("A gated tool ran without being allowed.")), new AIFunctionFactoryOptions { Name = "get_projects", Description = "Return registered projects.", });
+        var gatedFunction = AIFunctionFactory.Create((Func<string>)(() => throw new Exception("A gated tool ran without being allowed.")), new AIFunctionFactoryOptions { Name = "project_list", Description = "Return registered projects.", });
         // Deny: the refusal has to reach the model, or the model asks again.
         var order = new List<string>();
         var denyCompleted = 0;
@@ -444,8 +444,9 @@ internal static class AiToolPolicyChecks
             ("list_directory", ToolRisk.ReadOnly, true),
             ("workspace_map", ToolRisk.ReadOnly, true),
             ("memory_read", ToolRisk.ReadOnly, true),
-            ("get_projects", ToolRisk.ReadOnly, true),
-            ("get_engines", ToolRisk.ReadOnly, true),
+            ("project_list", ToolRisk.ReadOnly, true),
+            ("engine_list", ToolRisk.ReadOnly, true),
+            ("toolchain_status", ToolRisk.ReadOnly, true),
             ("list_sessions", ToolRisk.ReadOnly, true),
             // A grant grows the list of directories the session holds, so a read started beside it would be graded
             // against a sandbox that stops being the one it runs in. Not a read-only tier at all — the card is the

@@ -346,6 +346,7 @@ internal sealed partial class ChatExecutionCoordinator
                 // hand edit (or an engine installed later) put in the writable half is demoted to the read-only
                 // one rather than dropped, and every other stale entry is left out of both.
                 Sandbox = SandboxOf(session, root, guards),
+                HoldBatchLease = (callId, lease) => HoldBatchLease(conversationId, callId, lease),
             },
             // Null on a session file written before the setting existed reads as allowed, which is the only
             // honest reading of "nobody ever turned it off". Read here rather than at the call site because the
@@ -414,6 +415,20 @@ internal sealed partial class ChatExecutionCoordinator
     }
 
     private readonly ConcurrentDictionary<string, ConcurrentQueue<ChangeLineCounts>> _changeLines = new();
+    private readonly ConcurrentDictionary<(string Conversation, string Call), ConcurrentQueue<IDisposable>> _batchLeases = new();
+
+    private void HoldBatchLease(string conversationId, string callId, IDisposable lease)
+    {
+        lock (_batchLeases)
+            _batchLeases.GetOrAdd((conversationId, callId), _ => new ConcurrentQueue<IDisposable>()).Enqueue(lease);
+    }
+
+    private void ReleaseBatchLease(string conversationId, string callId)
+    {
+        lock (_batchLeases)
+            if (_batchLeases.TryRemove((conversationId, callId), out var leases))
+                while (leases.TryDequeue(out var lease)) lease.Dispose();
+    }
     private void RecordChangeLines(string conversationId, ChangeLineCounts lines)
     {
         _changeLines.GetOrAdd(conversationId, _ => new ConcurrentQueue<ChangeLineCounts>()).Enqueue(lines);
@@ -421,7 +436,7 @@ internal sealed partial class ChatExecutionCoordinator
 
     private ChangeLineCounts? TakeWriteTally(string conversationId, string? toolName, string result)
     {
-        if (!string.Equals(toolName, ChatChanges.FileWriteTool, StringComparison.Ordinal)) return null;
+        if (!ChatChanges.IsSingleFileWrite(toolName) && toolName != ToolNames.FsReplace) return null;
         if (ChatChanges.VerdictOf(result) is not (ChangeVerdict.Created or ChangeVerdict.Edited)) return null;
         return _changeLines.TryGetValue(conversationId, out var queue)
                && queue.TryDequeue(out var lines)
@@ -1826,7 +1841,6 @@ internal sealed partial class ChatExecutionCoordinator
         {
             var conversation = Sessions.Registry.Peek(run.ConversationId);
             if (conversation is null) return null;
-            var projects = ProjectPaths(scope);
             var mode = ApprovalModeFor(run.ConversationId);
             var seen = run.ConversationId == Sessions.Active?.Id;
             // One call read the way the gate reads it: the tier, whether a grant covers it, and whether that adds
@@ -1900,9 +1914,8 @@ internal sealed partial class ChatExecutionCoordinator
             // is the request's own rather than a fresh read of the session: the root cannot move inside a round —
             // that takes a person clicking the composer's menu — so the two agree today, and one value is what
             // keeps the tier and the execution reading the same directory if that ever changes.
-            ParkedCall Of(CallVerdict verdict) => new(verdict.Call,
-                (string?)ToolPreviews.PreviewFor(verdict.Call.Name, verdict.Call.ArgumentsJson,
-                    scope.Workspace, projects), verdict.Asks, seen);
+            ParkedCall Of(CallVerdict verdict) => new(verdict.Call, null, verdict.Asks, seen, null, null,
+                verdict.Risk == ToolRisk.CacheBreak);
 
             var thisCall = Judge(call);
             // Asked again about a call that is already on the card: a sibling of the same response raised the group,
@@ -1939,11 +1952,36 @@ internal sealed partial class ChatExecutionCoordinator
         if (waiting is null) return ChatPipeline.ToolGateOutcome.Allow;
         if (waiting.Count == 0) return ChatPipeline.ToolGateOutcome.Pending;
 
+        // Snapshots and diffs can read hundreds of megabytes. Prepare them away from the UI thread, then bind
+        // the visible preview to the same observed state before a decision can be applied.
+        waiting = await Task.Run(() => waiting.Select(parked =>
+        {
+            var member = parked.Call;
+            var isWrite = member.Name is ToolNames.FsWrite or ToolNames.FsReplace or ToolNames.FsDelete or ToolNames.FsMove;
+            var isAccess = member.Name == ToolNames.FsRequestAccess;
+            string? Fingerprint() => member.Name switch
+            {
+                ToolNames.FsReplace => ToolPreviews.ReplaceFingerprint(member.ArgumentsJson, scope.Workspace),
+                ToolNames.FsDelete or ToolNames.FsMove => ToolPreviews.ManagementFingerprint(member.Name,
+                    member.ArgumentsJson, scope.Workspace),
+                _ => ToolPreviews.WriteFingerprint(member.ArgumentsJson, scope.Workspace),
+            };
+            var before = isWrite ? Fingerprint() : null;
+            var accessBefore = isAccess ? ToolPreviews.AccessKind(member.ArgumentsJson) : null;
+            var preview = ToolPreviews.PreviewFor(member.Name, member.ArgumentsJson, scope.Workspace, ProjectPaths(scope));
+            var after = isWrite ? Fingerprint() : null;
+            var accessAfter = isAccess ? ToolPreviews.AccessKind(member.ArgumentsJson) : null;
+            return parked with { Preview = preview, WriteFingerprint = before == after ? before : "invalid",
+                AccessKind = accessBefore == accessAfter ? accessBefore : "invalid" };
+        }).ToList(), run.Token).ConfigureAwait(false);
+        run.Token.ThrowIfCancellationRequested();
+
+        var recorded = false;
         await ApplyOnUiAsync(() =>
         {
             // Recorded as waiting *before* the stream is told to end: a call that is cancelled but not recorded
             // would disappear, and the model's request would go with it.
-            Sessions.Registry.TryUpdate(run.ConversationId, opened =>
+            recorded = Sessions.Registry.TryUpdate(run.ConversationId, opened =>
             {
                 foreach (var parked in waiting)
                     MarkPending(opened, parked, call.BatchId);
@@ -1951,6 +1989,7 @@ internal sealed partial class ChatExecutionCoordinator
                 // tool rounds that follow the answer never move it again (see Conversation.EngagedAt).
                 opened.MarkEngaged();
             });
+            if (!recorded) return;
             run.ParkForApproval();
             run.SuspendForApproval();
             Changed?.Invoke();
@@ -1961,7 +2000,7 @@ internal sealed partial class ChatExecutionCoordinator
             AttentionRequired?.Invoke(run.ConversationId,
                 waiting[0].Asks ? ChatAttentionKind.UserQuestion : ChatAttentionKind.ToolApproval);
         }).ConfigureAwait(false);
-        return ChatPipeline.ToolGateOutcome.Pending;
+        return recorded ? ChatPipeline.ToolGateOutcome.Pending : ChatPipeline.ToolGateOutcome.Deny;
     }
 
     internal Action<string>? AuditWrite { get; set; }
@@ -2302,7 +2341,8 @@ internal sealed partial class ChatExecutionCoordinator
             return unanswered
                 .Where(turn => !computerUseBatch || turn.ApprovalState == ChatApprovalStates.Approved)
                 .Select(turn => new ApprovedCall(turn.ToolName ?? "", turn.ToolArguments ?? "{}", mode,
-                    turn.ToolCallId ?? "", turn.ToolName == AskUserTool.ToolName))
+                    turn.ToolCallId ?? "", turn.ToolName == AskUserTool.ToolName, turn.ApprovalWriteFingerprint,
+                    turn.ApprovalAccessKind, turn.ApprovalCacheBreak))
                 .ToList();
         }).ConfigureAwait(false);
 
@@ -2360,6 +2400,11 @@ internal sealed partial class ChatExecutionCoordinator
 
     private async Task RunApprovedCallAsync(ConversationRun run, ApprovedCall call, int budget, ChatToolScope scope)
     {
+        if (call.Name is ToolNames.FsWrite or ToolNames.FsReplace or ToolNames.FsDelete or ToolNames.FsMove)
+            scope = scope with { Workspace = scope.Workspace with { ApprovedWriteFingerprint = call.WriteFingerprint ?? "invalid",
+                ApprovedCacheBreak = call.CacheBreak } };
+        if (call.Name == ToolNames.FsRequestAccess)
+            scope = scope with { Workspace = scope.Workspace with { ApprovedAccessKind = call.AccessKind ?? "invalid" } };
         var result = ToolApprovalResults.Unavailable;
         var failed = true;
         // How long the call itself took, when it ran at all. Reading it off the bracket rather than off a stopwatch
@@ -2378,6 +2423,7 @@ internal sealed partial class ChatExecutionCoordinator
             NoteToolRun(run.ConversationId);
             try
             {
+                using var invocation = ToolInvocation.Enter(call.CallId);
                 var arguments = System.Text.Json.JsonSerializer
                     .Deserialize<Dictionary<string, object?>>(call.ArgumentsJson) ?? [];
                 // Invoked directly rather than through the model loop: the call was already made, and this is
@@ -2412,24 +2458,104 @@ internal sealed partial class ChatExecutionCoordinator
         // "批准" and not "允许": this call was answered by a person, and the daily log is the only record that
         // keeps the two apart once the card has folded into a line.
         run.RecordToolOutcome($"{call.Name}（{(failed ? "失败" : "批准")}）");
-        await ApplyOnUiAsync(() =>
+        try
         {
-            Sessions.Registry.TryUpdate(run.ConversationId, opened =>
+            await ApplyOnUiAsync(() =>
             {
-                opened.AppendFunctionResult(turn);
-                // The same undo record the model loop leaves: an approved write is still the write that has to be
-                // undoable, and this path is the one a strict mode takes most often.
-                RecordWriteFacts(opened, call.CallId, call.Name, result, lines);
-            });
-            ToolActivityChanged?.Invoke(run.ConversationId, call.Name, true);
-            Changed?.Invoke();
-        }).ConfigureAwait(false);
+                Sessions.Registry.TryUpdate(run.ConversationId, opened =>
+                {
+                    opened.AppendFunctionResult(turn);
+                    RecordWriteFacts(opened, call.CallId, call.Name, result, lines);
+                });
+                ToolActivityChanged?.Invoke(run.ConversationId, call.Name, true);
+                Changed?.Invoke();
+            }).ConfigureAwait(false);
+        }
+        finally { ReleaseBatchLease(run.ConversationId, call.CallId); }
     }
 
     internal async Task<UndoOutcome> RevertWriteAsync(string conversationId, string callId)
     {
         if (await ReadOnUiAsync(() => RunFor(conversationId) is not null).ConfigureAwait(false))
             return new UndoOutcome(null, "", "ChatSessionBusy");
+
+        var management = await ReadOnUiAsync<(string BatchId, WorkspaceToolScope Scope)?>(() =>
+        {
+            var conversation = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);
+            var index = conversation?.IndexOfToolCall(callId) ?? -1;
+            if (conversation is null || index < 0) return null;
+            var turn = conversation.Messages[index];
+            return !turn.UndoConsumed && turn.ManagementBatchId is { Length: > 0 } id
+                ? (id, ScopeFor(conversationId).Workspace) : null;
+        }).ConfigureAwait(false);
+        if (management is { } managed)
+        {
+            var result = await Task.Run(() =>
+            {
+                var verdict = new WorkspaceTools(managed.Scope).UndoManagement(managed.BatchId, out var path);
+                return (verdict, path);
+            }).ConfigureAwait(false);
+            if (result.verdict == UndoVerdict.Reverted)
+                await ApplyOnUiAsync(() =>
+                {
+                    Sessions.Registry.TryUpdate(conversationId, opened =>
+                    {
+                        var at = opened.IndexOfToolCall(callId);
+                        if (at >= 0) opened.Messages[at] = opened.Messages[at] with { UndoConsumed = true };
+                        opened.Append(ChatTurn.User(string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                            HubStrings.Get("ChatUndoNotifiedFormat"), result.path)) with { IsUndoNotice = true });
+                    });
+                    Changed?.Invoke();
+                }).ConfigureAwait(false);
+            return new UndoOutcome(result.verdict, result.path, null);
+        }
+
+        var batch = await ReadOnUiAsync<(IReadOnlyList<ChatChangeReference> Refs, WorkspaceToolScope Scope)?>(() =>
+        {
+            var conversation = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);
+            var index = conversation?.IndexOfToolCall(callId) ?? -1;
+            if (conversation is null || index < 0) return null;
+            var turn = conversation.Messages[index];
+            if (turn.UndoConsumed || turn.ChangeRefs.Count == 0) return null;
+            return (turn.ChangeRefs.Where(reference => !turn.RevertedChangeIds.Contains(reference.RevisionId,
+                StringComparer.Ordinal)).ToArray(), ScopeFor(conversationId).Workspace);
+        }).ConfigureAwait(false);
+        if (batch is { } work)
+        {
+            var outcomes = await Task.Run(() => work.Refs.Reverse().Select(reference =>
+            {
+                var verdict = ChatChangeStore.Restore(work.Scope.DataRoot, work.Scope.ConversationId,
+                    reference.RevisionId, work.Scope.Sandbox, work.Scope.Guards, out var path, out var inverse);
+                return (Reference: reference, Verdict: verdict, Path: path, Inverse: inverse);
+            }).ToArray()).ConfigureAwait(false);
+            await ApplyOnUiAsync(() =>
+            {
+                Sessions.Registry.TryUpdate(conversationId, opened =>
+                {
+                    var at = opened.IndexOfToolCall(callId);
+                    if (at < 0) return;
+                    var turn = opened.Messages[at];
+                    var reverted = turn.RevertedChangeIds.Concat(outcomes.Where(item => item.Verdict == UndoVerdict.Reverted)
+                        .Select(item => item.Reference.RevisionId)).Distinct(StringComparer.Ordinal).ToArray();
+                    opened.Messages[at] = turn with
+                    {
+                        RevertedChangeIds = reverted,
+                        UndoConsumed = turn.ChangeRefs.All(reference => reverted.Contains(reference.RevisionId, StringComparer.Ordinal)),
+                    };
+                    foreach (var inverse in outcomes.Select(item => item.Inverse).Where(id => id is { Length: > 0 }))
+                        if (!opened.ChangeHistoryIds.Contains(inverse!, StringComparer.Ordinal)) opened.ChangeHistoryIds.Add(inverse!);
+                    var count = outcomes.Count(item => item.Verdict == UndoVerdict.Reverted);
+                    if (count > 0)
+                        opened.Append(ChatTurn.User(string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                            HubStrings.Get("ChatReviewUndoneFormat"), count)) with { IsUndoNotice = true });
+                });
+                Changed?.Invoke();
+            }).ConfigureAwait(false);
+            var refusal = outcomes.FirstOrDefault(item => item.Verdict != UndoVerdict.Reverted);
+            return refusal.Reference is not null
+                ? new UndoOutcome(refusal.Verdict, refusal.Path, null)
+                : new UndoOutcome(UndoVerdict.Reverted, $"{outcomes.Length} files", null);
+        }
 
         var record = await ReadOnUiAsync<UndoRecord?>(() =>
         {
@@ -2484,7 +2610,7 @@ internal sealed partial class ChatExecutionCoordinator
                 // In the user's voice, because it is their own act: the assistant has to read that the file moved
                 // back before it anchors another edit on the content it wrote.
                 opened.Append(ChatTurn.User(string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                    HubStrings.Get("ChatUndoNotifiedFormat"), attempt.relative)));
+                    HubStrings.Get("ChatUndoNotifiedFormat"), attempt.relative)) with { IsUndoNotice = true });
             });
             Audit(conversationId, $"Undo: {attempt.relative} restored from the pre-image");
             Changed?.Invoke();
@@ -2517,6 +2643,9 @@ internal sealed partial class ChatExecutionCoordinator
         }).ConfigureAwait(false);
         if (plan is not { } work) return null;
 
+        using var changeGate = ChangeGateProvider?.Invoke("undo_turn");
+        if (ChangeGateProvider is not null && changeGate is null) return null;
+
         // Off the UI thread: this is one guarded read-and-write per file, the same work a single undo does.
         var undo = await Task.Run(() => work.Review.Undo(work.ConversationId, work.DataRoot, work.Sandbox,
             work.Guards), cancellation).ConfigureAwait(false);
@@ -2530,6 +2659,26 @@ internal sealed partial class ChatExecutionCoordinator
         {
             Sessions.Registry.TryUpdate(conversationId, opened =>
             {
+                if (work.Review.Actions is { } actions)
+                {
+                    foreach (var outcome in undo.Outcomes.Where(outcome => outcome.Verdict == UndoVerdict.Reverted))
+                    {
+                        var action = actions.FirstOrDefault(action => action.RevisionId == outcome.RevisionId
+                            && action.ManagementBatchId == outcome.ManagementBatchId);
+                        if (action is null || action.TurnIndex < 0 || action.TurnIndex >= opened.Messages.Count) continue;
+                        var turn = opened.Messages[action.TurnIndex];
+                        if (outcome.ManagementBatchId is not null || turn.ChangeRefs.Count == 0)
+                            opened.Messages[action.TurnIndex] = turn with { UndoName = null, UndoConsumed = true };
+                        else
+                        {
+                            var reverted = turn.RevertedChangeIds.Append(outcome.RevisionId!).Distinct(StringComparer.Ordinal).ToArray();
+                            opened.Messages[action.TurnIndex] = turn with { RevertedChangeIds = reverted,
+                                UndoConsumed = turn.ChangeRefs.All(reference => reverted.Contains(reference.RevisionId, StringComparer.Ordinal)) };
+                        }
+                    }
+                }
+                else
+                {
                 var restored = undo.Outcomes
                     .Where(outcome => outcome.Verdict == UndoVerdict.Reverted)
                     .Select(outcome => outcome.RelativePath)
@@ -2537,13 +2686,26 @@ internal sealed partial class ChatExecutionCoordinator
                 foreach (var file in work.Review.Files.Where(file => restored.Contains(file.RelativePath)))
                 foreach (var index in file.TurnIndices)
                     if (index >= 0 && index < opened.Messages.Count)
-                        opened.Messages[index] = opened.Messages[index] with { UndoName = null, UndoConsumed = true };
+                    {
+                        var turn = opened.Messages[index];
+                        if (turn.ChangeRefs.Count == 0)
+                            opened.Messages[index] = turn with { UndoName = null, UndoConsumed = true };
+                        else
+                        {
+                            var reverted = turn.RevertedChangeIds.Concat(turn.ChangeRefs
+                                .Where(reference => reference.Path == file.FullPath)
+                                .Select(reference => reference.RevisionId)).Distinct(StringComparer.Ordinal).ToArray();
+                            opened.Messages[index] = turn with { RevertedChangeIds = reverted,
+                                UndoConsumed = turn.ChangeRefs.All(reference => reverted.Contains(reference.RevisionId, StringComparer.Ordinal)) };
+                        }
+                    }
+                }
                 foreach (var inverse in undo.InverseIds)
                     if (!opened.ChangeHistoryIds.Contains(inverse, StringComparer.Ordinal))
                         opened.ChangeHistoryIds.Add(inverse);
                 // In the user's voice, because it is their own act: the assistant has to read that the tree moved
                 // back before it anchors another edit on content it believes is still there.
-                opened.Append(ChatTurn.User(UndoTurnNotice(undo)));
+                opened.Append(ChatTurn.User(UndoTurnNotice(undo)) with { IsUndoNotice = true });
             });
             Audit(conversationId, $"Undo turn: {undo.Restored} of {undo.Outcomes.Count} files restored");
             Changed?.Invoke();
@@ -3315,19 +3477,20 @@ internal sealed partial class ChatExecutionCoordinator
                     held.Remove(info.CallId);
                     if (held.Count == 0) brackets.Remove(info.BatchId ?? info.CallId);
                 }
-                await ApplyOnUiAsync(() =>
+                try
                 {
-                    Sessions.Registry.TryUpdate(run.ConversationId, opened =>
+                    await ApplyOnUiAsync(() =>
                     {
-                        // Beside its call rather than at the tail: every call of a response is recorded before any
-                        // of them runs, so the call this answers is usually not the last turn by the time the
-                        // answer lands. Same rule the human-answered path already follows.
-                        opened.AppendFunctionResult(turn);
-                        RecordWriteFacts(opened, info.CallId, info.Name, result, lines);
-                    });
-                    ToolActivityChanged?.Invoke(run.ConversationId, info.Name, true);
-                    Changed?.Invoke();
-                }).ConfigureAwait(false);
+                        Sessions.Registry.TryUpdate(run.ConversationId, opened =>
+                        {
+                            opened.AppendFunctionResult(turn);
+                            RecordWriteFacts(opened, info.CallId, info.Name, result, lines);
+                        });
+                        ToolActivityChanged?.Invoke(run.ConversationId, info.Name, true);
+                        Changed?.Invoke();
+                    }).ConfigureAwait(false);
+                }
+                finally { ReleaseBatchLease(run.ConversationId, info.CallId); }
                 // A call that never asked still leaves a line, and it comes from the gate: "Exempt from approval"
                 // is a decision about cards, not about the record — this is the one tool tier that writes into the
                 // user's repository with nothing clicked, so the trail is the only thing showing it happened.
@@ -3435,6 +3598,8 @@ internal sealed partial class ChatExecutionCoordinator
         string? spawnedParentId = null;
         string? spawnedTask = null;
         string? spawnedResult = null;
+        foreach (var key in _batchLeases.Keys.Where(key => key.Conversation == run.ConversationId))
+            ReleaseBatchLease(key.Conversation, key.Call);
         // Nothing may outlive the run that captured it. Every frame is taken by the result turn it belongs to, so
         // whatever is still queued here was captured and then cancelled — and a frame from a finished run riding
         // the next run's first result would put a picture in front of the model that nothing in the transcript
@@ -3847,7 +4012,8 @@ internal sealed partial class ChatExecutionCoordinator
             Files = WorkspacePaths.NormalizeFiles(session?.GrantedFiles),
         };
     }
-    private readonly record struct ParkedCall(ChatPipeline.ToolCallInfo Call, string? Preview, bool Asks, bool Seen);
+    private readonly record struct ParkedCall(ChatPipeline.ToolCallInfo Call, string? Preview, bool Asks, bool Seen,
+        string? WriteFingerprint, string? AccessKind, bool CacheBreak);
     private readonly record struct CallVerdict(ChatPipeline.ToolCallInfo Call, ToolRisk Risk, bool Asks, bool Malformed, bool Granted, bool SessionGrant, bool VerbGrant, bool Parks, bool ProtectedGrant);
     private static string VerdictFor(bool parks, bool granted, bool sessionGrant, bool verbGrant,
         bool protectedGrant)
@@ -3864,16 +4030,52 @@ internal sealed partial class ChatExecutionCoordinator
         {
             ApprovalState = ChatApprovalStates.Pending,
             ApprovalPreview = parked.Preview,
+            ApprovalWriteFingerprint = parked.WriteFingerprint,
+            ApprovalAccessKind = parked.AccessKind,
+            ApprovalCacheBreak = parked.CacheBreak,
             ApprovalSeen = parked.Seen,
             ApprovalBatchId = batchId,
         };
     }
 
-    private const string FileWriteTool = ToolNames.FileWrite;
-    private static void RecordWriteFacts(Conversation conversation, string callId, string toolName, string result,
+    private const string FileWriteTool = LegacyFileToolNames.FileWrite;
+    private void RecordWriteFacts(Conversation conversation, string callId, string toolName, string result,
         ChangeLineCounts? lines)
     {
-        if (toolName != FileWriteTool) return;
+        if (ChatChanges.IsManagement(toolName) && ChatChangeStore.BatchIdFromResult(result) is { } managementId
+            && ChatChangeStore.ReadBatch(_dataRoot, managementId) is { Management: { } operation } managementBatch
+            && managementBatch.ConversationId == conversation.Id)
+        {
+            var at = conversation.IndexOfToolCall(callId);
+            if (at < 0) return;
+            var entries = managementBatch.State == ChatChangeStore.Complete || operation.Operation == "move"
+                ? operation.Entries : operation.Entries.Where(entry => managementBatch.AppliedIds.Contains(entry.RelativePath,
+                    StringComparer.Ordinal)).ToArray();
+            conversation.Messages[at] = conversation.Messages[at] with
+            {
+                ManagementBatchId = managementId, ManagedEntries = entries,
+                ManagementSource = operation.Source, ManagementDestination = operation.Destination,
+            };
+            return;
+        }
+        if (toolName == ToolNames.FsReplace && ChatChangeStore.BatchIdFromResult(result) is { } batchId
+            && ChatChangeStore.ReadBatch(_dataRoot, batchId) is { } batch
+            && batch.ConversationId == conversation.Id)
+        {
+            var ids = batch.State == ChatChangeStore.Complete ? batch.RevisionIds : batch.AppliedIds;
+            var references = ids.Select(id => ChatChangeStore.Read(_dataRoot, id))
+                .Where(revision => revision is { State: ChatChangeStore.Complete })
+                .Select(revision => new ChatChangeReference(revision!.Path, revision.Id)).ToArray();
+            var at = conversation.IndexOfToolCall(callId);
+            if (at < 0 || references.Length == 0) return;
+            conversation.Messages[at] = conversation.Messages[at] with
+            { ChangeId = references[0].RevisionId, ChangeRefs = references, ChangeLines = lines };
+            foreach (var reference in references)
+                if (!conversation.ChangeHistoryIds.Contains(reference.RevisionId, StringComparer.Ordinal))
+                    conversation.ChangeHistoryIds.Add(reference.RevisionId);
+            return;
+        }
+        if (!ChatChanges.IsSingleFileWrite(toolName)) return;
         var name = ChatUndoStore.NameFromResult(result);
         var changeId = ChatChangeStore.IdFromResult(result);
         if (name is null && lines is null && changeId is null) return;
@@ -3886,7 +4088,8 @@ internal sealed partial class ChatExecutionCoordinator
         if (changeId is { Length: > 0 } && !conversation.ChangeHistoryIds.Contains(changeId, StringComparer.Ordinal))
             conversation.ChangeHistoryIds.Add(changeId);
     }
-    private readonly record struct ApprovedCall(string Name, string ArgumentsJson, string Mode, string CallId, bool Asking);
+    private readonly record struct ApprovedCall(string Name, string ArgumentsJson, string Mode, string CallId, bool Asking,
+        string? WriteFingerprint, string? AccessKind, bool CacheBreak);
 
     private readonly record struct UndoRecord(string? LegacyName, string? ChangeId, string ArgumentsJson, string? DataRoot, string ConversationId, WorkspaceSandbox Sandbox, WorkspaceGuards Guards);
     private static IReadOnlyList<AITool> UsedDeclarations(IReadOnlyList<ChatTurn> history, ChatToolScope scope)
@@ -3915,7 +4118,7 @@ internal sealed partial class ChatExecutionCoordinator
 
     private static bool HasWrittenFile(IReadOnlyList<ChatTurn> history)
     {
-        var writes = history.Where(turn => turn.ToolName == "file_write" && turn.ToolCallId is { Length: > 0 })
+        var writes = history.Where(turn => ChatChanges.IsSingleFileWrite(turn.ToolName) && turn.ToolCallId is { Length: > 0 })
             .Select(turn => turn.ToolCallId!)
             .ToHashSet(StringComparer.Ordinal);
         return history.Any(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId is { } id && !turn.ToolFailed

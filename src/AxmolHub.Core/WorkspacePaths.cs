@@ -37,7 +37,7 @@ public readonly record struct WorkspacePath(
 
     /// <summary>
     /// The one spelling every surface uses for this path: the tool's own sentences, the transcript's change rows,
-    /// the undo copy's name, and what <c>find_files</c> hands back to <c>read_file</c>.
+    /// the undo copy's name, and what <c>fs_find</c> hands back to <c>fs_read</c>.
     ///
     /// Under the primary root it is the workspace-relative path — the spelling every session had before a
     /// directory could be granted, which is what keeps an old transcript, an old pre-image and an old diff row
@@ -58,7 +58,7 @@ public readonly record struct WorkspacePath(
 /// never what a coding request meant.
 ///
 /// <para>What they no longer close is <b>reading</b>. A person may open one of these places to a session with a
-/// <c>request_directory</c> card, and what lands is a read-only grant: analysing Hub's own logs, one session file
+/// <c>fs_request_access</c> card, and what lands is a read-only grant: analysing Hub's own logs, one session file
 /// or an engine's headers is a thing a person can want, while nobody wants the assistant editing them. The grant
 /// has to name the location itself — a grant <i>above</i> it does not count, because a home directory is granted
 /// for the project inside it and not for Hub's records. See <see cref="WorkspacePaths.CoversProtected"/>.</para>
@@ -149,7 +149,7 @@ public enum WorkspaceTarget
 
 /// <summary>
 /// Every answer a directory can get when somebody asks for it to be opened — the model on a
-/// <c>request_directory</c> card, or the person on the workspace menu's own grant row. One ruling, two renderings:
+/// <c>fs_request_access</c> card, or the person on the workspace menu's own grant row. One ruling, two renderings:
 /// <see cref="WorkspaceTools.RequestDirectory"/> turns these into sentences for the model, the panel turns them
 /// into the interface's own words, and neither can drift from the other because the answer is a value rather than
 /// a string. <see cref="Granted"/> and <see cref="GrantedReadOnly"/> are the two that change anything.
@@ -170,7 +170,7 @@ public enum GrantVerdict
     /// <summary>Nothing at that path, or a file rather than a directory.</summary>
     Missing,
     /// <summary>A file grant named a directory. Its own answer rather than <see cref="Missing"/> because the way out
-    /// exists and is a different tool: <c>request_directory</c> opens a whole place — read-only when it is protected
+    /// exists and is a different tool: <c>fs_request_access</c> opens a whole place — read-only when it is protected
     /// — while a card on one file cannot.</summary>
     IsDirectory,
     /// <summary>The file is not there, and the grant it would get could only read: a protected location, or a name
@@ -474,6 +474,31 @@ public static class WorkspacePaths
 
     public static WorkspacePath ResolveWrite(string? root, string relative, WorkspaceGuards guards)
         => ResolveWrite(WorkspaceSandbox.For(root), relative, guards);
+
+    /// <summary>Resolve a file or directory for management without widening an exact-file or protected grant.</summary>
+    public static WorkspacePath ResolveManage(WorkspaceSandbox sandbox, string path, WorkspaceGuards guards)
+    {
+        var resolved = Resolve(sandbox, path, guards);
+        if (!resolved.IsAllowed) return resolved;
+        if (resolved.ReadOnly || IsProtected(resolved.Full, guards))
+            return WorkspacePath.Refuse(WorkspacePathVerdict.ReadOnlyRoot, resolved.Display);
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        // A root, or an ancestor containing another authorized/protected root, is never a manageable item.
+        var protectedRoots = sandbox.Roots.Concat(guards.EngineRoots)
+            .Concat(guards.DataRoot is { Length: > 0 } dataRoot ? [dataRoot] : []);
+        foreach (var root in protectedRoots)
+        {
+            try
+            {
+                if (IsInside(Path.GetFullPath(root), resolved.Full, comparison))
+                    return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, resolved.Display);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
+            { return WorkspacePath.Refuse(WorkspacePathVerdict.ProtectedRoot, resolved.Display); }
+        }
+        return resolved;
+    }
 
     /// <summary>A directory inside the sandbox, for the read-only listing, search and glob tools. An empty path or
     /// <c>"."</c> means the workspace itself: those tools start where the user pointed the session, and making the
@@ -920,25 +945,25 @@ public static class WorkspacePaths
         WorkspacePathVerdict.EscapesWorkspace =>
             $"Refused: '{detail}' is not a workspace-relative path. Paths must be relative to the workspace and "
             + "must not use '..', a drive letter or a rooted path. Do not retry another spelling of this path; if "
-            + "the user's own task named another directory, ask for it with request_directory, otherwise ask the "
+            + "the user's own task named another directory, ask for it with fs_request_access, otherwise ask the "
             + "user to widen the workspace.",
         WorkspacePathVerdict.OutsideRoots =>
             $"Refused: '{detail}' is outside the session workspace and outside every directory or file the user "
-            + "granted this session. If the user's own task named that place, call request_directory with its "
+            + "granted this session. If the user's own task named that place, call fs_request_access with its "
             + "absolute path — one approval card opens the whole directory for this session; if it named one file, "
-            + "call request_file with that file's absolute path. If it named neither, work inside the workspace. Do "
+            + "call fs_request_access with that file's absolute path. If it named neither, work inside the workspace. Do "
             + "not retry another spelling of this path.",
         WorkspacePathVerdict.ProtectedRoot =>
             $"Refused: '{detail}' is inside a protected location (the Hub data directory, an engine installation "
             + "or a .git directory) and this session holds no grant for it. Reading one of those is worth asking "
-            + "for: request_directory with its absolute path opens the whole place read-only, and request_file with "
+            + "for: fs_request_access with its absolute path opens the whole place read-only, and fs_request_access with "
             + "one file's absolute path opens just that file read-only — one card, this session. Writing there stays "
             + "refused in every approval mode, so a change is the user's to make. Do not retry another spelling of "
             + "this path.",
         WorkspacePathVerdict.ReadOnlyRoot =>
             $"Refused: '{detail}' is granted to this session for reading only — it is inside a protected location, "
-            + "or it is not a file the assistant may write (its extension is outside the write allowlist). read_file "
-            + "reads it, and a directory grant also lists and searches it; file_write refuses it, and no command can "
+            + "or it is not a file the assistant may write (its extension is outside the write allowlist). fs_read "
+            + "reads it, and a directory grant also lists and searches it; fs_replace refuses it, and no command can "
             + "run there, because a shell runs with write access. Ask the user to make that change; do not retry.",
         WorkspacePathVerdict.ReparsePoint =>
             $"Refused: '{detail}' resolves through a symbolic link or junction, which could point outside the "
@@ -951,10 +976,10 @@ public static class WorkspacePaths
             + "ask the user for the correct path; do not guess another spelling.",
         WorkspacePathVerdict.NotADirectory =>
             $"Refused: '{detail}' is not a directory inside the session's directories (it is missing, or it is a "
-            + "file). Call list_directory on its parent to see what is there; do not retry another spelling of it.",
+            + "file). Call fs_list on its parent to see what is there; do not retry another spelling of it.",
         WorkspacePathVerdict.AlreadyExists =>
             $"Refused: '{detail}' already exists, so it cannot be created with an empty old_string. Call "
-            + "read_file first and edit it with the exact text to replace. Do not retry an empty old_string.",
+            + "fs_read first and edit it with the exact text to replace. Do not retry an empty old_string.",
         _ => "The path was accepted.",
     };
 
@@ -967,27 +992,27 @@ public static class WorkspacePaths
     public static string GrantedResultFor(string full, bool readOnly)
         => readOnly
             ? $"Granted read-only: '{full}' is a protected location, so this session may read it and never write "
-              + "it. Name it by absolute path in read_file, list_directory, search_text, find_files or "
-              + "workspace_map. file_write will refuse it and no command can run there; ask the user for a change, "
+              + "it. Name it by absolute path in fs_read, fs_list, fs_grep, fs_find or "
+              + "workspace_map. fs_replace will refuse it and no command can run there; ask the user for a change, "
               + "and do not ask for this directory again."
             : $"Granted: {full} is readable and writable for this session, alongside the workspace. Name it by "
-              + "absolute path in read_file, file_write, list_directory, search_text, find_files, workspace_map, "
+              + "absolute path in fs_read, fs_replace, fs_list, fs_grep, fs_find, workspace_map, "
               + "and in run_command's cwd.";
 
     /// <summary>
     /// The same answer for a card on one file, and its own sentence because the grant is narrower in a way the
-    /// model has to act on: the path works, the folder around it does not. So it names <c>read_file</c> (and
-    /// <c>file_write</c> when the file is writable) and says out loud that listing, searching and the shell were
+    /// model has to act on: the path works, the folder around it does not. So it names <c>fs_read</c> (and
+    /// <c>fs_replace</c> when the file is writable) and says out loud that listing, searching and the shell were
     /// not part of the yes — a model told only "granted" asks for the folder next, which is a second card for
     /// something the first one never offered.
     /// </summary>
     public static string FileGrantedResultFor(string full, bool readOnly)
         => readOnly
             ? $"Granted read-only: '{full}' is one file this session may read and may never write — it is inside a "
-              + "protected location, or it is not a file the assistant may write. Read it with read_file by that "
-              + "absolute path. file_write will refuse it, its folder is not granted, and no command can run there; "
+              + "protected location, or it is not a file the assistant may write. Read it with fs_read by that "
+              + "absolute path. fs_replace will refuse it, its folder is not granted, and no command can run there; "
               + "ask the user for a change, and do not ask for this file again."
             : $"Granted: '{full}' is one file this session may read and write. Name it by absolute path in "
-              + "read_file and file_write. Its folder is not part of the grant, so listing, searching and "
+              + "fs_read and fs_replace. Its folder is not part of the grant, so listing, searching and "
               + "run_command's cwd cannot reach it; do not ask again for this file.";
 }

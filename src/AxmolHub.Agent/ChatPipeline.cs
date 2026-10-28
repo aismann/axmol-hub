@@ -342,6 +342,7 @@ public sealed class ChatPipeline(IChatClient client, ReasoningTable? reasoning =
                 var info = verdict.Call;
                 try
                 {
+                    using var invocation = ToolInvocation.Enter(info.CallId);
                     // Whatever is already running for this call is its answer; a call the batch did not vouch for
                     // runs now, on the function the invoking client resolved for it.
                     var raw = started.Remove(info.CallId, out var begun)

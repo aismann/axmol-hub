@@ -80,7 +80,8 @@ public static class TranscriptProjection
                                                         && turn.ToolCallId is { Length: > 0 }
                                                         && !string.IsNullOrWhiteSpace(turn.Text)
                                                         && turn.ApprovalState is null && turn.UndoName is null
-                                                        && (turn.ChangeId is null || turn.UndoConsumed);
+                                                        && (turn.ChangeId is null || turn.UndoConsumed)
+                                                        && (turn.ManagementBatchId is null || turn.UndoConsumed);
 
     /// <summary>The conversation-wide tool name a result prints, first named call wins. See the class remarks.</summary>
     public static Dictionary<string, string> CallNames(Conversation conversation)
@@ -185,7 +186,8 @@ public static class TranscriptProjection
             if (turn.Role == ChatRoles.Assistant && turn.ToolCallId is { Length: > 0 })
             {
                 if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 }
-                    || (turn.ChangeId is { Length: > 0 } && !turn.UndoConsumed) || IsNarratedCall(turn))
+                    || (turn.ChangeId is { Length: > 0 } && !turn.UndoConsumed)
+                    || (turn.ManagementBatchId is { Length: > 0 } && !turn.UndoConsumed) || IsNarratedCall(turn))
                 {
                     // The renderer tests the *source* index here rather than the visible one. Reproduced as it
                     // stands: a model that quietly "fixed" it would disagree with the painted rows the moment a
@@ -209,7 +211,9 @@ public static class TranscriptProjection
             {
                 var paired = calls.TryGetValue(answered, out var call) ? call : null;
                 // A write's record line already speaks for its exchange.
-                if (paired?.ToolName == ChatChanges.FileWriteTool) continue;
+                if (ChatChanges.IsSingleFileWrite(paired?.ToolName)
+                    || paired is { ToolName: ToolNames.FsReplace, ChangeRefs.Count: > 0 }
+                    || paired is { ManagementBatchId.Length: > 0 }) continue;
                 rows.Add(new TranscriptRow(TranscriptRowKind.ToolExchange, visible[at].Source,
                     paired?.ToolName ?? turn.ToolName, false, visible[at].Key));
                 continue;

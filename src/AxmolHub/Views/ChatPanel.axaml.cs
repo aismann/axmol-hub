@@ -2467,9 +2467,9 @@ public partial class ChatPanel : UserControl
     {
         var tool = name switch
         {
-            "get_projects" => HubStrings.Get("ChatToolProjects"),
-            "get_engines" => HubStrings.Get("ChatToolEngines"),
-            "get_toolchain_status" => HubStrings.Get("ChatToolchains"),
+            "project_list" or "get_projects" => HubStrings.Get("ChatToolProjects"),
+            "engine_list" or "get_engines" => HubStrings.Get("ChatToolEngines"),
+            "toolchain_status" or "get_toolchain_status" => HubStrings.Get("ChatToolchains"),
             _ => name,
         };
         return string.Format(
@@ -2784,7 +2784,8 @@ public partial class ChatPanel : UserControl
             if (turn.ApprovalState == ChatApprovalStates.Pending)
                 approvalSurface = BuildApprovalPendingLine(turn);
             else if (turn.ApprovalState is { Length: > 0 } || turn.UndoName is { Length: > 0 }
-                     || (turn.ChangeId is { Length: > 0 } && !turn.UndoConsumed))
+                     || (turn.ChangeId is { Length: > 0 } && !turn.UndoConsumed)
+                     || (turn.ManagementBatchId is { Length: > 0 } && !turn.UndoConsumed))
                 approvalSurface = BuildCallRecord(conversationId, callId, turn, index);
         }
         if (isPlanTurn) approvalSurface = BuildPlanCard(turn, index);
@@ -2997,7 +2998,8 @@ public partial class ChatPanel : UserControl
                                                          && turn.ToolCallId is { Length: > 0 }
                                                          && !string.IsNullOrWhiteSpace(turn.Text)
                                                          && turn.ApprovalState is null && turn.UndoName is null
-                                                         && (turn.ChangeId is null || turn.UndoConsumed);
+                                                         && (turn.ChangeId is null || turn.UndoConsumed)
+                                                         && (turn.ManagementBatchId is null || turn.UndoConsumed);
 
     /// <summary>
     /// <summary>
@@ -3679,7 +3681,24 @@ public partial class ChatPanel : UserControl
         {
             if (filled) return;
             filled = true;
-            body.Children.Add(BuildEditDiff(conversationId, call));
+            if ((call.ChangeRefs.Count > 1 || call.ManagedEntries.Count > 1)
+                && call.ToolCallId is { Length: > 0 } callId && _chat is not null)
+            {
+                var files = _chat.ChangesForCalls(_chat.ActiveConversation, new HashSet<string>(StringComparer.Ordinal) { callId });
+                var list = new StackPanel { Spacing = 8 };
+                foreach (var file in files)
+                {
+                    var item = new Expander { Header = file.RelativePath };
+                    item.PropertyChanged += (_, e) =>
+                    {
+                        if (e.Property == Expander.IsExpandedProperty && item.IsExpanded && item.Content is null)
+                            item.Content = BuildEditDiff(conversationId, call, file);
+                    };
+                    list.Children.Add(item);
+                }
+                body.Children.Add(new ScrollViewer { MaxHeight = 320, Content = list });
+            }
+            else body.Children.Add(BuildEditDiff(conversationId, call));
         }
 
         // The fold is driven off visibility rather than off the toggle, because opening one is not the only way it
@@ -3696,7 +3715,7 @@ public partial class ChatPanel : UserControl
     /// where a reader goes to find out what a write did, and a diff with no path over it is a change nobody can
     /// place. A revision that cannot be resolved says why in the inspector's own words rather than drawing an
     /// empty block.</summary>
-    private Control BuildEditDiff(string conversationId, ChatTurn call)
+    private Control BuildEditDiff(string conversationId, ChatTurn call, ChangedFile? selected = null)
     {
         var body = new StackPanel
         {
@@ -3705,10 +3724,10 @@ public partial class ChatPanel : UserControl
             Spacing = 2,
         };
 
-        var change = call.ToolCallId is { Length: > 0 } callId && _chat is not null
+        var change = selected ?? (call.ToolCallId is { Length: > 0 } callId && _chat is not null
             ? _chat.ChangesForCalls(_chat.ActiveConversation, new HashSet<string>(StringComparer.Ordinal) { callId })
                 .FirstOrDefault()
-            : null;
+            : null);
         if (change is null)
         {
             body.Children.Add(new TextBlock
@@ -3992,17 +4011,21 @@ public partial class ChatPanel : UserControl
 
         return name switch
         {
-            ToolNames.ReadFile when path.Length > 0
+            LegacyFileToolNames.ReadFile or ToolNames.FsRead when path.Length > 0
                 => string.Format(culture, HubStrings.Get("ActivityRowRead"), path),
-            ToolNames.FileWrite when path.Length > 0
+            LegacyFileToolNames.FileWrite or ToolNames.FsWrite when path.Length > 0
                 => string.Format(culture, HubStrings.Get("ActivityRowEditFile"), path),
-            ToolNames.SearchText
+            ToolNames.FsReplace => DescribeReplacement(call),
+            ToolNames.FsDelete => string.Format(culture, HubStrings.Get("ActivityRowDelete"), path),
+            ToolNames.FsMove => string.Format(culture, HubStrings.Get("ActivityRowMove"),
+                ArgField(args, "source") ?? "", ArgField(args, "destination") ?? ""),
+            LegacyFileToolNames.SearchText or ToolNames.FsGrep
                 => string.Format(culture, HubStrings.Get("ActivityRowSearch"),
                     ArgField(args, "pattern", "query") ?? ""),
-            ToolNames.FindFiles
+            LegacyFileToolNames.FindFiles or ToolNames.FsFind
                 => string.Format(culture, HubStrings.Get("ActivityRowFind"),
                     ArgField(args, "pattern", "query", "glob") ?? ""),
-            ToolNames.ListDirectory
+            LegacyFileToolNames.ListDirectory or ToolNames.FsList
                 => string.Format(culture, HubStrings.Get("ActivityRowList"), path.Length > 0 ? path : "."),
             ToolNames.RunCommand => PatchText.ForCall(call) is { } patch
                 ? DescribePatch(patch)
@@ -4021,6 +4044,27 @@ public partial class ChatPanel : UserControl
         => string.Format(System.Globalization.CultureInfo.CurrentCulture,
             HubStrings.Get(patch.Sections.Count == 1 ? "ActivityRowEditFile" : "ActivityRowEditFilesFormat"),
             patch.Sections.Count == 1 ? patch.Sections[0].Path : patch.Sections.Count);
+
+    private static string DescribeReplacement(ChatTurn call)
+    {
+        string[] paths = [];
+        if (!string.IsNullOrWhiteSpace(call.ToolArguments))
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(call.ToolArguments);
+                if (doc.RootElement.TryGetProperty("edits", out var edits) && edits.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    paths = edits.EnumerateArray().Where(edit => edit.ValueKind == System.Text.Json.JsonValueKind.Object
+                            && edit.TryGetProperty("path", out var path) && path.ValueKind == System.Text.Json.JsonValueKind.String)
+                        .Select(edit => edit.GetProperty("path").GetString() ?? "").Distinct(StringComparer.Ordinal).ToArray();
+            }
+            catch (System.Text.Json.JsonException) { }
+        }
+        if (paths.Length == 0) paths = call.ChangeRefs.Select(reference => reference.Path).Distinct(StringComparer.Ordinal).ToArray();
+        return string.Format(System.Globalization.CultureInfo.CurrentCulture,
+            HubStrings.Get(paths.Length == 1 ? "ActivityRowEditFile" : "ActivityRowEditFilesFormat"),
+            paths.Length == 1 ? paths[0] : paths.Length);
+    }
 
     /// <summary>The first string-valued field among <paramref name="keys"/> from a tool's JSON arguments, or null.
     /// A malformed payload is treated as absent rather than thrown: a description is not worth failing a paint.</summary>
@@ -4129,7 +4173,9 @@ public partial class ChatPanel : UserControl
         // A write that never had to ask still changed the file, so it gets a line of its own naming the file
         // rather than the tool: who was asked is a permission detail, what moved is the record.
         var asked = turn.ToolName == AskUserTool.ToolName;
-        var line = turn.ApprovalState is { Length: > 0 } state
+        var line = ((turn.ChangeId is { Length: > 0 } && (ChatChanges.IsSingleFileWrite(turn.ToolName)
+                       || turn.ToolName == ToolNames.FsReplace)) || turn.ManagementBatchId is { Length: > 0 }) ? DescribeToolCall(turn)
+            : turn.ApprovalState is { Length: > 0 } state
             ? $"{HubStrings.Get(state switch
                 {
                     ChatApprovalStates.Approved => "ChatApprovalResolvedApproved",
@@ -4149,8 +4195,10 @@ public partial class ChatPanel : UserControl
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        if (turn.ToolName == ToolNames.FileWrite && turn.ApprovalState != ChatApprovalStates.Denied
-            && (turn.ChangeId is { Length: > 0 } || turn.UndoName is { Length: > 0 }))
+        if ((ChatChanges.IsSingleFileWrite(turn.ToolName) || turn.ToolName == ToolNames.FsReplace || ChatChanges.IsManagement(turn.ToolName))
+            && turn.ApprovalState != ChatApprovalStates.Denied
+            && (turn.ChangeId is { Length: > 0 } || turn.UndoName is { Length: > 0 }
+                || turn.ManagementBatchId is { Length: > 0 }))
         {
             var completed = new Avalonia.Controls.Shapes.Path
             {

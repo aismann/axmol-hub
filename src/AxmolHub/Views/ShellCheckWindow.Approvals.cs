@@ -261,7 +261,7 @@ internal sealed class ShellApprovalsChecks
             };
             foreach (var client in new[] { parkClient, denyClient, supersededClient, restartClient, badgeClient })
                 client.Arguments = editArguments;
-            readClient.ToolName = "read_file";
+            readClient.ToolName = "fs_read";
             readClient.Arguments = new Dictionary<string, object?> { ["path"] = "note.txt" };
             // A command that says where it ran and does nothing else: the tier under test is "a process started in
             // the session's own sandbox", so the fixture has to start one for real and read its cwd back.
@@ -276,7 +276,7 @@ internal sealed class ShellApprovalsChecks
             batchClient.Batch =
             [
                 ("file_write", editArguments),
-                ("read_file", new Dictionary<string, object?> { ["path"] = "note.txt" }),
+                ("fs_read", new Dictionary<string, object?> { ["path"] = "note.txt" }),
             ];
             batchClient.CallsRemaining = 0;
             const string batchThinking = "先改文件，再读回来确认改动。";
@@ -320,12 +320,12 @@ internal sealed class ShellApprovalsChecks
             // depends on the directory the call will run in — a table checked with no scope would pass while
             // every command in the app was still being classed as a machine-level act.
             var sandbox = new WorkspaceToolScope(workspace, new WorkspaceGuards(null, []), null, "tier-map", [], null, null);
-            Check(ChatTools.RiskOf("get_projects", null, sandbox) == ToolRisk.ReadOnly
-                  && ChatTools.RiskOf("read_file", null, sandbox) == ToolRisk.ReadOnly
-                  && ChatTools.RiskOf("search_text", null, sandbox) == ToolRisk.ReadOnly
-                  && ChatTools.RiskOf("list_directory", null, sandbox) == ToolRisk.ReadOnly
-                  && ChatTools.RiskOf("find_files", null, sandbox) == ToolRisk.ReadOnly
-                  && ChatTools.RiskOf("file_write", null, sandbox) == ToolRisk.WorkspaceWrite
+            Check(ChatTools.RiskOf("project_list", null, sandbox) == ToolRisk.ReadOnly
+                  && ChatTools.RiskOf("fs_read", null, sandbox) == ToolRisk.ReadOnly
+                  && ChatTools.RiskOf("fs_grep", null, sandbox) == ToolRisk.ReadOnly
+                  && ChatTools.RiskOf("fs_list", null, sandbox) == ToolRisk.ReadOnly
+                  && ChatTools.RiskOf("fs_find", null, sandbox) == ToolRisk.ReadOnly
+                  && ChatTools.RiskOf("fs_replace", null, sandbox) == ToolRisk.WorkspaceWrite
                   && ChatTools.RiskOf("run_command", null, sandbox) == ToolRisk.WorkspaceCommand
                   // The negative control for the line above: a command with no sandbox to start in is not a
                   // workspace command, and a tier that only ever reads one way is a tier nobody tested.
@@ -339,6 +339,25 @@ internal sealed class ShellApprovalsChecks
                   && ChatTools.RiskOf("spawn_session", null, sandbox) == ToolRisk.SystemCommand
                   && ChatTools.RiskOf("没登记过的工具", null, sandbox) == ToolRisk.SystemCommand,
                 "只读查询登记为只读，写文件是工作区写，沙箱里的命令自成一档、没有沙箱或落在受保护目录时退回系统命令，抓屏与派生子会话仍在最高档，没听过的工具名按系统命令兜底而不是放行");
+
+            var cacheFixture = System.IO.Path.Combine(workspace, "build-fs-fixture");
+            System.IO.Directory.CreateDirectory(cacheFixture);
+            var deleteCache = System.Text.Json.JsonSerializer.Serialize(new { path = "build-fs-fixture", recursive = true });
+            var moveCache = System.Text.Json.JsonSerializer.Serialize(new { source = "build-fs-fixture", destination = "moved-cache" });
+            Check(ChatTools.RiskOf("fs_delete", deleteCache, sandbox) == ToolRisk.CacheBreak
+                  && ChatTools.RiskOf("fs_move", moveCache, sandbox) == ToolRisk.CacheBreak
+                  && ToolApprovalPolicy.RequiresApproval(ToolApprovalModes.Full, ToolRisk.CacheBreak),
+                "文件工具删除或移动构建缓存时，完全访问也必须审批");
+
+            var accessFixture = System.IO.Path.Combine(workspace, "protected-fs-fixture");
+            System.IO.Directory.CreateDirectory(accessFixture);
+            var accessFile = System.IO.Path.Combine(accessFixture, "note.txt");
+            System.IO.File.WriteAllText(accessFile, "protected\n");
+            var accessScope = new WorkspaceToolScope(workspace, new WorkspaceGuards(accessFixture, []), accessFixture,
+                "access-tier", [], null);
+            Check(ChatTools.OpensProtectedLocation("fs_request_access", System.Text.Json.JsonSerializer.Serialize(new { path = accessFixture }), accessScope)
+                  && ChatTools.OpensProtectedLocation("fs_request_access", System.Text.Json.JsonSerializer.Serialize(new { path = accessFile }), accessScope),
+                "统一授权工具对受保护目录和单个文件都保留强制审批");
 
             // The command tier is no longer decided by the directory alone. `git reset --hard` starts in the
             // sandbox the person chose and still moves state that <c>file_write</c> cannot hand back, so the verb
@@ -454,7 +473,7 @@ internal sealed class ShellApprovalsChecks
             // tool that has to ask in every mode is the bug this catches, and it is invisible at compile time
             // because registering it in ReadOnlyTools and mis-tiering it in RiskOf both build fine.
             var looksAsk = false;
-            foreach (var look in new[] { "search_text", "list_directory", "find_files", "workspace_map" })
+            foreach (var look in new[] { "fs_grep", "fs_list", "fs_find", "workspace_map" })
             foreach (var mode in new[] { ToolApprovalModes.Ask, ToolApprovalModes.Auto, ToolApprovalModes.Full })
                 looksAsk |= ToolApprovalPolicy.RequiresApproval(mode, ChatTools.RiskOf(look, null, sandbox));
             Check(!looksAsk, "探索四件套（检索、列目录、找文件、workspace_map）在三个审批档位上都不弹卡，陌生仓库不用一路点卡片");
@@ -531,9 +550,10 @@ internal sealed class ShellApprovalsChecks
             // that is gone from ChatTools' table but still registered (or the reverse) is exactly the drift a count
             // cannot see.
             Check(!agentToolNames.Contains("set_workspace", StringComparer.Ordinal)
-                  && agentToolNames.Contains("request_directory", StringComparer.Ordinal)
-                  && agentToolNames.Contains("request_file", StringComparer.Ordinal),
-                "模型拿到的工具表里没有 set_workspace——决定工作目录的能力只在人手里——而 request_directory 与 request_file 都还在");
+                  && agentToolNames.Contains("fs_request_access", StringComparer.Ordinal)
+                  && !agentToolNames.Contains("request_directory", StringComparer.Ordinal)
+                  && !agentToolNames.Contains("request_file", StringComparer.Ordinal),
+                "模型工具表使用统一的 fs_request_access，工作目录仍由用户选择");
 
             // ask_user's own schema cell, kept out of the line above for the reason that line already gives: a
             // count assertion is the one every new tool trips, and a missing keyword hides behind the number that
@@ -775,7 +795,7 @@ internal sealed class ShellApprovalsChecks
             // it.
             movedClient.Batch =
             [
-                ("read_file", new Dictionary<string, object?> { ["path"] = "src/main.cpp" }),
+                ("fs_read", new Dictionary<string, object?> { ["path"] = "src/main.cpp" }),
                 ("run_command", new Dictionary<string, object?> { ["command"] = whereIAm }),
             ];
             movedClient.CallsRemaining = 0;
@@ -785,7 +805,7 @@ internal sealed class ShellApprovalsChecks
             var movedTurn = movedSession.Messages.LastOrDefault(turn => turn.ToolCallId == movedCallId);
             Check(movedCallId is not null
                   && movedSession.Messages.Count(turn => turn.Role == ChatRoles.Tool) == 0
-                  && movedSession.Messages.All(turn => turn.ToolName != "read_file" || turn.ApprovalState is null)
+                  && movedSession.Messages.All(turn => turn.ToolName != "fs_read" || turn.ApprovalState is null)
                   && movedTurn?.ApprovalState == ChatApprovalStates.Pending
                   && panel.PendingApprovalCardsForCheck == 1
                   && panel.ApprovalCardTextForCheck.Contains("run_command", StringComparison.Ordinal)
@@ -1522,7 +1542,7 @@ internal sealed class ShellApprovalsChecks
             Dispatcher.UIThread.RunJobs();
             Check(panel.PendingApprovalCardsForCheck == 1 && panel.ApprovalCardOnScreenForCheck,
                 "待批准的调用画出占位的可见卡片（实际 " + panel.PendingApprovalCardsForCheck + " 张）");
-            Check(panel.ApprovalCardTextForCheck.Contains("file_write", StringComparison.Ordinal)
+            Check(panel.ApprovalCardTextForCheck.Contains("fs_replace", StringComparison.Ordinal)
                   && panel.ApprovalCardTextForCheck.Contains("note.txt", StringComparison.Ordinal)
                   && panel.ApprovalCardTextForCheck.Contains("+第二行（已改）", StringComparison.Ordinal),
                 "卡片说出是哪个工具、并给出它冻结下来的真实 diff（实际「" + panel.ApprovalCardTextForCheck + "」）");
@@ -1626,7 +1646,7 @@ internal sealed class ShellApprovalsChecks
                       && turn.Role == ChatRoles.Assistant
                       && turn.ApprovalState == ChatApprovalStates.Approved) == true
                   && afterApprove!.Messages.Any(turn => turn.ToolCallId == parkedCallId
-                      && turn.Role == ChatRoles.Tool && turn.Text.Contains("Edited note.txt", StringComparison.Ordinal))
+                      && turn.Role == ChatRoles.Tool && turn.Text.Contains("Edited 1 file", StringComparison.Ordinal))
                   && afterApprove.Messages[^1].Text == ApprovalChatClient.Answer,
                 "批准后按原调用执行、真实结果入库、回复接着说完（实际 "
                 + (afterApprove?.Messages.Count ?? -1) + " 条，工具结果「"
@@ -1637,13 +1657,13 @@ internal sealed class ShellApprovalsChecks
             Relayout(shell, panel, measure: true);
             Check(panel.PendingApprovalCardsForCheck == 0
                   && panel.ApprovalRecordsForCheck.Any(line =>
-                      line.Contains(HubStrings.Get("ChatApprovalResolvedApproved"), StringComparison.Ordinal)),
+                      line.Contains(string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ActivityRowEditFile"), "note.txt"), StringComparison.Ordinal)),
                 "决定之后卡片折成一行记录，按钮不再留在界面上（实际记录 "
                 + string.Join(" / ", panel.ApprovalRecordsForCheck) + "）");
             Check(chat.RunFor(parkSession.Id) is null && chat.RunningCount == 0,
                 "批准后的续答跑完即让出运行位（实际仍有 " + chat.RunningCount + " 路）");
-            Check(afterApprove?.AutoApprovedTools.Contains("file_write") == true
-                  && ToolTrust.Contains(chat.TrustedTools, "file_write"),
+            Check(afterApprove?.AutoApprovedTools.Contains("fs_replace") == true
+                  && ToolTrust.Contains(chat.TrustedTools, "fs_replace"),
                 "「总是允许」同时落进会话文件与应用级信任清单（应用清单：" + string.Join(",", chat.TrustedTools) + "）");
             // Revoked here so the sessions the rest of this check drives still meet a file_write that asks. The
             // session's own grant is what the next cell reads, and it survives this.
@@ -1674,19 +1694,17 @@ internal sealed class ShellApprovalsChecks
             panel.ExpandVirtualGroupsForCheck();
             Relayout(shell, panel, measure: true);
 
-            var wroteLine = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatWriteRecordFormat"), "note.txt");
+            var wroteLine = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ActivityRowEditFile"), "note.txt");
             // Which write recorded which copy, read at the moment each assertion speaks: a missing button can
             // only mean one of two things, and the report should say which.
             string CallState() => string.Join(" / ", parkSession.Messages
-                .Where(turn => turn.ToolName == "file_write")
+                .Where(turn => turn.ToolName == "fs_replace")
                 .Select(turn => $"{turn.ToolCallId}→{(turn.UndoName ?? "无副本")}"
                     + (parkSession.Messages.Any(result => result.Role == ChatRoles.Tool
                        && result.ToolCallId == turn.ToolCallId
                        && result.Text!.Contains("Undo copy:", StringComparison.Ordinal)) ? "(结果带副本路径)" : "(结果没带)")));
             Check(panel.UndoButtonsForCheck == 0
-                  && panel.ApprovalRecordsForCheck.Any(line =>
-                      line.Contains(HubStrings.Get("ChatApprovalResolvedApproved"), StringComparison.Ordinal))
-                  && panel.ApprovalRecordsForCheck.Any(line => line.Contains(wroteLine, StringComparison.Ordinal)),
+                  && panel.ApprovalRecordsForCheck.Count(line => line.Contains(wroteLine, StringComparison.Ordinal)) >= 2,
                 "两次写入各带一个撤销入口：批准过的那行照旧记决定，免批的那行改口说文件（记录 "
                 + string.Join(" / ", panel.ApprovalRecordsForCheck) + "；调用 " + CallState() + "）");
             Check(System.IO.File.ReadAllText(target).Contains("（已改）（已改）", StringComparison.Ordinal),
@@ -1694,7 +1712,7 @@ internal sealed class ShellApprovalsChecks
 
             // The newest copy belongs to the newest write, so undoing it is that write's undo — not a reset to
             // wherever the session started.
-            var newestCall = parkSession.Messages.Where(turn => turn.ToolName == "file_write").Last().ToolCallId!;
+            var newestCall = parkSession.Messages.Where(turn => turn.ToolName == "fs_replace").Last().ToolCallId!;
             await chat.RevertWriteAsync(parkSession.Id, newestCall);
             panel.ExpandVirtualGroupsForCheck();
             Relayout(shell, panel, measure: true);
@@ -1712,7 +1730,7 @@ internal sealed class ShellApprovalsChecks
                   && chat.RunningCount == 0,
                 "撤销以用户口吻记一行、助手下次读得到，但不为它另起一次回答（实际 " + chat.RunningCount + " 路在跑）");
 
-            var oldestCall = parkSession.Messages.Where(turn => turn.ToolName == "file_write").First().ToolCallId!;
+            var oldestCall = parkSession.Messages.Where(turn => turn.ToolName == "fs_replace").First().ToolCallId!;
             await chat.RevertWriteAsync(parkSession.Id, oldestCall);
             Check(System.IO.File.ReadAllText(target) == "第一行\n第二行\n"
                   && panel.UndoButtonsForCheck == 0
@@ -1732,7 +1750,7 @@ internal sealed class ShellApprovalsChecks
             Relayout(shell, panel, measure: true);
             System.IO.File.AppendAllText(target, "手工加的一行\n");
             var toldBefore = parkSession.Messages.Count(turn => turn.Role == ChatRoles.User);
-            var changedCall = parkSession.Messages.Where(turn => turn.ToolName == "file_write").Last().ToolCallId!;
+            var changedCall = parkSession.Messages.Where(turn => turn.ToolName == "fs_replace").Last().ToolCallId!;
             var refusal = await chat.RevertWriteAsync(parkSession.Id, changedCall);
             Check(refusal.Verdict == UndoVerdict.ChangedSince
                   && System.IO.File.ReadAllText(target).Contains("手工加的一行", StringComparison.Ordinal)
@@ -1970,11 +1988,11 @@ internal sealed class ShellApprovalsChecks
             // A durable approval is only defensible if the record says who granted it: the same decision made
             // after a restart, by a workspace that never saw the stream, has to show up too.
             var audit = System.IO.File.ReadAllText(shell.Workspace.Log.FilePath);
-            Check(audit.Contains($"Tool approval: always allowed file_write in \"{parkSession.Title}\"",
+            Check(audit.Contains($"Tool approval: always allowed fs_replace in \"{parkSession.Title}\"",
                     StringComparison.Ordinal)
-                  && audit.Contains($"Tool approval: refused file_write in \"{denySession.Title}\"",
+                  && audit.Contains($"Tool approval: refused fs_replace in \"{denySession.Title}\"",
                       StringComparison.Ordinal)
-                  && audit.Contains($"Tool approval: allowed file_write in \"{restartSession.Title}\"",
+                  && audit.Contains($"Tool approval: allowed fs_replace in \"{restartSession.Title}\"",
                       StringComparison.Ordinal),
                 "批准、总是允许、拒绝与重启后的批准各留下一行审计");
 
@@ -1990,7 +2008,7 @@ internal sealed class ShellApprovalsChecks
                        StringComparison.Ordinal))
                   && gateLines.Any(line => line.Contains("Tool gate: allowed-by-app-grant run_command · ask · WorkspaceCommand",
                        StringComparison.Ordinal))
-                  && gateLines.Any(line => line.Contains("Tool gate: allowed-by-session-grant file_write · ask · WorkspaceWrite",
+                  && gateLines.Any(line => line.Contains("Tool gate: allowed-by-session-grant fs_replace · ask · WorkspaceWrite",
                        StringComparison.Ordinal))
                   // Full access does not reach a system-wide capture: the missing piece is the app grant, not the
                   // mode, and the line names the mode it was judged under.
@@ -2123,7 +2141,7 @@ internal sealed class ShellApprovalsChecks
             var revokeAllCases = new (string Name, Func<bool> Fill, Func<int> Rows, Func<bool> RevokeAll, Func<int> Stored)[]
             {
                 ("工具",
-                    () => settings.TrustToolForCheck("file_write") && settings.TrustToolForCheck("run_command"),
+                    () => settings.TrustToolForCheck("fs_replace") && settings.TrustToolForCheck("run_command"),
                     () => settings.TrustedToolRowsShownForCheck,
                     settings.RevokeAllTrustedToolsForCheck,
                     () => new PreferencesStore(PreferencesPathFor(shell.Workspace.Store.Root)).Load().TrustedTools.Count),

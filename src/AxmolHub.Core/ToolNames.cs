@@ -10,15 +10,23 @@ namespace AxmolHub.Core;
 /// </summary>
 public static class ToolNames
 {
-    public const string ReadFile = "read_file";
+    public const string FsRead = "fs_read";
 
-    public const string FileWrite = "file_write";
+    public const string FsWrite = "fs_write";
 
-    public const string SearchText = "search_text";
+    public const string FsList = "fs_list";
 
-    public const string FindFiles = "find_files";
+    public const string FsFind = "fs_find";
 
-    public const string ListDirectory = "list_directory";
+    public const string FsGrep = "fs_grep";
+
+    public const string FsReplace = "fs_replace";
+
+    public const string FsDelete = "fs_delete";
+
+    public const string FsMove = "fs_move";
+
+    public const string FsRequestAccess = "fs_request_access";
 
     public const string WorkspaceMap = "workspace_map";
 
@@ -28,11 +36,11 @@ public static class ToolNames
 
     public const string WebSearch = "web_search";
 
-    public const string GetProjects = "get_projects";
+    public const string ProjectList = "project_list";
 
-    public const string GetEngines = "get_engines";
+    public const string EngineList = "engine_list";
 
-    public const string GetToolchainStatus = "get_toolchain_status";
+    public const string ToolchainStatus = "toolchain_status";
 
     public const string ListSessions = "list_sessions";
 
@@ -45,10 +53,6 @@ public static class ToolNames
     public const string MemoryRead = "memory_read";
 
     public const string MemoryWrite = "memory_write";
-
-    public const string RequestDirectory = "request_directory";
-
-    public const string RequestFile = "request_file";
 
     public const string CaptureScreen = "capture_screen";
 

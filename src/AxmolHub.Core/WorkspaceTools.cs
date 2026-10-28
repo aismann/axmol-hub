@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -12,10 +13,10 @@ namespace AxmolHub.Core;
 /// restart apply to the same directory the card was shown for: the value is read from the persisted session, not
 /// re-derived from whatever is on screen now.
 /// </summary>
-/// <param name="ApplyGrantedRoot">Persists one directory the person just approved on a <c>request_directory</c>
+/// <param name="ApplyGrantedRoot">Persists one directory the person just approved on a <c>fs_request_access</c>
 /// card and answers the model. The seam exists because the tool body is in Core and cannot reach a session
 /// registry, and a check that only exercises the guard passes null.</param>
-/// <param name="ApplyGrantedFile">The same seam for a <c>request_file</c> card: one file, persisted on the session
+/// <param name="ApplyGrantedFile">The same seam for a <c>fs_request_access</c> card: one file, persisted on the session
 /// as one exact path, answered with what the model may do with that file and nothing beside it.</param>
 /// <param name="Sessions">Where the other sessions live, for the cross-session tools. Null in a scope that has no
 /// session store to read — those tools then say so instead of inventing a peer.</param>
@@ -87,6 +88,12 @@ public sealed record WorkspaceToolScope(
     Func<string, Task<string>>? ApplyGrantedFile = null)
 {
     internal ComputerUseBridge? ComputerUse { get; init; }
+    /// <summary>Fingerprint of the file shown on a parked fs_write approval card; null on an automatic call.</summary>
+    public string? ApprovedWriteFingerprint { get; init; }
+    /// <summary>Keep a batch journal locked until the host has persisted its tool result.</summary>
+    public Action<string, IDisposable>? HoldBatchLease { get; init; }
+    public string? ApprovedAccessKind { get; init; }
+    public bool ApprovedCacheBreak { get; init; }
     /// <summary>A scope with nothing in it. Every file and command tool answers
     /// <see cref="WorkspacePathVerdict.NoWorkspace"/> rather than guessing a directory.</summary>
     public static WorkspaceToolScope Empty { get; } = new(null, new WorkspaceGuards(null, []), null, "", [], null);
@@ -118,7 +125,7 @@ public sealed record WorkspaceToolScope(
 /// applies no naming policy to them. A serializer-level policy would rename the schema without renaming what the
 /// invoker looks for, and the mismatch surfaces as "missing required parameter" — which reads like a model bug.
 /// </summary>
-public sealed class WorkspaceTools(WorkspaceToolScope context)
+public sealed partial class WorkspaceTools(WorkspaceToolScope context)
 {
     public const int MaxReadFileBytes = 256 * 1024;
     public const int DefaultReadLimit = 400;
@@ -138,7 +145,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     public const int MaxReadTurns = 60;
     public const int MaxTurnCharacters = 600;
 
-    /// <summary>The newline of every tool result. It is the newline <c>file_write</c> puts in the files those
+    /// <summary>The newline of every tool result. It is the newline <c>fs_replace</c> puts in the files those
     /// results describe, so a transcript replayed from another host reads the same.</summary>
     private const string Lf = "\n";
 
@@ -182,8 +189,8 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     public const int MaxFoundFiles = 500;
 
     [Description("Read a text file from the session workspace, or from a directory the user granted this session, "
-                 + "or one single file the user granted with request_file. "
-                 + "Lines come back without numbering so they can be copied verbatim into file_write.")]
+                 + "or one single file the user granted with fs_request_access. "
+                 + "Lines come back without numbering so they can be copied verbatim into fs_replace.")]
     public string ReadFile(
         [Description("Path relative to the session workspace, for example src/main.cpp, or an absolute path inside "
                      + "a directory or to a single file the user granted this session. A relative path must not "
@@ -229,20 +236,39 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     }
 
     [Description("Edit or create one text file in the session workspace, in a directory the user granted this "
-                 + "session, or in a single file granted with request_file — by replacing an exact string. The file "
+                 + "session, or in a single file granted with fs_request_access — by replacing an exact string. The file "
                  + "is left untouched unless old_string matches, so a wrong anchor is a refusal rather than damage.")]
     public string FileWrite(
         [Description("Path relative to the session workspace, or an absolute path inside a directory the user "
-                     + "granted this session, or to a single file granted with request_file (such a file is "
+                     + "granted this session, or to a single file granted with fs_request_access (such a file is "
                      + "read-only when it sits in a protected location or is not a text file type the assistant may "
                      + "write, and this call then refuses it).")]
         string path,
-        [Description("The exact text to replace, copied verbatim from read_file including indentation and line "
+        [Description("The exact text to replace, copied verbatim from fs_read including indentation and line "
                      + "breaks. Leave empty only to create a file that does not exist yet.")]
         string old_string,
         [Description("The text that takes old_string's place.")] string new_string,
         [Description("Replace every occurrence instead of refusing when old_string matches more than one place.")]
         bool replace_all = false)
+        => WriteText(path, original => FileEdit.Apply(original, old_string, new_string, replace_all));
+
+    [Description("Create a text file or replace its entire contents. Set overwrite to true only when the existing "
+                 + "file should be replaced. For localized changes use fs_replace.")]
+    public string FsWrite(
+        [Description("Path in the session workspace or a granted writable directory.")] string path,
+        [Description("The complete new text of the file.")] string content,
+        [Description("Explicitly allow replacing an existing file.")] bool overwrite = false)
+    {
+        if (Encoding.UTF8.GetByteCount(content ?? "") > 256L * 1024 * 1024)
+            return "Refused: the replacement exceeds the 256 MiB limit.";
+        using var gate = context.TakeChangeGate?.Invoke(ToolNames.FsWrite);
+        if (context.TakeChangeGate is not null && gate is null) return ToolApprovalResults.Busy;
+        return WriteText(path, original => FileEdit.Overwrite(original, content, overwrite),
+            context.ApprovedWriteFingerprint, wholeFile: true);
+    }
+
+    private string WriteText(string path, Func<string?, FileEditResult> makeEdit, string? approvedFingerprint = null,
+        bool wholeFile = false)
     {
         var resolved = WorkspacePaths.ResolveWrite(context.Sandbox, path, context.Guards);
         if (!resolved.IsAllowed) return Refusal(resolved.Verdict, resolved.Display, path);
@@ -259,7 +285,9 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         {
             try
             {
-                originalBytes = File.ReadAllBytes(resolved.Full);
+                if (new FileInfo(resolved.Full).Length > 256L * 1024 * 1024)
+                    return "Refused: the file exceeds the 256 MiB backup limit.";
+                originalBytes = ReadBoundedBytes(resolved.Full, 256L * 1024 * 1024);
                 using var memory = new MemoryStream(originalBytes);
                 using var reader = new StreamReader(memory, new UTF8Encoding(false, true), true);
                 original = reader.ReadToEnd();
@@ -271,14 +299,23 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
             }
         }
 
-        var edit = FileEdit.Apply(original, old_string, new_string, replace_all);
-        if (!edit.Changed) return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display);
+        if (approvedFingerprint is not null
+            && !string.Equals(approvedFingerprint, Fingerprint(resolved.Full, originalBytes), StringComparison.Ordinal))
+            return $"Refused: {resolved.Display} changed since approval. Review the operation again.";
+
+        var edit = makeEdit(original);
+        if (!edit.Changed)
+            return wholeFile && edit.Verdict == FileEditVerdict.Unchanged
+                ? $"No change: {resolved.Display} already has that content."
+                : wholeFile && edit.Verdict == FileEditVerdict.AlreadyExists
+                ? $"Refused: {resolved.Display} already exists. Pass overwrite=true to replace it."
+                : FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display);
 
         ChatFileRevision revision;
         try
         {
             revision = ChatChangeStore.Prepare(context.DataRoot, context.ConversationId, resolved.Full,
-                resolved.Root, original, edit.Updated);
+                resolved.Root, original, edit.Updated, originalBytes);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -317,6 +354,48 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         context.Log?.Write($"Assistant wrote {resolved.Full} ({edit.Verdict}, {edit.Matches} place(s))");
         return FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display)
                + ChatChangeStore.Marker + revision.Id + journalWarning;
+    }
+
+    /// <summary>Capture the file identity for a parked full-write call. Invalid paths fail closed.</summary>
+    public static string WriteFingerprint(WorkspaceToolScope scope, string path)
+    {
+        var resolved = WorkspacePaths.ResolveWrite(scope.Sandbox, path, scope.Guards);
+        if (!resolved.IsAllowed) return "invalid";
+        try
+        {
+            if (File.Exists(resolved.Full) && new FileInfo(resolved.Full).Length > 256L * 1024 * 1024)
+                return "invalid";
+            var bytes = File.Exists(resolved.Full) ? ReadBoundedBytes(resolved.Full, 256L * 1024 * 1024) : null;
+            return Fingerprint(resolved.Full, bytes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        { return "invalid"; }
+    }
+
+    private static string Fingerprint(string path, byte[]? bytes)
+    {
+        var identity = path + "\n" + (bytes is null ? "missing" : Convert.ToHexString(SHA256.HashData(bytes)));
+        if (bytes is not null)
+        {
+            identity += "\n" + (int)File.GetAttributes(path);
+            if (!OperatingSystem.IsWindows()) identity += "\n" + (int)File.GetUnixFileMode(path);
+        }
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+    }
+
+    private static byte[] ReadBoundedBytes(string path, long limit)
+    {
+        using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (input.Length > limit) throw new IOException("The file exceeds the backup limit.");
+        using var output = new MemoryStream();
+        var buffer = new byte[64 * 1024];
+        int count;
+        while ((count = input.Read(buffer, 0, (int)Math.Min(buffer.Length, limit - output.Length + 1))) > 0)
+        {
+            if (output.Length + count > limit) throw new IOException("The file grew beyond the backup limit.");
+            output.Write(buffer, 0, count);
+        }
+        return output.ToArray();
     }
 
     [Description("Run one shell command in the session workspace, or in a directory the user granted this session, "
@@ -594,11 +673,37 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         => $"{header} · exit: {(stalled.ExitCode.HasValue ? stalled.ExitCode.ToString() : "unknown (Hub could not read it)")}"
            + $"{Lf}{Shaped(final.Output, final.Error)}";
 
+    public static string AccessKind(string? path, string? kind)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path)) return "invalid";
+        kind = string.IsNullOrWhiteSpace(kind) ? "auto" : kind.Trim().ToLowerInvariant();
+        if (kind is not ("auto" or "file" or "directory")) return "invalid";
+        if (Directory.Exists(path)) return kind is "auto" or "directory" ? "directory" : "invalid";
+        if (File.Exists(path)) return kind is "auto" or "file" ? "file" : "invalid";
+        return kind == "auto" ? "invalid" : kind;
+    }
+
+    [Description("Request access to one user-named absolute file or directory. Calling this tool is the request; "
+                 + "the approval card decides it. A file grant never opens its parent directory. Protected "
+                 + "locations and unsupported file types remain read-only. Never ask for permission in prose first: "
+                 + "call this tool when the user named the path. Never guess a path.")]
+    public Task<string> FsRequestAccess(
+        [Description("Absolute path of the file or directory named by the user.")] string path,
+        [Description("auto detects an existing path; use file or directory to identify a missing target.")] string kind = "auto")
+    {
+        var actual = AccessKind(path, kind);
+        if (actual == "invalid")
+            return Task.FromResult("Refused: provide an absolute existing path or specify kind=file or kind=directory for a missing target; the kind must match the target.");
+        if (context.ApprovedAccessKind is { } expected && actual != expected)
+            return Task.FromResult("Refused: the target type changed since approval. Request access again.");
+        return actual == "directory" ? RequestDirectory(path) : RequestFile(path);
+    }
+
     [Description("Ask the user to grant this session read and write access to one directory outside the "
                  + "workspace: another project, a reference checkout, a folder the task or the user's own words "
                  + "named. It shows one approval card, and approving it adds that directory for the rest of this "
-                 + "session — alongside the workspace, not instead of it — after which read_file, file_write, "
-                 + "list_directory, search_text, find_files, workspace_map and run_command's cwd all take its "
+                 + "session — alongside the workspace, not instead of it — after which fs_read, fs_replace, "
+                 + "fs_list, fs_grep, fs_find, workspace_map and run_command's cwd all take its "
                  + "absolute paths. Never ask the user for permission in prose first: calling this tool *is* the "
                  + "request, and the card it shows *is* the approval, so a sentence that waits for the user to "
                  + "authorize you in words parks the task forever. If the user's own words already named the "
@@ -621,7 +726,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                     ? await apply(full).ConfigureAwait(false)
                     : WorkspacePaths.GrantedResultFor(full, verdict == GrantVerdict.GrantedReadOnly);
             case GrantVerdict.NoPath:
-                return "Refused: request_directory needs the absolute path of a directory. Do not retry it empty.";
+                return "Refused: fs_request_access needs the absolute path of a directory. Do not retry it empty.";
             case GrantVerdict.NotAbsolute:
                 return $"Refused: '{path}' is not an absolute path. Ask the user for the full directory. Do not retry "
                        + "a relative one.";
@@ -641,8 +746,8 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                        + "than the folder you asked about. Ask for the directory you actually need; do not retry "
                        + "this one.";
             case GrantVerdict.AlreadyGranted:
-                return $"'{full}' is already granted to this session. Name it by absolute path in read_file, "
-                       + "file_write, list_directory or run_command's cwd; do not ask again.";
+                return $"'{full}' is already granted to this session. Name it by absolute path in fs_read, "
+                       + "fs_replace, fs_list or run_command's cwd; do not ask again.";
             case GrantVerdict.InsideGrant:
                 return $"'{full}' is already inside '{detail}', which this session holds. Work there with absolute "
                        + "paths; do not ask again.";
@@ -660,14 +765,14 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     [Description("Ask the user to grant this session access to one single file outside the workspace: a log a "
                  + "diagnosis needs, a config in another checkout — the file the task or the user's own words "
                  + "named. One approval card opens that one file for the rest of this session, by absolute path in "
-                 + "read_file and file_write; its folder is not part of it, so listing, searching and a command's "
+                 + "fs_read and fs_replace; its folder is not part of it, so listing, searching and a command's "
                  + "cwd still cannot reach it. A file inside a protected location (Hub's data directory, an engine "
                  + "installation, a .git) or outside the write allowlist is granted for reading only, and the card "
                  + "says so. Never ask the user for permission in prose first: calling this tool *is* the request, "
                  + "and the card it shows *is* the approval, so a sentence that waits for the user to authorize you "
                  + "in words parks the task forever. If the user's own words already named the file, call this tool "
                  + "now, once, and let the card decide, and never guess a path. When the task needs more than one "
-                 + "file in a folder, ask for the folder with request_directory instead.")]
+                 + "file in a folder, ask for the folder with fs_request_access instead.")]
     public async Task<string> RequestFile(
         [Description("Absolute path of the single file to grant, for example D:\\dev\\other-project\\notes.md")]
         string path)
@@ -680,16 +785,16 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                     ? await apply(full).ConfigureAwait(false)
                     : WorkspacePaths.FileGrantedResultFor(full, verdict == GrantVerdict.GrantedReadOnly);
             case GrantVerdict.NoPath:
-                return "Refused: request_file needs the absolute path of one file. Do not retry it empty.";
+                return "Refused: fs_request_access needs the absolute path of one file. Do not retry it empty.";
             case GrantVerdict.NotAbsolute:
                 return $"Refused: '{path}' is not an absolute path. Ask the user for the file's full path. Do not "
                        + "retry a relative one.";
             case GrantVerdict.Unusable:
                 return $"Refused: '{path}' is not a usable path ({detail}). Do not retry it.";
             case GrantVerdict.IsDirectory:
-                return $"Refused: '{full}' is a directory, and request_file opens one file rather than the folder "
+                return $"Refused: '{full}' is a directory, and fs_request_access opens one file rather than the folder "
                        + "around it. If the task needs more than that one file, ask for the directory with "
-                       + "request_directory; do not retry this path with request_file.";
+                       + "fs_request_access; do not retry this path with fs_request_access.";
             case GrantVerdict.Missing:
                 return $"Refused: '{full}' does not exist and neither does its folder. Ask the user to confirm the "
                        + "path; do not guess another one.";
@@ -702,8 +807,8 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                 return $"'{full}' is inside the session workspace, so a relative path already reaches it. Use one "
                        + "like src/main.cpp; do not retry this call.";
             case GrantVerdict.AlreadyGranted:
-                return $"'{full}' is already granted to this session. Name it by absolute path in read_file or "
-                       + "file_write; do not ask again.";
+                return $"'{full}' is already granted to this session. Name it by absolute path in fs_read or "
+                       + "fs_replace; do not ask again.";
             case GrantVerdict.InsideGrant:
                 return $"'{full}' is already inside '{detail}', which this session holds. Work there with absolute "
                        + "paths; do not ask again.";
@@ -1078,7 +1183,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         foreach (var turn in shown)
         {
             // A tool result is the peer's raw command output, and forwarding it would spend this session's
-            // context on bytes nobody asked for. The call itself is shown: "it is mid-way through file_write"
+            // context on bytes nobody asked for. The call itself is shown: "it is mid-way through fs_replace"
             // is a fact about the peer that a reader came here for.
             if (turn.Role == ChatRoles.Tool) continue;
             builder.Append('\n').Append(Describe(turn, context.DataRoot));
@@ -1246,7 +1351,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     }
 
     [Description("Find text inside the session workspace, or inside a directory the user granted this session, "
-                 + "with a regular expression and get back path:line: content, ready to open with read_file at that "
+                 + "with a regular expression and get back path:line: content, ready to open with fs_read at that "
                  + "offset. This is how to look around a project without running a shell command, and it reads a "
                  + "single file too when the question is about one log.")]
     public string SearchText(
@@ -1277,7 +1382,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var oneFile = single is not null;
         var named = single ?? default;
         if (string.IsNullOrWhiteSpace(pattern))
-            return "Refused: search_text needs a pattern. Say what to look for, or call list_directory to see the "
+            return "Refused: fs_grep needs a pattern. Say what to look for, or call fs_list to see the "
                    + "shape of the project. Do not retry it empty.";
         if (GlobMatcher(glob) is not { } wants)
             return $"Refused: '{glob}' is not a usable glob. Use a name pattern like \"*.cpp\", a path one like "
@@ -1309,7 +1414,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         foreach (var file in candidates)
         {
             walked++;
-            // The glob filters inside the directory that was asked for; the path printed is the one read_file
+            // The glob filters inside the directory that was asked for; the path printed is the one fs_read
             // takes, which is the workspace-relative one. Those differ as soon as path is not the root. Naming one
             // file is already the filter, so a glob beside it is ignored rather than answering "no match" about the
             // file the caller named.
@@ -1366,10 +1471,10 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         var scope = $"{(string.IsNullOrWhiteSpace(glob) || oneFile ? "any text file" : $"files matching {glob}")}"
                     + (oneFile ? $" in {named.Display}" : $" under {LabelOf(directory)}");
         if (hits.Count == 0)
-            return $"search_text · {pattern} · {scope}\nNo match in the {searched} file(s) searched."
+            return $"fs_grep · {pattern} · {scope}\nNo match in the {searched} file(s) searched."
                    + notes + " Try a shorter pattern, or widen path. Do not retry this one unchanged.";
 
-        var builder = new StringBuilder($"search_text · {pattern} · {scope}\n")
+        var builder = new StringBuilder($"fs_grep · {pattern} · {scope}\n")
             .AppendJoin('\n', hits)
             .Append($"\n{hits.Count} match(es) in {matched.Count} file(s) of the {searched} searched.");
         if (hits.Count >= cap)
@@ -1433,7 +1538,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         }
 
         Walk(directory.Full, fromRoot, 1);
-        var head = $"list_directory · {LabelOf(directory)} · depth {levels} · {dirs} dir(s), {files} file(s)";
+        var head = $"fs_list · {LabelOf(directory)} · depth {levels} · {dirs} dir(s), {files} file(s)";
         if (truncated) head += $" (cut at {MaxListedEntries} entries)";
         if (skipped > 0) head += $" · {skipped} build/vendored dir(s) not entered";
         return builder.Length == 0 ? head + "\n(that directory is empty)" : head + builder;
@@ -1465,10 +1570,10 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         }
 
         if (found.Count == 0)
-            return $"find_files · {glob} · under {LabelOf(directory)}\nNo file matched in the {walked} file(s) "
-                   + "walked. Try the name without its extension, or call list_directory to see what is there.";
+            return $"fs_find · {glob} · under {LabelOf(directory)}\nNo file matched in the {walked} file(s) "
+                   + "walked. Try the name without its extension, or call fs_list to see what is there.";
 
-        var builder = new StringBuilder($"find_files · {glob} · under {LabelOf(directory)}\n")
+        var builder = new StringBuilder($"fs_find · {glob} · under {LabelOf(directory)}\n")
             .AppendJoin('\n', found)
             .Append($"\n{found.Count} file(s).");
         if (found.Count >= MaxFoundFiles) builder.Append(" Cut at the limit — narrow with path.");
@@ -1479,7 +1584,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
                  + "Hub project, whether it is a git repository and on what branch, which build units it holds and "
                  + "how they reference each other, what each top-level directory contains, and which parts the scan "
                  + "left out. Reads listings and manifest files only — no symbols, no index — and changes nothing. "
-                 + "Make this the first call in a tree you have not seen; use search_text and read_file for "
+                 + "Make this the first call in a tree you have not seen; use fs_grep and fs_read for "
                  + "questions about contents.")]
     public async Task<string> MapWorkspace(
         [Description("Directory to map: relative to the workspace, or an absolute path inside a directory the user "
@@ -1488,7 +1593,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
         CancellationToken cancellationToken = default)
     {
         // Inside the same guard as the listing tools: a map walks directories the session may already list, so it
-        // reaches nowhere new in any approval mode, and it is registered as ReadOnly for the reason search_text
+        // reaches nowhere new in any approval mode, and it is registered as ReadOnly for the reason fs_grep
         // is — exploration that costs a card gets replaced by a grep inside a command that costs nothing.
         var directory = WorkspacePaths.ResolveDirectory(context.Sandbox, path, context.Guards);
         if (!directory.IsAllowed) return Refusal(directory.Verdict, directory.Display, path);
@@ -1633,7 +1738,7 @@ public sealed class WorkspaceTools(WorkspaceToolScope context)
     private static string RelativeOf(string root, string full)
         => Path.GetRelativePath(root, full).Replace(Path.DirectorySeparatorChar, '/');
 
-    /// <summary>A found file as the next call needs it. read_file resolves a relative path against the workspace
+    /// <summary>A found file as the next call needs it. fs_read resolves a relative path against the workspace
     /// root, so a scoped search still has to print <c>probe/app.cpp</c>: the bare <c>app.cpp</c> is true inside the
     /// directory that was searched and a dead end everywhere else — and under a granted directory the path has to
     /// carry the directory itself, or it would name a file in the workspace instead.</summary>

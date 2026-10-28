@@ -13,6 +13,7 @@ namespace AxmolHub.Core;
 /// </summary>
 public sealed class ConversationStore(string root)
 {
+    public string DataRoot => root;
     private static readonly JsonSerializerOptions Json = StateStore.ReadOptions;
 
     /// <summary>
@@ -179,7 +180,11 @@ public sealed class ConversationStore(string root)
         var path = ConversationPath(id);
         if (!File.Exists(path)) return null;
         var conversation = Read(path);
-        if (conversation is not null) NormalizeGrants(conversation);
+        if (conversation is not null)
+        {
+            NormalizeGrants(conversation);
+            if (conversation.MigrateRetiredFsTools() > 0) Save(conversation);
+        }
         return conversation;
     }
 

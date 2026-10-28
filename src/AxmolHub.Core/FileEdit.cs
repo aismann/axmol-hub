@@ -24,6 +24,17 @@ public readonly record struct FileEditResult(FileEditVerdict Verdict, string Upd
 /// </summary>
 public static class FileEdit
 {
+    /// <summary>Replace a whole file only when overwriting was explicitly requested.</summary>
+    public static FileEditResult Overwrite(string? original, string? content, bool overwrite)
+    {
+        var updated = TextEol.ToLf(content ?? "");
+        if (original is null) return new(FileEditVerdict.Created, updated, 0);
+        if (!overwrite) return new(FileEditVerdict.AlreadyExists, original, 0);
+        if (string.Equals(original, updated, StringComparison.Ordinal))
+            return new(FileEditVerdict.Unchanged, original, 0);
+        return new(FileEditVerdict.Applied, updated, 1);
+    }
+
     /// <param name="original">The current text, or <see langword="null"/> when the file does not exist.</param>
     public static FileEditResult Apply(string? original, string oldString, string newString, bool replaceAll)
     {
@@ -59,7 +70,7 @@ public static class FileEdit
         return new FileEditResult(FileEditVerdict.Applied, updated, replaceAll ? matches : 1);
     }
 
-    private static int CountMatches(string text, string value)
+    internal static int CountMatches(string text, string value)
     {
         if (value.Length == 0) return 0;
         var count = 0;

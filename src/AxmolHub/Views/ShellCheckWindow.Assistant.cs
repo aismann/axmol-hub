@@ -1444,14 +1444,14 @@ internal sealed class ShellAssistantChecks
 
         // A tool exchange folds into one descriptive action row, which by construction carries no message-action
         // bar: it is not a readable message, and acting on one half of a call/result pair orphans the other.
-        opsConversation.Messages.Add(ChatTurn.FunctionCall("call_check", "get_projects", "{}"));
+        opsConversation.Messages.Add(ChatTurn.FunctionCall("call_check", "project_list", "{}"));
         opsConversation.Messages.Add(ChatTurn.FunctionResult("call_check", "[]"));
         panel.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         panel.ExpandVirtualGroupsForCheck();
         Relayout(shell, panel, measure: true);
-        var genericRow = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ActivityRowGeneric"), "get_projects");
+        var genericRow = string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ActivityRowGeneric"), "project_list");
         Check(panel.ActivityRowsForCheck.Contains(genericRow) && panel.ActivityRowActionCountForCheck == 0,
             "工具调用与结果折成一条动作行，且这条行里没有任何操作按钮（实际行 "
             + string.Join(" / ", panel.ActivityRowsForCheck) + "，行内按钮 " + panel.ActivityRowActionCountForCheck + "）");

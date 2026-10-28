@@ -15,6 +15,7 @@ namespace AxmolHub;
 /// </summary>
 internal sealed class ConversationRegistry(ConversationStore store)
 {
+    internal Func<WorkspaceGuards>? GuardsProvider { get; set; }
     /// <summary>Guards the two maps only; a session's own gate is what serializes its writes.</summary>
     private readonly object _maintenance = new();
 
@@ -41,7 +42,25 @@ internal sealed class ConversationRegistry(ConversationStore store)
         {
             if (_cache.TryGetValue(id, out var cached)) return cached;
             var conversation = store.Load(id);
-            if (conversation is not null) _cache[id] = conversation;
+            if (conversation is not null)
+            {
+                var migrated = false;
+                if (conversation.Messages.Any(turn => (turn.ToolName == ToolNames.FsReplace || ChatChanges.IsManagement(turn.ToolName))
+                                                      && turn.ToolCallId is { Length: > 0 })
+                    && conversation.HasUnansweredToolCall())
+                {
+                    if (GuardsProvider?.Invoke() is { } guards)
+                    {
+                        var (write, read) = WorkspacePaths.SplitRoots(conversation.GrantedRoots, conversation.ReadOnlyRoots, guards);
+                        var sandbox = new WorkspaceSandbox(conversation.WorkspaceRoot, write, read)
+                            { Files = WorkspacePaths.NormalizeFiles(conversation.GrantedFiles) };
+                        var batches = ChatChangeStore.BatchesForConversation(store.DataRoot, id);
+                        migrated |= ChatChangeStore.RecoverBatchCalls(store.DataRoot, conversation, batches, sandbox, guards) > 0;
+                    }
+                }
+                if (migrated) store.Save(conversation);
+                _cache[id] = conversation;
+            }
             return conversation;
         }
     }

@@ -626,6 +626,8 @@ internal sealed partial class ChatSessionCoordinator
             {
                 if (turn.ChangeId is { Length: > 0 } changeId) referenced.Add(changeId);
                 if (turn.UndoRevisionId is { Length: > 0 } undoId) referenced.Add(undoId);
+                if (turn.ManagementBatchId is { Length: > 0 } batchId) referenced.Add(batchId);
+                foreach (var reference in turn.ChangeRefs) referenced.Add(reference.RevisionId);
             }
             foreach (var changeId in conversation.ChangeHistoryIds)
                 if (changeId is { Length: > 0 }) referenced.Add(changeId);

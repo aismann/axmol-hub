@@ -259,7 +259,7 @@ public static class BuildCommandGrades
     /// <c>rm src/main.cpp</c> stays a file question, and the name is matched rather than substring-scanned, so
     /// <c>rm rebuild-notes.md</c> does not become a build. A <c>-rf</c>/<c>/s</c> style switch on the deleter is
     /// irrelevant: what makes this the cache is which directory it points at.</summary>
-    private static bool IsCachePath(string text)
+    public static bool IsCachePath(string text)
     {
         if (text.Length == 0 || text[0] == '-') return false;
         var name = Path.GetFileName(text.TrimEnd('/', '\\').Replace('\\', '/'));

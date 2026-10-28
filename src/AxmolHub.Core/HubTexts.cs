@@ -731,8 +731,8 @@ public static class HubTexts
         // fired and the way round it: the extension is what decides, and a large file is read in a window instead.
         ["ChatFileNotText"] = ("这不是 Hub 能作为上下文读取的文本文件（按扩展名判定）。源码与文本文件可以直接附上；二进制文件请让助手用 run_command 处理。",
             "That is not a text file Hub can read as context (the extension is what decides). Source and text files attach directly; for a binary, have the assistant use run_command."),
-        ["ChatFileTooLarge"] = ("这个文件太大，作为上下文单文件最多 {0} MiB。用 read_file 分窗口读它，或改附它所在的文件夹。",
-            "That file is too large; one context file is capped at {0} MiB. Read it in windows with read_file, or attach its folder instead."),
+        ["ChatFileTooLarge"] = ("这个文件太大，作为上下文单文件最多 {0} MiB。用 fs_read 分窗口读它，或改附它所在的文件夹。",
+            "That file is too large; one context file is capped at {0} MiB. Read it in windows with fs_read, or attach its folder instead."),
         // The session sandbox. Distinct from "add a folder as context": that one attaches text to a message, this
         // one decides where the assistant is allowed to write and run commands.
         ["ChatWorkspaceNone"] = ("未设工作目录", "No workspace"),
@@ -1180,6 +1180,8 @@ public static class HubTexts
         ["ActivityRowFind"] = ("查找 {0}", "Find {0}"),
         ["ActivityRowEditFile"] = ("编辑文件 {0}", "Edit {0}"),
         ["ActivityRowEditFilesFormat"] = ("编辑 {0} 个文件", "Edit {0} files"),
+        ["ActivityRowDelete"] = ("删除 {0}", "Delete {0}"),
+        ["ActivityRowMove"] = ("移动 {0} → {1}", "Move {0} → {1}"),
         ["ActivityRowRunCommand"] = ("执行命令", "Run command"),
         ["ActivityRowFetch"] = ("抓取 {0}", "Fetch {0}"),
         ["ActivityRowGeneric"] = ("调用 {0}", "Call {0}"),
@@ -1599,7 +1601,7 @@ public static class HubTexts
         // The subtitle is the scope of the whole assistant, so it must not name only engines: an Axmol-unrelated
         // question is in scope. The four chips below are the same promise stated as things to do.
         ["AssistantGreetingSubtitle"] = ("读代码、改代码、跑命令，都可以直接说", "Reading code, changing code, running commands — just ask"),
-        // Each one is something the shipped tool set can actually finish: read_file / search_text to look,
+        // Each one is something the shipped tool set can actually finish: fs_read / fs_grep to look,
         // file_write to change, run_command to prove it worked. No engine-only phrasing — these are the general
         // entry points, and a chip that the assistant cannot honour teaches the user not to trust the empty state.
         ["AssistantSuggestReadCodebase"] = ("梳理这个项目的结构和入口", "Walk me through this project's structure and entry points"),

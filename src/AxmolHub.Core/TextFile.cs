@@ -143,6 +143,52 @@ public static class TextFile
         private Action? _release;
         internal WriteLease(string full, Action release) { _full = full; _release = release; }
 
+        /// <summary>Restore a pre-image without changing its original encoding or line endings.</summary>
+        public TextReplaceResult ReplaceRaw(Func<WorkspacePath> resolveWrite, byte[]? expectedBytes, byte[] bytes)
+        {
+            ObjectDisposedException.ThrowIf(_release is null, this);
+            string? temporary = null;
+            TextReplaceResult? Validate()
+            {
+                var path = resolveWrite();
+                if (!path.IsAllowed || path.Full != _full)
+                    return new(TextReplaceVerdict.RefusedPath, "The permitted path changed. Reopen the file.");
+                if (!Matches(_full, expectedBytes))
+                    return new(TextReplaceVerdict.ChangedSince, "The file changed on disk. The buffer was kept.");
+                return null;
+            }
+            try
+            {
+                if (Validate() is { } refused) return refused;
+                Directory.CreateDirectory(Path.GetDirectoryName(_full)!);
+                temporary = _full + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                           4096, FileOptions.WriteThrough))
+                {
+                    stream.Write(bytes);
+                    stream.Flush(true);
+                }
+                if (expectedBytes is not null && !OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(temporary, File.GetUnixFileMode(_full));
+                if (Validate() is { } finalRefusal) return finalRefusal;
+                if (expectedBytes is null) File.Move(temporary, _full);
+                else File.Replace(temporary, _full, null);
+                temporary = null;
+                return new(TextReplaceVerdict.Written);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+            { return new(TextReplaceVerdict.Failed, ex.Message); }
+            finally
+            {
+                if (temporary is not null)
+                {
+                    try { File.Delete(temporary); }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                }
+            }
+        }
+
         /// <summary>A manual save does not enter the AI journal. An unchanged buffer must not touch any bytes,
         /// metadata or BOM, even if the source was CRLF. Fresh authorization and raw identity are still checked.</summary>
         public TextReplaceResult Save(Func<WorkspacePath> resolveWrite, TextFileSnapshot baseline, string text)

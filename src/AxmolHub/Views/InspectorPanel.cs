@@ -2458,6 +2458,8 @@ internal sealed partial class InspectorPanel : UserControl
     {
         ChangeVerdict.Created => "＋",
         ChangeVerdict.Edited => "✎",
+        ChangeVerdict.Deleted => "−",
+        ChangeVerdict.Moved => "→",
         ChangeVerdict.Unchanged => "·",
         _ => "⊘",
     };
@@ -2466,6 +2468,8 @@ internal sealed partial class InspectorPanel : UserControl
     {
         ChangeVerdict.Created => "created",
         ChangeVerdict.Edited => "edited",
+        ChangeVerdict.Deleted => "deleted",
+        ChangeVerdict.Moved => "edited",
         ChangeVerdict.Unchanged => "unchanged",
         _ => "refused",
     };

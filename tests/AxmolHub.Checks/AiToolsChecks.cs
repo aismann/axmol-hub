@@ -55,6 +55,222 @@ internal static class AiToolsChecks
         ChatFileSnapshot? preImage = revisionId is null ? null : ChatChangeStore.ReadSnapshot(dataRoot, revisionId, out _);
         if (revisionId is null || preImage is not { Before: { } before } || !before.Contains("return 0;", StringComparison.Ordinal))
             throw new Exception($"The pre-image was not kept before the write (id='{revisionId ?? "none"}').");
+        var rawPath = Path.Combine(workspace, "src", "raw.txt");
+        var rawBefore = new byte[] { 0xef, 0xbb, 0xbf, (byte)'a', (byte)'\r', (byte)'\n' };
+        File.WriteAllBytes(rawPath, rawBefore);
+        var fullFingerprint = WorkspaceTools.WriteFingerprint(scope, "src/raw.txt");
+        var fullWrite = tools.FsWrite("src/raw.txt", "changed\n", overwrite: true);
+        var fullRevision = ChatChangeStore.IdFromResult(fullWrite);
+        if (fullRevision is null || fullFingerprint == WorkspaceTools.WriteFingerprint(scope, "src/raw.txt")
+            || ChatChangeStore.Restore(dataRoot, scope.ConversationId, fullRevision, scope.Sandbox, guards, out _, out _)
+               != UndoVerdict.Reverted || !File.ReadAllBytes(rawPath).SequenceEqual(rawBefore))
+            throw new Exception("A full write did not restore the original BOM and CRLF bytes.");
+        if (!tools.FsWrite("src/raw.txt", "no", overwrite: false).Contains("already exists", StringComparison.OrdinalIgnoreCase)
+            || !File.ReadAllBytes(rawPath).SequenceEqual(rawBefore))
+            throw new Exception("A full write without overwrite permission changed an existing file.");
+        var staleScope = scope with { ApprovedWriteFingerprint = fullFingerprint };
+        File.WriteAllText(rawPath, "external\n");
+        if (!new WorkspaceTools(staleScope).FsWrite("src/raw.txt", "no", overwrite: true).Contains("changed since approval", StringComparison.Ordinal)
+            || File.ReadAllText(rawPath) != "external\n")
+            throw new Exception("A full write accepted an approval for a different pre-image.");
+        var batchOne = Path.Combine(workspace, "src", "batch-one.txt");
+        var batchTwo = Path.Combine(workspace, "src", "batch-two.txt");
+        File.WriteAllText(batchOne, "alpha\r\n");
+        File.WriteAllText(batchTwo, "beta\n");
+        var refusedBatch = tools.FsReplace([new("src/batch-one.txt", "alpha", "A"),
+            new("src/batch-two.txt", "missing", "B")]);
+        if (!refusedBatch.Contains("No change", StringComparison.Ordinal)
+            || File.ReadAllText(batchOne) != "alpha\r\n" || File.ReadAllText(batchTwo) != "beta\n")
+            throw new Exception("A failed batch replacement changed an earlier file.");
+        var batch = tools.FsReplace([new("src/batch-one.txt", "alpha", "A"),
+            new("src/batch-two.txt", "beta", "B")]);
+        var batchId = ChatChangeStore.BatchIdFromResult(batch);
+        var batchIds = batchId is null ? [] : ChatChangeStore.ReadBatch(dataRoot, batchId)?.RevisionIds ?? [];
+        if (batchIds.Count != 2 || File.ReadAllText(batchOne) != "A\n" || File.ReadAllText(batchTwo) != "B\n")
+            throw new Exception($"A multi-file replacement failed: {batch}");
+        foreach (var id in batchIds)
+            if (ChatChangeStore.Restore(dataRoot, scope.ConversationId, id, scope.Sandbox, guards, out _, out _)
+                != UndoVerdict.Reverted) throw new Exception("A batch replacement revision could not be restored.");
+        if (File.ReadAllText(batchOne) != "alpha\r\n" || File.ReadAllText(batchTwo) != "beta\n")
+            throw new Exception("A batch undo did not restore both original files.");
+        var batchArgs = """{"edits":[{"path":"src/batch-one.txt","old_string":"alpha","new_string":"A"},{"path":"src/batch-two.txt","old_string":"beta","new_string":"B"}]}""";
+        var approvedBatch = ToolPreviews.ReplaceFingerprint(batchArgs, scope);
+        File.WriteAllText(batchTwo, "beta changed\n");
+        var staleBatch = new WorkspaceTools(scope with { ApprovedWriteFingerprint = approvedBatch }).FsReplace(
+            [new("src/batch-one.txt", "alpha", "A"), new("src/batch-two.txt", "beta", "B")]);
+        if (!staleBatch.Contains("changed since", StringComparison.Ordinal)
+            || File.ReadAllText(batchOne) != "alpha\r\n" || File.ReadAllText(batchTwo) != "beta changed\n")
+            throw new Exception("A stale multi-file approval allowed a replacement.");
+        File.WriteAllText(batchTwo, "beta\n");
+        string recoverResult;
+        using (ToolInvocation.Enter("recover-batch"))
+            recoverResult = tools.FsReplace([new("src/batch-one.txt", "alpha", "recover")]);
+        var recoveredConversation = new Conversation { Id = scope.ConversationId };
+        recoveredConversation.Append(ChatTurn.FunctionCall("recover-batch", "fs_replace", "{}"));
+        var recoverBatches = ChatChangeStore.BatchesForConversation(dataRoot, scope.ConversationId);
+        if (ChatChangeStore.BatchIdFromResult(recoverResult) is null
+            || ChatChangeStore.RecoverBatchCalls(dataRoot, recoveredConversation, recoverBatches, scope.Sandbox, guards) != 1
+            || recoveredConversation.Messages[0].ChangeRefs.Count != 1
+            || ChatChangeStore.RecoverBatchCalls(dataRoot, recoveredConversation, recoverBatches, scope.Sandbox, guards) != 0)
+            throw new Exception("A completed batch was not recovered once against its original call.");
+        var recoveredId = recoveredConversation.Messages[0].ChangeRefs[0].RevisionId;
+        if (ChatChangeStore.Restore(dataRoot, scope.ConversationId, recoveredId, scope.Sandbox, guards, out _, out _)
+            != UndoVerdict.Reverted) throw new Exception("A recovered batch revision could not be undone.");
+        var outsideJournalPath = Path.Combine(toolRoot, "outside-journal.txt");
+        File.WriteAllText(outsideJournalPath, "after\n");
+        var outsideRevision = ChatChangeStore.Prepare(dataRoot, scope.ConversationId, outsideJournalPath,
+            toolRoot, "before\n", "after\n");
+        ChatChangeBatch outsideBatch;
+        using (ToolInvocation.Enter("outside-batch"))
+        {
+            outsideBatch = ChatChangeStore.PrepareBatch(dataRoot, scope.ConversationId, [outsideRevision], out var outsideLease);
+            outsideLease.Dispose();
+        }
+        var outsideConversation = new Conversation { Id = scope.ConversationId };
+        outsideConversation.Append(ChatTurn.FunctionCall("outside-batch", "fs_replace", "{}"));
+        ChatChangeStore.RecoverBatchCalls(dataRoot, outsideConversation, [outsideBatch], scope.Sandbox, guards);
+        if (outsideConversation.Messages[0].ChangeRefs.Count != 0)
+            throw new Exception("Batch recovery trusted a journal path outside the workspace.");
+        IDisposable? heldBatch = null;
+        var batchHoldingTools = new WorkspaceTools(scope with { HoldBatchLease = (_, lease) => heldBatch = lease });
+        string heldResult;
+        using (ToolInvocation.Enter("held-batch"))
+            heldResult = batchHoldingTools.FsReplace([new("src/batch-one.txt", "alpha", "held")]);
+        var heldId = ChatChangeStore.BatchIdFromResult(heldResult);
+        if (heldId is null || heldBatch is null || !ChatChangeStore.BatchIsActive(dataRoot, heldId))
+            throw new Exception("A batch was recoverable before its tool result was persisted.");
+        heldBatch.Dispose();
+        if (ChatChangeStore.BatchIsActive(dataRoot, heldId))
+            throw new Exception("A completed batch kept its recovery lock after the result was persisted.");
+        var heldRevision = ChatChangeStore.ReadBatch(dataRoot, heldId)!.RevisionIds[0];
+        if (ChatChangeStore.Restore(dataRoot, scope.ConversationId, heldRevision, scope.Sandbox, guards, out _, out _)
+            != UndoVerdict.Reverted) throw new Exception("A held batch revision could not be undone.");
+        var interruptedPath = Path.Combine(workspace, "src", "interrupted.bin");
+        byte[] interruptedBytes = [0, 255, 42];
+        File.WriteAllBytes(interruptedPath, interruptedBytes);
+        var interruptedEntry = new FsManagedEntry(".", false, ChatChangeStore.SaveRawObject(dataRoot, interruptedBytes),
+            interruptedBytes.Length, (int)File.GetAttributes(interruptedPath),
+            OperatingSystem.IsWindows() ? null : (int)File.GetUnixFileMode(interruptedPath));
+        ChatChangeBatch interruptedBatch;
+        using (ToolInvocation.Enter("interrupted-delete"))
+        {
+            interruptedBatch = ChatChangeStore.PrepareBatch(dataRoot, scope.ConversationId, [], out var interruptedLease,
+                new FsManagementRecord("delete", interruptedPath, null, [interruptedEntry], []));
+            File.Delete(interruptedPath);
+            interruptedBatch = ChatChangeStore.RecordBatchProgress(dataRoot, interruptedBatch, ".");
+            interruptedLease.Dispose();
+        }
+        var interruptedConversation = new Conversation { Id = scope.ConversationId };
+        interruptedConversation.Append(ChatTurn.FunctionCall("interrupted-delete", "fs_delete", "{}"));
+        if (ChatChangeStore.RecoverBatchCalls(dataRoot, interruptedConversation, [interruptedBatch], scope.Sandbox, guards) != 1
+            || interruptedConversation.Messages[0].ManagementBatchId != interruptedBatch.Id
+            || tools.UndoManagement(interruptedBatch.Id, out _) != UndoVerdict.Reverted
+            || !File.ReadAllBytes(interruptedPath).SequenceEqual(interruptedBytes))
+            throw new Exception("Recorded delete progress was lost after interruption or could not be undone.");
+        var tree = Path.Combine(workspace, "managed-tree");
+        Directory.CreateDirectory(Path.Combine(tree, "sub"));
+        var imagePath = Path.Combine(tree, "sub", "image.bin");
+        var imageBytes = new byte[] { 0, 255, 10, 13, 128 };
+        File.WriteAllBytes(imagePath, imageBytes);
+        if (!tools.FsDelete("managed-tree").Contains("not empty", StringComparison.Ordinal)
+            || !File.Exists(imagePath)) throw new Exception("A nonrecursive delete changed a nonempty directory.");
+        var deletedTree = tools.FsDelete("managed-tree", recursive: true);
+        var deletedBatch = ChatChangeStore.BatchIdFromResult(deletedTree);
+        if (deletedBatch is null || Directory.Exists(tree)
+            || tools.UndoManagement(deletedBatch, out _) != UndoVerdict.Reverted
+            || !File.ReadAllBytes(imagePath).SequenceEqual(imageBytes))
+            throw new Exception($"A directory delete could not restore its binary contents: {deletedTree}");
+        var movedImage = tools.FsMove("managed-tree/sub/image.bin", "new-folder/image.bin");
+        var moveBatch = ChatChangeStore.BatchIdFromResult(movedImage);
+        if (moveBatch is null || File.Exists(imagePath)
+            || !File.ReadAllBytes(Path.Combine(workspace, "new-folder", "image.bin")).SequenceEqual(imageBytes)
+            || tools.UndoManagement(moveBatch, out _) != UndoVerdict.Reverted
+            || !File.ReadAllBytes(imagePath).SequenceEqual(imageBytes))
+            throw new Exception($"A binary move could not be undone: {movedImage}");
+        Directory.CreateDirectory(Path.Combine(tree, ".git"));
+        if (!tools.FsDelete("managed-tree", recursive: true).Contains("Refused", StringComparison.Ordinal)
+            || !File.Exists(imagePath)) throw new Exception("A directory containing .git was deleted.");
+        var cachedPath = Path.Combine(workspace, "build-cache-fixture", "cache.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(cachedPath)!);
+        File.WriteAllBytes(cachedPath, imageBytes);
+        if (!tools.FsDelete("build-cache-fixture", recursive: true).Contains("requires explicit approval", StringComparison.Ordinal)
+            || !File.Exists(cachedPath)) throw new Exception("A direct filesystem call bypassed build-cache approval.");
+        var approvedCache = new WorkspaceTools(scope with { ApprovedCacheBreak = true }).FsDelete("build-cache-fixture", recursive: true);
+        var approvedCacheId = ChatChangeStore.BatchIdFromResult(approvedCache);
+        if (approvedCacheId is null || tools.UndoManagement(approvedCacheId, out _) != UndoVerdict.Reverted
+            || !File.ReadAllBytes(cachedPath).SequenceEqual(imageBytes))
+            throw new Exception("An explicitly approved cache deletion was not recoverable.");
+        if (!tools.FsDelete(".", recursive: true).Contains("Refused", StringComparison.Ordinal)
+            || !tools.FsMove("../outside.txt", "new-folder/outside.txt").Contains("Refused", StringComparison.Ordinal))
+            throw new Exception("A filesystem management operation escaped or targeted its workspace root.");
+        if (!OperatingSystem.IsWindows())
+        {
+            var linkTree = Path.Combine(workspace, "link-tree");
+            Directory.CreateDirectory(linkTree);
+            Directory.CreateSymbolicLink(Path.Combine(linkTree, "escape"), toolRoot);
+            if (!tools.FsDelete("link-tree", recursive: true).Contains("Refused", StringComparison.Ordinal)
+                || !Directory.Exists(linkTree)) throw new Exception("A recursive delete followed a symbolic link.");
+        }
+        else Console.WriteLine("SKIP: creating a symbolic link may require additional Windows privileges.");
+        var turnSource = Path.Combine(workspace, "turn-order.txt");
+        var turnTarget = Path.Combine(workspace, "turn-order-moved.txt");
+        File.WriteAllBytes(turnSource, Encoding.UTF8.GetBytes("before\r\n"));
+        var turnWrite = tools.FsWrite("turn-order.txt", "after\n", overwrite: true);
+        var turnRevision = ChatChangeStore.IdFromResult(turnWrite)!;
+        var turnMove = tools.FsMove("turn-order.txt", "turn-order-moved.txt");
+        var turnBatchId = ChatChangeStore.BatchIdFromResult(turnMove)!;
+        var turnManagement = ChatChangeStore.ReadBatch(dataRoot, turnBatchId)!.Management!;
+        var orderedTurn = new Conversation { Id = scope.ConversationId, WorkspaceRoot = workspace };
+        orderedTurn.Append(ChatTurn.User("change and move"));
+        orderedTurn.Append(ChatTurn.FunctionCall("turn-write", "fs_write", "{}") with { ChangeId = turnRevision });
+        orderedTurn.Append(ChatTurn.FunctionResult("turn-write", turnWrite));
+        orderedTurn.Append(ChatTurn.FunctionCall("turn-move", "fs_move", "{}") with
+        {
+            ManagementBatchId = turnBatchId, ManagementSource = turnManagement.Source,
+            ManagementDestination = turnManagement.Destination, ManagedEntries = turnManagement.Entries,
+        });
+        orderedTurn.Append(ChatTurn.FunctionResult("turn-move", turnMove));
+        orderedTurn.Append(ChatTurn.Assistant("done"));
+        var orderedReview = TurnReview.Of(orderedTurn, orderedTurn.Messages.Count - 1, dataRoot);
+        var orderedUndo = orderedReview.Undo(scope.ConversationId, dataRoot, scope.Sandbox, guards);
+        if (orderedUndo.Outcomes.Count != 2 || orderedUndo.Outcomes.Any(outcome => outcome.Verdict != UndoVerdict.Reverted)
+            || File.Exists(turnTarget) || File.ReadAllText(turnSource) != "before\r\n")
+            throw new Exception("Turn undo did not reverse a move before the earlier write.");
+        var blockedWrite = tools.FsWrite("turn-order.txt", "after\n", overwrite: true);
+        var blockedRevision = ChatChangeStore.IdFromResult(blockedWrite)!;
+        var blockedMove = tools.FsMove("turn-order.txt", "turn-order-moved.txt");
+        var blockedBatchId = ChatChangeStore.BatchIdFromResult(blockedMove)!;
+        var blockedManagement = ChatChangeStore.ReadBatch(dataRoot, blockedBatchId)!.Management!;
+        var blockedTurn = new Conversation { Id = scope.ConversationId, WorkspaceRoot = workspace };
+        blockedTurn.Append(ChatTurn.User("change and move"));
+        blockedTurn.Append(ChatTurn.FunctionCall("blocked-write", "fs_write", "{}") with { ChangeId = blockedRevision });
+        blockedTurn.Append(ChatTurn.FunctionResult("blocked-write", blockedWrite));
+        blockedTurn.Append(ChatTurn.FunctionCall("blocked-move", "fs_move", "{}") with
+        {
+            ManagementBatchId = blockedBatchId, ManagementSource = blockedManagement.Source,
+            ManagementDestination = blockedManagement.Destination, ManagedEntries = blockedManagement.Entries,
+        });
+        blockedTurn.Append(ChatTurn.FunctionResult("blocked-move", blockedMove));
+        blockedTurn.Append(ChatTurn.Assistant("done"));
+        File.WriteAllText(turnTarget, "later edit\n");
+        var blockedUndo = TurnReview.Of(blockedTurn, blockedTurn.Messages.Count - 1, dataRoot)
+            .Undo(scope.ConversationId, dataRoot, scope.Sandbox, guards);
+        if (blockedUndo.Outcomes.Count != 1 || blockedUndo.Outcomes[0].Verdict != UndoVerdict.ChangedSince
+            || File.Exists(turnSource) || File.ReadAllText(turnTarget) != "later edit\n")
+            throw new Exception("Turn undo crossed a conflicting move or changed a later edit.");
+        var forkData = Path.Combine(toolRoot, "fork-fs-data");
+        Directory.CreateDirectory(forkData);
+        var forkPath = Path.Combine(workspace, "fork-bytes.bin");
+        File.WriteAllBytes(forkPath, imageBytes);
+        var originalScope = new WorkspaceToolScope(workspace, guards, forkData, "original-session", [], null);
+        var forkDelete = new WorkspaceTools(originalScope).FsDelete("fork-bytes.bin");
+        var forkBatchId = ChatChangeStore.BatchIdFromResult(forkDelete)!;
+        ChatChangeStore.PruneSession(forkData, new HashSet<string> { "fork-session" }, new HashSet<string> { forkBatchId });
+        var forkScope = originalScope with { ConversationId = "fork-session" };
+        if (ChatChangeStore.ReadBatch(forkData, forkBatchId) is null
+            || new WorkspaceTools(forkScope).UndoManagement(forkBatchId, out _) != UndoVerdict.Reverted
+            || !File.ReadAllBytes(forkPath).SequenceEqual(imageBytes))
+            throw new Exception("A fork lost the referenced management snapshot or could not undo it.");
         var created = tools.FileWrite("src/notes.md", "", "# 记录\n");
         if (!created.Contains("Created"))
             throw new Exception("An empty anchor did not create the file.");
@@ -196,12 +412,13 @@ internal static class AiToolsChecks
         var tallyLegacyFile = Path.Combine(tallyStoreRoot, "ai", "sessions", "tally-legacy.json");
         File.WriteAllText(tallyLegacyFile, "{\"Id\":\"tally-legacy\",\"Title\":\"旧会话\",\"Messages\":[{\"Role\":\"assistant\",\"Text\":\"\"," + "\"At\":\"2026-01-01T00:00:00+08:00\",\"ToolName\":\"file_write\",\"ToolCallId\":\"l-1\"}]}");
         var tallyLegacy = new ConversationStore(tallyStoreRoot).Load("tally-legacy");
-        if (tallyLegacy is null || tallyLegacy.Messages.Count != 1 || tallyLegacy.Messages[0].ChangeLines is not null)
+        if (tallyLegacy is null || tallyLegacy.Messages.Count != 2 || tallyLegacy.Messages[0].ChangeLines is not null
+            || tallyLegacy.Messages[1].ToolCallId != "l-1")
             throw new Exception("A session file written before the tally existed either did not load or was given one.");
         if (ChatChanges.LinesOf(tallyLegacy!.Messages[0])is not { Added: 0, Removed: 0 })
             throw new Exception("An old session with no preview and no tally invented line counts.");
         Directory.Delete(tallyStoreRoot, recursive: true);
-        Console.WriteLine("PASS: a recorded tally round-trips through the session file, and a session written before it " + "existed loads unchanged and claims nothing.");
+        Console.WriteLine("PASS: a recorded tally round-trips, and an old interrupted call is closed without inventing a tally.");
         // ── the undo: one pre-image goes back over the one write it was made for, and over nothing else ──
         var undoRoot = ChatUndoStore.DirectoryFor(dataRoot, "conversation-1")!;
         var writeArgs = """{"path":"src/main.cpp","old_string":"    return 0;","new_string":"    return 1;"}""";
@@ -277,7 +494,7 @@ internal static class AiToolsChecks
         var reopened = undoStore.Load(undoSession.Id) ?? throw new Exception("The undo session did not reload.");
         if (reopened.Messages[1].UndoName != secondCopy)
             throw new Exception("A recorded undo copy did not survive the session file.");
-        if (reopened.Messages[2].UndoName is not null)
+        if (reopened.Messages.First(turn => turn.ToolName == "read_file").UndoName is not null)
             throw new Exception("A read-only call came back with a revert to offer.");
         File.WriteAllText(Path.Combine(dataRoot, "ai", "sessions", "legacy-no-undo.json"), """{"Id":"legacy-no-undo","Title":"legacy","ProviderId":"orcarouter","Messages":[{"Role":"assistant","Text":"","ToolCallId":"c1","ToolName":"file_write"}]}""");
         var legacyUndo = undoStore.Load("legacy-no-undo") ?? throw new Exception("A session file written before the undo stopped loading.");
@@ -521,7 +738,7 @@ internal static class AiToolsChecks
         Directory.CreateDirectory(outsiderRoot);
         var grantedFile = Path.Combine(grantedRoot, "src", "lib.cpp");
         File.WriteAllText(grantedFile, "int lib() { return 1; }\n");
-        if (WorkspacePaths.ResolveRead(workspace, grantedFile, guards).Verdict != WorkspacePathVerdict.OutsideRoots || !WorkspacePaths.ResultFor(WorkspacePathVerdict.OutsideRoots, grantedFile).Contains("request_directory", StringComparison.Ordinal))
+        if (WorkspacePaths.ResolveRead(workspace, grantedFile, guards).Verdict != WorkspacePathVerdict.OutsideRoots || !WorkspacePaths.ResultFor(WorkspacePathVerdict.OutsideRoots, grantedFile).Contains("fs_request_access", StringComparison.Ordinal))
             throw new Exception("An absolute path outside the workspace was not refused as outside every root, or its " + "refusal did not name request_directory.");
         var grantBox = new WorkspaceSandbox(workspace, [grantedRoot]);
         var insideGrant = WorkspacePaths.ResolveRead(grantBox, grantedFile, guards);
@@ -570,7 +787,7 @@ internal static class AiToolsChecks
         // ── request_directory: the card is the mechanism, so the body's own answers are what it gives — and a
         // protected location is answered with a read-only grant rather than a refusal ──
         var protectedGrantAnswer = await tools.RequestDirectory(dataRoot);
-        if (!protectedGrantAnswer.Contains("Granted read-only", StringComparison.Ordinal) || !protectedGrantAnswer.Contains("absolute path", StringComparison.Ordinal) || !WorkspacePaths.ResultFor(WorkspacePathVerdict.ProtectedRoot, dataFile).Contains("request_directory", StringComparison.Ordinal))
+        if (!protectedGrantAnswer.Contains("Granted read-only", StringComparison.Ordinal) || !protectedGrantAnswer.Contains("absolute path", StringComparison.Ordinal) || !WorkspacePaths.ResultFor(WorkspacePathVerdict.ProtectedRoot, dataFile).Contains("fs_request_access", StringComparison.Ordinal))
             throw new Exception($"A protected location was not granted read-only, or its refusal stopped naming the door:{Environment.NewLine}{protectedGrantAnswer}");
         if (!(await tools.RequestDirectory("relative/path")).Contains("not an absolute path", StringComparison.Ordinal) || !(await tools.RequestDirectory(Path.Combine(toolRoot, "no-such-folder"))).Contains("does not exist", StringComparison.Ordinal) || !(await tools.RequestDirectory(Path.Combine(workspace, "src"))).Contains("inside the session workspace", StringComparison.Ordinal) || !(await tools.RequestDirectory(toolRoot)).Contains("contains the session workspace", StringComparison.Ordinal))
             throw new Exception("request_directory accepted a relative, missing, internal or enclosing directory.");
@@ -705,7 +922,7 @@ internal static class AiToolsChecks
             || !(await tools.RequestFile("relative/path")).Contains("not an absolute path", StringComparison.Ordinal)
             || !(await tools.RequestFile(Path.Combine(fileGrantRoot, "new.log"))).Contains("could never write", StringComparison.Ordinal)
             || !(await tools.RequestFile(protectedFile)).Contains("Granted read-only", StringComparison.Ordinal)
-            || !(await tools.RequestFile(protectedFile)).Contains("read_file", StringComparison.Ordinal))
+            || !(await tools.RequestFile(protectedFile)).Contains("fs_read", StringComparison.Ordinal))
             throw new Exception("request_file answered a file it holds, a directory, a relative path or a dead end with the wrong sentence.");
         string? askedFile = null;
         var freshFile = new WorkspaceTools(new WorkspaceToolScope(workspace, guards, dataRoot, "file-fresh", [], log)
@@ -719,6 +936,28 @@ internal static class AiToolsChecks
         var freshFileAnswer = await freshFile.RequestFile(looseFile);
         if (askedFile != looseFile || !freshFileAnswer.Contains($"Granted: {looseFile}", StringComparison.Ordinal))
             throw new Exception($"A file nobody holds was not handed to the caller to persist:{Environment.NewLine}" + freshFileAnswer);
+        if (WorkspaceTools.AccessKind(grantedRoot, "auto") != "directory"
+            || WorkspaceTools.AccessKind(looseFile, "auto") != "file"
+            || WorkspaceTools.AccessKind(Path.Combine(fileGrantRoot, "missing.txt"), "auto") != "invalid"
+            || WorkspaceTools.AccessKind(Path.Combine(fileGrantRoot, "missing.txt"), "file") != "file"
+            || !(await tools.FsRequestAccess(dataRoot)).Contains("Granted read-only", StringComparison.Ordinal)
+            || !(await new WorkspaceTools(scope with { ApprovedAccessKind = "file" }).FsRequestAccess(grantedRoot))
+                .Contains("target type changed", StringComparison.Ordinal))
+            throw new Exception("The unified access tool confused a file and directory or widened a parked approval.");
+        var accessCard = ToolPreviews.PreviewFor("fs_request_access", JsonSerializer.Serialize(new { path = looseFile }), cardScope);
+        if (!accessCard.Contains("file", StringComparison.Ordinal)
+            || !accessCard.Contains("folder around it is not opened", StringComparison.Ordinal))
+            throw new Exception("The unified access card did not describe the narrow file grant.");
+        var oldCalls = new Conversation { Id = "old-fs-calls", AutoApprovedTools = ["request_file", "FILE_WRITE", "run_command"] };
+        oldCalls.Append(ChatTurn.FunctionCall("old-grant", "request_file", "{}") with { ApprovalState = ChatApprovalStates.Pending });
+        oldCalls.Append(ChatTurn.FunctionCall("new-grant", "fs_request_access", "{}") with { ApprovalState = ChatApprovalStates.Pending });
+        if (oldCalls.MigrateRetiredFsTools() != 3 || oldCalls.AutoApprovedTools.Contains("request_file")
+            || oldCalls.AutoApprovedTools.Contains("FILE_WRITE")
+            || !oldCalls.AutoApprovedTools.Contains("run_command")
+            || oldCalls.Messages.Count(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId == "old-grant") != 1
+            || oldCalls.Messages.Any(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId == "new-grant")
+            || oldCalls.MigrateRetiredFsTools() != 0)
+            throw new Exception("Retired filesystem calls or approvals were not migrated idempotently.");
         // The same two sentences the directory card owes: calling the tool *is* the request, and a protected file
         // buys a reading only. A model that waits to be authorized in prose parks the task forever.
         var fileMethod = typeof(WorkspaceTools).GetMethod(nameof(WorkspaceTools.RequestFile));
@@ -1154,6 +1393,11 @@ internal static class AiToolsChecks
         {
             ("read_file", (Delegate)tools.ReadFile),
             ("file_write", tools.FileWrite),
+            ("fs_write", tools.FsWrite),
+            ("fs_replace", tools.FsReplace),
+            ("fs_delete", tools.FsDelete),
+            ("fs_move", tools.FsMove),
+            ("fs_request_access", tools.FsRequestAccess),
             ("run_command", tools.RunCommand),
             ("memory_read", tools.MemoryRead),
             ("memory_write", tools.MemoryWrite),
@@ -1204,6 +1448,24 @@ internal static class AiToolsChecks
         var boundEdit = await bound["file_write"].InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["path"] = "src/twice.txt", ["old_string"] = "dup", ["new_string"] = "single", ["replace_all"] = true, }));
         if (!Convert.ToString(boundEdit)!.Contains("Edited") || File.ReadAllText(Path.Combine(workspace, "src", "twice.txt")) != "single\nsingle\n")
             throw new Exception($"A call using the schema's own parameter names did not bind ({boundEdit}).");
+        var boundReplace = await bound["fs_replace"].InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["edits"] = JsonSerializer.Deserialize<JsonElement>("""[{"path":"src/batch-one.txt","old_string":"alpha","new_string":"ALPHA"}]""")
+        }));
+        if (!Convert.ToString(boundReplace)!.Contains("Edited", StringComparison.Ordinal)
+            || File.ReadAllText(batchOne) != "ALPHA\n")
+            throw new Exception($"A structured fs_replace call did not bind ({boundReplace}).");
+        var dictionaryReplace = await bound["fs_replace"].InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["edits"] = new[] { new Dictionary<string, object?> { ["path"] = "src/batch-one.txt", ["old_string"] = "ALPHA", ["new_string"] = "alpha" } }
+        }));
+        if (!Convert.ToString(dictionaryReplace)!.Contains("Edited", StringComparison.Ordinal)
+            || File.ReadAllText(batchOne) != "alpha\n")
+            throw new Exception($"A dictionary-backed fs_replace call did not bind ({dictionaryReplace}).");
+        var boundAccess = await bound["fs_request_access"].InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+        { ["path"] = dataRoot, ["kind"] = "directory" }));
+        if (!Convert.ToString(boundAccess)!.Contains("Granted read-only", StringComparison.Ordinal))
+            throw new Exception($"A unified directory access request did not bind ({boundAccess}).");
         var boundSearch = await bound["search_text"].InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["pattern"] = "App::go", ["path"] = "probe", ["ignore_case"] = true, ["max_matches"] = 5, }));
         if (!Convert.ToString(boundSearch)!.Contains("probe/app.cpp:3:", StringComparison.Ordinal))
             throw new Exception($"search_text did not bind the parameter names its schema advertises ({boundSearch}).");
@@ -1212,7 +1474,7 @@ internal static class AiToolsChecks
         var boundMap = await bound["workspace_map"].InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["path"] = "map-tree", }));
         if (!Convert.ToString(boundMap)!.Contains("Build units", StringComparison.Ordinal))
             throw new Exception($"workspace_map did not bind the parameter names its schema advertises ({boundMap}).");
-        Console.WriteLine("PASS: all twelve tools bind, and the schema names are the names a call is accepted by.");
+        Console.WriteLine("PASS: tool bodies bind, and calls accept the parameter names advertised in their schemas.");
         // ── capture_screen: target matching, black frames not sent, normal frames landing in the session directory ──
         // The tool's every branch is asserted against a host that draws nothing, because the decision — which window,
         // is this frame worth sending, where do the bytes go — is Core's, and only the pixels are the host's.

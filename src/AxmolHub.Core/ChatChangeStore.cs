@@ -15,9 +15,23 @@ public sealed record ChatFileRevision(
     string? BeforeHash,
     string? AfterHash,
     string State,
-    ChangeLineCounts? Lines = null);
+    ChangeLineCounts? Lines = null,
+    string? BeforeRawHash = null);
 
 public sealed record ChatFileSnapshot(string Before, string After);
+
+public sealed record ChatChangeReference(string Path, string RevisionId);
+
+public sealed record FsManagedEntry(string RelativePath, bool Directory, string? ContentHash, long Length,
+    int Attributes, int? UnixMode);
+
+public sealed record FsManagementRecord(string Operation, string Source, string? Destination,
+    IReadOnlyList<FsManagedEntry> Entries, IReadOnlyList<string> CreatedParents, string? TemporaryPath = null);
+
+/// <summary>A durable list of the file revisions prepared for one multi-file tool call.</summary>
+public sealed record ChatChangeBatch(string Id, string ConversationId, IReadOnlyList<string> RevisionIds,
+    IReadOnlyList<string> AppliedIds, string State, string? ToolCallId = null, FsManagementRecord? Management = null,
+    IReadOnlyDictionary<string, string[]>? UndoProgress = null);
 
 /// <summary>Durable content and a write journal for each successful assistant file edit. Pending records are
 /// written before touching source; a crash between the source rename and journal completion can be recovered by
@@ -25,6 +39,7 @@ public sealed record ChatFileSnapshot(string Before, string After);
 public static class ChatChangeStore
 {
     public const string Marker = " Change ID: ";
+    public const string BatchMarker = " Change batch: ";
     public const string Pending = "pending";
     public const string Complete = "complete";
 
@@ -40,16 +55,222 @@ public static class ChatChangeStore
         return Guid.TryParseExact(value, "N", out _) ? value : null;
     }
 
+    public static string? BatchIdFromResult(string? result)
+    {
+        if (result?.IndexOf(BatchMarker, StringComparison.Ordinal) is not { } at || at < 0) return null;
+        var value = result[(at + BatchMarker.Length)..].Split([' ', '\r', '\n'], 2)[0];
+        return Guid.TryParseExact(value, "N", out _) ? value : null;
+    }
+
+    public static ChatChangeBatch PrepareBatch(string? dataRoot, string conversationId,
+        IReadOnlyList<ChatFileRevision> revisions, out IDisposable lease, FsManagementRecord? management = null)
+    {
+        var batch = new ChatChangeBatch(Guid.NewGuid().ToString("N"), conversationId,
+            revisions.Select(revision => revision.Id).ToArray(), [], Pending, ToolInvocation.CallId, management);
+        var root = DirectoryFor(dataRoot) ?? throw new IOException("Hub data directory is unavailable.");
+        var lockPath = BatchLockPath(root, batch.Id);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(lockPath)!);
+        var stream = new FileStream(lockPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        try
+        {
+            WriteBatch(dataRoot, batch);
+            lease = stream;
+            return batch;
+        }
+        catch { stream.Dispose(); throw; }
+    }
+
+    public static bool BatchIsActive(string? dataRoot, string id)
+    {
+        if (!Guid.TryParseExact(id, "N", out _) || DirectoryFor(dataRoot) is not { } root) return true;
+        try
+        {
+            using var stream = new FileStream(BatchLockPath(root, id), FileMode.OpenOrCreate,
+                FileAccess.ReadWrite, FileShare.None);
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return true; }
+    }
+
+    public static ChatChangeBatch RecordBatchProgress(string? dataRoot, ChatChangeBatch batch, string revisionId)
+    {
+        var next = batch with { AppliedIds = [.. batch.AppliedIds, revisionId] };
+        WriteBatch(dataRoot, next);
+        return next;
+    }
+
+    public static void CompleteBatch(string? dataRoot, ChatChangeBatch batch, string state)
+        => WriteBatch(dataRoot, batch with { State = state });
+
+    public static ChatChangeBatch RecordBatchUndo(string? dataRoot, ChatChangeBatch batch, string conversationId, string relativePath)
+    {
+        var progress = batch.UndoProgress?.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal)
+                       ?? new Dictionary<string, string[]>(StringComparer.Ordinal);
+        progress[conversationId] = [.. progress.GetValueOrDefault(conversationId) ?? [], relativePath];
+        var next = batch with { UndoProgress = progress };
+        WriteBatch(dataRoot, next);
+        return next;
+    }
+
+    public static ChatChangeBatch? ReadBatch(string? dataRoot, string id)
+    {
+        if (!Guid.TryParseExact(id, "N", out _) || DirectoryFor(dataRoot) is not { } root) return null;
+        try
+        {
+            var batch = JsonSerializer.Deserialize<ChatChangeBatch>(File.ReadAllBytes(BatchPath(root, id)), StateStore.ReadOptions);
+            return batch?.Id == id && batch.RevisionIds is not null && batch.AppliedIds is not null
+                   && (batch.Management is null || batch.Management.Entries is not null && batch.Management.CreatedParents is not null)
+                ? batch : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return null; }
+    }
+
+    public static IReadOnlyList<ChatChangeBatch> BatchesForConversation(string? dataRoot, string conversationId)
+        => Batches(dataRoot).Where(batch => batch.ConversationId == conversationId).ToArray();
+
+    public static IReadOnlyList<ChatChangeBatch> Batches(string? dataRoot)
+    {
+        if (DirectoryFor(dataRoot) is not { } root) return [];
+        var directory = System.IO.Path.Combine(root, "batches");
+        if (!Directory.Exists(directory)) return [];
+        try
+        {
+            return Directory.EnumerateFiles(directory, "*.json")
+                .Select(file => ReadBatch(dataRoot, System.IO.Path.GetFileNameWithoutExtension(file)))
+                .Where(batch => batch is not null).Cast<ChatChangeBatch>().ToArray();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return []; }
+    }
+
+    public static string SaveRawObject(string? dataRoot, byte[] bytes)
+        => DirectoryFor(dataRoot) is { } root ? SaveBytes(root, bytes)
+            : throw new IOException("Hub data directory is unavailable.");
+
+    public static byte[]? ReadRawObject(string? dataRoot, string hash) => ReadBytes(dataRoot, hash);
+
+    /// <summary>Attach interrupted batch journals to their unanswered calls when a host starts.</summary>
+    public static int RecoverBatchCalls(string? dataRoot, Conversation conversation, IReadOnlyList<ChatChangeBatch> batches,
+        WorkspaceSandbox sandbox, WorkspaceGuards guards)
+    {
+        var answered = conversation.Messages.Where(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 })
+            .Select(turn => turn.ToolCallId!).ToHashSet(StringComparer.Ordinal);
+        var recovered = 0;
+        foreach (var group in batches.Where(batch => batch.ConversationId == conversation.Id && batch.ToolCallId is { Length: > 0 }
+                                                    && !BatchIsActive(dataRoot, batch.Id))
+                     .GroupBy(batch => batch.ToolCallId!, StringComparer.Ordinal))
+        {
+            if (answered.Contains(group.Key)) continue;
+            var index = conversation.IndexOfToolCall(group.Key);
+            if (index < 0) continue;
+            var call = conversation.Messages[index];
+            if (ChatChanges.IsManagement(call.ToolName))
+            {
+                var managementBatch = group.FirstOrDefault(batch => batch.Management is not null);
+                if (managementBatch?.Management is not { } operation) continue;
+                // A crash can leave a durable progress record without a terminal state. Expose
+                // only recorded effects for guarded undo; the result still reports uncertainty.
+                if (managementBatch.State == "pending" && managementBatch.AppliedIds.Count > 0)
+                {
+                    try
+                    {
+                        CompleteBatch(dataRoot, managementBatch, "partial");
+                        managementBatch = managementBatch with { State = "partial" };
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                }
+                var knownChange = managementBatch.State == Complete || managementBatch.State == "partial";
+                if (knownChange)
+                {
+                    var entries = managementBatch.State == Complete || operation.Operation == "move"
+                        ? operation.Entries : operation.Entries.Where(entry => managementBatch.AppliedIds.Contains(entry.RelativePath,
+                            StringComparer.Ordinal)).ToArray();
+                    conversation.Messages[index] = call with
+                    {
+                        ManagementBatchId = managementBatch.Id, ManagementSource = operation.Source,
+                        ManagementDestination = operation.Destination, ManagedEntries = entries,
+                    };
+                }
+                var complete = group.Count() == 1 && managementBatch.State == Complete;
+                conversation.AppendFunctionResult(ChatTurn.FunctionResult(group.Key,
+                    complete ? "The filesystem operation completed; its journal was recovered after interruption."
+                        : managementBatch.State == "rolled-back" ? "The interrupted filesystem operation was rolled back."
+                        : $"The filesystem operation was interrupted. Inspect {operation.Source} and its journal {managementBatch.Id} before retrying.",
+                    failed: !complete));
+                answered.Add(group.Key);
+                recovered++;
+                continue;
+            }
+            if (call.ToolName != ToolNames.FsReplace) continue;
+            var records = group.SelectMany(batch => batch.RevisionIds).Distinct(StringComparer.Ordinal)
+                .Select(id => ReadMetadata(dataRoot, id))
+                .Where(record => record is not null && record.ConversationId == conversation.Id
+                    && WorkspacePaths.ResolveWrite(sandbox, record.Path, guards) is { IsAllowed: true } resolved
+                    && resolved.Full == record.Path)
+                .Select(record => Read(dataRoot, record!.Id))
+                .Where(record => record is { State: Complete }).Cast<ChatFileRevision>().ToArray();
+            var references = records.Select(record => new ChatChangeReference(record.Path, record.Id)).ToArray();
+            var turn = conversation.Messages[index];
+            conversation.Messages[index] = turn with
+            {
+                ChangeId = references.FirstOrDefault()?.RevisionId,
+                ChangeRefs = references,
+                ChangeLines = references.Length == 0 ? null : new ChangeLineCounts(
+                    records.Sum(record => record.Lines?.Added ?? 0), records.Sum(record => record.Lines?.Removed ?? 0)),
+            };
+            foreach (var reference in references)
+                if (!conversation.ChangeHistoryIds.Contains(reference.RevisionId, StringComparer.Ordinal))
+                    conversation.ChangeHistoryIds.Add(reference.RevisionId);
+            var completed = group.Count() == 1 && group.First().State == Complete
+                            && references.Length == group.First().RevisionIds.Count;
+            var result = completed
+                ? $"Edited {references.Length} file(s); recovered the completed change journal after interruption."
+                : $"The batch was interrupted. {references.Length} recorded file change(s) may need review; inspect the change journal before retrying.";
+            conversation.AppendFunctionResult(ChatTurn.FunctionResult(group.Key, result, failed: !completed));
+            answered.Add(group.Key);
+            recovered++;
+        }
+        return recovered;
+    }
+
+    private static void WriteBatch(string? dataRoot, ChatChangeBatch batch)
+    {
+        var root = DirectoryFor(dataRoot) ?? throw new IOException("Hub data directory is unavailable.");
+        var path = BatchPath(root, batch.Id);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                       4096, FileOptions.WriteThrough))
+            {
+                var bytes = Encoding.UTF8.GetBytes(TextEol.ToLf(JsonSerializer.Serialize(batch, Json)) + "\n");
+                stream.Write(bytes);
+                stream.Flush(true);
+            }
+            File.Move(temporary, path, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    private static string BatchPath(string root, string id) => System.IO.Path.Combine(root, "batches", id + ".json");
+    private static string BatchLockPath(string root, string id) => System.IO.Path.Combine(root, "batches", id + ".lock");
+
     public static ChatFileRevision? Read(string? dataRoot, string id)
+    {
+        var record = ReadMetadata(dataRoot, id);
+        return record is { State: Pending } && RecoverState(dataRoot, record) == Complete
+            ? record with { State = Complete }
+            : record;
+    }
+
+    private static ChatFileRevision? ReadMetadata(string? dataRoot, string id)
     {
         if (!Guid.TryParseExact(id, "N", out _) || DirectoryFor(dataRoot) is not { } root) return null;
         try
         {
             var record = JsonSerializer.Deserialize<ChatFileRevision>(File.ReadAllText(RecordPath(root, id)), StateStore.ReadOptions);
             if (record is null || !string.Equals(record.Id, id, StringComparison.Ordinal)) return null;
-            return record.State == Pending && RecoverState(dataRoot, record) == Complete
-                ? record with { State = Complete }
-                : record;
+            return record;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -148,7 +369,7 @@ public static class ChatChangeStore
     /// <summary>Prepare both full LF snapshots and the pending record. Throws when any durable prerequisite fails;
     /// callers must leave the source untouched on that road.</summary>
     public static ChatFileRevision Prepare(string? dataRoot, string conversationId, string path, string rootPath,
-        string? before, string? after)
+        string? before, string? after, byte[]? beforeBytes = null)
     {
         if (DirectoryFor(dataRoot) is not { } root || string.IsNullOrWhiteSpace(conversationId))
             throw new IOException("Hub has no data directory or conversation for a durable change snapshot.");
@@ -157,7 +378,8 @@ public static class ChatChangeStore
         var afterHash = after is null ? null : SaveContent(root, TextEol.ToLf(after));
         var record = new ChatFileRevision(Guid.NewGuid().ToString("N"), conversationId,
             System.IO.Path.GetFullPath(path), System.IO.Path.GetFullPath(rootPath), DateTimeOffset.UtcNow,
-            beforeHash, afterHash, Pending, ToLineCounts(FileDiff.CountChangedLines(before, after)));
+            beforeHash, afterHash, Pending, ToLineCounts(FileDiff.CountChangedLines(before, after)),
+            beforeBytes is null ? null : SaveBytes(root, beforeBytes));
         WriteRecord(root, record);
         return record;
     }
@@ -257,15 +479,18 @@ public static class ChatChangeStore
 
         var before = first.BeforeHash is null ? null : ReadContent(dataRoot, first.BeforeHash);
         if (first.BeforeHash is not null && before is null) return UndoVerdict.CopyMissing;
+        var beforeBytes = first.BeforeRawHash is null ? null : ReadBytes(dataRoot, first.BeforeRawHash);
+        if (first.BeforeRawHash is not null && beforeBytes is null) return UndoVerdict.CopyMissing;
         ChatFileRevision inverse;
-        try { inverse = Prepare(dataRoot, conversationId, resolved.Full, resolved.Root, current, before); }
+        try { inverse = Prepare(dataRoot, conversationId, resolved.Full, resolved.Root, current, before, baseline.Bytes); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
             return UndoVerdict.WriteFailed;
         }
 
-        var replaced = write.Replace(() => WorkspacePaths.ResolveWrite(sandbox, last.Path, guards),
-            baseline.Bytes, before);
+        var replaced = beforeBytes is null
+            ? write.Replace(() => WorkspacePaths.ResolveWrite(sandbox, last.Path, guards), baseline.Bytes, before)
+            : write.ReplaceRaw(() => WorkspacePaths.ResolveWrite(sandbox, last.Path, guards), baseline.Bytes, beforeBytes);
         if (replaced.Verdict != TextReplaceVerdict.Written)
         {
             Abandon(dataRoot, inverse);
@@ -294,13 +519,33 @@ public static class ChatChangeStore
         try
         {
             var recordsDirectory = System.IO.Path.Combine(root, "records");
-            if (!Directory.Exists(recordsDirectory)) return;
+            Directory.CreateDirectory(recordsDirectory);
+            var activeRevisions = Batches(dataRoot).Where(batch => BatchIsActive(dataRoot, batch.Id))
+                .SelectMany(batch => batch.RevisionIds).ToHashSet(StringComparer.Ordinal);
             foreach (var file in Directory.EnumerateFiles(recordsDirectory, "*.json"))
             {
                 var id = System.IO.Path.GetFileNameWithoutExtension(file);
                 var record = Read(dataRoot, id);
                 if (record is not null && !liveConversationIds.Contains(record.ConversationId)
-                    && !referencedIds.Contains(id)) File.Delete(file);
+                    && !referencedIds.Contains(id) && !activeRevisions.Contains(id)) File.Delete(file);
+            }
+
+            var batchesDirectory = System.IO.Path.Combine(root, "batches");
+            if (Directory.Exists(batchesDirectory))
+            {
+                foreach (var file in Directory.EnumerateFiles(batchesDirectory, "*.json"))
+                {
+                    var id = System.IO.Path.GetFileNameWithoutExtension(file);
+                    var batch = ReadBatch(dataRoot, id);
+                    if (batch is not null && !liveConversationIds.Contains(batch.ConversationId)
+                        && !referencedIds.Contains(id) && !batch.RevisionIds.Any(referencedIds.Contains)
+                        && !BatchIsActive(dataRoot, id))
+                    {
+                        File.Delete(file);
+                        var lockPath = BatchLockPath(root, id);
+                        if (File.Exists(lockPath)) File.Delete(lockPath);
+                    }
+                }
             }
 
             var liveHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -309,7 +554,12 @@ public static class ChatChangeStore
                 var record = JsonSerializer.Deserialize<ChatFileRevision>(File.ReadAllText(file), StateStore.ReadOptions);
                 if (record?.BeforeHash is { } before) liveHashes.Add(before);
                 if (record?.AfterHash is { } after) liveHashes.Add(after);
+                if (record?.BeforeRawHash is { } raw) liveHashes.Add(raw);
             }
+            foreach (var batch in Batches(dataRoot))
+                if (batch.Management is { } management)
+                    foreach (var entry in management.Entries)
+                        if (entry.ContentHash is { } raw) liveHashes.Add(raw);
             var objects = System.IO.Path.Combine(root, "objects");
             if (!Directory.Exists(objects)) return;
             foreach (var file in Directory.EnumerateFiles(objects, "*.txt", SearchOption.AllDirectories))
@@ -321,9 +571,21 @@ public static class ChatChangeStore
         }
     }
 
-    private static string SaveContent(string root, string text)
+    private static string SaveContent(string root, string text) => SaveBytes(root, new UTF8Encoding(false).GetBytes(text));
+
+    private static byte[]? ReadBytes(string? dataRoot, string hash)
     {
-        var bytes = new UTF8Encoding(false).GetBytes(text);
+        if (hash.Length != 64 || !hash.All(Uri.IsHexDigit) || DirectoryFor(dataRoot) is not { } root) return null;
+        try
+        {
+            var bytes = File.ReadAllBytes(ObjectPath(root, hash));
+            return string.Equals(Hash(bytes), hash, StringComparison.OrdinalIgnoreCase) ? bytes : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    private static string SaveBytes(string root, byte[] bytes)
+    {
         var hash = Hash(bytes);
         var path = ObjectPath(root, hash);
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);

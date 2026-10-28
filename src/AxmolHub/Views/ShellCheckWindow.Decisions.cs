@@ -698,7 +698,7 @@ internal sealed class ShellDecisionsChecks
             await panel.WaitForRunToFinishForCheck();
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
-            var silentTurn = silentSession.Messages.Find(turn => turn.ToolName == "file_write");
+            var silentTurn = silentSession.Messages.Find(turn => turn.ToolName == "fs_replace");
             var silentTotal = panel.ActivityGroupDiffTotalForCheck(0);
             // The turn has to be named, not merely "not carrying a preview": a null turn satisfies a null check on
             // its own and would let a fixture that wrote nothing pass as a tier that never asked.
@@ -752,7 +752,7 @@ internal sealed class ShellDecisionsChecks
             shell.UpdateLayout();
             Dispatcher.UIThread.RunJobs();
             var bandPairs = bandSession.Messages
-                .Where(turn => turn.ToolName == "file_write" && turn.ChangeLines is not null)
+                .Where(turn => turn.ToolName == "fs_replace" && turn.ChangeLines is not null)
                 .Select(turn => (turn.ChangeLines!.Added, turn.ChangeLines.Removed))
                 .ToList();
             Check(bandPairs.Count == 6

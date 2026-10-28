@@ -17,11 +17,16 @@ public sealed record TurnReviewFile(
     string FirstRevisionId,
     string LastRevisionId,
     IReadOnlyList<int> TurnIndices,
-    ChangeLineCounts? Lines);
+    ChangeLineCounts? Lines,
+    string? ManagementBatchId = null,
+    string? ManagedRelativePath = null);
+
+public sealed record TurnReviewAction(string Path, int TurnIndex, string? RevisionId, string? ManagementBatchId);
 
 /// <summary>What one batch undo came to, per file. <see cref="Verdict"/> is the same vocabulary a single undo
 /// answers with, because it is the same question asked once per file.</summary>
-public sealed record TurnUndoOutcome(string RelativePath, UndoVerdict Verdict);
+public sealed record TurnUndoOutcome(string RelativePath, UndoVerdict Verdict, string? RevisionId = null,
+    string? ManagementBatchId = null);
 
 /// <summary>One batch undo: the verdict per file, and the inverses it left so the act itself can be undone.</summary>
 public sealed record TurnUndo(IReadOnlyList<TurnUndoOutcome> Outcomes, IReadOnlyList<string> InverseIds)
@@ -46,7 +51,8 @@ public sealed record TurnUndo(IReadOnlyList<TurnUndoOutcome> Outcomes, IReadOnly
 public sealed record TurnReview(
     IReadOnlyList<TurnReviewFile> Files,
     IReadOnlyList<ChangedFile> Rows,
-    bool RanCommands)
+    bool RanCommands,
+    IReadOnlyList<TurnReviewAction>? Actions = null)
 {
     public static TurnReview Empty { get; } = new([], [], false);
 
@@ -97,24 +103,44 @@ public sealed record TurnReview(
 
         var chains = new Dictionary<string, List<(ChatFileRevision Revision, int Index)>>(StringComparer.Ordinal);
         var order = new List<string>();
+        var actions = new List<TurnReviewAction>();
+        var managedRows = new List<(ChangedFile Row, int Index)>();
+        var hasManagement = false;
         var ranCommands = false;
         for (var index = start; index <= end; index++)
         {
             var turn = messages[index];
             if (turn.Role != ChatRoles.Assistant) continue;
             if (string.Equals(turn.ToolName, ToolNames.RunCommand, StringComparison.Ordinal)) ranCommands = true;
-            if (turn.ChangeId is not { Length: > 0 } id) continue;
-            if (ChatChangeStore.Read(dataRoot, id) is not { } revision) continue;
-            if (revision.State != ChatChangeStore.Complete) continue;
-            if (!chains.TryGetValue(revision.Path, out var chain))
+            if (turn.ManagementBatchId is { Length: > 0 } managementId
+                && turn.ToolCallId is { Length: > 0 } callId
+                && ChatChangeStore.ReadBatch(dataRoot, managementId) is { } batch)
             {
-                chains[revision.Path] = chain = [];
-                order.Add(revision.Path);
+                hasManagement = true;
+                if (!turn.UndoConsumed)
+                    actions.Add(new TurnReviewAction(batch.Management?.Source ?? "", index, null, managementId));
+                managedRows.AddRange(ChatChanges.ForCalls(conversation, new HashSet<string>(StringComparer.Ordinal) { callId })
+                    .Select(row => (row, index)));
             }
-            chain.Add((revision, index));
+            var ids = turn.ChangeRefs.Count > 0
+                ? turn.ChangeRefs.Select(reference => reference.RevisionId)
+                : turn.ChangeId is { Length: > 0 } id ? [id] : Enumerable.Empty<string>();
+            foreach (var revisionId in ids)
+            {
+                if (ChatChangeStore.Read(dataRoot, revisionId) is not { } revision) continue;
+                if (revision.State != ChatChangeStore.Complete) continue;
+                if (!turn.UndoConsumed && !turn.RevertedChangeIds.Contains(revisionId, StringComparer.Ordinal))
+                    actions.Add(new TurnReviewAction(revision.Path, index, revisionId, null));
+                if (!chains.TryGetValue(revision.Path, out var chain))
+                {
+                    chains[revision.Path] = chain = [];
+                    order.Add(revision.Path);
+                }
+                chain.Add((revision, index));
+            }
         }
 
-        if (order.Count == 0) return new TurnReview([], [], ranCommands);
+        if (order.Count == 0 && managedRows.Count == 0) return new TurnReview([], [], ranCommands);
 
         var files = new List<TurnReviewFile>(order.Count);
         var rows = new List<ChangedFile>(order.Count);
@@ -140,7 +166,13 @@ public sealed record TurnReview(
                 SelectedRevisionId: first.Id,
                 LastRevisionId: last.Id));
         }
-        return new TurnReview(files, rows, ranCommands);
+        foreach (var (row, index) in managedRows)
+        {
+            files.Add(new TurnReviewFile(row.RelativePath, row.RelativePath, row.Verdict,
+                row.ManagementBatchId!, row.ManagementBatchId!, [index], null, row.ManagementBatchId, row.ManagedRelativePath));
+            rows.Add(row);
+        }
+        return new TurnReview(files, rows, ranCommands, hasManagement ? actions : null);
     }
 
     /// <summary>The first index of the turn that owns <paramref name="turnIndex"/>: everything after the user
@@ -148,16 +180,22 @@ public sealed record TurnReview(
     public static int TurnStart(IReadOnlyList<ChatTurn> messages, int turnIndex)
     {
         var index = Math.Clamp(turnIndex, 0, Math.Max(0, messages.Count - 1));
-        while (index >= 0 && messages[index].Role != ChatRoles.User) index--;
+        while (index >= 0 && (messages[index].Role != ChatRoles.User || messages[index].IsUndoNotice)) index--;
         return index + 1;
     }
 
     /// <summary>The net diff of one file's chain, or null with <paramref name="state"/> saying why not. The same
     /// call the git-shaped rows answer with, so a Last turn row and a Git row cannot disagree about a file.</summary>
-    public string? DiffFor(TurnReviewFile file, string? dataRoot, DiffLimits limits, out UndoCopyState state) =>
-        ChatChangeStore.ReadChainSnapshot(dataRoot, file.FirstRevisionId, file.LastRevisionId, out state) is { } snapshot
+    public string? DiffFor(TurnReviewFile file, string? dataRoot, DiffLimits limits, out UndoCopyState state)
+    {
+        if (file.ManagementBatchId is { } batchId && ChatChangeStore.ReadBatch(dataRoot, batchId) is { } batch)
+            return ChatChanges.DiffFor(new ChangedFile(file.RelativePath, file.Verdict, "", 0, null, null, null,
+                "", true, ManagementBatchId: batchId, ManagedRelativePath: file.ManagedRelativePath),
+                batch.ConversationId, dataRoot, WorkspaceSandbox.Empty, new WorkspaceGuards(null, []), limits, out state);
+        return ChatChangeStore.ReadChainSnapshot(dataRoot, file.FirstRevisionId, file.LastRevisionId, out state) is { } snapshot
             ? FileDiff.Unified(snapshot.Before, snapshot.After, file.RelativePath, limits)
             : null;
+    }
 
     /// <summary>
     /// Restore every file of the turn. Each file is one guarded restore of its whole chain, in reverse order, and a
@@ -170,6 +208,26 @@ public sealed record TurnReview(
     {
         var outcomes = new List<TurnUndoOutcome>(Files.Count);
         var inverses = new List<string>(Files.Count);
+        if (Actions is { } actions)
+        {
+            var scope = new WorkspaceToolScope(sandbox.Primary, guards, dataRoot, conversationId, [], null)
+                { Sandbox = sandbox };
+            var tools = new WorkspaceTools(scope);
+            foreach (var action in actions.Reverse())
+            {
+                UndoVerdict verdict;
+                string? inverseId = null;
+                if (action.ManagementBatchId is { } batchId)
+                    verdict = tools.UndoManagement(batchId, out _);
+                else if (action.RevisionId is { } revisionId)
+                    verdict = ChatChangeStore.Restore(dataRoot, conversationId, revisionId, sandbox, guards, out _, out inverseId);
+                else continue;
+                if (verdict == UndoVerdict.Reverted && inverseId is { Length: > 0 }) inverses.Add(inverseId);
+                outcomes.Add(new TurnUndoOutcome(action.Path, verdict, action.RevisionId, action.ManagementBatchId));
+                if (verdict != UndoVerdict.Reverted) break;
+            }
+            return new TurnUndo(outcomes, inverses);
+        }
         foreach (var file in Enumerable.Reverse(Files))
         {
             var verdict = ChatChangeStore.RestoreChain(dataRoot, conversationId, file.FirstRevisionId,

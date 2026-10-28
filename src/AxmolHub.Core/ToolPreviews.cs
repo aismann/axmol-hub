@@ -20,10 +20,14 @@ public static class ToolPreviews
         var arguments = Parse(argumentsJson);
         return name switch
         {
-            ToolNames.FileWrite => WritePreview(arguments, scope),
+            LegacyFileToolNames.FileWrite => WritePreview(arguments, scope),
+            ToolNames.FsWrite => FullWritePreview(arguments, scope),
+            ToolNames.FsReplace => ReplacePreview(arguments, scope),
+            ToolNames.FsDelete or ToolNames.FsMove => ManagementPreview(name, arguments, scope),
             ToolNames.RunCommand => CommandPreview(arguments, scope),
-            ToolNames.RequestDirectory => GrantPreview(Text(arguments, "path"), scope, projectPaths),
-            ToolNames.RequestFile => FileGrantPreview(Text(arguments, "path"), scope),
+            LegacyFileToolNames.RequestDirectory => GrantPreview(Text(arguments, "path"), scope, projectPaths),
+            LegacyFileToolNames.RequestFile => FileGrantPreview(Text(arguments, "path"), scope),
+            ToolNames.FsRequestAccess => AccessPreview(arguments, scope, projectPaths),
             ToolNames.CaptureScreen => CapturePreview(arguments, scope),
             ToolNames.WebFetch => FetchPreview(arguments, scope),
             ToolNames.SendToSession => SendPreview(arguments),
@@ -34,14 +38,104 @@ public static class ToolPreviews
             // itself. The card reads the stored arguments directly rather than this string — a question's text is
             // immutable model output and needs no freezing, unlike a diff of a file that can change under it.
             ToolNames.AskUser => AskUserQuestion.Preview(argumentsJson),
-            ToolNames.ReadFile => $"read_file · {Text(arguments, "path")}",
-            ToolNames.SearchText => $"search_text · {Text(arguments, "pattern")} · "
+            LegacyFileToolNames.ReadFile or ToolNames.FsRead => $"{name} · {Text(arguments, "path")}",
+            LegacyFileToolNames.SearchText or ToolNames.FsGrep => $"{name} · {Text(arguments, "pattern")} · "
                              + $"{(Text(arguments, "glob") is { Length: > 0 } glob ? glob : "any text file")} · in "
                              + $"{DirectoryOf(arguments)}",
-            ToolNames.ListDirectory => $"list_directory · {DirectoryOf(arguments)} · depth {Number(arguments, "depth")}",
-            ToolNames.FindFiles => $"find_files · {Text(arguments, "glob")} · in {DirectoryOf(arguments)}",
+            LegacyFileToolNames.ListDirectory or ToolNames.FsList => $"{name} · {DirectoryOf(arguments)} · depth {Number(arguments, "depth")}",
+            LegacyFileToolNames.FindFiles or ToolNames.FsFind => $"{name} · {Text(arguments, "glob")} · in {DirectoryOf(arguments)}",
             _ => name,
         };
+    }
+
+    public static string ManagementFingerprint(string name, string? argumentsJson, WorkspaceToolScope scope)
+    {
+        var arguments = Parse(argumentsJson);
+        var isMove = name == ToolNames.FsMove;
+        return WorkspaceTools.PrepareManagement(scope, Text(arguments, isMove ? "source" : "path"),
+            isMove ? Text(arguments, "destination") : null, isMove || Flag(arguments, "recursive")).Fingerprint;
+    }
+
+    private static string ManagementPreview(string name, IReadOnlyDictionary<string, JsonElement> arguments,
+        WorkspaceToolScope scope)
+    {
+        var isMove = name == ToolNames.FsMove;
+        var plan = WorkspaceTools.PrepareManagement(scope, Text(arguments, isMove ? "source" : "path"),
+            isMove ? Text(arguments, "destination") : null, isMove || Flag(arguments, "recursive"));
+        if (plan.Error is not null) return plan.Error;
+        var size = plan.Entries.Sum(entry => entry.Bytes?.LongLength ?? 0);
+        var action = isMove ? $"Move {plan.Source.Display} → {plan.Destination?.Display}" : $"Delete {plan.Source.Display}";
+        return $"{action}\n{plan.Entries.Count} entries · {size} bytes\n"
+               + string.Join("\n", plan.Entries.Select(entry => entry.Relative + (entry.IsDirectory ? "/" : "")));
+    }
+
+    public static string AccessKind(string? argumentsJson)
+    {
+        var arguments = Parse(argumentsJson);
+        return WorkspaceTools.AccessKind(Text(arguments, "path"), Text(arguments, "kind"));
+    }
+
+    private static string AccessPreview(IReadOnlyDictionary<string, JsonElement> arguments, WorkspaceToolScope scope,
+        IReadOnlyList<string>? projectPaths)
+    {
+        var path = Text(arguments, "path");
+        var kind = WorkspaceTools.AccessKind(path, Text(arguments, "kind"));
+        return kind switch
+        {
+            "directory" => GrantPreview(path, scope, projectPaths).Replace("request_directory ·", "fs_request_access · directory ·", StringComparison.Ordinal),
+            "file" => FileGrantPreview(path, scope).Replace("request_file ·", "fs_request_access · file ·", StringComparison.Ordinal),
+            _ => "fs_request_access · invalid or ambiguous path; specify an existing path or its kind.",
+        };
+    }
+
+    private static string FullWritePreview(IReadOnlyDictionary<string, JsonElement> arguments, WorkspaceToolScope scope)
+    {
+        var path = Text(arguments, "path");
+        var resolved = WorkspacePaths.ResolveWrite(scope.Sandbox, path, scope.Guards);
+        if (!resolved.IsAllowed) return WorkspacePaths.ResultFor(resolved.Verdict, path);
+        try
+        {
+            if (File.Exists(resolved.Full) && new FileInfo(resolved.Full).Length > 256L * 1024 * 1024)
+                return "Refused: the file exceeds the 256 MiB backup limit.";
+            var original = File.Exists(resolved.Full) ? File.ReadAllText(resolved.Full) : null;
+            var edit = FileEdit.Overwrite(original, Text(arguments, "content"), Flag(arguments, "overwrite"));
+            return edit.Changed ? FileDiff.Unified(original ?? "", edit.Updated, resolved.Display)
+                : edit.Verdict == FileEditVerdict.Unchanged ? $"No change: {resolved.Display} already has that content."
+                : edit.Verdict == FileEditVerdict.AlreadyExists ? $"Refused: {resolved.Display} already exists. Pass overwrite=true to replace it."
+                : FileEdit.ResultFor(edit.Verdict, edit.Matches, resolved.Display);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { return $"Cannot preview {resolved.Display}: {ex.Message}"; }
+    }
+
+    public static string WriteFingerprint(string? argumentsJson, WorkspaceToolScope scope)
+        => WorkspaceTools.WriteFingerprint(scope, Text(Parse(argumentsJson), "path"));
+
+    private static IReadOnlyList<FsReplacement>? ReplacementEdits(IReadOnlyDictionary<string, JsonElement> arguments)
+    {
+        if (!arguments.TryGetValue("edits", out var value)) return null;
+        try { return value.Deserialize<FsReplacement[]>(StateStore.ReadOptions); }
+        catch (JsonException) { return null; }
+    }
+
+    public static string ReplaceFingerprint(string? argumentsJson, WorkspaceToolScope scope)
+        => WorkspaceTools.PrepareReplacements(scope, ReplacementEdits(Parse(argumentsJson))).Fingerprint;
+
+    private static string ReplacePreview(IReadOnlyDictionary<string, JsonElement> arguments, WorkspaceToolScope scope)
+    {
+        var plan = WorkspaceTools.PrepareReplacements(scope, ReplacementEdits(arguments));
+        if (plan.Error is not null) return plan.Error;
+        var preview = new System.Text.StringBuilder($"Edit {plan.Changes.Count} file(s)");
+        foreach (var change in plan.Changes)
+        {
+            preview.Append('\n').Append(FileDiff.Unified(change.Before, change.After, change.Path.Display));
+            if (preview.Length > 60_000)
+            {
+                preview.Append("\n… (preview truncated)");
+                break;
+            }
+        }
+        return preview.ToString();
     }
 
     private static string WritePreview(IReadOnlyDictionary<string, JsonElement> arguments, WorkspaceToolScope scope)

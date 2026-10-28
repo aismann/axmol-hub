@@ -12,6 +12,10 @@ public enum ChangeVerdict
     /// <summary>An anchored edit landed.</summary>
     Edited,
 
+    Deleted,
+
+    Moved,
+
     /// <summary>The tool answered "no change": anchor not found, ambiguous, or identical strings.</summary>
     Unchanged,
 
@@ -49,13 +53,32 @@ public sealed record ChangedFile(
     // The write that closed a row's chain. Set only on a row that stands for a whole turn's edits to one file, in
     // which case SelectedRevisionId is the write that opened it and the diff between the two is the net movement.
     // A row derived from a single call leaves this null and keeps comparing that call's own before and after.
-    string? LastRevisionId = null);
+    string? LastRevisionId = null,
+    string? ManagementBatchId = null,
+    string? ManagedRelativePath = null);
 
 public static class ChatChanges
 {
     /// <summary>The tool whose calls are file changes. Spelled out once because both the scan and the undo
     /// record match on it, and a rename that only touched one side would silently empty the list.</summary>
-    public const string FileWriteTool = ToolNames.FileWrite;
+    public const string FileWriteTool = LegacyFileToolNames.FileWrite;
+
+    public static bool IsSingleFileWrite(string? name) => name is LegacyFileToolNames.FileWrite or ToolNames.FsWrite;
+
+    public static bool IsManagement(string? name) => name is ToolNames.FsDelete or ToolNames.FsMove;
+
+    private static IEnumerable<ChangedFile> ManagedRows(ChatTurn turn, string callId, int index, string result)
+    {
+        if (turn.ManagementBatchId is not { Length: > 0 } batch || turn.ManagementSource is not { Length: > 0 } source)
+            yield break;
+        foreach (var entry in turn.ManagedEntries)
+        {
+            var path = entry.RelativePath == "." ? source : Path.Combine(source, entry.RelativePath);
+            yield return new ChangedFile(path, turn.ToolName == ToolNames.FsDelete ? ChangeVerdict.Deleted : ChangeVerdict.Moved,
+                callId, index, turn.ApprovalPreview, null, turn.ToolArguments, FirstLine(result), true,
+                ManagementBatchId: batch, ManagedRelativePath: entry.RelativePath);
+        }
+    }
 
     /// <summary>
     /// The bounds the inspector asks for, against the approval card's defaults. Two numbers on one fact, on
@@ -106,8 +129,31 @@ public static class ChatChanges
         for (var index = 0; index < messages.Count; index++)
         {
             var turn = messages[index];
+            if (turn.Role == ChatRoles.Assistant && IsManagement(turn.ToolName)
+                && turn.ToolCallId is { Length: > 0 } managementCall)
+            {
+                foreach (var change in ManagedRows(turn, managementCall, index, results.GetValueOrDefault(managementCall) ?? ""))
+                {
+                    if (!byPath.ContainsKey(change.RelativePath)) order.Add(change.RelativePath);
+                    byPath[change.RelativePath] = change;
+                }
+                continue;
+            }
+            if (turn.Role == ChatRoles.Assistant && turn.ToolName == ToolNames.FsReplace
+                && turn.ToolCallId is { Length: > 0 } batchCall && turn.ChangeRefs.Count > 0)
+            {
+                var batchResult = results.GetValueOrDefault(batchCall) ?? "";
+                foreach (var reference in turn.ChangeRefs)
+                {
+                    if (!byPath.ContainsKey(reference.Path)) order.Add(reference.Path);
+                    byPath[reference.Path] = new ChangedFile(reference.Path, ChangeVerdict.Edited, batchCall,
+                        index, turn.ApprovalPreview, null, turn.ToolArguments, FirstLine(batchResult), false,
+                        ChangeId: reference.RevisionId);
+                }
+                continue;
+            }
             if (turn.Role != ChatRoles.Assistant
-                || turn.ToolName != FileWriteTool
+                || !IsSingleFileWrite(turn.ToolName)
                 || turn.ToolCallId is not { Length: > 0 } callId) continue;
 
             var path = ChatUndoStore.WritePathOf(turn.ToolArguments);
@@ -152,7 +198,23 @@ public static class ChatChanges
         for (var index = 0; index < conversation.Messages.Count; index++)
         {
             var turn = conversation.Messages[index];
-            if (turn.Role != ChatRoles.Assistant || turn.ToolName != FileWriteTool
+            if (turn.Role == ChatRoles.Assistant && IsManagement(turn.ToolName)
+                && turn.ToolCallId is { Length: > 0 } managementCall && callIds.Contains(managementCall))
+            {
+                changes.AddRange(ManagedRows(turn, managementCall, index, results.GetValueOrDefault(managementCall) ?? ""));
+                continue;
+            }
+            if (turn.Role == ChatRoles.Assistant && turn.ToolName == ToolNames.FsReplace
+                && turn.ToolCallId is { Length: > 0 } batchCall && callIds.Contains(batchCall))
+            {
+                var batchResult = results.GetValueOrDefault(batchCall) ?? "";
+                foreach (var reference in turn.ChangeRefs)
+                    changes.Add(new ChangedFile(reference.Path, ChangeVerdict.Edited, batchCall, index,
+                        turn.ApprovalPreview, null, turn.ToolArguments, FirstLine(batchResult), true,
+                        ChangeId: reference.RevisionId));
+                continue;
+            }
+            if (turn.Role != ChatRoles.Assistant || !IsSingleFileWrite(turn.ToolName)
                 || turn.ToolCallId is not { Length: > 0 } callId || !callIds.Contains(callId)) continue;
             var path = ChatUndoStore.WritePathOf(turn.ToolArguments);
             if (path.Length == 0 || !results.TryGetValue(callId, out var result)) continue;
@@ -195,6 +257,27 @@ public static class ChatChanges
         state = UndoCopyState.EvictedOrSpent;
         var capped = limits ?? InspectorLimits;
         if (wholeFile) capped = capped.Expanded();
+
+        if (file.ManagementBatchId is { Length: > 0 } batchId)
+        {
+            var batch = ChatChangeStore.ReadBatch(dataRoot, batchId);
+            if (batch?.Management is not { } operation
+                || operation.Entries.FirstOrDefault(entry => entry.RelativePath == file.ManagedRelativePath) is not { } entry)
+            { state = UndoCopyState.MissingSnapshot; return null; }
+            state = UndoCopyState.Read;
+            var destination = operation.Destination is null ? null
+                : entry.RelativePath == "." ? operation.Destination : Path.Combine(operation.Destination, entry.RelativePath);
+            if (entry.Directory) return destination is null ? $"Deleted directory {file.RelativePath}."
+                : $"Moved directory {file.RelativePath} → {destination}.";
+            if (destination is not null) return $"Moved {file.RelativePath} → {destination} ({entry.Length} bytes; content unchanged).";
+            if (entry.Length > TextFile.MaxDiffBytes)
+                return $"Deleted file {file.RelativePath} ({entry.Length} bytes; too large for a text diff).";
+            if (entry.ContentHash is not { } hash || ChatChangeStore.ReadRawObject(dataRoot, hash) is not { } bytes)
+            { state = UndoCopyState.Unreadable; return null; }
+            if (TextFile.Decode(bytes) is not { State: TextFileState.Text } text)
+                return $"Deleted file {file.RelativePath} ({bytes.LongLength} bytes; binary or too large for a text diff).";
+            return FileDiff.Unified(text.Text, "", file.RelativePath, capped);
+        }
 
         if (file.SelectedRevisionId is { Length: > 0 } || file.ChangeId is { Length: > 0 })
         {

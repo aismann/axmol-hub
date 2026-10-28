@@ -212,6 +212,9 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// to this exact message after the composer selection has been consumed.</summary>
     public bool IsGoal { get; init; }
 
+    /// <summary>A generated user-facing undo notice, not the start of a new task turn.</summary>
+    public bool IsUndoNotice { get; init; }
+
     /// <summary>What the model thought before it said <see cref="Text"/>, kept because some gateways make it
     /// part of the conversation rather than a display nicety: DeepSeek answers 400 on any request whose history
     /// came from a thinking model that was also offered tools, unless each assistant message carries its own
@@ -307,6 +310,13 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// card then has to show exactly what the gate saw.</summary>
     public string? ApprovalPreview { get; init; }
 
+    /// <summary>File state bound to a parked full-write approval.</summary>
+    public string? ApprovalWriteFingerprint { get; init; }
+
+    public string? ApprovalAccessKind { get; init; }
+
+    public bool ApprovalCacheBreak { get; init; }
+
     /// <summary>The file name of the pre-image this write left in <see cref="ChatUndoStore"/>, kept by name rather
     /// than as a full path so a session file still means the same thing after the data root moves. Null when the
     /// write created a file (there was nothing before it), kept no copy, or has already been reverted — the copy
@@ -316,6 +326,21 @@ public sealed record ChatTurn(string Role, string Text, DateTimeOffset At)
     /// <summary>Stable ID of the full before/after revision in the Hub data directory. Null on older calls,
     /// refused writes and no-op edits. The contents stay out of the conversation JSON.</summary>
     public string? ChangeId { get; init; }
+
+    /// <summary>File revisions produced by one multi-file call, in operation order.</summary>
+    public IReadOnlyList<ChatChangeReference> ChangeRefs { get; init; } = [];
+
+    /// <summary>Durable filesystem management operation produced by this call.</summary>
+    public string? ManagementBatchId { get; init; }
+
+    /// <summary>Operation entries, kept for transcript rendering without disk I/O.</summary>
+    public IReadOnlyList<FsManagedEntry> ManagedEntries { get; init; } = [];
+
+    public string? ManagementSource { get; init; }
+    public string? ManagementDestination { get; init; }
+
+    /// <summary>Original revision IDs already restored by a partial batch undo.</summary>
+    public IReadOnlyList<string> RevertedChangeIds { get; init; } = [];
 
     /// <summary>The inverse revision produced by undoing this write. Kept separately from <see cref="ChangeId"/>
     /// so the original edit remains addressable in history.</summary>
@@ -750,6 +775,38 @@ public sealed class Conversation
         }
 
         return closed;
+    }
+
+    /// <summary>Close calls whose old tool name is no longer declared, without disturbing other pending calls.</summary>
+    public int MigrateRetiredFsTools()
+    {
+        AutoApprovedTools ??= [];
+        var answered = Messages.Where(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 })
+            .Select(turn => turn.ToolCallId!).ToHashSet(StringComparer.Ordinal);
+        var changed = AutoApprovedTools.RemoveAll(LegacyFileToolNames.Contains);
+        for (var i = 0; i < Messages.Count; i++)
+        {
+            var turn = Messages[i];
+            if (turn.ChangeRefs is null || turn.RevertedChangeIds is null || turn.ManagedEntries is null)
+            {
+                turn = turn with { ChangeRefs = turn.ChangeRefs ?? [], RevertedChangeIds = turn.RevertedChangeIds ?? [],
+                    ManagedEntries = turn.ManagedEntries ?? [] };
+                Messages[i] = turn;
+                changed++;
+            }
+            if (turn.Role != ChatRoles.Assistant || turn.ToolCallId is not { Length: > 0 } id
+                || !LegacyFileToolNames.Contains(turn.ToolName) || answered.Contains(id)) continue;
+            Messages[i] = turn with { ApprovalState = ChatApprovalStates.Superseded };
+            Messages.Insert(i + 1, ChatTurn.FunctionResult(id,
+                turn.ApprovalState == ChatApprovalStates.Pending
+                    ? "Not executed: this file tool was replaced. Use the currently declared fs_* tool and request approval again."
+                    : "The old file tool was interrupted and its outcome is unknown. Inspect its target before retrying with an fs_* tool.",
+                failed: true));
+            answered.Add(id);
+            changed++;
+            i++;
+        }
+        return changed;
     }
 
     /// <summary>

@@ -189,6 +189,7 @@ public sealed class PreferencesStore(string path)
         // what a stored grant means. Unknown names are kept rather than dropped — they match no call, and a
         // reader that deleted what it did not recognise would silently eat a grant a newer Hub wrote.
         preferences.TrustedTools = ToolTrust.Normalize(preferences.TrustedTools);
+        var removedRetiredTools = preferences.TrustedTools.RemoveAll(LegacyFileToolNames.Contains) > 0;
         // And the command-verb list with the same care and the same reason: the shape rules live in CommandTrust so
         // the store, the card's verb button and the settings page cannot disagree about what a stored verb means.
         preferences.TrustedCommands = CommandTrust.Normalize(preferences.TrustedCommands);
@@ -198,6 +199,7 @@ public sealed class PreferencesStore(string path)
         // rather than to "no ceiling", which is the one way a hand-edited settings file could spend past the
         // strongest tier anyone agreed to.
         preferences.MaxAutoEffort = ModelRouting.Ceiling(preferences.MaxAutoEffort);
+        if (removedRetiredTools) Save(preferences);
         return preferences;
     }
     public void Save(HubPreferences preferences) => StateStore.WriteJson(path, preferences);

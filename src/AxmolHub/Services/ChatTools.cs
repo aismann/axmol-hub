@@ -113,11 +113,12 @@ internal static class ChatTools
     public static ToolRisk RiskOf(string name, string? argumentsJson, WorkspaceToolScope scope,
         IReadOnlyList<string>? trustedCommands = null) => name switch
     {
-        ToolNames.GetProjects or ToolNames.GetEngines or ToolNames.GetToolchainStatus or ToolNames.ReadFile or ToolNames.MemoryRead
+        ToolNames.ProjectList or ToolNames.EngineList or ToolNames.ToolchainStatus or ToolNames.FsRead or ToolNames.MemoryRead
             or ToolNames.ListSessions or ToolNames.ReadSession
-            or ToolNames.SearchText or ToolNames.ListDirectory or ToolNames.FindFiles or ToolNames.WorkspaceMap
+            or ToolNames.FsGrep or ToolNames.FsList or ToolNames.FsFind or ToolNames.WorkspaceMap
             => ToolRisk.ReadOnly,
-        ToolNames.FileWrite or ToolNames.SendToSession => ToolRisk.WorkspaceWrite,
+        ToolNames.FsWrite or ToolNames.FsReplace or ToolNames.SendToSession => ToolRisk.WorkspaceWrite,
+        ToolNames.FsDelete or ToolNames.FsMove => ManagementRisk(name, argumentsJson, scope),
         ToolNames.UpdatePlanTask => ToolRisk.AssistantNote,
         // Decided by one method rather than an inline ternary, because there are now two things that can make a
         // command cost more than the sandbox tier, and both have to be read from the same place the gate reads.
@@ -143,7 +144,7 @@ internal static class ChatTools
         // directory I ever name". A single file shares the tier for the same reason, and 「总是允许」 is refused
         // harder still there: it would read as "open every file I ever name", which is not something one click
         // could have meant.
-        ToolNames.RequestDirectory or ToolNames.RequestFile => ToolRisk.SystemCommand,
+        ToolNames.FsRequestAccess => ToolRisk.SystemCommand,
         // Reading the screen writes nothing, but it shows the desktop to a model that decided when to look, and
         // the frame leaves the machine in the next request. That is the SystemCommand tier's job: it asks in
         // every mode but full. Spelled out rather than left to the fallback arm, because "unknown tool" and "this
@@ -221,6 +222,13 @@ internal static class ChatTools
             : ToolRisk.SystemCommand;
     }
 
+    private static ToolRisk ManagementRisk(string name, string? argumentsJson, WorkspaceToolScope scope)
+    {
+        var path = ArgumentOf(argumentsJson, name == ToolNames.FsMove ? "source" : "path");
+        if (path is null) return ToolRisk.SystemCommand;
+        return WorkspaceTools.ManagementMayBreakCache(scope, path) ? ToolRisk.CacheBreak : ToolRisk.WorkspaceWrite;
+    }
+
     /// <summary>
     /// The single git write verb a card may offer to trust, or null when no one verb would change this call's
     /// verdict. The card's third button and the gate read this one predicate, so a button can never be drawn for a
@@ -283,13 +291,12 @@ internal static class ChatTools
     /// </summary>
     public static bool OpensProtectedLocation(string name, string? argumentsJson, WorkspaceToolScope scope)
         => ArgumentOf(argumentsJson, "path") is { Length: > 0 } path
-           && (string.Equals(name, ToolNames.RequestDirectory, StringComparison.Ordinal)
-               && WorkspacePaths.ClassifyGrant(scope.Sandbox, scope.Guards, path).Verdict
-                  == GrantVerdict.GrantedReadOnly
-               || string.Equals(name, ToolNames.RequestFile, StringComparison.Ordinal)
-               && WorkspacePaths.ClassifyFileGrant(scope.Sandbox, scope.Guards, path).Verdict
-                  == GrantVerdict.GrantedReadOnly
-               && WorkspacePaths.IsProtected(path, scope.Guards));
+           && (string.Equals(name, ToolNames.FsRequestAccess, StringComparison.Ordinal)
+               && WorkspacePaths.IsProtected(path, scope.Guards)
+               && (ToolPreviews.AccessKind(argumentsJson) == "directory"
+                   && WorkspacePaths.ClassifyGrant(scope.Sandbox, scope.Guards, path).Verdict == GrantVerdict.GrantedReadOnly
+                   || ToolPreviews.AccessKind(argumentsJson) == "file"
+                   && WorkspacePaths.ClassifyFileGrant(scope.Sandbox, scope.Guards, path).Verdict == GrantVerdict.GrantedReadOnly));
 
     /// <summary>One string argument, exactly as the model wrote it: empty when the call names none, null when the
     /// arguments cannot be read at all. One reader for every argument the tier table looks at, because two of them
@@ -355,21 +362,21 @@ internal static class ChatTools
                     project.Configuration,
                     project.BuildStatus,
                 }))),
-                Options(ToolNames.GetProjects,
+                Options(ToolNames.ProjectList,
                     "List the Axmol game projects registered in Hub — each one is a workspace with a locked engine "
                     + "version and a build target. A workspace is any directory, so being a project only adds those "
                     + "attributes.")),
             AIFunctionFactory.Create(
                 (Func<string>)(() => JsonSerializer.Serialize(snapshot.Engines)),
-                Options(ToolNames.GetEngines, "List installed Axmol engine versions and channels.")),
+                Options(ToolNames.EngineList, "List installed Axmol engine versions and channels.")),
             AIFunctionFactory.Create(
                 (Func<string>)(() => JsonSerializer.Serialize(snapshot.Toolchains)),
-                Options(ToolNames.GetToolchainStatus,
+                Options(ToolNames.ToolchainStatus,
                     "Read the latest already-known toolchain detection status; does not run probes or change anything.")),
-            AIFunctionFactory.Create(tools.ReadFile, Options(ToolNames.ReadFile)),
-            AIFunctionFactory.Create(tools.SearchText, Options(ToolNames.SearchText)),
-            AIFunctionFactory.Create(tools.ListDirectory, Options(ToolNames.ListDirectory)),
-            AIFunctionFactory.Create(tools.FindFiles, Options(ToolNames.FindFiles)),
+            AIFunctionFactory.Create(tools.ReadFile, Options(ToolNames.FsRead)),
+            AIFunctionFactory.Create(tools.SearchText, Options(ToolNames.FsGrep)),
+            AIFunctionFactory.Create(tools.ListDirectory, Options(ToolNames.FsList)),
+            AIFunctionFactory.Create(tools.FindFiles, Options(ToolNames.FsFind)),
             // The method is MapWorkspace because WorkspaceMap is the Core class it delegates to; the name the
             // model sees is the tool's own, and AIFunctionFactory would have taken the method name otherwise.
             AIFunctionFactory.Create(tools.MapWorkspace, Options(ToolNames.WorkspaceMap)),
@@ -384,7 +391,10 @@ internal static class ChatTools
         var tools = new WorkspaceTools(scope.Workspace);
         var result = new List<AITool>
         {
-            AIFunctionFactory.Create(tools.FileWrite, Options(ToolNames.FileWrite)),
+            AIFunctionFactory.Create(tools.FsWrite, Options(ToolNames.FsWrite)),
+            AIFunctionFactory.Create(tools.FsReplace, Options(ToolNames.FsReplace)),
+            AIFunctionFactory.Create(tools.FsDelete, Options(ToolNames.FsDelete)),
+            AIFunctionFactory.Create(tools.FsMove, Options(ToolNames.FsMove)),
             AIFunctionFactory.Create(tools.RunCommand, Options(ToolNames.RunCommand)),
             // The name is the pair's, not this call's: web_fetch reads a page from here, and the phase-two search
             // arrives as web_search — which is not ours to name anyway, since a hosted tool is advertised by the
@@ -393,8 +403,7 @@ internal static class ChatTools
             // WebFetch is the rules class in Core's namespace, and a method of that name would shadow it here.
             AIFunctionFactory.Create(tools.CaptureScreen, Options(ToolNames.CaptureScreen)),
             AIFunctionFactory.Create(tools.ComputerUse, Options(ToolNames.ComputerUse)),
-            AIFunctionFactory.Create(tools.RequestDirectory, Options(ToolNames.RequestDirectory)),
-            AIFunctionFactory.Create(tools.RequestFile, Options(ToolNames.RequestFile)),
+            AIFunctionFactory.Create(tools.FsRequestAccess, Options(ToolNames.FsRequestAccess)),
             AIFunctionFactory.Create(tools.MemoryWrite, Options(ToolNames.MemoryWrite)),
             AIFunctionFactory.Create(tools.SendToSession, Options(ToolNames.SendToSession)),
             AIFunctionFactory.Create(tools.SpawnSession, Options(ToolNames.SpawnSession)),
