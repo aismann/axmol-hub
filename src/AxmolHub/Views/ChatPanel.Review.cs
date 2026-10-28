@@ -216,7 +216,7 @@ public partial class ChatPanel
         var active = chat is not null && conversation is not null
             && chat.RunFor(conversation.Id) is { Phase: not RunPhase.Completed };
         var review = active ? chat!.TurnReviewFor(conversation) : TurnReview.Empty;
-        TurnChangesPill.IsVisible = active && !review.IsEmpty;
+        TurnChangesPill.IsVisible = active && review.HasRows;
         Grid.SetColumn(ScrollToBottomButton, TurnChangesPill.IsVisible ? 2 : 1);
         ScrollToBottomButton.HorizontalAlignment = TurnChangesPill.IsVisible
             ? HorizontalAlignment.Left : HorizontalAlignment.Center;

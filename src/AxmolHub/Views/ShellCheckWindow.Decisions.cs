@@ -117,7 +117,7 @@ internal sealed class ShellDecisionsChecks
             var activity = new ApprovalChatClient
             {
                 CallsRemaining = 1,
-                ToolName = "list_directory",
+                ToolName = ToolNames.FsList,
                 Arguments = new Dictionary<string, object?> { ["path"] = "." },
             };
             chat.ClientOverride = (_, _) => activity;
@@ -409,7 +409,7 @@ internal sealed class ShellDecisionsChecks
             var live = new ApprovalChatClient
             {
                 CallsRemaining = 2,
-                ToolName = "list_directory",
+                ToolName = ToolNames.FsList,
                 Arguments = new Dictionary<string, object?> { ["path"] = "." },
                 ParkBeforeFollowUp = livePark.Task,
                 FollowUpReached = liveArrived,
@@ -494,7 +494,7 @@ internal sealed class ShellDecisionsChecks
             chat.ClientOverride = (_, _) => new ApprovalChatClient
             {
                 CallsRemaining = 1,
-                ToolName = "list_directory",
+                ToolName = ToolNames.FsList,
                 Arguments = new Dictionary<string, object?> { ["path"] = "." },
             };
             panel.SetInputForCheck("再列一次目录");
@@ -568,7 +568,8 @@ internal sealed class ShellDecisionsChecks
             var pillPlacement = panel.TurnChangesPillPlacementForCheck;
             Check(pillPlacement is { } placement && Math.Abs(placement.CenterOffset) <= 1 && placement.Bottom <= 0,
                 "修改胶囊居中位于输入框上方，不覆盖输入框（偏移 "
-                + (pillPlacement?.CenterOffset.ToString("F1", CultureInfo.InvariantCulture) ?? "无") + "）");
+                + (pillPlacement?.CenterOffset.ToString("F1", CultureInfo.InvariantCulture) ?? "无")
+                + "，底部 " + (pillPlacement?.Bottom.ToString("F1", CultureInfo.InvariantCulture) ?? "无") + "）");
             panel.ClickTurnChangesPillForCheck();
             Dispatcher.UIThread.RunJobs();
             Check(panel.TurnChangesPillVisibleForCheck && livePill.Contains("+1", StringComparison.Ordinal)
@@ -643,7 +644,11 @@ internal sealed class ShellDecisionsChecks
             // list in the repository view.
             Check(ChatChanges.Of(chipSession).Any(change => change.RelativePath == "chip-note.txt"
                   && change.Lines is { Added: 1, Removed: 1 }),
-                "轮次历史快照仍保留精确 diff 数据，但不混入 Repo Changes 的列表");
+                "轮次历史快照仍保留精确 diff 数据，但不混入 Repo Changes 的列表（实际 "
+                + string.Join(" / ", ChatChanges.Of(chipSession).Select(change =>
+                    change.RelativePath + " " + change.Verdict
+                    + (change.Lines is { } counts ? $" +{counts.Added} −{counts.Removed}" : " 无计数")
+                    + " 副本 " + (change.ChangeId ?? "无"))) + "）");
             // The repo pane stays repository-wide while the assistant keeps working.
             var chipTwoClient = new ApprovalChatClient
             {
@@ -786,6 +791,11 @@ internal sealed class ShellDecisionsChecks
                       + "，详情 " + (bandRepository.Detail ?? "无"))
                 + "）");
             bandPane = shell.InspectorPaneForCheck ?? bandPane;
+            // The picker stays wherever the fixture before this one left it, and a scope that is not on show has
+            // no rows built at all — so the check names the scope it is counting rows for instead of inheriting one.
+            bandPane.PickScopeForCheck(GitReviewScope.Uncommitted);
+            shell.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
             Check(bandPane.RepoRowCountForCheck == bandRepository?.Entries.Count,
                 "Repo Changes 文件行数与胶囊共享同一仓库快照（页 " + bandPane.RepoRowCountForCheck + " 行）");
             // ── the two plates share one row, and scrolling does not move the box ──
@@ -1028,7 +1038,7 @@ internal sealed class ShellDecisionsChecks
         Check(restored.InspectorVisibleForCheck && restored.InspectorWidthForCheck == 420
               && restoredPane is not null
               && restoredPane.PlanTabVisibleForCheck && !restoredPane.ChangesTabVisibleForCheck
-              && !restoredPane.RepoTabVisibleForCheck,
+              && !restoredPane.RepoScopeListVisibleForCheck,
             "重启后那一列自己把面板建了回来：三页页签都在，宽度还是存的那个，不是一列没法关的空白");
         Check(restoredPane?.PlanNoticeForCheck == HubStrings.Get("InspectorPlanEmpty"),
             "这一会话没有计划时那一列说「还没有生成计划」，而不是什么都不说（实际「"
@@ -1065,8 +1075,8 @@ internal sealed class ShellDecisionsChecks
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
         Check(shell.InspectorTabForCheck == "repo" && tabPane is { } afterChanges
-              && afterChanges.RepoTabVisibleForCheck && !afterChanges.PlanTabVisibleForCheck
-              && afterChanges.SelectedTabKeyForCheck == "repo",
+              && afterChanges.ChangesTabVisibleForCheck && !afterChanges.PlanTabVisibleForCheck
+              && afterChanges.SelectedTabKeyForCheck == "changes",
             "点页眉的「改动」：外壳跟着改到改动页，页眉的下划线也移过去了（外壳记的是「"
             + shell.InspectorTabForCheck + "」，页眉标的是「"
             + (shell.InspectorPaneForCheck?.SelectedTabKeyForCheck ?? "") + "」）");
@@ -1075,7 +1085,7 @@ internal sealed class ShellDecisionsChecks
         panel.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
-        Check(shell.InspectorPaneForCheck is { } afterPaint && afterPaint.RepoTabVisibleForCheck
+        Check(shell.InspectorPaneForCheck is { } afterPaint && afterPaint.ChangesTabVisibleForCheck
               && !afterPaint.PlanTabVisibleForCheck && shell.InspectorTabForCheck == "repo",
             "转录又长一截之后重画，那一列还停在改动页，不会把人弹回他两分钟前就走开的计划页");
         // The reader's actual complaint: 仓库 showed the plan, because the read that landed repainted the column
@@ -1093,7 +1103,7 @@ internal sealed class ShellDecisionsChecks
             return repoTabLanded;
         });
         Check(chat.RepositoryReadsForCheck == repoTabReads && repoTabLanded
-              && shell.InspectorPaneForCheck is { } afterRepo && afterRepo.RepoTabVisibleForCheck
+              && shell.InspectorPaneForCheck is { } afterRepo && afterRepo.ChangesTabVisibleForCheck
               && !afterRepo.PlanTabVisibleForCheck && shell.InspectorTabForCheck == "repo",
             "没有工作目录时点「仓库」直接说明原因，仍停在仓库页（两次之间读了 "
             + (chat.RepositoryReadsForCheck - repoTabReads) + " 次）");
@@ -1189,7 +1199,7 @@ internal sealed class ShellDecisionsChecks
         Dispatcher.UIThread.RunJobs();
         Check(shell.InspectorVisibleForCheck && shell.InspectorTabForCheck == "repo"
               && shell.InspectorPaneForCheck is { } reopened
-              && reopened.RepoTabVisibleForCheck && !reopened.PlanTabVisibleForCheck,
+              && reopened.ChangesTabVisibleForCheck && !reopened.PlanTabVisibleForCheck,
             "再按展开：回到读者上次停的那一页，而不是从头塞给他一个计划（外壳记的是「"
             + shell.InspectorTabForCheck + "」）");
         var barBounds = shell.TitleBarBoundsForCheck;
@@ -1352,7 +1362,8 @@ internal sealed class ShellDecisionsChecks
                 ? "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（旧版）"
                 : "@@ -1,2 +1,2 @@\n 第一行\n-第二行\n+第二行（已改）", UndoCopyState.Read), null, "changes");
         Check(inspector.ChangeRowCountForCheck == 1 && inspector.FirstChangePathForCheck == "note.txt"
-              && inspector.RepoTabVisibleForCheck && !inspector.PlanTabVisibleForCheck,
+              && inspector.RepoScopeListVisibleForCheck && !inspector.LastTurnListVisibleForCheck
+              && !inspector.PlanTabVisibleForCheck,
             "历史轮次改动数据仍可读取，但 Changes 默认停在仓库视图（历史 "
             + inspector.ChangeRowCountForCheck + " 项，首项「" + inspector.FirstChangePathForCheck + "」）");
         Check(inspector.ChangeOpenFileButtonForCheck,
@@ -1446,7 +1457,7 @@ internal sealed class ShellDecisionsChecks
         inspector.Reload("# 计划\n\n- 先看实现", changes,
             (_, _) => ((string?)null, UndoCopyState.Read), null, "plan");
         Check(inspector.PlanTabVisibleForCheck && !inspector.ChangesTabVisibleForCheck
-              && !inspector.RepoTabVisibleForCheck,
+              && !inspector.RepoScopeListVisibleForCheck,
             "三页各显示各的，切到计划页不会把改动页或仓库页也带出来");
 
         // ── the repository tab, fed a snapshot the same shape the reader produces ──
@@ -1467,8 +1478,8 @@ internal sealed class ShellDecisionsChecks
         var repoReads = 0;
         inspector.RepoRefreshRequested += () => repoReads++;
         inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), repoState, "repo");
-        Check(inspector.RepoTabVisibleForCheck && !inspector.ChangesTabVisibleForCheck
-              && !inspector.PlanTabVisibleForCheck
+        Check(inspector.ChangesTabVisibleForCheck && inspector.RepoScopeListVisibleForCheck
+              && !inspector.LastTurnListVisibleForCheck && !inspector.PlanTabVisibleForCheck
               && inspector.RepoRowCountForCheck == 3
               && inspector.RepoHeadlineForCheck.Contains("master", StringComparison.Ordinal)
               && inspector.RepoHeadlineForCheck.Contains(HubStrings.Get("InspectorRepoAheadBehindFormat")
@@ -1548,8 +1559,8 @@ internal sealed class ShellDecisionsChecks
         var cleanTree = new GitRepositoryState(GitReadOutcome.Ok, @"D:\dev\probe", "master", 0, 0, [],
             new Dictionary<string, string>(StringComparer.Ordinal), false, null);
         inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), dirtyThree, "changes");
-        Check(inspector.RepoTabVisibleForCheck && inspector.RepoRowCountForCheck == dirtyThree.Entries.Count
-              && !inspector.SessionChangesSurfaceVisibleForCheck && !inspector.RepoJumpPresentForCheck,
+        Check(inspector.RepoScopeListVisibleForCheck && inspector.RepoRowCountForCheck == dirtyThree.Entries.Count
+              && !inspector.LastTurnListVisibleForCheck && !inspector.RepoJumpPresentForCheck,
             "Changes 默认 Repo 并列出全部仓库更改，session 历史仍保留在模型中但不作为独立范围展示");
         inspector.Reload(null, changes, (_, _) => ((string?)null, UndoCopyState.Read), cleanTree, "changes");
         // The empty sentence answers the scope that is showing: "nothing is uncommitted" is a fact about the tree,
@@ -1584,7 +1595,7 @@ internal sealed class ShellDecisionsChecks
             return repoReadLanded;
         });
         Check(repoReadLanded && shell.InspectorVisibleForCheck
-              && shell.InspectorPaneForCheck is { } repoPane && repoPane.RepoTabVisibleForCheck
+              && shell.InspectorPaneForCheck is { } repoPane && repoPane.ChangesTabVisibleForCheck
               && repoPane.RepoRowCountForCheck == 0
               && repoPane.RepoNoticeForCheck.Contains(HubStrings.Get("InspectorRepoNoWorkspace"),
                   StringComparison.Ordinal),

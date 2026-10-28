@@ -40,7 +40,7 @@ internal sealed class ShellContextChecks
         var client = new ApprovalChatClient
         {
             CallsRemaining = 5,
-            ToolName = "read_file",
+            ToolName = ToolNames.FsRead,
             ArgumentsByCall = call => new Dictionary<string, object?>
             {
                 ["path"] = $"big-{Math.Min(5, call)}.txt",
@@ -119,7 +119,7 @@ internal sealed class ShellContextChecks
                   && notice != "ChatContextCompacted",
                 "自动压缩有一行用户可见的提示文案，而不是把键名显示出来");
 
-            Check(logged.Contains("read_file（允许）", StringComparison.Ordinal)
+            Check(logged.Contains("fs_read（允许）", StringComparison.Ordinal)
                   && logged.Contains("自动压缩了上下文", StringComparison.Ordinal)
                   && logged.Contains("## ", StringComparison.Ordinal),
                 "运行收尾把这一次的工具与压缩写进当天的项目日志（" + logFile + "）");
@@ -146,7 +146,7 @@ internal sealed class ShellContextChecks
             chat.ClientOverride = (_, _) => new ApprovalChatClient
             {
                 CallsRemaining = 2,
-                ToolName = "read_file",
+                ToolName = ToolNames.FsRead,
                 // Two identical asks are under the guard's repeat limit, and this fixture is about a window that
                 // cannot be compressed at all — the same path twice is the simplest way to fill it.
                 Arguments = new Dictionary<string, object?> { ["path"] = "big-1.txt" },

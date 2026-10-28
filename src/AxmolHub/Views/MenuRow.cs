@@ -117,6 +117,9 @@ internal static class MenuRow
             StrokeJoin = PenLineJoin.Round,
             VerticalAlignment = VerticalAlignment.Center,
             IsVisible = current,
+            // The key, not only the binding: a menu a check built has no resource host to resolve against, so
+            // Data reads null there. The key says which glyph the mark asked for without the dictionaries.
+            Tag = "Hub.Icon.MenuTick",
         };
         tick.Bind(Avalonia.Controls.Shapes.Path.DataProperty, new DynamicResourceExtension("Hub.Icon.MenuTick"));
         tick.Bind(Avalonia.Controls.Shapes.Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));

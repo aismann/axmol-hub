@@ -146,9 +146,7 @@ public static class ChatChanges
                 foreach (var reference in turn.ChangeRefs)
                 {
                     if (!byPath.ContainsKey(reference.Path)) order.Add(reference.Path);
-                    byPath[reference.Path] = new ChangedFile(reference.Path, ChangeVerdict.Edited, batchCall,
-                        index, turn.ApprovalPreview, null, turn.ToolArguments, FirstLine(batchResult), false,
-                        ChangeId: reference.RevisionId);
+                    byPath[reference.Path] = RevisionRow(turn, reference, batchCall, index, batchResult, false);
                 }
                 continue;
             }
@@ -209,9 +207,7 @@ public static class ChatChanges
             {
                 var batchResult = results.GetValueOrDefault(batchCall) ?? "";
                 foreach (var reference in turn.ChangeRefs)
-                    changes.Add(new ChangedFile(reference.Path, ChangeVerdict.Edited, batchCall, index,
-                        turn.ApprovalPreview, null, turn.ToolArguments, FirstLine(batchResult), true,
-                        ChangeId: reference.RevisionId));
+                    changes.Add(RevisionRow(turn, reference, batchCall, index, batchResult, true));
                 continue;
             }
             if (turn.Role != ChatRoles.Assistant || !IsSingleFileWrite(turn.ToolName)
@@ -368,6 +364,13 @@ public static class ChatChanges
         }
         return (added, removed);
     }
+
+    /// <summary>One row for one file an <c>fs_replace</c> call produced. A call can touch several files, so the
+    /// counts come from the file's own revision: the turn's total is the sum of them and belongs to no row.</summary>
+    private static ChangedFile RevisionRow(ChatTurn turn, ChatChangeReference reference, string callId, int index,
+        string batchResult, bool latest)
+        => new(reference.Path, ChangeVerdict.Edited, callId, index, turn.ApprovalPreview, null, turn.ToolArguments,
+            FirstLine(batchResult), latest, reference.Lines, ChangeId: reference.RevisionId);
 
     /// <summary>
     /// How many lines one write added and removed — the one answer every surface that totals a change reads, so a

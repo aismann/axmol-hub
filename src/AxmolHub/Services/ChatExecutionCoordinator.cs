@@ -2544,10 +2544,13 @@ internal sealed partial class ChatExecutionCoordinator
                     };
                     foreach (var inverse in outcomes.Select(item => item.Inverse).Where(id => id is { Length: > 0 }))
                         if (!opened.ChangeHistoryIds.Contains(inverse!, StringComparer.Ordinal)) opened.ChangeHistoryIds.Add(inverse!);
-                    var count = outcomes.Count(item => item.Verdict == UndoVerdict.Reverted);
-                    if (count > 0)
+                    var restored = outcomes.Where(item => item.Verdict == UndoVerdict.Reverted)
+                        .Select(item => item.Path).ToArray();
+                    // One write, named: the row the assistant reads back has to say which file moved. "Restored the
+                    // N files this turn changed" belongs to the turn-level undo, which is a different act.
+                    if (restored.Length > 0)
                         opened.Append(ChatTurn.User(string.Format(System.Globalization.CultureInfo.CurrentCulture,
-                            HubStrings.Get("ChatReviewUndoneFormat"), count)) with { IsUndoNotice = true });
+                            HubStrings.Get("ChatUndoNotifiedFormat"), string.Join("、", restored))) with { IsUndoNotice = true });
                 });
                 Changed?.Invoke();
             }).ConfigureAwait(false);
@@ -4065,7 +4068,8 @@ internal sealed partial class ChatExecutionCoordinator
             var ids = batch.State == ChatChangeStore.Complete ? batch.RevisionIds : batch.AppliedIds;
             var references = ids.Select(id => ChatChangeStore.Read(_dataRoot, id))
                 .Where(revision => revision is { State: ChatChangeStore.Complete })
-                .Select(revision => new ChatChangeReference(revision!.Path, revision.Id)).ToArray();
+                .Select(revision => new ChatChangeReference(
+                    ChatChangeStore.RelativeToRoot(revision!.Path, revision.Root), revision.Id, revision.Lines)).ToArray();
             var at = conversation.IndexOfToolCall(callId);
             if (at < 0 || references.Length == 0) return;
             conversation.Messages[at] = conversation.Messages[at] with

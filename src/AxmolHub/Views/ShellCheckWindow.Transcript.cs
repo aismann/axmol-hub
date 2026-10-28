@@ -819,7 +819,7 @@ internal sealed class ShellTranscriptChecks
             var silent = new ApprovalChatClient
             {
                 CallsRemaining = 1,
-                ToolName = "list_directory",
+                ToolName = ToolNames.FsList,
                 Arguments = new Dictionary<string, object?> { ["path"] = "." },
             };
             silent.Thinking = [silentThought];
@@ -882,7 +882,7 @@ internal sealed class ShellTranscriptChecks
             var loop = new ApprovalChatClient
             {
                 CallsRemaining = 2,
-                ToolName = "list_directory",
+                ToolName = ToolNames.FsList,
                 Arguments = new Dictionary<string, object?> { ["path"] = "." },
             };
             chat.ClientOverride = (_, _) => loop;

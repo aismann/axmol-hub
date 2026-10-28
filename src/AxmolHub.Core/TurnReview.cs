@@ -75,7 +75,14 @@ public sealed record TurnReview(
         return new TurnReview(files, rows, ranCommands);
     }
 
+    /// <summary>Whether there is a file an undo could restore, which is what makes the review card worth showing.
+    /// A row whose write left no revision id has nothing to put back, so it is not a file for that purpose.</summary>
     public bool IsEmpty => Files.Count == 0;
+
+    /// <summary>Whether there is anything to list. A row that no undo could reach is still a change the reader
+    /// asked to see, and the pane paints <see cref="Rows"/> — so this, not <see cref="IsEmpty"/>, is what decides
+    /// between rows and an empty sentence.</summary>
+    public bool HasRows => Rows.Count > 0;
 
     public int Added => Files.Sum(file => file.Lines?.Added ?? 0);
 

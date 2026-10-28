@@ -19,6 +19,10 @@ internal static class HubActionIcon
             StrokeLineCap = PenLineCap.Round,
             StrokeJoin = PenLineJoin.Round,
             IsHitTestVisible = false,
+            // The key is on the icon, not only in the binding: a DynamicResource resolves once the icon has a
+            // resource host, and a pane a check built without a tree reads Data as null. Carrying the key here
+            // lets an assertion say which glyph a button asked for without standing up the app's dictionaries.
+            Tag = geometryKey,
         };
         icon.Bind(Path.DataProperty, new DynamicResourceExtension(geometryKey));
         icon.Bind(Path.StrokeProperty, new DynamicResourceExtension("Hub.TextSecondary"));

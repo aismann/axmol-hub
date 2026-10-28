@@ -20,7 +20,9 @@ public sealed record ChatFileRevision(
 
 public sealed record ChatFileSnapshot(string Before, string After);
 
-public sealed record ChatChangeReference(string Path, string RevisionId);
+/// <summary>One file a write call produced. The counts ride along because one call can touch several files:
+/// the turn's own total would be the sum, which belongs to no single row.</summary>
+public sealed record ChatChangeReference(string Path, string RevisionId, ChangeLineCounts? Lines = null);
 
 public sealed record FsManagedEntry(string RelativePath, bool Directory, string? ContentHash, long Length,
     int Attributes, int? UnixMode);
@@ -47,6 +49,13 @@ public static class ChatChangeStore
 
     public static string? DirectoryFor(string? dataRoot) => string.IsNullOrWhiteSpace(dataRoot)
         ? null : System.IO.Path.Combine(dataRoot, "ai", "changes");
+
+    /// <summary>The path a row shows: relative to the workspace the write happened in. A revision keeps the
+    /// absolute path because that is what a restore resolves, but a list that spelled it out would print the whole
+    /// checkout in every row and in the undo notice.</summary>
+    public static string RelativeToRoot(string path, string root)
+        => !System.IO.Path.IsPathRooted(path) || string.IsNullOrEmpty(root)
+            ? path : System.IO.Path.GetRelativePath(root, path);
 
     public static string? IdFromResult(string? result)
     {
@@ -208,7 +217,8 @@ public static class ChatChangeStore
                     && resolved.Full == record.Path)
                 .Select(record => Read(dataRoot, record!.Id))
                 .Where(record => record is { State: Complete }).Cast<ChatFileRevision>().ToArray();
-            var references = records.Select(record => new ChatChangeReference(record.Path, record.Id)).ToArray();
+            var references = records.Select(record => new ChatChangeReference(
+                RelativeToRoot(record.Path, record.Root), record.Id, record.Lines)).ToArray();
             var turn = conversation.Messages[index];
             conversation.Messages[index] = turn with
             {

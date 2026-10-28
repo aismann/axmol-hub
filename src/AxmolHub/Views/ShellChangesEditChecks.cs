@@ -179,9 +179,12 @@ internal sealed class ShellChangesEditChecks(Action<bool, string> check)
             pane.SetScope(GitReviewScope.LastTurn);
             pane.ClickChangeRowForCheck(0);
             window.UpdateLayout();
+            var lastTurnEditors = pane.GetVisualDescendants().OfType<TextEditor>().ToArray();
             check(pane.ChangeRowExpandedForCheck(0)
-                  && !pane.GetVisualDescendants().OfType<TextEditor>().Any(e => Equals(e.Tag, "InspectorDiffEditor")),
-                "即使工作区有未保存编辑，Last turn 的原始快照仍以只读差异展示");
+                  && !lastTurnEditors.Any(e => Equals(e.Tag, "InspectorDiffEditor")),
+                "即使工作区有未保存编辑，Last turn 的原始快照仍以只读差异展示（行展开 "
+                + pane.ChangeRowExpandedForCheck(0) + "，改动行 " + pane.ChangeRowCountForCheck
+                + "，编辑框 " + string.Join("/", lastTurnEditors.Select(e => e.Tag + ":" + e.IsReadOnly)) + "）");
             pane.SetScope(GitReviewScope.Staged);
             pane.ClickRepoRowForCheck(0);
             window.UpdateLayout();

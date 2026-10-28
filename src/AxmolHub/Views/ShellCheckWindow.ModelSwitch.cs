@@ -97,18 +97,24 @@ internal sealed class ShellModelSwitchChecks
                      (ChatReasoningEfforts.Default, ChatReasoningEfforts.Default),
                  })
         {
-            var switched = panel.SelectModelForCheck(first.Id, sourceModel)
-                && shell.Chat.SelectReasoningEffort(picked)
-                && panel.SelectModelForCheck(second.Id, targetModel);
+            var backToSource = panel.SelectModelForCheck(first.Id, sourceModel);
+            var tierAccepted = shell.Chat.SelectReasoningEffort(picked);
+            var switchToTarget = panel.SelectModelForCheck(second.Id, targetModel);
+            var switched = backToSource && tierAccepted && switchToTarget;
             Relayout(shell, panel);
             var stored = shell.Chat.StoredCopyForCheck(sessionId)?.ReasoningEffort;
             var slider = ToolTip.GetTip(panel.FindControl<Slider>("ReasoningLevelSlider")!)?.ToString();
             var expectedSlider = expected == ChatReasoningEfforts.Default ? ChatReasoningEfforts.Medium : expected;
-            var expectedChip = expected == ChatReasoningEfforts.Default ? ""
-                : HubStrings.Get(expected == ChatReasoningEfforts.High ? "ChatReasoningHigh" : "ChatReasoningMedium");
-            consistent &= switched && panel.SelectedReasoningForCheck == expected && stored == expected
-                && slider == expectedSlider && panel.ReasoningChipTextForCheck == expectedChip;
-            observations.Add($"{picked} → {panel.SelectedReasoningForCheck}, saved={stored}, slider={slider}, chip={panel.ReasoningChipTextForCheck}");
+            var expectedChip = expected == ChatReasoningEfforts.Default ? "" : panel.ReasoningChipLabelForCheck(expected);
+            var selectedRight = panel.SelectedReasoningForCheck == expected;
+            var storedRight = stored == expected;
+            var sliderRight = slider == expectedSlider;
+            var chipRight = panel.ReasoningChipTextForCheck == expectedChip;
+            consistent &= switched && selectedRight && storedRight && sliderRight && chipRight;
+            observations.Add($"{picked} → 选 {panel.SelectedReasoningForCheck}/{expected} "
+                + $"({selectedRight})、落盘 {stored}/{expected} ({storedRight})、"
+                + $"滑块 {slider}/{expectedSlider} ({sliderRight})、芯片「{panel.ReasoningChipTextForCheck}」/「{expectedChip}」({chipRight})、"
+                + $"回源 {backToSource}、选档 {tierAccepted}、切到目标 {switchToTarget}");
         }
         Check(consistent,
             "跨模型切换保留兼容档位、不兼容时落到目标默认档位，芯片、滑块与落盘一致（实际 "

@@ -13,12 +13,21 @@ internal sealed partial class InspectorPanel : UserControl
 {
     // ── check accessors ──
     internal bool PlanTabVisibleForCheck => _planScroll.IsVisible;
-    internal bool ChangesTabVisibleForCheck => _changesScroll.IsVisible;
-    internal bool RepoTabVisibleForCheck => _repoScroll.IsVisible;
-    /// <summary>Which tab button carries the underline. The three visibility booleans say what is on screen; this
-    /// says what the header claims is on screen, and a pane that showed one page while marking another is caught
-    /// by nothing else.</summary>
-    internal string SelectedTabKeyForCheck => _planTab.Classes.Contains("selected") ? "plan" : _repoScroll.IsVisible ? "repo" : _changesTab.Classes.Contains("selected") ? "changes" : "";
+
+    /// <summary>The Changes tab, whatever its picker is left on. Asking a scroller instead would answer "which
+    /// list", and the two lists come and go with the scope inside one tab.</summary>
+    internal bool ChangesTabVisibleForCheck => _changesHost.IsVisible;
+
+    /// <summary>The git-scope list: Committed, Uncommitted, Staged or Branch, whichever of them the picker names.</summary>
+    internal bool RepoScopeListVisibleForCheck => _repoScroll.IsVisible;
+
+    /// <summary>The last-turn list, which is the one scope that is not a git reading.</summary>
+    internal bool LastTurnListVisibleForCheck => _changesScroll.IsVisible;
+
+    /// <summary>Which tab button carries the underline. The visibility booleans say what is on screen; this says
+    /// what the header claims is on screen, and a pane that showed one page while marking another is caught by
+    /// nothing else.</summary>
+    internal string SelectedTabKeyForCheck => _planTab.Classes.Contains("selected") ? "plan" : _changesTab.Classes.Contains("selected") ? "changes" : "";
 
     /// <summary>Presses a header tab. Every repository test used to enter through the shell's own
     /// <c>OpenInspector</c> — which is exactly how a pane that only <em>looked</em> like it had moved to 仓库
@@ -26,6 +35,11 @@ internal sealed partial class InspectorPanel : UserControl
     internal void ClickPlanTabForCheck() => ClickTab(_planTab);
     internal void ClickChangesTabForCheck() => ClickTab(_changesTab);
     internal void ClickRepoTabForCheck() => ClickTab(_changesTab);
+
+    /// <summary>Names a scope through the picker, the way a reader does. A scope picked here sticks — entering
+    /// the tab deliberately does not reset it — so a check that makes a claim about the repo list has to say which
+    /// scope it means instead of inheriting whatever the fixture before it left the picker on.</summary>
+    internal void PickScopeForCheck(GitReviewScope scope) => SetScope(scope);
     private static void ClickTab(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     /// <summary>The markdown the plan tab is holding, read off the rendered viewer's own <c>Tag</c>. A check can
     /// therefore prove *which* plan a card click landed on, not merely that some plan is on screen.</summary>
@@ -118,7 +132,7 @@ internal sealed partial class InspectorPanel : UserControl
 
     internal bool ChangeOpenFileButtonForCheck => ChangeRows().FirstOrDefault()?.GetLogicalDescendants().OfType<Button>()
         .Any(button => button.Tag as string == "InspectorOpenFile"
-            && button.Content is ShapePath icon && icon.Data is not null) == true;
+            && button.Content is ShapePath icon && icon.Tag as string == "Hub.Icon.OpenFile") == true;
     internal string FirstChangePathForCheck => ChangeRows().FirstOrDefault()?.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("inspector-path"))?.Text ?? "";
     /// <summary>Which file rows the reader had opened, as the panel keeps them across repaints. A check drives
     /// this by clicking a row rather than by setting the field, so what it asserts is the wiring.</summary>
@@ -176,7 +190,6 @@ internal sealed partial class InspectorPanel : UserControl
     /// <summary>The empty-scope jump on the changes tab, as the reader sees it. Read apart from the notice line
     /// on purpose: "the session has changed nothing" and "the repository holds three files, go look" are two
     /// sentences, and a check that only saw the first would pass on a pane that cannot offer the second.</summary>
-    internal bool SessionChangesSurfaceVisibleForCheck => _changesScroll.IsVisible;
     internal string ChangeJumpTextForCheck => JumpText(_changesList);
     internal bool ChangeJumpPresentForCheck => ChangeJumpTextForCheck.Length > 0;
 
@@ -244,7 +257,7 @@ internal sealed partial class InspectorPanel : UserControl
     internal string RepoFirstPathForCheck => _repoBody.GetLogicalDescendants().OfType<TextBlock>().FirstOrDefault(block => block.Classes.Contains("inspector-path"))?.Text ?? "";
     internal bool RepoOpenFileButtonForCheck(int index) => _repoBody.GetLogicalDescendants().OfType<Button>()
         .Where(button => button.Tag as string == "InspectorOpenFile").ElementAtOrDefault(index)?.Content is ShapePath icon
-        && icon.Data is not null;
+        && icon.Tag as string == "Hub.Icon.OpenFile";
 
     /// <summary>Every string in one row, joined: the two status letters, the path, and the mark when this
     /// conversation also wrote it. Read as text because that is what the reader sees, and a fixture state makes

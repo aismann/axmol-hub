@@ -59,13 +59,22 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
                 new Dictionary<string, string>(StringComparer.Ordinal), false, null);
             savedRead = pane.ReadComparisonRequested;
             pane.ReadComparisonRequested = (_, _, _) => Task.FromResult<ChatFileSnapshot?>(new(oldText, newText));
-            pane.Reload(null, [],
-                (_, _) => (FileDiff.Unified(oldText, newText, "selection.cpp"), UndoCopyState.Read),
-                repository, "changes");
-            Dispatcher.UIThread.RunJobs();
-            if (!pane.RepoRowExpandedForCheck(0)) pane.ClickRepoRowForCheck(0);
-            shell.UpdateLayout();
-            Dispatcher.UIThread.RunJobs();
+            // The pane is the shell's, and every repository read that lands repaints it from the shell's own
+            // snapshot — which here knows no workspace, because this fixture has none. The injected reading is
+            // therefore installed again until it survives the queued work, and the picker is named each time: a
+            // scope that is not on show builds no rows, and the last fixture leaves the picker wherever it likes.
+            for (var attempt = 0; attempt < 4; attempt++)
+            {
+                pane.Reload(null, [],
+                    (_, _) => (FileDiff.Unified(oldText, newText, "selection.cpp"), UndoCopyState.Read),
+                    repository, "changes");
+                pane.PickScopeForCheck(GitReviewScope.Uncommitted);
+                Dispatcher.UIThread.RunJobs();
+                if (!pane.RepoRowExpandedForCheck(0)) pane.ClickRepoRowForCheck(0);
+                shell.UpdateLayout();
+                Dispatcher.UIThread.RunJobs();
+                if (pane.RepoRowCountForCheck > 0 && pane.RepoRowExpandedForCheck(0)) break;
+            }
             await Task.Delay(30);
             shell.UpdateLayout();
             var text = pane.GetVisualDescendants().OfType<SelectableTextBlock>()
@@ -76,6 +85,10 @@ internal sealed class ShellDiffSelectionChecks(Action<bool, string> check)
                 var observed = text is null
                     ? "正文块 0 个，仓库行 " + pane.GetVisualDescendants().OfType<Button>()
                         .Count(button => button.Classes.Contains("inspector-change-header")) + " 行"
+                      + "，页 " + pane.SelectedTabKeyForCheck + "，git 列表 " + pane.RepoScopeListVisibleForCheck
+                      + "，轮次列表 " + pane.LastTurnListVisibleForCheck
+                      + "，行 " + pane.RepoRowCountForCheck
+                      + "，说明「" + pane.RepoNoticeForCheck + "」，标题「" + pane.RepoHeadlineForCheck + "」"
                     : "文本宽 " + InspectorPanel.TextForCheck(text).Length + "，最近视口 "
                       + string.Join("/", text.GetVisualAncestors().OfType<ScrollViewer>()
                           .Select(ancestor => ancestor.Extent.Width.ToString("0.0") + " 对 "

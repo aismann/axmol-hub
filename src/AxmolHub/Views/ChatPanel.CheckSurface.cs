@@ -164,9 +164,15 @@ public partial class ChatPanel : UserControl
     {
         get
         {
-            if (!TurnChangesPill.IsVisible || TurnChangesPill.Bounds.Width <= 0
-                || TurnChangesPill.TranslatePoint(new Point(TurnChangesPill.Bounds.Width / 2,
-                    TurnChangesPill.Bounds.Height), ComposerFrame) is not { } point) return null;
+            // The width the pill has to be centred for is the one the layout gave it this pass, which is its
+            // desired width. Bounds.Width lags a pass behind whenever the label grew after the window was laid
+            // out — it is the size of the pill one repaint ago — and reading it here reported a four pixel shift
+            // that was not on screen: the left edge sat exactly where a centred pill of the current width sits.
+            var width = TurnChangesPill.DesiredSize.Width > 0
+                ? TurnChangesPill.DesiredSize.Width : TurnChangesPill.Bounds.Width;
+            if (!TurnChangesPill.IsVisible || width <= 0
+                || TurnChangesPill.TranslatePoint(new Point(width / 2, TurnChangesPill.Bounds.Height),
+                    ComposerFrame) is not { } point) return null;
             return (point.X - ComposerFrame.Bounds.Width / 2, point.Y);
         }
     }
@@ -985,6 +991,11 @@ public partial class ChatPanel : UserControl
     internal string SelectedReasoningForCheck => _chat.ActiveReasoningEffort;
     internal string ReasoningChipTextForCheck => SelectedReasoningLabel.Text ?? "";
 
+    /// <summary>A tier as the chip spells it — the choice's label without its "推理：" prefix. Read through the
+    /// panel's own function because a check that rebuilt the string would keep passing while the chip said
+    /// something else.</summary>
+    internal string ReasoningChipLabelForCheck(string effort) => ReasoningChoiceLabel(effort);
+
     /// <summary>The selectable effort ladder currently displayed by the reasoning slider.</summary>
     internal string[] SelectedModelReasoningEffortsForCheck
     {
@@ -1318,7 +1329,10 @@ public partial class ChatPanel : UserControl
             for (var i = 0; i < items.Count; i++)
             {
                 // The row's two Paths are the tier's icon and then the tick; the text column is a panel.
-                if (items[i].Header is Grid grid && grid.Children.OfType<Avalonia.Controls.Shapes.Path>().LastOrDefault()is { IsVisible: true } tick && ReferenceEquals(tick.Data, ThemeGeometry("Hub.Icon.MenuTick")))
+                if (items[i].Header is Grid grid
+                    && grid.Children.OfType<Avalonia.Controls.Shapes.Path>().LastOrDefault()
+                        is { IsVisible: true } tick
+                    && tick.Tag as string == "Hub.Icon.MenuTick")
                     return i;
             }
 

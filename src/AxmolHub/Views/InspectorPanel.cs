@@ -605,7 +605,7 @@ internal sealed partial class InspectorPanel : UserControl
         _diffRebuilds.Clear();
         _changesList.Children.Clear();
         _review = review;
-        if (review.IsEmpty)
+        if (!review.HasRows)
         {
             _changesList.Children.Add(EmptyLine("InspectorChangesEmpty"));
         }
