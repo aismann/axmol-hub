@@ -70,6 +70,14 @@
       <Setter Property="Foreground" Value="{DynamicResource Hub.Link}" />
     </Style>
 
+    <Style Selector="Button.chat-review-file">
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="MinHeight" Value="0" />
+    </Style>
+    <Style Selector="Button.chat-review-file:pointerover">
+      <Setter Property="Background" Value="{DynamicResource Hub.SurfaceHover}" />
+    </Style>
+
     <!-- Assistant message: no frame at all, plain text on the background. -->
     <Style Selector="Border.assistant-msg">
       <Setter Property="Background" Value="Transparent" />

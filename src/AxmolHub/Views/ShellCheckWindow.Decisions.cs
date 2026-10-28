@@ -1705,15 +1705,24 @@ internal sealed class ShellDecisionsChecks
         panel.Reload();
         Check(panel.ReviewCardTextForCheck == "",
             "还没改过文件的会话不画审阅卡片（实际「" + panel.ReviewCardTextForCheck + "」）");
-        var cardRevision = turnRevisions.Count;
-        // One line out, one line in, so the card has both numbers to colour: a card of pure additions would have
-        // no minus to check, and the theme assertion below would be reading a control that was never built.
-        await WriteTurnFileAsync("改成别的\n");
-        chat.SeedTurnForCheck(cardSession.Id, "把 note.txt 改一下");
-        chat.SeedWriteTurnForCheck(cardSession.Id, turnRevisions[cardRevision], new ChangeLineCounts(1, 1));
+        var cardFiles = new List<string>();
+        for (var i = 0; i < 7; i++)
+        {
+            var relative = i == 0 ? "note.txt" : $"card-{i}.txt";
+            var full = Path.Combine(reviewWorkspace, relative);
+            var before = File.Exists(full) ? await File.ReadAllTextAsync(full) : null;
+            var after = $"card file {i}\n";
+            var revision = ChatChangeStore.Prepare(turnDataRoot, "review-turn", full, reviewWorkspace, before, after);
+            await File.WriteAllTextAsync(full, after);
+            ChatChangeStore.CompleteRevision(turnDataRoot, revision);
+            cardFiles.Add(relative);
+            if (i == 0) turnRevisions.Add(revision.Id);
+            if (i == 0) chat.SeedTurnForCheck(cardSession.Id, "把七个文件改一下");
+            chat.SeedWriteTurnForCheck(cardSession.Id, revision.Id, new ChangeLineCounts(1, i == 0 ? 1 : 0));
+        }
         panel.Reload();
         var cardText = panel.ReviewCardTextForCheck;
-        Check(cardText.Contains(HubStrings.Get("ChatReviewEditedOne"), StringComparison.Ordinal)
+        Check(cardText.Contains(string.Format(CultureInfo.CurrentCulture, HubStrings.Get("ChatReviewEditedFormat"), 7), StringComparison.Ordinal)
               && cardText.Contains("+1", StringComparison.Ordinal)
               && cardText.Contains("−1", StringComparison.Ordinal)
               && cardText.Contains("note.txt", StringComparison.Ordinal)
@@ -1721,6 +1730,17 @@ internal sealed class ShellDecisionsChecks
               && cardText.Contains(HubStrings.Get("ChatReviewUndo"), StringComparison.Ordinal),
             "一轮落地了文件修改，转录里就多一张卡片：改了几个文件、加减几行、哪个文件，以及审阅和撤销（实际「"
             + cardText + "」）");
+        var initiallyFolded = !cardText.Contains(cardFiles[6], StringComparison.Ordinal)
+                              && panel.ClickReviewToggleForCheck();
+        var expandedCard = panel.ReviewCardTextForCheck;
+        var expandWorked = initiallyFolded && expandedCard.Contains(cardFiles[6], StringComparison.Ordinal)
+                           && panel.ClickReviewToggleForCheck();
+        var collapsedCard = panel.ReviewCardTextForCheck;
+        Check(expandWorked && !collapsedCard.Contains(cardFiles[6], StringComparison.Ordinal)
+              && collapsedCard.Contains(string.Format(CultureInfo.CurrentCulture,
+                  HubStrings.Get("ChatReviewMoreFormat"), 1), StringComparison.Ordinal),
+            "审阅卡展开后能显示剩余文件，再收起回到前六项");
+        panel.ClickReviewToggleForCheck();
         // The card's Review opens the scope that reads the turn, not whichever scope the picker was left on.
         shell.InspectorPaneForCheck?.SetScope(GitReviewScope.Uncommitted);
         var clickedReview = panel.ClickReviewForCheck();
@@ -1728,6 +1748,9 @@ internal sealed class ShellDecisionsChecks
         Check(clickedReview && shell.InspectorPaneForCheck?.Scope == GitReviewScope.LastTurn,
             "卡片的审阅把 Changes 切到「本轮修改」，而不是读者上次停下的那个范围（实际「"
             + (shell.InspectorPaneForCheck?.Scope.ToString() ?? "无") + "」）");
+        var clickedCardFile = panel.ClickReviewFileForCheck(cardFiles[6]);
+        Check(clickedCardFile && shell.InspectorPaneForCheck?.IsLastTurnFileExpandedForCheck(cardFiles[6]) == true,
+            "点审阅卡中的文件后，右侧切到 Last turn 并展开对应差异");
         inspector.SetScope(GitReviewScope.Uncommitted);
         // Both themes, because the card's two numbers are the one place in it where colour carries meaning: in
         // either theme the plus and the minus must resolve to two different opaque colours, which is also how a

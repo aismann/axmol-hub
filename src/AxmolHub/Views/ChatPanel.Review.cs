@@ -63,6 +63,24 @@ public partial class ChatPanel
         return true;
     }
 
+    internal bool ClickReviewFileForCheck(string path)
+    {
+        var button = ReviewCardFor(_chat?.ActiveConversation)?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(item => item.Tag as string == "ChatReviewFile:" + path);
+        if (button is null) return false;
+        button.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        return true;
+    }
+
+    internal bool ClickReviewToggleForCheck()
+    {
+        var button = ReviewCardFor(_chat?.ActiveConversation)?.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(item => item.Tag as string == "ChatReviewToggle");
+        if (button is null) return false;
+        button.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        return true;
+    }
+
     /// <summary>The colours the card's two numbers resolve to right now. Read off the rendered control, so a
     /// hard-coded colour would show up as a value that cannot follow the theme at all.</summary>
     internal (Color Plus, Color Minus) ReviewCountColorsForCheck
@@ -128,7 +146,7 @@ public partial class ChatPanel
         var body = new StackPanel { Spacing = 2 };
         body.Children.Add(ReviewHead(conversation, review));
         foreach (var file in _reviewFilesOpen ? review.Files : review.Files.Take(ReviewFilesListed))
-            body.Children.Add(ReviewFileRow(file));
+            body.Children.Add(ReviewFileRow(file, selected => OpenTurnReviewFile(conversation, selected)));
         if (review.Files.Count > ReviewFilesListed) body.Children.Add(ReviewToggle(review.Files.Count));
         if (review.RanCommands)
         {
@@ -183,6 +201,14 @@ public partial class ChatPanel
         Avalonia.Threading.Dispatcher.UIThread.Post(() => _inspector?.SetScope(GitReviewScope.LastTurn));
     }
 
+    private void OpenTurnReviewFile(Conversation? conversation, string path)
+    {
+        if (conversation is null) return;
+        OpenInspector?.Invoke("repo", conversation.Messages.Count - 1);
+        _inspector?.OpenLastTurnFile(path);
+        Avalonia.Threading.Dispatcher.UIThread.Post(() => _inspector?.SetScope(GitReviewScope.LastTurn));
+    }
+
     private void RefreshTurnChangesPill()
     {
         var chat = _chat;
@@ -223,9 +249,9 @@ public partial class ChatPanel
         return row;
     }
 
-    private static Control ReviewFileRow(TurnReviewFile file)
+    private static Control ReviewFileRow(TurnReviewFile file, Action<string> openFile)
     {
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(2, 5, 0, 5) };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 2, 0, 2) };
         var path = new TextBlock
         {
             Text = file.RelativePath,
@@ -236,7 +262,21 @@ public partial class ChatPanel
         };
         path.Bind(TextBlock.ForegroundProperty, new DynamicResourceExtension("Hub.TextSecondary"));
         ToolTip.SetTip(path, file.RelativePath);
-        row.Children.Add(path);
+        var fileButton = new Button
+        {
+            Content = path,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4, 5),
+            Classes = { "chat-review-file" },
+            Tag = "ChatReviewFile:" + file.RelativePath,
+        };
+        fileButton.Bind(TemplatedControl.ForegroundProperty, new DynamicResourceExtension("Hub.Link"));
+        ToolTip.SetTip(fileButton, file.RelativePath);
+        fileButton.Click += (_, _) => openFile(file.RelativePath);
+        row.Children.Add(fileButton);
         if (file.Lines is { } lines)
         {
             var counts = ReviewCounts(lines.Added, lines.Removed);
@@ -271,7 +311,17 @@ public partial class ChatPanel
         button.Click += (_, _) =>
         {
             _reviewFilesOpen = !_reviewFilesOpen;
+            var offset = MessageScroller.Offset;
+            _reviewCardKey = null;
+            ReviewCardFor(_chat?.ActiveConversation);
             SyncVirtualTails();
+            MessageScroller.Offset = offset;
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                var updated = _reviewCard?.GetLogicalDescendants().OfType<Button>()
+                    .FirstOrDefault(item => item.Tag as string == "ChatReviewToggle");
+                updated?.Focus();
+            });
         };
         return button;
     }

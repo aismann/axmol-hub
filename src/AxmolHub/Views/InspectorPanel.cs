@@ -5,6 +5,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Controls.Shapes;
 using Avalonia.Input;
+using Avalonia.LogicalTree;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
@@ -649,6 +650,11 @@ internal sealed partial class InspectorPanel : UserControl
     /// follows always change together.</summary>
     public GitReviewScope Scope => _scope;
 
+    internal bool IsLastTurnFileExpandedForCheck(string path)
+        => _scope == GitReviewScope.LastTurn && _openedChanges.Contains(path) && _expandedFiles.Contains(path)
+           && _changesList.GetLogicalDescendants().OfType<Button>().Any(button => button.Tag as string == path
+               && button.Classes.Contains("expanded"));
+
     /// <summary>
     /// Lay out whichever list the chosen scope governs. The two history scopes need a read of their own and show
     /// what the last one left until it lands; the three status scopes are a filter over the state the shell already
@@ -1114,6 +1120,18 @@ internal sealed partial class InspectorPanel : UserControl
         EnsureReviewRead();
         UpdateEditActions();
         if (changed) ScopeChanged?.Invoke(scope);
+    }
+
+    /// <summary>Open one turn-review row when navigation comes from a transcript file link.</summary>
+    internal void OpenLastTurnFile(string path)
+    {
+        SetScope(GitReviewScope.LastTurn);
+        _openedChanges.Add(path);
+        _expandedFiles.Add(path);
+        var row = _changesList.GetLogicalDescendants().OfType<Button>()
+            .FirstOrDefault(button => string.Equals(button.Tag as string, path, StringComparison.Ordinal));
+        if (row is not null && !row.Classes.Contains("expanded"))
+            row.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
     }
 
     /// <summary>Which of the two lists stands for the scope, and that both are gone while the tab is not the one
