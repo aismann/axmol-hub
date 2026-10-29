@@ -94,15 +94,16 @@
       "extraHeaders": {
         "user-agent": "Axmol Hub",
         "x-github-api-version": "2026-06-01",
+        "copilot-integration-id": "copilot-developer-cli",
         "openai-intent": "conversation-panel",
         "x-initiator": "user"
       },
-      "_extraHeadersNote": "x-initiator is a default, not a claim: ProviderRequestPolicy rewrites it per request from the conversation actually being sent, because Copilot meters premium requests against a human prompt and a tool round that reports 'user' spends the subscriber's allowance. Which of these headers are strictly required has not been measured (no billable probe was run) — the set is what the reference clients send, and the first real sign-in will show whether any of it can go.",
+      "_extraHeadersNote": "x-initiator is a default, not a claim: ProviderRequestPolicy rewrites it per request from the conversation actually being sent, because Copilot meters premium requests against a human prompt and a tool round that reports 'user' spends the subscriber's allowance. A model catalog comparison showed that copilot-integration-id selects the Copilot CLI catalog; chat requests have not been verified by that comparison.",
       "authMethods": ["oauth", "apiKey"],
       "keyValidation": { "type": "httpGetModels", "path": "/models" },
       "oauth": {
         "flow": "deviceCode",
-        "clientId": "Iv1.b507a08c87ecfe98",
+        "clientId": "Ov23lidzcoGFYNmdeTsg",
         "deviceAuthorizationUrl": "https://github.com/login/device/code",
         "tokenUrl": "https://github.com/login/oauth/access_token",
         "scope": "read:user",
