@@ -1001,6 +1001,7 @@
                     Classes="strip" Padding="10,4" />
           </Grid>
           <TextBox Grid.Row="1" x:Name="ActivityLog" Classes="mono"
+                   SelectionBrush="{DynamicResource Hub.Selection}"
                    IsReadOnly="True" TextWrapping="NoWrap"
                    AcceptsReturn="True" />
         </Grid>
