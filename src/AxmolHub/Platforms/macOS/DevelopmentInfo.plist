@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>org.axmol.hub.development</string>
+  <string>dev.axmol.hub.development</string>
   <key>CFBundleName</key>
   <string>Axmol Hub</string>
   <key>CFBundleDisplayName</key>

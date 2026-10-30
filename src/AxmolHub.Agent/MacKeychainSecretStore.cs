@@ -25,7 +25,7 @@ public sealed class MacKeychainSecretStore : ISecretStore
     public MacKeychainSecretStore(string dataRoot, IMacKeychainApi? api = null)
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataRoot)).Normalize(NormalizationForm.FormC);
-        Service = "org.axmol.hub." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(root))).ToLowerInvariant();
+        Service = "dev.axmol.hub." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(root))).ToLowerInvariant();
         _api = api ?? new NativeMacKeychainApi();
     }
     public SecretStoreDescriptor Descriptor => new(SecretStoreKind.Keychain, Service, _problem);
