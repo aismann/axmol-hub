@@ -521,6 +521,12 @@ public sealed class Conversation
 
     /// <summary>Number of automatic continuation runs already spent on the current goal.</summary>
     public int GoalContinuationCount { get; set; }
+
+    /// <summary>Consecutive goal runs without a tool result; not a measure of task completion.</summary>
+    public int GoalEmptyRunCount { get; set; }
+
+    /// <summary>Why automatic goal continuation stopped, if known.</summary>
+    public string? GoalStopReason { get; set; }
     public string ReasoningEffort { get; set; } = ChatReasoningEfforts.Default;
 
     /// <summary>Whether the person or Hub picks the model and tier for this session — see

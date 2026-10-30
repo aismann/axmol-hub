@@ -8,6 +8,29 @@ internal static class AiSessionsChecks
 {
     internal static async Task RunAsync(string root, string[] args)
     {
+        // A tool result is an activity signal, not proof that the objective progressed.
+        var firstEmpty = GoalContinuation.Decide("partial", false, 0, 0);
+        var secondEmpty = GoalContinuation.Decide("partial again", false, firstEmpty.EmptyRuns, 1);
+        var working = GoalContinuation.Decide("partial", true, firstEmpty.EmptyRuns, 1);
+        var limited = GoalContinuation.Decide("partial", true, 0, GoalContinuation.Limit);
+        var blocked = GoalContinuation.Decide("need access [GOAL_BLOCKED]", true, 0, 0);
+        var completed = GoalContinuation.Decide("done [GOAL_COMPLETE]", false, 1, GoalContinuation.Limit);
+        if (!firstEmpty.Continue || secondEmpty.State != ChatGoalStates.Paused || secondEmpty.Reason != "no_activity"
+            || !working.Continue || working.EmptyRuns != 0 || limited.State != ChatGoalStates.BudgetLimited
+            || limited.Reason != "limit" || blocked.State != ChatGoalStates.Paused || blocked.Reason != "blocked"
+            || completed.State != ChatGoalStates.Complete || completed.Continue)
+            throw new Exception("Goal continuation did not stop on inactivity, blockers, completion or its automatic limit.");
+        var goalSession = Conversation.Create("orcarouter");
+        goalSession.GoalEmptyRunCount = secondEmpty.EmptyRuns;
+        goalSession.GoalStopReason = secondEmpty.Reason;
+        var goalStore = new ConversationStore(root);
+        goalStore.Save(goalSession);
+        var restoredGoal = goalStore.Load(goalSession.Id);
+        if (restoredGoal?.GoalEmptyRunCount != 2 || restoredGoal.GoalStopReason != "no_activity")
+            throw new Exception("Goal stop reason and inactivity count did not round-trip.");
+        goalStore.Delete(goalSession.Id);
+        Console.WriteLine("PASS: goal continuation bounds inactive runs and persists its stop reason.");
+
         // Conversation model: title is derived from the first user turn, and the first line only.
         var conversation = Conversation.Create("orcarouter");
         if (conversation.Mode != ChatModes.Agent)

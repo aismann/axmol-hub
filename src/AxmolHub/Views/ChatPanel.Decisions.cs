@@ -1575,11 +1575,21 @@ public partial class ChatPanel
         row.Children.Add(icon);
         var statusKey = state switch
         {
+            ChatGoalStates.Paused when conversation.GoalStopReason == "no_activity" => "ChatGoalNoActivity",
+            ChatGoalStates.Paused when conversation.GoalStopReason == "blocked" => "ChatGoalBlocked",
             ChatGoalStates.Paused => "ChatGoalPaused",
             ChatGoalStates.BudgetLimited => "ChatGoalBudgetLimited",
             _ => "ChatGoalActive",
         };
         var status = new TextBlock { Classes = { "goal-capsule-status" }, Text = HubStrings.Get(statusKey) };
+        var reasonKey = conversation.GoalStopReason switch
+        {
+            "limit" => "ChatGoalLimitTip",
+            "no_activity" => "ChatGoalNoActivityTip",
+            "blocked" => "ChatGoalBlockedTip",
+            _ => null,
+        };
+        if (reasonKey is not null) ToolTip.SetTip(status, HubStrings.Get(reasonKey));
         Grid.SetColumn(status, 1);
         row.Children.Add(status);
         var text = new TextBlock { Classes = { "goal-capsule-text" }, Text = goal.Text };

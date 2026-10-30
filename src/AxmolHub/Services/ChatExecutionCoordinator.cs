@@ -236,7 +236,7 @@ internal sealed partial class ChatExecutionCoordinator
                    && conversation.GoalState == ChatGoalStates.Active
             ? "\n\nActive thread goal (user-defined outcome; keep working toward it across turns, verify against concrete evidence, and never claim completion without evidence):\n"
               + objective
-              + "\nAt the end of each continuation, if the objective is fully satisfied, include the exact marker [GOAL_COMPLETE] in your final response. If it is not satisfied, summarize the evidence and next best step."
+              + "\nKeep working on the approved objective within this run; do not end merely to report incremental progress. At the end, include [GOAL_COMPLETE] only when the objective is fully satisfied and verified. If you cannot proceed without user action or a genuine external prerequisite, explain the blocker and include [GOAL_BLOCKED]. Otherwise describe the evidence and next step without either marker."
             : "";
         return new ContextPrompt(mode + goal + charter + summary + memory + commit, mode + goal + commit,
             charter, summary, memory);
@@ -1252,7 +1252,11 @@ internal sealed partial class ChatExecutionCoordinator
     {
         var changed = Sessions.Registry.TryUpdate(conversationId, opened =>
         {
-            if (opened.GoalState == ChatGoalStates.Active) opened.GoalState = ChatGoalStates.Paused;
+            if (opened.GoalState == ChatGoalStates.Active)
+            {
+                opened.GoalState = ChatGoalStates.Paused;
+                opened.GoalStopReason = null;
+            }
         });
         if (changed) Changed?.Invoke();
         return changed;
@@ -1266,6 +1270,8 @@ internal sealed partial class ChatExecutionCoordinator
             {
                 opened.GoalState = ChatGoalStates.Active;
                 opened.GoalContinuationCount = 0;
+                opened.GoalEmptyRunCount = 0;
+                opened.GoalStopReason = null;
             }
         });
         if (!changed) return false;
@@ -1281,6 +1287,8 @@ internal sealed partial class ChatExecutionCoordinator
             opened.Goal = null;
             opened.GoalState = null;
             opened.GoalContinuationCount = 0;
+            opened.GoalEmptyRunCount = 0;
+            opened.GoalStopReason = null;
         });
         if (changed) Changed?.Invoke();
         return changed;
@@ -1421,7 +1429,14 @@ internal sealed partial class ChatExecutionCoordinator
                     opened.Goal = text;
                     opened.GoalState = ChatGoalStates.Active;
                     opened.GoalContinuationCount = 0;
+                    opened.GoalEmptyRunCount = 0;
+                    opened.GoalStopReason = null;
                     opened.GoalTurnAt = userTurn.At;
+                }
+                if (!userTurn.IsGoal && opened.GoalState == ChatGoalStates.Active)
+                {
+                    opened.GoalEmptyRunCount = 0;
+                    opened.GoalStopReason = null;
                 }
                 opened.Append(userTurn);
                 appended = true;
@@ -2801,6 +2816,11 @@ internal sealed partial class ChatExecutionCoordinator
         }
 
         var run = new ConversationRun(conversationId, IdleTimeout, FirstFrameTimeout);
+        var startingConversation = Sessions.Registry.Peek(conversationId) ?? Sessions.Registry.Load(conversationId);
+        if (startingConversation is not null)
+            run.GoalPriorToolResults = startingConversation.Messages
+                .Where(turn => turn.Role == ChatRoles.Tool && turn.ToolCallId is { Length: > 0 })
+                .Select(turn => turn.ToolCallId!).ToHashSet(StringComparer.Ordinal);
         _runs[conversationId] = run;
         _ = PumpSegmentsAsync(run);
         RunsChanged?.Invoke(conversationId);
@@ -3691,6 +3711,7 @@ internal sealed partial class ChatExecutionCoordinator
                     || opened.Messages.LastOrDefault(turn => turn.Role == ChatRoles.User)?.IsGitOperationFallback == true))
                 {
                     opened.GoalState = ChatGoalStates.Paused;
+                    opened.GoalStopReason = null;
                 }
                 else if (opened.GoalState == ChatGoalStates.Active && NormalizeMode(opened.Mode) == ChatModes.Agent
                     && result == RunResult.Completed
@@ -3699,20 +3720,24 @@ internal sealed partial class ChatExecutionCoordinator
                 {
                     var final = opened.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant
                         && turn.ToolCallId is not { Length: > 0 });
-                    if (final?.Text.Contains("[GOAL_COMPLETE]", StringComparison.Ordinal) == true)
-                    {
-                        opened.GoalState = ChatGoalStates.Complete;
-                        var index = opened.Messages.LastIndexOf(final);
-                        opened.Messages[index] = final with { Text = final.Text.Replace("[GOAL_COMPLETE]", "", StringComparison.Ordinal).TrimEnd() };
-                    }
-                    else if (opened.GoalContinuationCount < MaxGoalContinuations)
+                    var hadToolActivity = opened.Messages.Any(turn => turn.Role == ChatRoles.Tool
+                        && turn.ToolCallId is { Length: > 0 } id && !run.GoalPriorToolResults.Contains(id));
+                    var decision = GoalContinuation.Decide(final?.Text, hadToolActivity,
+                        opened.GoalEmptyRunCount, opened.GoalContinuationCount);
+                    opened.GoalState = decision.State;
+                    opened.GoalEmptyRunCount = decision.EmptyRuns;
+                    opened.GoalStopReason = decision.Reason;
+                    if (decision.Continue)
                     {
                         opened.GoalContinuationCount++;
                         continueGoal = true;
                     }
-                    else
+                    if (final is not null)
                     {
-                        opened.GoalState = ChatGoalStates.BudgetLimited;
+                        var index = opened.Messages.LastIndexOf(final);
+                        opened.Messages[index] = final with { Text = final.Text
+                            .Replace(GoalContinuation.CompleteMarker, "", StringComparison.Ordinal)
+                            .Replace(GoalContinuation.BlockedMarker, "", StringComparison.Ordinal).TrimEnd() };
                     }
                 }
             });
@@ -3880,7 +3905,6 @@ internal sealed partial class ChatExecutionCoordinator
     internal void ClearRoute(string conversationId) => _routes.Remove(conversationId);
 
 
-    private const int MaxGoalContinuations = 3;
     /// <summary>
     /// The summarizing request's own instructions: six headings, in the order somebody coming back to a
     /// conversation actually asks about it — what was asked, what was decided, what was touched, what was proven,
