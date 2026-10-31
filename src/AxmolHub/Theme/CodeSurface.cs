@@ -4,6 +4,7 @@ using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
 using AvaloniaEdit;
 using AvaloniaEdit.Editing;
+using AvaloniaEdit.Rendering;
 
 namespace AxmolHub;
 
@@ -18,6 +19,14 @@ internal static class CodeSurface
 
     internal static void ApplySelection(TextEditor editor)
         => editor.TextArea.Bind(TextArea.SelectionBrushProperty, new DynamicResourceExtension("Hub.CodeSelection"));
+
+    /// <summary>AvaloniaEdit finds a bare URL by itself and paints that run from a layer of its own: blue, chosen
+    /// for a white page, applied on top of whatever the syntax definition said, and therefore out of reach of every
+    /// palette rule in <see cref="DarkSyntax"/> — a URL in a log or a Markdown file stayed #0000FF on the dark well,
+    /// about 2:1, which is the one run a reader cannot see. A URL is ink like any other, so it takes the token a link
+    /// has everywhere else in Hub, which is also what keeps it readable in both themes.</summary>
+    internal static void ApplyLinkInk(TextEditor editor)
+        => editor.TextArea.TextView.Bind(TextView.LinkTextForegroundBrushProperty, new DynamicResourceExtension("Hub.Link"));
 
     internal static TextEditor ForFile(string? path, string text)
     {
@@ -39,6 +48,7 @@ internal static class CodeSurface
         editor.Bind(TemplatedControl.ForegroundProperty, new DynamicResourceExtension("Hub.TextBody"));
         editor.Bind(TemplatedControl.BackgroundProperty, new DynamicResourceExtension("Hub.SurfaceSunken"));
         ApplySelection(editor);
+        ApplyLinkInk(editor);
         // The file name, not the fence tag: this is the caller that makes <see cref="CodeSyntax.ForFile"/> and the
         // transcript's blocks one answer instead of two.
         void RefreshSyntax() => editor.SyntaxHighlighting = DarkSyntax.ForBackdrop(CodeSyntax.ForFile(path));

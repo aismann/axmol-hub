@@ -54,6 +54,7 @@ internal sealed class ShellCodeBlocksChecks
                 for (var i = 0; i < editors.Length; i++)
                     CheckCodeBlockGeometry(editors[i], name + (i == 0 ? "单行长日志" : "多行长命令"));
             }
+            CheckCodeBlockLinkInk(chatEditors.Concat(planEditors).ToArray(), "会话历史与计划栏");
             SmokeCapture.Capture(window, System.IO.Path.Combine(ScratchDirectory.Resolve("code-block-geometry"), "after.png"));
         }
         finally
@@ -125,6 +126,23 @@ internal sealed class ShellCodeBlocksChecks
         => "（代码块 " + panel.GetVisualDescendants().OfType<TextEditor>().Count()
            + " 个，屏上 " + panel.PaintedRowsForCheck.Count + " 行，会话 " + session.Messages.Count
            + " 条，运行中 " + shell.Chat.IsRunning(session.Id) + "）";
+
+    /// <summary>A bare URL in a code block is drawn by AvaloniaEdit's own link layer rather than by the syntax
+    /// definition, so no palette rule in <see cref="DarkSyntax"/> reaches it: it shipped in the library's #0000FF, picked
+    /// for a white page, about 2:1 on the dark well. Reading the layer rather than a screenshot is the only way this
+    /// can fail in CI — the ink is a brush on the text view, and a wrong one renders without an error.</summary>
+    internal void CheckCodeBlockLinkInk(TextEditor[] editors, string name)
+    {
+        var inks = editors.Select(editor => editor.TextArea.TextView.LinkTextForegroundBrush).ToArray();
+        var well = DarkSyntax.Well();
+        var contrast = inks.Select(ThemeProbe.ColorOf).OfType<Avalonia.Media.Color>()
+            .Select(color => DarkSyntax.Contrast(color, well)).DefaultIfEmpty(0).Min();
+        Check(inks.Length > 0 && inks.All(ink => ThemeProbe.IsToken(ink, "Hub.Link"))
+              && contrast >= DarkSyntax.MinimumContrast,
+            name + "：代码块里的裸 URL 用 Hub 链接色，不是编辑器自带的页面蓝（" + ThemeProbe.Describe(inks.FirstOrDefault())
+            + "，在 " + well + " 上对比度 " + contrast.ToString("0.0") + "，下限 "
+            + DarkSyntax.MinimumContrast.ToString("0.0") + "）");
+    }
 
     internal void CheckCodeBlockGeometry(TextEditor editor, string name)
     {

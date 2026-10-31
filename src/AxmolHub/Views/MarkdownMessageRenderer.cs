@@ -284,6 +284,7 @@ internal static partial class MarkdownMessageRenderer
             // Apply the shared Hub palette to both built-in and Hub-owned language definitions.
             editor.SyntaxHighlighting = DarkSyntax.ForBackdrop(editor.SyntaxHighlighting);
             CodeSurface.ApplySelection(editor);
+            CodeSurface.ApplyLinkInk(editor);
             if (!SyntaxThemeHooks.TryGetValue(editor, out _))
             {
                 SyntaxThemeHooks.Add(editor, new object());
