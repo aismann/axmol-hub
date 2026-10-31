@@ -362,7 +362,6 @@ public partial class ChatPanel : UserControl
         };
         TurnChangesPill.Click += (_, _) => OpenTurnReview(_chat.ActiveConversation);
         ModelPicker.Click += (_, _) => ShowModelSettings();
-        OpenAiPlanUsage.Click += (_, _) => _chat.BrowserOpener("https://chatgpt.com/settings/usage");
         ModelSettingsPopup.PlacementTarget = ModelPicker;
         ModelSettingsPopup.Placement = PlacementMode.TopEdgeAlignedRight;
         AutoReasoningSwitch.IsCheckedChanged += (_, _) =>
@@ -722,8 +721,6 @@ public partial class ChatPanel : UserControl
                 && string.Equals(choice.ModelName, active.ModelName, StringComparison.OrdinalIgnoreCase))
             : null;
         SelectedModelLabel.Text = selected?.ModelName ?? HubStrings.Get("NoAvailableChatModels");
-        OpenAiPlanUsage.IsVisible = selected?.Provider.IsOpenAiPlan == true;
-        OpenAiPlanUsage.Content = HubStrings.Get("OpenAiPlanUsing");
         var supportsReasoning = selected is not null
             && ModelCatalog.SupportsReasoningEffort(selected.Provider, selected.ModelName);
         var hasExplicitEffort = _chat.ActiveReasoningEffort != ChatReasoningEfforts.Default;
@@ -822,6 +819,11 @@ public partial class ChatPanel : UserControl
             ? HubStrings.Get("NoAvailableChatModels")
             : selected.Provider.Name + " · " + selected.ModelName;
         OpenModelMenuButton.IsEnabled = hasModel || _chat.AvailableChatModels.Count > 0;
+        // Only a plan-backed model has something to say here, and it says exactly one true thing: whose quota pays
+        // for the answers. The wording is the sentence the first sign-in dialog already uses, so the two surfaces
+        // cannot drift apart.
+        PlanUsageNote.IsVisible = selected?.Provider.IsOpenAiPlan == true;
+        if (PlanUsageNote.IsVisible) PlanUsageNote.Text = HubStrings.Get("OpenAiPlanWelcome");
     }
 
     private bool GoalDraftSelectedForActiveConversation

@@ -1463,7 +1463,6 @@ public static class HubTexts
         ["AuthOAuthHint"] = ("将在浏览器中打开 {0} 的授权页面；完成授权后密钥会自动保存，无需手动复制。", "Opens {0}'s authorization page in your browser. The key is saved automatically once you approve — nothing to copy."),
         ["AuthOAuthPending"] = ("正在等待浏览器授权…", "Waiting for authorization in the browser…"),
         ["AuthOAuthSucceeded"] = ("已登录并保存密钥。", "Signed in; the key has been saved."),
-        ["OpenAiPlanUsing"] = ("正在使用 ChatGPT 套餐 · 管理用量", "Using ChatGPT plan · Manage usage"),
         ["OpenAiPlanWelcomeTitle"] = ("正在使用 ChatGPT 套餐", "You're using your ChatGPT plan"),
         ["OpenAiPlanWelcome"] = ("符合条件的 AI 请求将使用你的 ChatGPT 套餐。你可以在 ChatGPT 设置中管理用量。", "Eligible AI requests will use your ChatGPT plan. You can manage usage in ChatGPT settings."),
         ["OpenAiLegacyRelogin"] = ("旧版 ChatGPT 凭据需要重新登录", "Legacy ChatGPT credential — sign in again"),

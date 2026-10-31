@@ -1474,7 +1474,6 @@
                   <Path Classes="chip-caret" Data="{StaticResource Hub.Icon.Caret}" />
                 </StackPanel>
               </Button>
-              <Button x:Name="OpenAiPlanUsage" Classes="chip" IsVisible="False" VerticalAlignment="Center" />
               <Button x:Name="SendButton" Classes="send" VerticalAlignment="Center" />
             </StackPanel>
           </Grid>
@@ -1525,6 +1524,11 @@
               <TextBlock Grid.Column="1" Text="›" Margin="10,0,0,0" />
             </Grid>
           </Button>
+          <!-- What the answers here are billed against, in the one place a person already opens to tune the
+               model. It replaces a permanent pill beside the send button that read as a usage meter while never
+               showing a number: this note claims only what is true, and only while a plan model is selected. -->
+          <TextBlock x:Name="PlanUsageNote" Classes="context-popover-detail" TextWrapping="Wrap"
+                     IsVisible="False" />
         </StackPanel>
       </Border>
     </Popup>
