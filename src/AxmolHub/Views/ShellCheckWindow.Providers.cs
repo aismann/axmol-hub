@@ -1727,6 +1727,19 @@ internal sealed class ShellProvidersChecks
             stepOne.SelectForCheck(ProviderAuthMethods.ApiKey);
             Check(stepOne.NextEnabledForCheck, "选中一种方式后「下一步」才可用");
 
+            // The regression this guards: the bound route used to be read as a step, so a provider already signed
+            // in through the browser — or one whose saved key the store could not hand back — opened a key box and
+            // left the choice one Back click away. Both hints are opened here so neither route can regress alone.
+            var reopened = new[] { ProviderAuthMethods.ApiKey, ProviderAuthMethods.OAuth }
+                .Select(hint => AuthDialog.ForCheck(dual, hint))
+                .ToArray();
+            Check(reopened.All(dialog => !dialog.HasPasswordBoxForCheck
+                    && dialog.MethodOptionsForCheck.Contains(ProviderAuthMethods.OAuth)
+                    && dialog.MethodOptionsForCheck.Contains(ProviderAuthMethods.ApiKey)),
+                "已绑定方式的 provider 再次鉴权仍停在第一步，绑定方式只作预选（实际 ["
+                    + string.Join(" | ", reopened.Select(dialog => "[" + string.Join(",", dialog.MethodOptionsForCheck) + "]"))
+                    + "]，密码框 " + string.Join(",", reopened.Select(dialog => dialog.HasPasswordBoxForCheck)) + "）");
+
             var login = providers.FirstOrDefault(provider => provider.SupportsOAuth);
             if (login is not null)
             {
@@ -1738,25 +1751,26 @@ internal sealed class ShellProvidersChecks
         }
 
         // A key-only provider opens straight on the key box. Asserted because dressing a one-option choice
-        // up as a decision is the failure mode: the user clicks Next to accept what was already decided.
+        // up as a decision is the failure mode: the user clicks Next to accept what was already decided. The
+        // step is not forced here — it is the one the dialog chooses from its own route list.
         var keyOnly = providers.FirstOrDefault(provider => !provider.SupportsOAuth
             && provider.EffectiveAuthMethods.Contains(ProviderAuthMethods.ApiKey));
         Check(keyOnly is not null, "存在只支持密钥的 provider，用它检查单路径时直接进输入步");
 
         if (keyOnly is not null)
         {
-            var stepTwo = AuthDialog.ForCheck(keyOnly, ProviderAuthMethods.ApiKey);
-            Check(stepTwo.StepControlCountForCheck > 0,
-                "鉴权对话框第二步建出了控件（实际 " + stepTwo.StepControlCountForCheck + " 个；为 0 说明读的是空树）");
-            Check(stepTwo.BlankTextCountForCheck == 0,
-                "鉴权对话框第二步没有空白文字块（实际 " + stepTwo.BlankTextCountForCheck + " 个）");
-            Check(stepTwo.MethodOptionsForCheck.Length == 0, "密钥步不再重复列鉴权方式");
-            Check(stepTwo.NextEnabledForCheck == false, "密钥步没有「下一步」，确认键是「保存」");
-            Check(stepTwo.HasPasswordBoxForCheck, "密钥步有一个密码类输入框");
-            Check(stepTwo.VisibleTextForCheck.Any(text => text.Contains(keyOnly.Name))
+            var keyStep = AuthDialog.ForCheck(keyOnly);
+            Check(keyStep.StepControlCountForCheck > 0,
+                "鉴权对话框单路径一打开就建出了控件（实际 " + keyStep.StepControlCountForCheck + " 个；为 0 说明读的是空树）");
+            Check(keyStep.BlankTextCountForCheck == 0,
+                "鉴权对话框单路径没有空白文字块（实际 " + keyStep.BlankTextCountForCheck + " 个）");
+            Check(keyStep.MethodOptionsForCheck.Length == 0, "密钥步不再重复列鉴权方式");
+            Check(keyStep.NextEnabledForCheck == false, "密钥步没有「下一步」，确认键是「保存」");
+            Check(keyStep.HasPasswordBoxForCheck, "密钥步有一个密码类输入框");
+            Check(keyStep.VisibleTextForCheck.Any(text => text.Contains(keyOnly.Name))
                 == (keyOnly.KeyValidation is { IsKnown: true }),
                 "是否说明「会先校验」取决于清单有没有配 keyValidation（实际 ["
-                    + string.Join(" | ", stepTwo.VisibleTextForCheck) + "]）");
+                    + string.Join(" | ", keyStep.VisibleTextForCheck) + "]）");
         }
 
         // The provider that cannot authenticate at all must also never be asked to: this is the negation of the

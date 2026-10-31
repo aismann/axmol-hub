@@ -239,10 +239,12 @@ public partial class App : Application
                 return;
             }
 
-            var step = authDialogShot.Contains("key", StringComparison.OrdinalIgnoreCase)
-                ? ProviderAuthMethods.ApiKey
-                : null;
-            var authDialog = AuthDialog.ForCheck(provider, step);
+            // Two pictures, because the flow has two halves and only the second one has an input in it: a name
+            // containing "key" photographs the key surface, anything else the method list the dialog actually
+            // opens on — the half the settings page's sign-in button lands on.
+            var authDialog = authDialogShot.Contains("key", StringComparison.OrdinalIgnoreCase)
+                ? AuthDialog.ForCheckKeyStep(provider)
+                : AuthDialog.ForCheck(provider);
             desktop.MainWindow = authDialog;
             authDialog.Opened += (_, _) => Dispatcher.UIThread.Post(() =>
             {

@@ -3040,8 +3040,10 @@ public partial class SettingsPage : UserControl
     /// <summary>
     /// Opens the authentication dialog and applies whatever it produces.
     ///
-    /// <para>When the provider has already bound a method (preferred, or a credential source), the dialog
-    /// skips its choice step and opens that method's surface directly — one provider never shows both.</para>
+    /// <para>A provider that offers both routes always opens on the choice, with the route it is already bound
+    /// to marked. That is the dialog's own decision (see <see cref="AuthDialog"/>): handing it the bound method
+    /// as a step once made every already-configured provider open a key box, even the ones signed in through
+    /// the browser, and put the choice one Back click away.</para>
     ///
     /// <para>The two routes end differently on purpose. A pasted key is stored here and now. Browser sign-in
     /// closes this dialog immediately and hands off to <see cref="SignInAsync"/>, which owns the browser, the
@@ -3062,7 +3064,7 @@ public partial class SettingsPage : UserControl
         var outcome = await AuthDialog.ShowAsync(
             owner,
             provider,
-            initialMethod: BoundAuthMethod(provider),
+            preferredMethod: BoundAuthMethod(provider),
             checkKey: key => _chat.CheckApiKeyAsync(provider.Id, key));
 
         // Null is the user closing the dialog without choosing. Anything else is one of the two routes, and
@@ -3106,14 +3108,19 @@ public partial class SettingsPage : UserControl
         await RefreshModelsAsync(provider);
     }
 
-    /// <summary>The method this provider is bound to for sign-in, or null when the user has not chosen yet.</summary>
+    /// <summary>
+    /// The route this provider is already bound to, or null when nothing has been chosen yet.
+    ///
+    /// <para>It is passed to the dialog as a mark only: a provider offering two routes still opens on the choice,
+    /// so the remembered route is a default rather than a decision taken for the user. Which step to show is
+    /// derived from the provider's own route list, and a provider with a single key route lands on the key box
+    /// without this method having to say so.</para>
+    /// </summary>
     private static string? BoundAuthMethod(ModelProvider provider)
     {
         if (provider.Credential?.Source == CredentialSources.OAuth) return ProviderAuthMethods.OAuth;
         if (provider.Credential?.Source == CredentialSources.ApiKey) return ProviderAuthMethods.ApiKey;
-        if (provider.PreferredAuthMethod is { Length: > 0 } preferred) return preferred;
-        var methods = provider.EffectiveAuthMethods;
-        return methods.Count == 1 ? methods[0] : null;
+        return provider.PreferredAuthMethod is { Length: > 0 } preferred ? preferred : null;
     }
 
     /// <summary>The top-level window, used as the dialog owner. <c>null</c> in a design-time host, in which

@@ -6,17 +6,21 @@ namespace AxmolHub;
 public sealed partial class AuthDialog : Window
 {
     /// <summary>
-    /// Builds a detached instance for a screenshot, optionally already advanced to a step.
+    /// Opens the dialog the way the settings page opens it, with <paramref name="preferredMethod"/> as the route
+    /// the provider is already bound to.
     ///
-    /// <para>The step is a parameter because a picture of step one alone would misrepresent the dialog: the
-    /// method list and the key box are the two halves of one flow, and only the second half has an input in
-    /// it. <c>"key"</c> is what the key step is called in <see cref = "Choose"/>.</para>
+    /// <para>No step is passed in, and that is the point: what the dialog opens on has to be read off its own
+    /// route list. A fixture that forced the step could only confirm what it had just forced.</para>
     /// </summary>
-    internal static AuthDialog ForCheck(ModelProvider provider, string? step = null)
+    internal static AuthDialog ForCheck(ModelProvider provider, string? preferredMethod = null)
+        => new(provider, preferredMethod, null);
+
+    /// <summary>The key surface, for the picture of step two — reached through <see cref="Choose"/> the way the
+    /// dialog reaches it, not painted onto a fresh window.</summary>
+    internal static AuthDialog ForCheckKeyStep(ModelProvider provider)
     {
         var dialog = new AuthDialog(provider, null, null);
-        if (step is not null)
-            dialog.RenderKeyStep();
+        dialog.Choose(ProviderAuthMethods.ApiKey);
         return dialog;
     }
 

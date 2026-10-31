@@ -15,8 +15,13 @@ namespace AxmolHub;
 /// key into a field that no longer exists. A separate window is not rebuilt, so what they typed survives.</para>
 ///
 /// <para><b>Step one lists what the manifest declares, not a fixed pair of buttons.</b> <c>authMethods</c> is
-/// data (see <see cref="AiProviderEntry.AuthMethods"/>): a key-only provider shows one option and skips
-/// straight to the key box, and adding a third method to a provider later needs no change here.</para>
+/// data (see <see cref="AiProviderEntry.AuthMethods"/>): a key-only provider has one route and skips straight
+/// to the key box, and adding a third method to a provider later needs no change here.</para>
+///
+/// <para><b>Which step it opens on is decided here, from the route list.</b> The caller may say which route
+/// the provider is already bound to, and that only marks the row step one starts on; it never picks the step.
+/// Deriving the step from that hint is what once opened a key box for a provider whose bound route was the
+/// browser, leaving the method list one Back click away.</para>
 ///
 /// <para><b>Step two is either the browser flow or a key box.</b> Key entry optionally validates first — see
 /// <see cref="KeyCheckOutcome"/> for why an unreachable probe is not treated as a rejection.</para>
@@ -25,6 +30,9 @@ public sealed partial class AuthDialog : Window
 {
     private readonly ModelProvider _provider;
     private readonly Func<string, Task<KeyCheckOutcome>>? _checkKey;
+    /// <summary>The routes step one lists, in the order it lists them. Snapshotted once so the opening step and
+    /// the list itself cannot disagree about how many there are.</summary>
+    private readonly IReadOnlyList<string> _routes;
 
     private readonly StackPanel _steps = new() { Spacing = 12 };
     private readonly StackPanel _navButtons = new()
@@ -35,17 +43,33 @@ public sealed partial class AuthDialog : Window
         Margin = new Thickness(0, 16, 0, 0),
     };
 
-    private string? _chosenMethod;
+    /// <summary>The route currently marked in the list. A mark on a row, not a record of which step is showing —
+    /// <see cref="_keyStep"/> answers that, and keeping them apart is the fix: one field used to answer both,
+    /// so any marked route also meant "go to the key box".</summary>
+    private string? _selection;
+    /// <summary>Whether the key surface is the one on screen.</summary>
+    private bool _keyStep;
     private TextBox? _keyBox;
     private TextBlock? _status;
     private Button? _next;
     private Button? _confirm;
 
-    private AuthDialog(ModelProvider provider, string? initialMethod, Func<string, Task<KeyCheckOutcome>>? checkKey)
+    private AuthDialog(ModelProvider provider, string? preferredMethod, Func<string, Task<KeyCheckOutcome>>? checkKey)
     {
         _provider = provider;
         _checkKey = checkKey;
-        _chosenMethod = initialMethod;
+        _routes = Routes();
+
+        // One route and it is a key: there is no decision to make, so do not dress it up as one. Every other
+        // shape — two routes, or a single browser route — starts on the list, because the list is the choice
+        // and a browser route is reported from here rather than performed before the window is up.
+        _keyStep = _routes.Count == 1 && _routes[0] == ProviderAuthMethods.ApiKey;
+
+        // A bound method arrives as a mark, never as a step: it says which row Enter would accept, and it is
+        // dropped when the provider no longer offers that route.
+        _selection = _keyStep
+            ? ProviderAuthMethods.ApiKey
+            : preferredMethod is not null && _routes.Contains(preferredMethod) ? preferredMethod : null;
 
         Title = string.Format(
             System.Globalization.CultureInfo.InvariantCulture,
@@ -66,16 +90,21 @@ public sealed partial class AuthDialog : Window
     }
 
     /// <summary>
-    /// Shows the dialog. <paramref name="initialMethod"/> skips step one when the provider offers exactly one
-    /// route — a key-only provider should not make the user click "next" on a dialog with nothing to choose.
+    /// Shows the dialog.
     /// </summary>
+    /// <param name="preferredMethod">
+    /// The route this provider is already bound to, if any. It marks that row on step one so Enter carries the
+    /// user back to what they did last time; it never skips the step, because a provider that offers two routes
+    /// is a provider whose route the user may want to change. Only a single key route opens on the key box, and
+    /// that decision belongs to the dialog's own route list.
+    /// </param>
     public static async Task<AuthDialogResult?> ShowAsync(
         Window? owner,
         ModelProvider provider,
-        string? initialMethod = null,
+        string? preferredMethod = null,
         Func<string, Task<KeyCheckOutcome>>? checkKey = null)
     {
-        var dialog = new AuthDialog(provider, initialMethod, checkKey);
+        var dialog = new AuthDialog(provider, preferredMethod, checkKey);
         var result = owner is null
             ? await dialog.ShowDialog<HubDialogResult>(null!)
             : await dialog.ShowDialog<HubDialogResult>(owner);
@@ -94,8 +123,8 @@ public sealed partial class AuthDialog : Window
         _next = null;
         _confirm = null;
 
-        if (_chosenMethod is null) RenderMethodStep();
-        else RenderKeyStep();
+        if (_keyStep) RenderKeyStep();
+        else RenderMethodStep();
 
         Opened -= OnOpened;
         Opened += OnOpened;
@@ -109,35 +138,17 @@ public sealed partial class AuthDialog : Window
     /// A visible confirm step is also the only way the two routes can be read side by side before either is
     /// taken — the previous build advanced on click, which made the list a menu rather than a choice.</para>
     ///
-    /// <para>The single-route case is the exception: a key-only provider has nothing to choose, so the dialog
-    /// opens straight on the key box instead of showing one option and a Next button over it.</para>
+    /// <para>This is also what an already-bound provider opens on, with its old route marked: the exception is a
+    /// provider with a single key route, which the constructor sends straight to the key box instead of showing
+    /// one option and a Next button over it.</para>
     /// </summary>
     private void RenderMethodStep()
     {
-        var methods = new List<string>();
-        if (_provider.SupportsOAuth) methods.Add(ProviderAuthMethods.OAuth);
-        if (_provider.EffectiveAuthMethods.Contains(ProviderAuthMethods.ApiKey)) methods.Add(ProviderAuthMethods.ApiKey);
-
-        // One route and it is a key: there is no decision to make, so do not dress it up as one.
-        if (methods.Count == 1 && methods[0] == ProviderAuthMethods.ApiKey)
-        {
-            Choose(ProviderAuthMethods.ApiKey);
-            return;
-        }
-
-        if (methods.Count == 0)
-        {
-            // A provider that declares nothing usable still needs a way in; key is the universal fallback and
-            // is what EffectiveAuthMethods already decided on.
-            Choose(ProviderAuthMethods.ApiKey);
-            return;
-        }
-
         _steps.Children.Add(Heading(HubStrings.Get("AuthDialogHint")));
 
         var options = new StackPanel { Spacing = 6 };
         var rows = new List<Button>();
-        foreach (var method in methods)
+        foreach (var method in _routes)
         {
             var row = MethodOption(method, LabelFor(method), () => Select(method, rows));
             rows.Add(row);
@@ -147,9 +158,28 @@ public sealed partial class AuthDialog : Window
         _steps.Children.Add(options);
 
         _next = new Button { Content = HubStrings.Get("Next"), IsDefault = true, IsEnabled = false };
-        _next.Click += (_, _) => Choose(_chosenMethod!);
+        _next.Click += (_, _) => Choose(_selection!);
         _navButtons.Children.Add(_next);
         _navButtons.Children.Add(DialogButtons.Cancel(this));
+
+        // The bound route is marked, not taken: the step is the same for everyone and the mark only says where
+        // Enter goes. A fresh provider has nothing marked and a disabled Next until a row is clicked.
+        if (_selection is not null) Select(_selection, rows);
+    }
+
+    /// <summary>
+    /// The routes step one offers, in the order it offers them: the browser first, then the key.
+    ///
+    /// <para>A provider that declares nothing usable still needs a way in; the key box is the universal fallback
+    /// and is what <see cref="ModelProvider.EffectiveAuthMethods"/> already decided on.</para>
+    /// </summary>
+    private List<string> Routes()
+    {
+        var routes = new List<string>(2);
+        if (_provider.SupportsOAuth) routes.Add(ProviderAuthMethods.OAuth);
+        if (_provider.EffectiveAuthMethods.Contains(ProviderAuthMethods.ApiKey)) routes.Add(ProviderAuthMethods.ApiKey);
+        if (routes.Count == 0) routes.Add(ProviderAuthMethods.ApiKey);
+        return routes;
     }
 
     private string LabelFor(string method)
@@ -164,7 +194,7 @@ public sealed partial class AuthDialog : Window
     /// so the list reads as a list.</summary>
     private void Select(string method, List<Button> rows)
     {
-        _chosenMethod = method;
+        _selection = method;
         foreach (var row in rows) row.Classes.Set("quiet", row.Tag as string != method);
         if (_next is not null) _next.IsEnabled = true;
     }
@@ -206,7 +236,12 @@ public sealed partial class AuthDialog : Window
             Content = HubStrings.Get("Back"),
             IsCancel = true,
         };
-        back.Click += (_, _) => { _chosenMethod = null; Render(); };
+        back.Click += (_, _) =>
+        {
+            // Back keeps the mark, so returning to the list lands on the row the user came from with Next live.
+            _keyStep = false;
+            Render();
+        };
 
         _navButtons.Children.Add(back);
         _navButtons.Children.Add(_confirm);
@@ -214,7 +249,7 @@ public sealed partial class AuthDialog : Window
 
     private void Choose(string method)
     {
-        _chosenMethod = method;
+        _selection = method;
         if (method == ProviderAuthMethods.OAuth)
         {
             // The browser route is reported, not performed: the flow (browser, callback, failure messages)
@@ -224,6 +259,7 @@ public sealed partial class AuthDialog : Window
             return;
         }
 
+        _keyStep = true;
         Render();
     }
 
@@ -286,7 +322,8 @@ public sealed partial class AuthDialog : Window
         }
         else
         {
-            // Put the caret on the only option when there is only one, so Enter alone carries the user on.
+            // Next is the key that carries a choice forward, and it is live whenever a row is already marked —
+            // which is the case whenever the provider was bound to a route before this dialog opened.
             _next?.Focus();
         }
     }
