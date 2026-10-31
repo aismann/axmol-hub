@@ -148,6 +148,8 @@ public static class ChatClientFactory
         var model = string.IsNullOrWhiteSpace(modelOverride) ? provider.Model : modelOverride;
         if (string.IsNullOrWhiteSpace(model))
             throw new InvalidOperationException($"Provider '{provider.Name}' has no model.");
+        if (provider.NeedsOpenAiRelogin)
+            throw new InvalidOperationException("This legacy ChatGPT credential requires signing in again.");
         if (provider.RequiresCredential && string.IsNullOrEmpty(provider.ApiKey))
             throw new InvalidOperationException($"Provider '{provider.Name}' is not authenticated yet.");
 
@@ -183,17 +185,14 @@ public static class ChatClientFactory
             // that changes is a build error at this line, which is the loud failure we want, and a project-wide
             // NoWarn would also be swallowing the next one.
 #pragma warning disable OPENAI001 // OpenAI.Responses is marked experimental in the 2.14 SDK.
-            var options = new ResponsesClientOptions { Endpoint = new Uri(provider.IsOpenAiOAuth ? OpenAiCodexTransport.BaseUrl : provider.BaseUrl) };
+            var options = new ResponsesClientOptions { Endpoint = new Uri(provider.IsOpenAiPlan ? "https://api.openai.com/v1" : provider.BaseUrl) };
             // The retry decision is stated on both wires from one constant, so the two cannot drift into two
             // different numbers of attempts — and both wrap it in the same policy, so a wait is reported on
             // whichever wire the model answers on.
             options.RetryPolicy = new IdleAwareRetryPolicy(MaxRetries, onRetryWait);
-            if (provider.IsOpenAiOAuth)
-            {
+            if (provider.IsOpenAiPlan)
                 options.Transport = new HttpClientPipelineTransport(new System.Net.Http.HttpClient(
-                    new OpenAiCodexTransport(provider, transport ?? new System.Net.Http.HttpClientHandler { AllowAutoRedirect = false })));
-                options.AddPolicy(new OpenAiCodexRequestPolicy(), PipelinePosition.BeforeTransport);
-            }
+                    new OpenAiPlanTransport(provider, transport ?? new System.Net.Http.HttpClientHandler { AllowAutoRedirect = false })));
             else if (transport is not null)
                 options.Transport = new HttpClientPipelineTransport(new System.Net.Http.HttpClient(transport));
             if (headers is not null)
@@ -202,7 +201,7 @@ public static class ChatClientFactory
             // the messages, and a recording taken before that would document an intention rather than a request.
             options.AddPolicy(new WireLogPolicy(), PipelinePosition.BeforeTransport);
             var responses = new ResponsesClient(credential, options).AsIChatClient(model);
-            return provider.IsOpenAiOAuth ? new OpenAiCodexChatClient(responses) : responses;
+            return provider.IsOpenAiPlan ? new OpenAiStreamingChatClient(responses) : responses;
 #pragma warning restore OPENAI001
         }
 

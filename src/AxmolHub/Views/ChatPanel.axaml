@@ -1474,6 +1474,7 @@
                   <Path Classes="chip-caret" Data="{StaticResource Hub.Icon.Caret}" />
                 </StackPanel>
               </Button>
+              <Button x:Name="OpenAiPlanUsage" Classes="chip" IsVisible="False" VerticalAlignment="Center" />
               <Button x:Name="SendButton" Classes="send" VerticalAlignment="Center" />
             </StackPanel>
           </Grid>

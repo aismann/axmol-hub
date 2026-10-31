@@ -362,6 +362,7 @@ public partial class ChatPanel : UserControl
         };
         TurnChangesPill.Click += (_, _) => OpenTurnReview(_chat.ActiveConversation);
         ModelPicker.Click += (_, _) => ShowModelSettings();
+        OpenAiPlanUsage.Click += (_, _) => _chat.BrowserOpener("https://chatgpt.com/settings/usage");
         ModelSettingsPopup.PlacementTarget = ModelPicker;
         ModelSettingsPopup.Placement = PlacementMode.TopEdgeAlignedRight;
         AutoReasoningSwitch.IsCheckedChanged += (_, _) =>
@@ -721,6 +722,8 @@ public partial class ChatPanel : UserControl
                 && string.Equals(choice.ModelName, active.ModelName, StringComparison.OrdinalIgnoreCase))
             : null;
         SelectedModelLabel.Text = selected?.ModelName ?? HubStrings.Get("NoAvailableChatModels");
+        OpenAiPlanUsage.IsVisible = selected?.Provider.IsOpenAiPlan == true;
+        OpenAiPlanUsage.Content = HubStrings.Get("OpenAiPlanUsing");
         var supportsReasoning = selected is not null
             && ModelCatalog.SupportsReasoningEffort(selected.Provider, selected.ModelName);
         var hasExplicitEffort = _chat.ActiveReasoningEffort != ChatReasoningEfforts.Default;

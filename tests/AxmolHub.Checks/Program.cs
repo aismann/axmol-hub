@@ -8,6 +8,16 @@ internal static class Program
         // directory names (that was how "--check-cli-json"/"--check-build-profiles" ended up as empty folders).
         var root = Path.GetFullPath(args.Length > 0 && !args[0].StartsWith("--") ? args[0] : "artifacts/checks");
         Directory.CreateDirectory(root);
+        if (args.Contains("--openai-refresh-worker"))
+        {
+            await OpenAiChecks.RefreshWorkerAsync(root, args[^1]);
+            return;
+        }
+        if (args.Contains("--openai-metadata-worker"))
+        {
+            await OpenAiChecks.MetadataWorkerAsync(root, args);
+            return;
+        }
         if (args.Contains("--check-openai-oauth"))
         {
             await OpenAiChecks.RunAsync(root, args.Contains("--native-keychain"), args.Contains("--loopback"));

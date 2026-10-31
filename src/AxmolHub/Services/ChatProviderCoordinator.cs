@@ -14,6 +14,7 @@ internal sealed partial class ChatProviderCoordinator
 
     internal ChatProviderCoordinator(string dataRoot)
     {
+        _dataRoot = dataRoot;
         try
         {
             _secrets = SecretStoreFactory.Create(dataRoot);
@@ -28,6 +29,7 @@ internal sealed partial class ChatProviderCoordinator
         _modelLists = new ModelListStore(dataRoot);
     }
 
+    private readonly string _dataRoot;
     private readonly ProviderStore _providers;
     private readonly CredentialStore _credentials;
     internal HttpClient? ModelListTransportOverride => _modelListHttp;
@@ -217,8 +219,10 @@ internal sealed partial class ChatProviderCoordinator
     {
         _credentialList.Clear();
         var loaded = _credentials.Load();
-        var loadedCount = loaded.Count;
         _credentialList.AddRange(loaded);
+        // Persist mappings recovered from older valid token bundles before they can be cleared.
+        if (_credentialList.Any(c => c.OpenAiRegistration is not null))
+            _credentials.Save(_credentialList, writeSecrets: false);
 
         // Migration: no credential file, but the provider list has a legacy key stored under the provider id.
         // Writing the migrated list immediately is deliberate — it makes the upgrade a one-time event rather
@@ -229,38 +233,41 @@ internal sealed partial class ChatProviderCoordinator
             if (legacy.Count > 0)
             {
                 _credentialList.AddRange(legacy);
-                _credentials.Save(_credentialList);
+                _credentials.Save(_credentialList, writeSecrets: false);
             }
         }
 
         foreach (var provider in _providerList)
         {
-            // Adopt the one credential this provider has. A list written by an install that predates the
-            // one-to-one rule can still hold several for one provider, so extras are dropped rather than
-            // silently left as orphans nobody can reach: the oldest survives, because that is the one a
-            // re-auth has been rotating in place.
-            var owned = _credentialList
-                .Where(credential => credential.ProviderId == provider.Id)
-                .OrderBy(credential => credential.CreatedAt)
-                .ToList();
-
-            foreach (var extra in owned.Skip(1))
-            {
-                _credentialList.Remove(extra);
-                _credentials.DeleteSecret(extra.Id);
-            }
-
-            provider.Credential = owned.FirstOrDefault();
+            // Keep every saved credential intact even when an older installation stored several.
+            // Until account selection is available, continue using the oldest as before.
+            var owned = _credentialList.Where(credential => credential.ProviderId == provider.Id).ToList();
+            provider.Credential = provider.SelectedCredentialId is { } selected
+                ? owned.FirstOrDefault(credential => credential.Id == selected)
+                : owned.OrderBy(credential => credential.CreatedAt).FirstOrDefault();
             BindOpenAiTokens(provider);
         }
-
-        // Written back only when extras were actually dropped, so an ordinary launch touches nothing.
-        if (_credentialList.Count != loadedCount) _credentials.Save(_credentialList);
     }
 
     internal ProviderCredential? CredentialFor(string providerId)
-        => _credentialList.FirstOrDefault(credential => credential.ProviderId == providerId);
+        => _providerList.FirstOrDefault(provider => provider.Id == providerId)?.Credential;
     internal IReadOnlyList<ProviderCredential> Credentials => _credentialList;
+    internal bool HasPlanCredentials(string providerId)
+        => _credentialList.Any(credential => credential.ProviderId == providerId
+            && credential.Secret is not null && IsPlanCredential(credential));
+
+    internal bool SelectCredential(string providerId, string credentialId)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
+        var credential = _credentialList.FirstOrDefault(candidate => candidate.ProviderId == providerId && candidate.Id == credentialId);
+        if (provider is null || credential is null || (!credential.HasSecret && credential.OpenAiRegistration is null)) return false;
+        provider.Credential = credential;
+        provider.SelectedCredentialId = credential.Id;
+        BindOpenAiTokens(provider);
+        _providers.Save(_providerList);
+        Execution.Changed?.Invoke();
+        return true;
+    }
 
     internal ProviderCredential? AddCredential(string providerId, string label, string? secret, string source)
     {
@@ -268,7 +275,7 @@ internal sealed partial class ChatProviderCoordinator
         if (!string.IsNullOrEmpty(secret) && !CanStoreSecrets) return null;
         if (provider.RequiresCredential && string.IsNullOrEmpty(secret)) return null;
 
-        var existing = CredentialFor(providerId);
+        var existing = provider.IsOpenAiPlan ? null : CredentialFor(providerId);
         if (existing is not null)
         {
             lock (existing)
@@ -302,7 +309,9 @@ internal sealed partial class ChatProviderCoordinator
         _credentialList.Add(credential);
         SaveCredentials(writeSecrets: false);
         provider.Credential = credential;
+        provider.SelectedCredentialId = credential.Id;
         BindOpenAiTokens(provider);
+        _providers.Save(_providerList);
         Execution.Changed?.Invoke();
         return credential;
     }
@@ -345,7 +354,9 @@ internal sealed partial class ChatProviderCoordinator
         _credentialList.Add(credential);
         SaveCredentials(writeSecrets: false);
         provider.Credential = credential;
+        provider.SelectedCredentialId = credential.Id;
         BindOpenAiTokens(provider);
+        _providers.Save(_providerList);
         Execution.Changed?.Invoke();
         return credential;
     }
@@ -354,7 +365,8 @@ internal sealed partial class ChatProviderCoordinator
     {
         if (provider.Id == "openai")
         {
-            var mode = provider.IsOpenAiOAuth ? "openaiOAuth" : "apiKey";
+            var mode = provider.IsOpenAiPlan ? "plan:" + provider.Credential!.Id
+                : provider.IsOpenAiOAuth ? "openaiOAuth" : "apiKey";
             var cached = _modelLists.Load().FirstOrDefault(entry => entry.Id == ModelCacheId(provider.Id));
             if (provider.ModelAuthKind != mode)
             {
@@ -369,13 +381,16 @@ internal sealed partial class ChatProviderCoordinator
             provider.ReasoningModels = MergeReasoningModels(preset?.ReasoningModels, cached?.ReasoningModels);
             provider.ModelCapabilities = ReportedCapabilities(cached?.Capabilities);
         }
-        provider.OpenAiTokenProvider = provider.IsOpenAiOAuth && provider.Credential is { } credential && _secrets is not null
-            ? new OpenAiTokenSession(provider, credential, _secrets, _oauthHttp ?? OpenAiRefreshHttp).GetAsync : null;
+        provider.OpenAiTokenProvider = provider.IsOpenAiPlan && provider.Credential is { } credential && _secrets is not null
+            ? new OpenAiDynamicTokenSession(provider, credential, _secrets, OpenAiDynamicTokenExchange.Create(), _dataRoot).GetAsync
+            : null;
     }
 
     private string ModelCacheId(string providerId)
-        => _providerList.FirstOrDefault(provider => provider.Id == providerId)?.IsOpenAiOAuth == true
-            ? providerId + ":openaiOAuth" : providerId;
+        => _providerList.FirstOrDefault(provider => provider.Id == providerId) is { } provider
+            ? provider.IsOpenAiPlan ? providerId + ":plan:" + provider.Credential!.Id
+                : provider.IsOpenAiOAuth ? providerId + ":openaiOAuth" : providerId
+            : providerId;
     private string AccountLabel(string providerId, string accountId)
     {
         var name = _providerList.FirstOrDefault(provider => provider.Id == providerId)?.Name ?? providerId;
@@ -386,24 +401,39 @@ internal sealed partial class ChatProviderCoordinator
 
     private string DefaultCredentialLabel(string providerId)
         => _providerList.FirstOrDefault(provider => provider.Id == providerId)?.Name ?? providerId;
-    internal bool RemoveCredential(string credentialId)
+    private static bool IsPlanCredential(ProviderCredential credential)
+    {
+        if (credential.ProviderId != "openai" || credential.AuthKind != "openaiOAuth") return false;
+        if (credential.OpenAiRegistration is not null) return true; // A stale process must not delete a renewed session.
+        if (credential.Secret is null) return true; // A missing secret cannot prove this is not a plan account.
+        try { return OpenAiTokens.Decode(credential.Secret).IsDynamicRegistration; }
+        catch (InvalidOperationException) { return true; } // Never delete an unreadable OAuth credential without its lock.
+    }
+
+    internal bool RemoveCredential(string credentialId) => RemoveCredentialCore(credentialId, planLockHeld: false);
+
+    private bool RemoveCredentialCore(string credentialId, bool planLockHeld)
     {
         var credential = _credentialList.FirstOrDefault(candidate => candidate.Id == credentialId);
-        if (credential is null) return false;
+        if (credential is null || (!planLockHeld && IsPlanCredential(credential))) return false;
 
         lock (credential)
         {
             _credentials.DeleteSecret(credential.Id);
             _credentialList.Remove(credential);
             credential.Secret = null;
-            if (_providerList.FirstOrDefault(provider => provider.Id == credential.ProviderId) is { } provider)
+            if (_providerList.FirstOrDefault(provider => provider.Id == credential.ProviderId) is { } provider
+                && ReferenceEquals(provider.Credential, credential))
             {
                 provider.Credential = null;
+                // An empty selection deliberately prevents old saved accounts from being auto-selected on restart.
+                provider.SelectedCredentialId = "";
                 provider.OpenAiTokenProvider = null;
+                _providers.Save(_providerList);
             }
         }
 
-        _credentials.Save(_credentialList);
+        _credentials.Save(_credentialList, writeSecrets: false);
         Execution.Changed?.Invoke();
         return true;
     }
@@ -616,12 +646,76 @@ internal sealed partial class ChatProviderCoordinator
 
     internal ProviderCredential? SetApiKey(string providerId, string key)
         => string.IsNullOrWhiteSpace(key) ? null : AddCredential(providerId, "", key, CredentialSources.ApiKey);
+    internal async Task<ProviderCredential> SavePlanCredentialAsync(ModelProvider provider, ProviderCredential? selected,
+        OpenAiTokens? previous, string? observedSecret, OpenAiTokens tokens, CancellationToken cancellationToken)
+    {
+        if (_secrets is null) throw new InvalidOperationException("Secret storage is unavailable.");
+        await using var credentialLock = previous is not null && selected is not null
+            ? await OpenAiDynamicTokenSession.LockCredentialAsync(_dataRoot, selected.Id, cancellationToken)
+            : null;
+        if (!_providerList.Contains(provider) || !ReferenceEquals(provider.Credential, selected)
+            || (previous is not null && (selected?.Secret != observedSecret
+                || _secrets.Read(selected!.Id) != observedSecret)))
+            throw new InvalidOperationException("The provider credential changed during sign-in. Retry the request.");
+        if (previous is not null && (previous.ClientId != tokens.ClientId || previous.HostId != tokens.HostId
+            || previous.Issuer != tokens.Issuer || previous.Subject != tokens.Subject))
+            throw new InvalidOperationException("The signed-in OpenAI account does not match the saved registration.");
+        // A legacy credential cannot be converted, but a successful sign-in replaces it in place: a second row
+        // would leave behind an account that can only ever ask the user to sign in again. An API-key row is
+        // left alone (signing in with ChatGPT must not destroy it), and "add another account" also adds a row.
+        var replacing = selected is not null && (previous is not null || (selected.AuthKind == "openaiOAuth" && !provider.IsOpenAiPlan));
+        var credential = replacing ? selected! : new ProviderCredential
+        {
+            Id = Guid.NewGuid().ToString("N"), ProviderId = provider.Id, Source = CredentialSources.OAuth,
+            AuthKind = "openaiOAuth", Label = tokens.Email ?? "ChatGPT",
+        };
+        var encoded = tokens.Encode();
+        var oldSecret = credential.Secret;
+        var oldScope = credential.Scope;
+        var oldAccount = credential.AccountId;
+        var oldRegistration = credential.OpenAiRegistration;
+        var added = !_credentialList.Contains(credential);
+        var metadataSaved = false;
+        try
+        {
+            credential.Scope = tokens.Scope;
+            credential.AccountId = tokens.Subject;
+            credential.OpenAiRegistration = OpenAiRegistration.FromTokens(tokens);
+            if (added) _credentialList.Add(credential);
+            // Make the non-secret identity durable first. A crash cannot strand an unreferenced new token.
+            _credentials.Save(_credentialList, writeSecrets: false);
+            metadataSaved = true;
+            _secrets.Write(credential.Id, encoded);
+            credential.Secret = encoded;
+        }
+        catch
+        {
+            credential.Secret = oldSecret;
+            // If metadata was saved, keep its valid registration so the account remains recoverable.
+            if (!metadataSaved)
+            {
+                credential.Scope = oldScope;
+                credential.AccountId = oldAccount;
+                credential.OpenAiRegistration = oldRegistration;
+                if (added) _credentialList.Remove(credential);
+            }
+            throw;
+        }
+        provider.Credential = credential;
+        provider.SelectedCredentialId = credential.Id;
+        provider.PreferredAuthMethod = ProviderAuthMethods.OAuth;
+        BindOpenAiTokens(provider);
+        _providers.Save(_providerList);
+        Execution.Changed?.Invoke();
+        return credential;
+    }
+
     internal async Task<OAuthSignInOutcome?> SignInWithOAuthAsync(
         string providerId,
         Action<string>? onManualUrl = null,
         CancellationToken cancellationToken = default,
         IProgress<DeviceCodeChallenge>? deviceProgress = null,
-        Action<OpenAiLoginAttempt>? openAiProgress = null)
+        Action<IOpenAiLoginAttempt>? openAiProgress = null, bool addOpenAiAccount = false)
     {
         if (!CanStoreSecrets) return null;
 
@@ -648,11 +742,19 @@ internal sealed partial class ChatProviderCoordinator
             // discovery document to find on its own.
             if (oauth.EffectiveFlow == ProviderOAuthFlows.OpenAi)
             {
-                var tokens = await new OpenAiOAuthFlow(http).SignInAsync(
-                    openAiProgress ?? (_ => { }), OpenOrReport, cancellationToken);
-                var saved = AddOAuthCredential(providerId, tokens.AccountId, "openid profile email offline_access", tokens.Encode(), "openaiOAuth");
-                return saved is null ? new OAuthSignInOutcome(Error: "The credential could not be stored.")
-                    : new OAuthSignInOutcome(Credential: saved);
+                var selected = provider.Credential;
+                var observedSecret = selected?.Secret;
+                var previous = !addOpenAiAccount && provider.IsOpenAiPlan
+                    ? selected?.HasSecret == true ? OpenAiTokens.Decode(observedSecret!)
+                        : selected?.OpenAiRegistration?.AuthorizationContext()
+                    : null;
+                var hostId = previous?.HostId ?? new OpenAiHostIdStore(_dataRoot).GetOrCreate();
+                var tokens = await new OpenAiDynamicLogin(OpenAiDynamicTokenExchange.Create()).SignInAsync(
+                    hostId, previous, attempt => openAiProgress?.Invoke(attempt), url => { BrowserOpener(url); }, cancellationToken);
+                if (!_providerList.Contains(provider) || !ReferenceEquals(provider.Credential, selected))
+                    return new OAuthSignInOutcome(Error: "The provider credential changed during sign-in. Retry the request.");
+                var saved = await SavePlanCredentialAsync(provider, selected, previous, observedSecret, tokens, cancellationToken);
+                return new OAuthSignInOutcome(Credential: saved);
             }
             var result = oauth.EffectiveFlow == ProviderOAuthFlows.DeviceCode
                 ? await new DeviceCodeOAuthFlow(http, OpenOrReport, DeviceCodeWait)
@@ -763,8 +865,10 @@ internal sealed partial class ChatProviderCoordinator
         // consumed by ChatPanel.Reload — code that mutates Avalonia controls. It must resume on the captured
         // UI context; resuming on the thread pool would touch the visual tree from a worker thread and hang
         // the whole UI (a CPU-bound cross-thread re-entrancy, not a network wait).
-        var result = provider.IsOpenAiOAuth
-            ? await OpenAiCodexModels.FetchAsync(client, provider, cancellationToken)
+        if (provider.NeedsOpenAiRelogin)
+            return ModelFetchResult.Unreachable("This legacy ChatGPT credential requires signing in again.");
+        var result = provider.IsOpenAiPlan
+            ? await OpenAiPlanModels.FetchAsync(client, provider, cancellationToken)
             : await ModelList.FetchAsync(client, provider, cancellationToken);
         if (!_providerList.Contains(provider) || !ReferenceEquals(provider.Credential, catalogCredential)
             || ModelCacheId(providerId) != catalogMode || provider.Credential?.AccountId != catalogAccount)
@@ -980,6 +1084,9 @@ internal sealed partial class ChatProviderCoordinator
         var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
         if (provider is null || provider.Id == AiProviderManifest.DefaultProviderId()) return false;
 
+        // A plan session must be signed out through its asynchronous locked revocation path first.
+        if (_credentialList.Any(credential => credential.ProviderId == providerId && IsPlanCredential(credential))) return false;
+
         // Disconnect first, and through the same method the disconnect button uses. Removing a provider that
         // still had a key would leave an orphan secret in the OS store — invisible in the UI, and never
         // cleaned up, because the account list it belonged to no longer renders anywhere. Doing it here rather
@@ -1001,11 +1108,64 @@ internal sealed partial class ChatProviderCoordinator
         return true;
     }
 
+    internal Func<OpenAiTokens, CancellationToken, Task<bool>> RevokeOpenAiPlan { get; set; }
+        = (tokens, cancellationToken) => OpenAiSessionRevocation.Create().RevokeAsync(tokens, cancellationToken);
+
+    internal async Task<(bool Removed, bool Revoked)> DisconnectOpenAiPlanAsync(CancellationToken cancellationToken = default)
+    {
+        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == "openai");
+        if (provider?.IsOpenAiOAuth != true || provider.Credential is not { } credential || _secrets is null)
+            return (false, false);
+        await using var credentialLock = await OpenAiDynamicTokenSession.LockCredentialAsync(_dataRoot, credential.Id, cancellationToken);
+        if (!ReferenceEquals(provider.Credential, credential)) return (false, false);
+        var persisted = _secrets.Read(credential.Id);
+        OpenAiTokens? tokens = null;
+        try { if (persisted is not null) tokens = OpenAiTokens.Decode(persisted); }
+        catch (InvalidOperationException) { } // A damaged payload still needs a local recovery path.
+        if (tokens?.IsDynamicRegistration == true)
+        {
+            var registration = OpenAiRegistration.FromTokens(tokens);
+            if (credential.OpenAiRegistration is { } saved && (saved.ClientId != registration.ClientId
+                || saved.HostId != registration.HostId || saved.Issuer != registration.Issuer || saved.Subject != registration.Subject))
+                throw new InvalidOperationException("The OpenAI credential changed during sign-out. Retry the request.");
+            credential.OpenAiRegistration = registration;
+        }
+        // Durably retain the verified identity before deleting tokens, including after a crash or save conflict.
+        if (credential.OpenAiRegistration is not null)
+            _credentials.Save(_credentialList, writeSecrets: false);
+        // Local deletion precedes network revocation so a crash cannot silently restore the session.
+        _secrets.Delete(credential.Id);
+        credential.Secret = null;
+        provider.OpenAiTokenProvider = null;
+        if (credential.OpenAiRegistration is null)
+        {
+            _credentialList.Remove(credential);
+            provider.Credential = null;
+            provider.SelectedCredentialId = "";
+        }
+        _credentials.Save(_credentialList, writeSecrets: false);
+        _modelLists.Save("openai:plan:" + credential.Id, null);
+        BindOpenAiTokens(provider);
+        _providers.Save(_providerList);
+        Execution.Changed?.Invoke();
+        try
+        {
+            return (true, tokens?.IsDynamicRegistration == true
+                && await RevokeOpenAiPlan(tokens, cancellationToken));
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or IOException or InvalidOperationException)
+        {
+            return (true, false);
+        }
+    }
+
     internal bool DisconnectProvider(string providerId)
     {
         var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
         if (provider is null) return false;
 
+        // Refuse the entire operation rather than partially deleting accounts or bypassing plan revocation.
+        if (_credentialList.Any(credential => credential.ProviderId == providerId && IsPlanCredential(credential))) return false;
         var removed = false;
         foreach (var credential in _credentialList.Where(credential => credential.ProviderId == providerId).ToList())
         {
@@ -1015,7 +1175,7 @@ internal sealed partial class ChatProviderCoordinator
         if (removed)
         {
             provider.Credential = null;
-            _credentials.Save(_credentialList);
+            _credentials.Save(_credentialList, writeSecrets: false);
             Execution.Changed?.Invoke();
         }
 
@@ -1098,10 +1258,6 @@ internal sealed partial class ChatProviderCoordinator
     }
 
 
-    private static readonly HttpClient OpenAiRefreshHttp = new(new HttpClientHandler { AllowAutoRedirect = false })
-    {
-        Timeout = TimeSpan.FromSeconds(45)
-    };
     private static string GrantedScopeOf(string message)
     {
         var start = message.IndexOf('\'') + 1;

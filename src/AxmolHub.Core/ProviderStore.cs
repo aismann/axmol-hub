@@ -21,11 +21,36 @@ namespace AxmolHub.Core;
 public sealed class ProviderStore(string root)
 {
     private string ProviderPath => Path.Combine(root, "ai", "providers.json");
+    private Dictionary<string, string?>? _selectionBaseline;
+
+    private Mutex SelectionMutex()
+    {
+        var path = Path.GetFullPath(ProviderPath);
+        if (OperatingSystem.IsWindows()) path = path.ToUpperInvariant();
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(path)));
+        return new Mutex(false, "AxmolHubProviders-" + hash);
+    }
+
+    private static void Acquire(Mutex gate)
+    {
+        try { if (!gate.WaitOne(TimeSpan.FromSeconds(10))) throw new TimeoutException("Provider metadata is busy."); }
+        catch (AbandonedMutexException) { }
+    }
 
     /// <summary>Loads the provider list. A missing file is an empty list, not an error.</summary>
     public List<ModelProvider> Load()
     {
-        var providers = StateStore.ReadJson<List<ModelProvider>>(ProviderPath) ?? [];
+        List<ModelProvider> providers;
+        using (var gate = SelectionMutex())
+        {
+            Acquire(gate);
+            try
+            {
+                providers = StateStore.ReadJson<List<ModelProvider>>(ProviderPath) ?? [];
+                _selectionBaseline = providers.ToDictionary(p => p.Id, p => p.SelectedCredentialId);
+            }
+            finally { gate.ReleaseMutex(); }
+        }
 
         // Every provider is normalized on the way out, never on the way in: the serializer cannot enforce
         // "exactly one model is in use", and a file edited by hand (or written by an older build) must not
@@ -35,5 +60,32 @@ public sealed class ProviderStore(string root)
     }
 
     /// <summary>Persists the provider list. No credential is written here by construction (see the class note).</summary>
-    public void Save(IReadOnlyList<ModelProvider> providers) => StateStore.WriteJson(ProviderPath, providers);
+    public void Save(IReadOnlyList<ModelProvider> providers)
+    {
+        using var gate = SelectionMutex();
+        Acquire(gate);
+        try
+        {
+            var latest = StateStore.ReadJson<List<ModelProvider>>(ProviderPath) ?? [];
+            var remote = latest.ToDictionary(p => p.Id, p => p.SelectedCredentialId);
+            var baseline = _selectionBaseline ?? remote;
+            var restore = new List<(ModelProvider Provider, string? Selection)>();
+            foreach (var provider in providers)
+            {
+                if (!baseline.TryGetValue(provider.Id, out var before) || !remote.TryGetValue(provider.Id, out var other)) continue;
+                var local = provider.SelectedCredentialId;
+                if (local != before && other != before && local != other)
+                    throw new InvalidOperationException("The selected credential changed in another process. Reload before retrying.");
+                if (local == before && other != before)
+                {
+                    restore.Add((provider, local));
+                    provider.SelectedCredentialId = other;
+                }
+            }
+            try { StateStore.WriteJson(ProviderPath, providers); }
+            finally { foreach (var (provider, selection) in restore) provider.SelectedCredentialId = selection; }
+            _selectionBaseline = providers.ToDictionary(p => p.Id, p => p.SelectedCredentialId);
+        }
+        finally { gate.ReleaseMutex(); }
+    }
 }

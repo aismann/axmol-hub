@@ -56,7 +56,19 @@ public sealed class ProviderCredential
     /// </summary>
     public string? Scope { get; set; }
 
+    /// <summary>Validated account/client mapping, retained independently of renewable session tokens.</summary>
+    public OpenAiRegistration? OpenAiRegistration { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+
+    private int _planUsagePaused;
+    /// <summary>Runtime admission pause for this account after a confirmed plan limit; resume only by user action.</summary>
+    [JsonIgnore]
+    public bool PlanUsagePaused
+    {
+        get => Volatile.Read(ref _planUsagePaused) != 0;
+        set => Volatile.Write(ref _planUsagePaused, value ? 1 : 0);
+    }
 
     /// <summary>
     /// Runtime-only: the secret, rehydrated from <see cref="ISecretStore"/> at load time and never serialized.
@@ -68,7 +80,16 @@ public sealed class ProviderCredential
 
     /// <summary>Whether a secret is present in memory (i.e. this credential can actually be used right now).</summary>
     [JsonIgnore]
-    public bool HasSecret => Secret is { Length: > 0 };
+    public bool HasSecret
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(Secret)) return false;
+            if (AuthKind != "openaiOAuth") return true;
+            try { _ = OpenAiTokens.Decode(Secret); return true; }
+            catch (InvalidOperationException) { return false; }
+        }
+    }
 
     /// <summary>
     /// What the credential list shows. A label is preferred, but an unlabelled credential must still render as

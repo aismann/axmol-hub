@@ -70,6 +70,12 @@ public sealed class ModelProvider
     /// <summary>Identifies which authentication catalog the saved model selection belongs to.</summary>
     public string ModelAuthKind { get; set; } = "apiKey";
 
+    /// <summary>Selected saved credential, when a provider has more than one account.</summary>
+    public string? SelectedCredentialId { get; set; }
+
+    /// <summary>Whether the first-use ChatGPT plan notice was acknowledged.</summary>
+    public bool OpenAiPlanWelcomeAcknowledged { get; set; }
+
     /// <summary>OAuth configuration for a provider that offers browser sign-in; <c>null</c> otherwise.</summary>
     public AiProviderOAuth? OAuth { get; set; }
 
@@ -291,11 +297,36 @@ public sealed class ModelProvider
     /// construction.
     /// </summary>
     [JsonIgnore]
-    public string? ApiKey => IsOpenAiOAuth && Credential?.Secret is { } bundle
-        ? OpenAiTokens.Decode(bundle).AccessToken : Credential?.Secret;
+    public string? ApiKey => IsOpenAiOAuth
+        ? Credential?.HasSecret == true ? OpenAiTokens.Decode(Credential.Secret!).AccessToken : null
+        : Credential?.Secret;
 
     [JsonIgnore]
     public bool IsOpenAiOAuth => Id == "openai" && Credential?.AuthKind == "openaiOAuth";
+
+    /// <summary>Whether the selected OAuth credential is a dynamically registered ChatGPT plan session.</summary>
+    [JsonIgnore]
+    public bool IsOpenAiPlan
+    {
+        get
+        {
+            if (!IsOpenAiOAuth) return false;
+            // A stored secret is the truth: it is what every request carries. The registration is consulted
+            // only when there is none (after sign-out, so the next sign-in can reuse the host identity),
+            // because a re-login that failed between its two writes leaves a plan registration next to the
+            // legacy secret — and that must still read as "sign in again" instead of "connected".
+            if (Credential?.Secret is { } secret)
+            {
+                try { return OpenAiTokens.Decode(secret).IsDynamicRegistration; }
+                catch (InvalidOperationException) { return false; }
+            }
+            return Credential?.OpenAiRegistration is not null;
+        }
+    }
+
+    /// <summary>Older Codex OAuth credentials cannot be used with ChatGPT plan registration.</summary>
+    [JsonIgnore]
+    public bool NeedsOpenAiRelogin => IsOpenAiOAuth && !IsOpenAiPlan;
 
     /// <summary>Supplied by the credential owner; all HTTP callers share refresh and persistence.</summary>
     [JsonIgnore]
@@ -317,7 +348,7 @@ public sealed class ModelProvider
     /// reachable on a machine where nothing was ever pasted.</para>
     /// </summary>
     [JsonIgnore]
-    public bool IsCallReady => !RequiresCredential || Credential?.HasSecret == true;
+    public bool IsCallReady => !RequiresCredential || (Credential?.HasSecret == true && !NeedsOpenAiRelogin);
 
     /// <summary>
     /// The provider's default model name, projected from the model that is marked in use rather than stored

@@ -13,7 +13,7 @@ public sealed partial class OpenAiLoginCard : UserControl
 {
     private readonly TextBox _callback;
     private readonly TextBlock _error;
-    public OpenAiLoginCard(OpenAiLoginAttempt attempt, Action cancel)
+    public OpenAiLoginCard(IOpenAiLoginAttempt attempt, Action cancel)
     {
         ClipToBounds = true;
         MaxWidth = 560;

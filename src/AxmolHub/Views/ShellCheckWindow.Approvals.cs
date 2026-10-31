@@ -1359,7 +1359,11 @@ internal sealed class ShellApprovalsChecks
                     {
                         ProviderId = openAiProvider.Id,
                         AuthKind = "openaiOAuth",
-                        Secret = "fixture-token-bundle",
+                        Secret = (new OpenAiTokens("fixture-access", "fixture-refresh", null, DateTimeOffset.UtcNow.AddHours(1), null)
+                        {
+                            Version = 1, ClientId = "oaiapp_fixture", HostId = "urn:uuid:fixture",
+                            Issuer = "https://auth.openai.com", Subject = "fixture", Scope = "chatgpt.tokens.use.direct",
+                        }).Encode(),
                     };
                     var oauthTools = chat.PreparedToolsForCheck(oauthSession.Id);
                     Check(oauthTools.Count(tool => tool.Name == ProviderServerTools.WebSearch) == 1
@@ -1383,7 +1387,11 @@ internal sealed class ShellApprovalsChecks
                     {
                         ProviderId = openAiProvider.Id,
                         AuthKind = "openaiOAuth",
-                        Secret = "fixture-token-bundle",
+                        Secret = (new OpenAiTokens("fixture-access", "fixture-refresh", null, DateTimeOffset.UtcNow.AddHours(1), null)
+                        {
+                            Version = 1, ClientId = "oaiapp_fixture", HostId = "urn:uuid:fixture",
+                            Issuer = "https://auth.openai.com", Subject = "fixture", Scope = "chatgpt.tokens.use.direct",
+                        }).Encode(),
                     };
                     appPreferences.AllowHostedWebSearch = false;
                     appPreferences.AllowDeepSeekWebApi = false;

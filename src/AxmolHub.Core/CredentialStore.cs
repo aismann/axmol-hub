@@ -18,23 +18,57 @@ namespace AxmolHub.Core;
 public sealed class CredentialStore(string root, ISecretStore secrets)
 {
     private string CredentialPath => Path.Combine(root, "ai", "credentials.json");
+    private Dictionary<string, string>? _baseline;
+
+    private Mutex MetadataMutex()
+    {
+        var path = Path.GetFullPath(CredentialPath);
+        if (OperatingSystem.IsWindows()) path = path.ToUpperInvariant();
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(path)));
+        return new Mutex(false, "AxmolHubCredentials-" + hash);
+    }
+
+    private static void Acquire(Mutex gate)
+    {
+        try { if (!gate.WaitOne(TimeSpan.FromSeconds(10))) throw new TimeoutException("Credential metadata is busy."); }
+        catch (AbandonedMutexException) { }
+    }
+
+    private static Dictionary<string, string> Snapshot(IEnumerable<ProviderCredential> credentials)
+        => credentials.ToDictionary(credential => credential.Id, credential => JsonSerializer.Serialize(credential));
 
     /// <summary>Loads every credential and rehydrates each <c>Secret</c> from the secret store.</summary>
     public List<ProviderCredential> Load()
     {
-        var credentials = StateStore.ReadJson<List<ProviderCredential>>(CredentialPath) ?? [];
+        List<ProviderCredential> credentials;
+        using (var gate = MetadataMutex())
+        {
+            Acquire(gate);
+            try
+            {
+                credentials = StateStore.ReadJson<List<ProviderCredential>>(CredentialPath) ?? [];
+                _baseline = Snapshot(credentials);
+            }
+            finally { gate.ReleaseMutex(); }
+        }
 
         foreach (var credential in credentials)
         {
             try { credential.Secret = secrets.Read(credential.Id); }
             catch (SecretStoreException) { credential.Secret = null; }
+            if (credential.AuthKind == "openaiOAuth" && credential.HasSecret)
+            {
+                var tokens = OpenAiTokens.Decode(credential.Secret!);
+                if (tokens.IsDynamicRegistration)
+                    credential.OpenAiRegistration ??= OpenAiRegistration.FromTokens(tokens);
+            }
         }
 
         return credentials;
     }
 
     /// <summary>
-    /// Persists the credential list (secrets excluded) and writes each secret to the secret store.
+    /// Persists the credential list (secrets excluded) and optionally writes non-plan secrets to the secret store.
     ///
     /// A credential with no secret is <b>kept in the list</b> rather than dropped: on a platform with no secret
     /// store the metadata still round-trips, so the UI can explain what is missing instead
@@ -42,12 +76,36 @@ public sealed class CredentialStore(string root, ISecretStore secrets)
     /// </summary>
     public void Save(IReadOnlyList<ProviderCredential> credentials, bool writeSecrets = true)
     {
-        foreach (var credential in credentials.Where(credential => writeSecrets && credential.HasSecret))
+        using var gate = MetadataMutex();
+        Acquire(gate);
+        try
         {
-            lock (credential) secrets.Write(credential.Id, credential.Secret!);
+            var latest = StateStore.ReadJson<List<ProviderCredential>>(CredentialPath) ?? [];
+            var remote = Snapshot(latest);
+            var baseline = _baseline ?? remote;
+            var local = Snapshot(credentials);
+            foreach (var id in baseline.Keys.Union(local.Keys))
+            {
+                baseline.TryGetValue(id, out var before);
+                local.TryGetValue(id, out var after);
+                remote.TryGetValue(id, out var other);
+                if (before == after) continue;
+                if (other != before && other != after)
+                    throw new InvalidOperationException("Credential metadata changed in another process. Reload before retrying.");
+                latest.RemoveAll(item => item.Id == id);
+                if (after is not null) latest.Add(credentials.First(item => item.Id == id));
+            }
+            foreach (var credential in credentials.Where(credential => writeSecrets && credential.HasSecret
+                && (credential.AuthKind != "openaiOAuth" || credential.OpenAiRegistration is null)))
+            {
+                lock (credential) secrets.Write(credential.Id, credential.Secret!);
+            }
+            // Plan secrets are written only by their credential-locked lifecycle, never by a stale metadata save.
+            StateStore.WriteJson(CredentialPath, latest);
+            // Track what this instance saw, not remote additions it has not loaded.
+            _baseline = Snapshot(credentials);
         }
-
-        StateStore.WriteJson(CredentialPath, credentials);
+        finally { gate.ReleaseMutex(); }
     }
 
     /// <summary>

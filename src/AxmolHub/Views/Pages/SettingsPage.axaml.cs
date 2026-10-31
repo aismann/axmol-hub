@@ -1435,6 +1435,26 @@ public partial class SettingsPage : UserControl
             Margin = new Thickness(0, 2),
         });
 
+        if (provider.Id == "openai" && _chat is not null)
+        {
+            var saved = _chat.Credentials.Where(credential => credential.ProviderId == provider.Id && (credential.HasSecret || credential.OpenAiRegistration is not null)).ToArray();
+            if (saved.Length > 1 || (saved.Length > 0 && provider.Credential is null))
+            {
+                var picker = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+                foreach (var credential in saved)
+                    picker.Items.Add(new ComboBoxItem { Content = credential.Label, Tag = credential.Id });
+                picker.SelectedIndex = Array.FindIndex(saved, credential => credential.Id == provider.Credential?.Id);
+                picker.SelectionChanged += async (_, _) =>
+                {
+                    if (picker.SelectedItem is ComboBoxItem { Tag: string id } && _chat.SelectCredential(provider.Id, id))
+                    {
+                        RebuildProviderGroups();
+                        if (provider.IsOpenAiPlan && provider.IsCallReady) await RefreshModelsAsync(provider);
+                    }
+                };
+                content.Children.Add(BuildField(HubStrings.Get("OpenAiSavedAccounts"), picker));
+            }
+        }
         // The model section is present in both states; only the edit form is gated on the draft.
         content.Children.Add(BuildModelSection(provider));
 
@@ -1527,7 +1547,36 @@ public partial class SettingsPage : UserControl
                 else await AuthenticateProviderAsync(provider);
             };
             actions.Children.Add(auth);
-
+            if (provider.IsOpenAiOAuth && provider.Credential?.Secret is not null && !linked)
+            {
+                var clear = new Button { Content = HubStrings.Get("DisconnectProvider"), Classes = { "quiet" },
+                    FontSize = 11, Padding = new Thickness(8, 3), VerticalAlignment = VerticalAlignment.Center };
+                clear.Click += async (_, _) => await DisconnectProviderAsync(provider);
+                actions.Children.Add(clear);
+            }
+            if (provider.IsOpenAiPlan && provider.Credential is { } planCredential)
+            {
+                var resume = new Button { Content = HubStrings.Get("OpenAiResumePlan"), Classes = { "quiet" },
+                    FontSize = 11, Padding = new Thickness(8, 3), VerticalAlignment = VerticalAlignment.Center };
+                resume.Click += (_, _) => { planCredential.PlanUsagePaused = false; resume.IsVisible = false; };
+                resume.IsVisible = planCredential.PlanUsagePaused;
+                actions.Children.Add(resume);
+                actions.AttachedToVisualTree += (_, _) => resume.IsVisible = planCredential.PlanUsagePaused;
+            }
+            if (provider.IsOpenAiPlan && linked && !OpenAiTokens.Decode(provider.Credential!.Secret!).HasPlanUsage)
+            {
+                var enable = new Button { Content = HubStrings.Get("OpenAiEnablePlan"), Classes = { "quiet" },
+                    FontSize = 11, Padding = new Thickness(8, 3), VerticalAlignment = VerticalAlignment.Center };
+                enable.Click += async (_, _) => await SignInAsync(provider, enable);
+                actions.Children.Add(enable);
+            }
+            if (provider.Id == "openai" && linked)
+            {
+                var addAccount = new Button { Content = HubStrings.Get("OpenAiAddAccount"), Classes = { "quiet" },
+                    FontSize = 11, Padding = new Thickness(8, 3), VerticalAlignment = VerticalAlignment.Center };
+                addAccount.Click += async (_, _) => await SignInAsync(provider, addAccount, addOpenAiAccount: true);
+                actions.Children.Add(addAccount);
+            }
         }
 
         var reveal = new StackPanel
@@ -1727,6 +1776,7 @@ public partial class SettingsPage : UserControl
         {
             Text = HubStrings.Get(
                 keyless ? "ProviderKeylessReady"
+                    : provider.NeedsOpenAiRelogin ? "OpenAiLegacyRelogin"
                     : linked ? "ProviderConnected"
                     : "ProviderNotConnected"),
             FontSize = 11,
@@ -1869,7 +1919,7 @@ public partial class SettingsPage : UserControl
     /// conversation disagree — the row said connected, the send answered "authenticate first".</para>
     /// </summary>
     private bool IsLinked(ModelProvider provider)
-        => _chat?.CredentialFor(provider.Id)?.HasSecret == true;
+        => !provider.NeedsOpenAiRelogin && _chat?.CredentialFor(provider.Id)?.HasSecret == true;
 
     /// <summary>Opens the edit draft for a provider, replacing its collapsed header. Any model draft goes
     /// away with it: one draft at a time is what makes the page-wide flags readable, and Cancel/Save close
@@ -2724,7 +2774,7 @@ public partial class SettingsPage : UserControl
         }
     }
 
-    private async Task SignInAsync(ModelProvider provider, Button? button)
+    private async Task SignInAsync(ModelProvider provider, Button? button, bool addOpenAiAccount = false)
     {
         if (_chat is null || !provider.SupportsOAuth || OpenAiLoginLayer.IsVisible) return;
 
@@ -2782,7 +2832,7 @@ public partial class SettingsPage : UserControl
             {
                 OpenAiLoginHost.Content = new OpenAiLoginCard(attempt, () => openAiCancellation.Cancel());
                 OpenAiLoginLayer.IsVisible = true;
-            });
+            }, addOpenAiAccount);
 
             OpenAiLoginLayer.IsVisible = false;
             OpenAiLoginHost.Content = null;
@@ -2814,6 +2864,22 @@ public partial class SettingsPage : UserControl
                 return;
             }
 
+            if (provider.IsOpenAiPlan && result.Credential?.Secret is { } planSecret)
+            {
+                if (!OpenAiTokens.Decode(planSecret).HasPlanUsage)
+                {
+                    SetProviderStatus(true, HubStrings.Get("OpenAiPlanNotGranted"));
+                    RebuildProviderGroups();
+                    return;
+                }
+                if (!provider.OpenAiPlanWelcomeAcknowledged && Owner() is { } welcomeOwner)
+                {
+                    await HubDialog.ShowAsync(welcomeOwner, HubStrings.Get("OpenAiPlanWelcomeTitle"),
+                        HubStrings.Get("OpenAiPlanWelcome"), HubDialogButtons.Ok);
+                    provider.OpenAiPlanWelcomeAcknowledged = true;
+                    _chat.SaveProviders();
+                }
+            }
             SetProviderStatus(false, HubStrings.Get("AuthOAuthSucceeded"));
 
             _chat?.SetPreferredAuthMethod(provider.Id, ProviderAuthMethods.OAuth);
@@ -2904,6 +2970,11 @@ public partial class SettingsPage : UserControl
         // The header only offers this for a provider that may be removed, so this is a guard rather than the
         // rule; the rule itself lives in ChatWorkspace so the two cannot drift.
         if (!ChatWorkspace.CanRemoveProvider(provider)) return;
+        if (_chat.HasPlanCredentials(provider.Id))
+        {
+            SetProviderStatus(true, HubStrings.Get("OpenAiPlanSignOutFirst"));
+            return;
+        }
 
         if (Owner() is { } owner)
         {
@@ -2930,20 +3001,39 @@ public partial class SettingsPage : UserControl
     private async Task DisconnectProviderAsync(ModelProvider provider)
     {
         if (_chat is null) return;
+        if (!provider.IsOpenAiOAuth && _chat.HasPlanCredentials(provider.Id))
+        {
+            SetProviderStatus(true, HubStrings.Get("OpenAiPlanSignOutFirst"));
+            return;
+        }
 
         if (Owner() is { } owner)
         {
             var confirmed = await HubDialog.ShowAsync(
                 owner,
                 HubStrings.Get("DisconnectProvider"),
-                provider.Name + "\n\n" + HubStrings.Get("DisconnectProviderConfirm"),
+                provider.Name + "\n\n" + HubStrings.Get(provider.IsOpenAiPlan ? "OpenAiPlanDisconnectConfirm" : "DisconnectProviderConfirm"),
                 HubDialogButtons.OkCancel);
             if (confirmed != HubDialogResult.Ok) return;
         }
 
-        SetProviderStatus(false, _chat.DisconnectProvider(provider.Id)
-            ? HubStrings.Get("ProviderDisconnected")
-            : HubStrings.Get("ProviderNothingToDisconnect"));
+        if (provider.IsOpenAiPlan || (provider.IsOpenAiOAuth && provider.Credential?.HasSecret != true))
+        {
+            try
+            {
+                var (removed, revoked) = await _chat.DisconnectOpenAiPlanAsync();
+                SetProviderStatus(removed && !revoked, HubStrings.Get(!removed ? "ProviderNothingToDisconnect"
+                    : revoked ? "ProviderDisconnected" : "OpenAiPlanRevokeUnconfirmed"));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+            {
+                SetProviderStatus(true, ex.Message);
+            }
+        }
+        else
+            SetProviderStatus(false, _chat.DisconnectProvider(provider.Id)
+                ? HubStrings.Get("ProviderDisconnected")
+                : HubStrings.Get("ProviderNothingToDisconnect"));
         RebuildProviderGroups();
     }
 
