@@ -421,7 +421,7 @@ public sealed partial class ChatWorkspace : IDisposable
     /// <para><paramref name = "onManualUrl"/> exposes the link when a browser cannot be opened. OpenAI also
     /// reports the pending attempt so the caller can accept a manually pasted callback URL.</para>
     /// </summary>
-    public Task<OAuthSignInOutcome?> SignInWithOAuthAsync(string providerId, Action<string>? onManualUrl = null, CancellationToken cancellationToken = default, IProgress<DeviceCodeChallenge>? deviceProgress = null, Action<IOpenAiLoginAttempt>? openAiProgress = null, bool addOpenAiAccount = false) => _providers.SignInWithOAuthAsync(providerId, onManualUrl, cancellationToken, deviceProgress, openAiProgress, addOpenAiAccount);
+    public Task<OAuthSignInOutcome?> SignInWithOAuthAsync(string providerId, Action<string>? onManualUrl = null, CancellationToken cancellationToken = default, IProgress<DeviceCodeChallenge>? deviceProgress = null, Action<IOpenAiLoginAttempt>? openAiProgress = null) => _providers.SignInWithOAuthAsync(providerId, onManualUrl, cancellationToken, deviceProgress, openAiProgress);
 
     /// <summary>
     /// Opens a URL in the default browser on all three platforms; elsewhere the caller falls back to showing the
@@ -533,7 +533,6 @@ public sealed partial class ChatWorkspace : IDisposable
     /// </summary>
     public bool DisconnectProvider(string providerId) => _providers.DisconnectProvider(providerId);
     public bool HasPlanCredentials(string providerId) => _providers.HasPlanCredentials(providerId);
-    public bool SelectCredential(string providerId, string credentialId) => _providers.SelectCredential(providerId, credentialId);
     internal Task<ProviderCredential> SavePlanCredentialForCheckAsync(ModelProvider provider, ProviderCredential? selected,
         OpenAiTokens? previous, string? observedSecret, OpenAiTokens tokens)
         => _providers.SavePlanCredentialAsync(provider, selected, previous, observedSecret, tokens, default);

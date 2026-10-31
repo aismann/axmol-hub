@@ -1435,26 +1435,6 @@ public partial class SettingsPage : UserControl
             Margin = new Thickness(0, 2),
         });
 
-        if (provider.Id == "openai" && _chat is not null)
-        {
-            var saved = _chat.Credentials.Where(credential => credential.ProviderId == provider.Id && (credential.HasSecret || credential.OpenAiRegistration is not null)).ToArray();
-            if (saved.Length > 1 || (saved.Length > 0 && provider.Credential is null))
-            {
-                var picker = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
-                foreach (var credential in saved)
-                    picker.Items.Add(new ComboBoxItem { Content = credential.Label, Tag = credential.Id });
-                picker.SelectedIndex = Array.FindIndex(saved, credential => credential.Id == provider.Credential?.Id);
-                picker.SelectionChanged += async (_, _) =>
-                {
-                    if (picker.SelectedItem is ComboBoxItem { Tag: string id } && _chat.SelectCredential(provider.Id, id))
-                    {
-                        RebuildProviderGroups();
-                        if (provider.IsOpenAiPlan && provider.IsCallReady) await RefreshModelsAsync(provider);
-                    }
-                };
-                content.Children.Add(BuildField(HubStrings.Get("OpenAiSavedAccounts"), picker));
-            }
-        }
         // The model section is present in both states; only the edit form is gated on the draft.
         content.Children.Add(BuildModelSection(provider));
 
@@ -1569,13 +1549,6 @@ public partial class SettingsPage : UserControl
                     FontSize = 11, Padding = new Thickness(8, 3), VerticalAlignment = VerticalAlignment.Center };
                 enable.Click += async (_, _) => await SignInAsync(provider, enable);
                 actions.Children.Add(enable);
-            }
-            if (provider.Id == "openai" && linked)
-            {
-                var addAccount = new Button { Content = HubStrings.Get("OpenAiAddAccount"), Classes = { "quiet" },
-                    FontSize = 11, Padding = new Thickness(8, 3), VerticalAlignment = VerticalAlignment.Center };
-                addAccount.Click += async (_, _) => await SignInAsync(provider, addAccount, addOpenAiAccount: true);
-                actions.Children.Add(addAccount);
             }
         }
 
@@ -2774,7 +2747,7 @@ public partial class SettingsPage : UserControl
         }
     }
 
-    private async Task SignInAsync(ModelProvider provider, Button? button, bool addOpenAiAccount = false)
+    private async Task SignInAsync(ModelProvider provider, Button? button)
     {
         if (_chat is null || !provider.SupportsOAuth || OpenAiLoginLayer.IsVisible) return;
 
@@ -2832,7 +2805,7 @@ public partial class SettingsPage : UserControl
             {
                 OpenAiLoginHost.Content = new OpenAiLoginCard(attempt, () => openAiCancellation.Cancel());
                 OpenAiLoginLayer.IsVisible = true;
-            }, addOpenAiAccount);
+            });
 
             OpenAiLoginLayer.IsVisible = false;
             OpenAiLoginHost.Content = null;

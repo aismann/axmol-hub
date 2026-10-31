@@ -239,8 +239,9 @@ internal sealed partial class ChatProviderCoordinator
 
         foreach (var provider in _providerList)
         {
-            // Keep every saved credential intact even when an older installation stored several.
-            // Until account selection is available, continue using the oldest as before.
+            // Keep every saved credential intact even when an older installation stored several; the oldest is the
+            // one this provider answers with, and removing it leaves the provider signed out rather than
+            // silently adopting a sibling row.
             var owned = _credentialList.Where(credential => credential.ProviderId == provider.Id).ToList();
             provider.Credential = provider.SelectedCredentialId is { } selected
                 ? owned.FirstOrDefault(credential => credential.Id == selected)
@@ -256,26 +257,15 @@ internal sealed partial class ChatProviderCoordinator
         => _credentialList.Any(credential => credential.ProviderId == providerId
             && credential.Secret is not null && IsPlanCredential(credential));
 
-    internal bool SelectCredential(string providerId, string credentialId)
-    {
-        var provider = _providerList.FirstOrDefault(candidate => candidate.Id == providerId);
-        var credential = _credentialList.FirstOrDefault(candidate => candidate.ProviderId == providerId && candidate.Id == credentialId);
-        if (provider is null || credential is null || (!credential.HasSecret && credential.OpenAiRegistration is null)) return false;
-        provider.Credential = credential;
-        provider.SelectedCredentialId = credential.Id;
-        BindOpenAiTokens(provider);
-        _providers.Save(_providerList);
-        Execution.Changed?.Invoke();
-        return true;
-    }
-
     internal ProviderCredential? AddCredential(string providerId, string label, string? secret, string source)
     {
         if (_providerList.FirstOrDefault(candidate => candidate.Id == providerId) is not { } provider) return null;
         if (!string.IsNullOrEmpty(secret) && !CanStoreSecrets) return null;
         if (provider.RequiresCredential && string.IsNullOrEmpty(secret)) return null;
 
-        var existing = provider.IsOpenAiPlan ? null : CredentialFor(providerId);
+        // One credential per provider, so a key replaces whatever it already held — including a ChatGPT plan
+        // registration, whose fields are cleared here rather than left behind on a record that now speaks apiKey.
+        var existing = CredentialFor(providerId);
         if (existing is not null)
         {
             lock (existing)
@@ -285,6 +275,8 @@ internal sealed partial class ChatProviderCoordinator
                 existing.AuthKind = "apiKey";
                 existing.AccountId = null;
                 existing.Scope = null;
+                existing.OpenAiRegistration = null;
+                existing.PlanUsagePaused = false;
                 existing.Source = source;
                 if (label.Trim().Length > 0) existing.Label = label.Trim();
                 BindOpenAiTokens(provider);
@@ -715,7 +707,7 @@ internal sealed partial class ChatProviderCoordinator
         Action<string>? onManualUrl = null,
         CancellationToken cancellationToken = default,
         IProgress<DeviceCodeChallenge>? deviceProgress = null,
-        Action<IOpenAiLoginAttempt>? openAiProgress = null, bool addOpenAiAccount = false)
+        Action<IOpenAiLoginAttempt>? openAiProgress = null)
     {
         if (!CanStoreSecrets) return null;
 
@@ -744,10 +736,11 @@ internal sealed partial class ChatProviderCoordinator
             {
                 var selected = provider.Credential;
                 var observedSecret = selected?.Secret;
-                var previous = !addOpenAiAccount && provider.IsOpenAiPlan
-                    ? selected?.HasSecret == true ? OpenAiTokens.Decode(observedSecret!)
-                        : selected?.OpenAiRegistration?.AuthorizationContext()
-                    : null;
+                // A provider owns one credential, so this sign-in resumes the registration the current one carries
+                // instead of registering another host; a first sign-in has nothing to resume and starts clean.
+                var previous = !provider.IsOpenAiPlan ? null
+                    : selected?.HasSecret == true ? OpenAiTokens.Decode(observedSecret!)
+                    : selected?.OpenAiRegistration?.AuthorizationContext();
                 var hostId = previous?.HostId ?? new OpenAiHostIdStore(_dataRoot).GetOrCreate();
                 var tokens = await new OpenAiDynamicLogin(OpenAiDynamicTokenExchange.Create()).SignInAsync(
                     hostId, previous, attempt => openAiProgress?.Invoke(attempt), url => { BrowserOpener(url); }, cancellationToken);

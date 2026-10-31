@@ -561,18 +561,11 @@ internal sealed class ShellProvidersChecks
             Check(selected?.Id == older.Id && savedCredentials.Count == 2
                 && savedCredentials.Any(credential => credential.Id == newer.Id && credential.Secret == "fixture-new")
                 && savedCredentials.Any(credential => credential.Id == older.Id && credential.Secret == "fixture-old"),
-                "启动保留历史多账号凭据和密钥，并继续选用最早凭据");
-        }
-        using (var switcher = new ChatWorkspace(retainedRoot))
-            Check(switcher.SelectCredential("openai", newer.Id) && !switcher.SelectCredential("deepseek", older.Id),
-                "可以切换已保存的账号，但不能选用其他提供商的凭据");
-        using (var selectedAgain = new ChatWorkspace(retainedRoot))
-        {
-            Check(selectedAgain.CredentialFor("openai")?.Id == newer.Id && selectedAgain.RemoveCredential(newer.Id),
-                "切换后的账号在重启后保持选中，并可单独移除");
+                "启动保留旧版遗留的多条凭据与密钥，并选中最早的一条");
         }
         using (var signedOut = new ChatWorkspace(retainedRoot))
-            Check(signedOut.CredentialFor("openai") is null && retainedStore.Load().Any(credential => credential.Id == older.Id && credential.Secret == "fixture-old"),
+            Check(signedOut.RemoveCredential(older.Id) && signedOut.CredentialFor("openai") is null
+                && retainedStore.Load().Any(credential => credential.Id == newer.Id && credential.Secret == "fixture-new"),
                 "移除选中账号后不自动登录其他保存的账号，其他密钥仍在");
         retainedSecrets.Delete(older.Id);
         retainedSecrets.Delete(newer.Id);
