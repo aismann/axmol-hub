@@ -77,18 +77,18 @@ internal sealed class ShellAssistantChecks
             "Shell check local", "http://localhost:11434/v1", checkModel, null, out _);
         Check(checkProvider is not null, "自检创建了免密本地模型 provider");
         panel.Reload();
-        shell.Chat.SelectReasoningEffort(ChatReasoningEfforts.Default);
         Check(panel.ModelChoiceCount == 1,
             "模型选择器排除未鉴权 provider，只列出可用模型（实际 " + panel.ModelChoiceCount + " 项）");
         // Models without declared capabilities expose the conservative three-tier try ladder.
-        // The fallback is not persisted as model metadata; selecting a tier remains an explicit user action.
+        // The fallback picks a concrete session tier without inventing model capability metadata.
         Check(panel.SelectModelForCheck(checkProvider!.Id, checkModel)
               && panel.SelectedModelText.Contains(checkModel, StringComparison.Ordinal)
               && panel.SelectedModelReasoningEffortsForCheck.SequenceEqual(
                   [ChatReasoningEfforts.Low, ChatReasoningEfforts.Medium, ChatReasoningEfforts.High])
               && ModelCatalog.EffortsFor(checkProvider, checkModel).Count == 0
-              && panel.ReasoningChipTextForCheck.Length == 0,
-            "未知模型显示 Low/Medium/High 三档，但不伪造模型元数据或未选择档位");
+              && panel.SelectedReasoningForCheck == ChatReasoningEfforts.Medium
+              && panel.ReasoningChipTextForCheck == HubStrings.Get("ChatEffortMedium"),
+            "未知模型提供三档并选中明确的中档，不伪造模型能力元数据");
         checkProvider.ReasoningModels[checkModel] = new AiModelReasoning
         {
             Efforts = [ChatReasoningEfforts.Low, ChatReasoningEfforts.High],
@@ -99,12 +99,9 @@ internal sealed class ShellAssistantChecks
                   .SequenceEqual([ChatReasoningEfforts.Low, ChatReasoningEfforts.High]),
             "滑块直接展示模型明确声明的低/高档位（实际 "
             + string.Join("/", panel.SelectedModelReasoningEffortsForCheck) + "）");
-        // 「自动」 now means Hub routing a request by task complexity, and the gateway has its own model id of
-        // that name. A tier is something the person picked, so a session that never picked one prints nothing at
-        // all rather than naming a default Hub invented for it — the request then goes out with no tier.
-        Check(panel.ReasoningChipTextForCheck.Length == 0
-              && panel.SelectedReasoningForCheck == ChatReasoningEfforts.Default,
-            "没手选过档位时芯片不写任何档位（「默认」不再是一档，也不替人念它）（实际「"
+        Check(panel.ReasoningChipTextForCheck == HubStrings.Get("ChatEffortHigh")
+              && panel.SelectedReasoningForCheck == ChatReasoningEfforts.High,
+            "模型仅有低高两档时选中明确的高档，而不是不存在的中档（实际「"
             + panel.ReasoningChipTextForCheck + "」）");
 
         // ── Auto routing: the per-session switch, the chip wording, and that a manual pick can take over ──
@@ -118,14 +115,14 @@ internal sealed class ShellAssistantChecks
               && shell.Chat.ActiveRouting == ChatRouting.Auto,
             "会话可以打开自动路由（Routing 落在会话上而不是全局）");
         panel.Reload();
-        Check(panel.ReasoningChipTextForCheck == HubStrings.Get("ChatRoutingAutoChip"),
-            "开路由后芯片读「自动路由」而不是某个档位（实际「" + panel.ReasoningChipTextForCheck + "」）");
+        Check(panel.ReasoningChipTextForCheck == HubStrings.Get("ChatEffortHigh"),
+            "开启自动推理时芯片仍显示明确档位（实际「" + panel.ReasoningChipTextForCheck + "」）");
         Check(shell.Chat.SelectReasoningEffort(ChatReasoningEfforts.Low)
               && shell.Chat.RoutingFor(routeSession.Id) == ChatRouting.Manual,
             "手选一档，本会话立刻退出自动路由——被悄悄覆盖的手选不算手选");
         panel.Reload();
-        Check(panel.ReasoningChipTextForCheck != HubStrings.Get("ChatRoutingAutoChip"),
-            "退出路由后芯片回到档位本身（实际「" + panel.ReasoningChipTextForCheck + "」）");
+        Check(panel.ReasoningChipTextForCheck == HubStrings.Get("ChatEffortLow"),
+            "手动选择后芯片显示明确的低档（实际「" + panel.ReasoningChipTextForCheck + "」）");
         shell.Chat.SetRouting(routeSession.Id, ChatRouting.Auto);
         Check(shell.Chat.SetRouting(routeSession.Id, "不认识的值")
               && shell.Chat.RoutingFor(routeSession.Id) == ChatRouting.Manual,
@@ -2194,7 +2191,8 @@ internal sealed class ShellAssistantChecks
         };
         var routedSession = shell.Chat.StartConversation(routeProvider.Id);
         shell.Chat.SelectChatModel(routeProvider.Id, checkModel);
-        shell.Chat.ClientOverride = (_, _) => new ScriptedChatClient(["路由回答"]);
+        ScriptedChatClient? routedClient = null;
+        shell.Chat.ClientOverride = (_, _) => routedClient = new ScriptedChatClient(["路由回答"]);
         panel.Reload();
         shell.UpdateLayout();
         Dispatcher.UIThread.RunJobs();
@@ -2208,17 +2206,32 @@ internal sealed class ShellAssistantChecks
         var tookRoute = shell.Chat.LastRouteFor(routedSession.Id);
         Check(routingOn && tookRoute is not null
               && tookRoute.Value.Effort is ChatReasoningEfforts.Low or ChatReasoningEfforts.High
-              && tookRoute.Value.Reason.Length > 0,
-            "自动路由把档位降到这个模型收得下的那一档，并留下可读的原因（实际「" + tookRoute?.Effort
-            + "」，开关 " + routingOn + "，可用模型 " + shell.Chat.AvailableChatModels.Count
-            + "，活动会话 " + (shell.Chat.ActiveConversation?.Id == routedSession.Id) + "）");
+              && tookRoute.Value.Reason.Length > 0
+              && string.Equals(routedClient?.LastOptions?.Reasoning?.Effort.ToString(), tookRoute.Value.Effort,
+                  StringComparison.OrdinalIgnoreCase)
+              && panel.ReasoningChipTextForCheck == panel.ReasoningChipLabelForCheck(tookRoute.Value.Effort)
+              && shell.Chat.StoredCopyForCheck(routedSession.Id)?.ReasoningEffort == tookRoute.Value.Effort
+              && shell.Chat.ActiveConversation?.Messages.LastOrDefault(turn => turn.Role == ChatRoles.Assistant)
+                  ?.RunReasoningEffort == tookRoute.Value.Effort,
+            "自动推导后芯片显示本次实际选择的明确档位（实际「" + tookRoute?.Effort
+            + "」，显示「" + panel.ReasoningChipTextForCheck + "」）");
         Check(routeAudits.Count(line => line.Contains("Auto route:", StringComparison.Ordinal)) == 1
               && routeAudits.Any(line => line.Contains(tookRoute?.Effort ?? "\n", StringComparison.Ordinal)),
             "按路由发出的那次请求恰好留一行审计，写的就是实际生效的档位（实际 " + routeAudits.Count(line =>
                 line.Contains("Auto route:", StringComparison.Ordinal)) + " 行）");
         shell.Chat.SetRouting(routedSession.Id, ChatRouting.Manual);
-        Check(shell.Chat.LastRouteFor(routedSession.Id) is null,
-            "切回手动后那次路由的读数不再冒充现状");
+        shell.Chat.SelectReasoningEffort(ChatReasoningEfforts.Low);
+        ScriptedChatClient? manualClient = null;
+        shell.Chat.ClientOverride = (_, _) => manualClient = new ScriptedChatClient(["手动请求已答"]);
+        panel.Reload();
+        await panel.SendForCheckAsync("手动低档请求");
+        shell.Chat.ClientOverride = null;
+        Check(shell.Chat.LastRouteFor(routedSession.Id) is null
+              && string.Equals(manualClient?.LastOptions?.Reasoning?.Effort.ToString(), ChatReasoningEfforts.Low,
+                  StringComparison.OrdinalIgnoreCase)
+              && shell.Chat.StoredCopyForCheck(routedSession.Id)?.ReasoningEffort == ChatReasoningEfforts.Low
+              && panel.ReasoningChipTextForCheck == panel.ReasoningChipLabelForCheck(ChatReasoningEfforts.Low),
+            "切回手动后实际请求、落盘与芯片都为低档，不再冒充上次自动路由的档位");
 
         // ── A manual session that names a model its provider no longer offers ──
         // Every auto route writes a line; a manual session being moved onto another model was the one silent model

@@ -36,7 +36,15 @@ internal sealed partial class ChatSessionCoordinator
     internal Conversation? ActiveConversation => _active;
     internal string ActiveMode => _active is null ? _selectedMode : NormalizeMode(_active.Mode);
     internal string ActiveReasoningEffort
-        => ChatReasoningEfforts.Normalize(_active?.ReasoningEffort ?? _selectedReasoningEffort);
+    {
+        get
+        {
+            var stored = _active?.ReasoningEffort ?? _selectedReasoningEffort;
+            return Providers.SelectedChatModel is { } choice
+                ? ModelCatalog.ResolveReasoningEffort(choice.Provider, choice.ModelName, stored)
+                : ChatReasoningEfforts.Normalize(stored);
+        }
+    }
     internal bool SupportsReasoningEffort
         => Providers.SelectedChatModel is { } choice && ModelCatalog.SupportsReasoningEffort(choice.Provider, choice.ModelName);
     internal IReadOnlyList<ConversationSummary> Conversations
@@ -92,32 +100,30 @@ internal sealed partial class ChatSessionCoordinator
 
     internal string SelectModelReasoningEffort(ChatModelOption choice)
     {
-        var current = ActiveReasoningEffort;
-        var efforts = ModelCatalog.SelectableReasoningEfforts(choice.Provider, choice.ModelName);
-        if (current == ChatReasoningEfforts.Default
-            || efforts.Contains(current, StringComparer.OrdinalIgnoreCase))
-            return _selectedReasoningEffort = current;
+        return _selectedReasoningEffort = ModelCatalog.ResolveReasoningEffort(
+            choice.Provider, choice.ModelName, ActiveReasoningEffort);
+    }
 
-        // A tier belongs to the model's ladder. Carry a compatible choice across a switch; otherwise use the
-        // new model's default, or the same middle tier the slider uses when no default was declared.
-        var effort = ModelCatalog.DefaultReasoningEffort(choice.Provider, choice.ModelName);
-        if (!efforts.Contains(effort, StringComparer.OrdinalIgnoreCase))
-            effort = efforts.Contains(ChatReasoningEfforts.Medium, StringComparer.OrdinalIgnoreCase)
-                ? ChatReasoningEfforts.Medium
-                : efforts.Count > 0 ? efforts[efforts.Count / 2] : ChatReasoningEfforts.Default;
-        return _selectedReasoningEffort = effort;
+    private void NormalizeSessionReasoningEffort(Conversation conversation)
+    {
+        var choice = Providers.ModelFor(conversation.Id);
+        var effort = choice is null
+            ? ChatReasoningEfforts.Normalize(conversation.ReasoningEffort)
+            : ModelCatalog.ResolveReasoningEffort(choice.Provider, choice.ModelName, conversation.ReasoningEffort);
+        _selectedReasoningEffort = effort;
+        if (!string.Equals(conversation.ReasoningEffort, effort, StringComparison.Ordinal))
+            _sessions.TryUpdate(conversation.Id, item => item.ReasoningEffort = effort);
     }
 
     internal bool SelectReasoningEffort(string effort)
     {
-        if (effort is not (ChatReasoningEfforts.Default or ChatReasoningEfforts.Low
-            or ChatReasoningEfforts.Medium or ChatReasoningEfforts.High or ChatReasoningEfforts.XHigh
+        if (effort is not (ChatReasoningEfforts.Low or ChatReasoningEfforts.Medium
+            or ChatReasoningEfforts.High or ChatReasoningEfforts.XHigh
             or ChatReasoningEfforts.Max or ChatReasoningEfforts.Ultra)) return false;
         // Choosing a tier is allowed unless this model refused that one; "the manifest never mentioned it" is
         // not a refusal, and treating it as one is what made the menu unreachable on the default gateway.
-        if (effort != ChatReasoningEfforts.Default
-            && (Providers.SelectedChatModel is not { } choice
-                || !ModelCatalog.MaySendEffort(choice.Provider, choice.ModelName, effort))) return false;
+        if (Providers.SelectedChatModel is not { } choice
+            || !ModelCatalog.MaySendEffort(choice.Provider, choice.ModelName, effort)) return false;
         _selectedReasoningEffort = effort;
         if (_active is not null) _sessions.TryUpdate(_active.Id, conversation =>
         {
@@ -144,9 +150,9 @@ internal sealed partial class ChatSessionCoordinator
         }
         if (!_sessions.TryUpdate(conversationId, conversation => conversation.Routing = normalized))
             return false;
-        _selectedRouting = normalized;
         if (normalized == ChatRouting.Manual)
             Execution.ClearRoute(conversationId);
+        _selectedRouting = normalized;
         Execution.Changed?.Invoke();
         return true;
     }
@@ -411,11 +417,8 @@ internal sealed partial class ChatSessionCoordinator
         conversation.Mode = mode;
         _selectedMode = mode;
         _selectedModeExplicit = false;
-        var defaultEffort = ModelCatalog.DefaultReasoningEffort(selectedProvider, modelName);
-        conversation.ReasoningEffort = _selectedReasoningEffort != ChatReasoningEfforts.Default
-                                       && ModelCatalog.MaySendEffort(selectedProvider, modelName, _selectedReasoningEffort)
-            ? _selectedReasoningEffort
-            : defaultEffort;
+        conversation.ReasoningEffort = ModelCatalog.ResolveReasoningEffort(
+            selectedProvider, modelName, _selectedReasoningEffort);
         conversation.Routing = ChatRouting.Normalize(_selectedRouting);
         _selectedReasoningEffort = conversation.ReasoningEffort;
         conversation.ApprovalMode = approvalMode;
@@ -442,7 +445,7 @@ internal sealed partial class ChatSessionCoordinator
             ?? throw new InvalidOperationException("Conversation index listed an id that no longer exists.");
         _active = conversation;
         _selectedMode = NormalizeMode(conversation.Mode);
-        _selectedReasoningEffort = ChatReasoningEfforts.Normalize(conversation.ReasoningEffort);
+        NormalizeSessionReasoningEffort(conversation);
         _selectedRouting = ChatRouting.Normalize(conversation.Routing);
         Execution.Changed?.Invoke();
         return conversation;
@@ -504,6 +507,8 @@ internal sealed partial class ChatSessionCoordinator
         _selectedRouting = ChatRouting.Normalize(_active?.Routing);
         if (_active is { } opened)
         {
+            NormalizeSessionReasoningEffort(opened);
+            _selectedRouting = ChatRouting.Normalize(opened.Routing);
             // Asked before writing, because the write is not free: it replaces the whole session file, and for a
             // long conversation that file is the largest thing an open touches — larger than the read that just
             // happened, and entirely inside the open's own path. A card whose flag is already set has nothing to
@@ -785,7 +790,7 @@ internal sealed partial class ChatSessionCoordinator
         _sessions.Adopt(branch);
         _active = branch;
         _selectedMode = NormalizeMode(branch.Mode);
-        _selectedReasoningEffort = ChatReasoningEfforts.Normalize(branch.ReasoningEffort);
+        NormalizeSessionReasoningEffort(branch);
         _selectedRouting = ChatRouting.Normalize(branch.Routing);
         Execution.Changed?.Invoke();
         return branch;

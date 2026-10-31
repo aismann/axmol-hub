@@ -723,18 +723,17 @@ public partial class ChatPanel : UserControl
         SelectedModelLabel.Text = selected?.ModelName ?? HubStrings.Get("NoAvailableChatModels");
         var supportsReasoning = selected is not null
             && ModelCatalog.SupportsReasoningEffort(selected.Provider, selected.ModelName);
-        var hasExplicitEffort = _chat.ActiveReasoningEffort != ChatReasoningEfforts.Default;
-        SelectedReasoningLabel.IsVisible = supportsReasoning && hasExplicitEffort;
-        // With routing on there is no single tier to name — Hub picks one per request — so the chip says who is
-        // picking, and the tooltip carries the route this session last actually went out on. A setting that
-        // spends money has to be readable without opening a log file.
         var routed = supportsReasoning && _chat.ActiveRouting == ChatRouting.Auto;
-        SelectedReasoningLabel.Text = supportsReasoning
-            ? routed ? HubStrings.Get("ChatRoutingAutoChip") : ReasoningChoiceLabel(_chat.ActiveReasoningEffort)
-            : "";
-        ToolTip.SetTip(SelectedReasoningLabel, routed && _chat.ActiveConversation is { } session
-            && _chat.LastRouteFor(session.Id) is { } route
-            ? $"{route.Model} · {route.Effort} — {route.Reason}"
+        var route = routed && _chat.ActiveConversation is { } session
+            ? _chat.LastRouteFor(session.Id)
+            : null;
+        var displayedEffort = _chat.ActiveReasoningEffort;
+        SelectedReasoningLabel.IsVisible = supportsReasoning;
+        SelectedReasoningLabel.Text = supportsReasoning ? ReasoningChoiceLabel(displayedEffort) : "";
+        ToolTip.SetTip(SelectedReasoningLabel, routed
+            ? route is { } chosen
+                ? $"{chosen.Model} · {ReasoningEffortLabel(chosen.Effort)} — {chosen.Reason}"
+                : HubStrings.Get("ChatRoutingAuto")
             : null);
         ModelPicker.IsEnabled = choices.Length > 0;
         ToolTip.SetTip(ModelPicker, selected is null
@@ -770,12 +769,15 @@ public partial class ChatPanel : UserControl
         var efforts = selected is null
             ? Array.Empty<string>()
             : ModelCatalog.SelectableReasoningEfforts(selected.Provider, selected.ModelName).ToArray();
+        var routingAuto = _chat.ActiveRouting == ChatRouting.Auto;
         _updatingReasoningControls = true;
         try
         {
             AutoReasoningSwitch.IsEnabled = supportsReasoning;
-            AutoReasoningSwitch.IsChecked = _chat.ActiveRouting == ChatRouting.Auto;
-            ReasoningLevelSlider.IsEnabled = supportsReasoning && AutoReasoningSwitch.IsChecked != true;
+            AutoReasoningSwitch.IsChecked = routingAuto;
+            ReasoningLevelSlider.IsEnabled = supportsReasoning && !routingAuto;
+            ReasoningLevelSlider.IsVisible = supportsReasoning;
+            ReasoningEffortLabels.IsVisible = supportsReasoning;
             ReasoningLevelSlider.Minimum = 0;
             ReasoningLevelSlider.Maximum = Math.Max(0, efforts.Length - 1);
             ReasoningLevelSlider.TickFrequency = 1;
@@ -802,18 +804,18 @@ public partial class ChatPanel : UserControl
         {
             _updatingReasoningControls = false;
         }
-        if (supportsReasoning)
+        if (!supportsReasoning)
+        {
+            ReasoningLevelLabel.Text = HubStrings.Get("ChatReasoningUnavailable");
+            ToolTip.SetTip(ReasoningLevelSlider, null);
+        }
+        else
         {
             var level = (int)Math.Round(ReasoningLevelSlider.Value);
             var actual = efforts[level];
             ReasoningLevelLabel.Text = HubStrings.Get("ChatReasoningLevelFormat").Replace("{0}",
                 ReasoningEffortLabel(actual));
             ToolTip.SetTip(ReasoningLevelSlider, actual);
-        }
-        else
-        {
-            ReasoningLevelLabel.Text = HubStrings.Get("ChatReasoningUnavailable");
-            ToolTip.SetTip(ReasoningLevelSlider, null);
         }
         ModelSettingsSelectedModel.Text = selected is null
             ? HubStrings.Get("NoAvailableChatModels")

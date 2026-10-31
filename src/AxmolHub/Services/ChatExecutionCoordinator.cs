@@ -3271,9 +3271,8 @@ internal sealed partial class ChatExecutionCoordinator
         var mode = NormalizeMode(conversation.Mode);
         var history = MaterializePlans(conversation.Messages.Skip(SummaryMessageCount(conversation)));
         var modelName = choice.ModelName;
-        var reasoning = ModelCatalog.SupportsReasoningEffort(choice.Provider, modelName, conversation.ReasoningEffort)
-            ? ChatReasoningEfforts.Normalize(conversation.ReasoningEffort)
-            : null;
+        var effort = ModelCatalog.ResolveReasoningEffort(choice.Provider, modelName, conversation.ReasoningEffort);
+        string? reasoning = effort == ChatReasoningEfforts.Default ? null : effort;
 
         if (ChatRouting.Normalize(conversation.Routing) == ChatRouting.Auto)
         {
@@ -3289,17 +3288,19 @@ internal sealed partial class ChatExecutionCoordinator
                 null,
                 null));
             reasoning = ReachableTier(choice.Provider, modelName, decision.ReasoningEffort);
-            // One line per decision, in the audit the user can open. A tier nobody can read back is a bill with
-            // no itemisation, and this is the half of routing that makes it reviewable.
             Audit(conversationId, $"Auto route: {modelName} · {reasoning ?? "the model's own default"} — {decision.Reason}");
             _routes[conversationId] = (modelName, reasoning ?? ChatReasoningEfforts.Default, decision.Reason);
         }
         else
         {
-            // A session that went back to manual stops reporting a route it no longer takes. Written and read on
-            // the UI thread only — this is request assembly, not a tool loop — so it needs no concurrent bag.
             _routes.Remove(conversationId);
         }
+
+        // Persist the resolved tier, including automatic decisions, so the composer, session and wire agree.
+        // Unsupported models retain the internal sentinel, never a fabricated visible tier.
+        var selectedEffort = reasoning ?? ChatReasoningEfforts.Default;
+        if (!string.Equals(conversation.ReasoningEffort, selectedEffort, StringComparison.Ordinal))
+            Sessions.Registry.TryUpdate(conversationId, opened => opened.ReasoningEffort = selectedEffort);
 
         // One scope per request: it is what the tools close over, and now also what the approval gate reads, so a
         // call's tier and a call's working directory are decided from the same value rather than two reads of the
@@ -3374,6 +3375,7 @@ internal sealed partial class ChatExecutionCoordinator
     private readonly Dictionary<string, (string Model, string Effort, string Reason)> _routes = new();
     internal (string Model, string Effort, string Reason)? LastRouteFor(string conversationId)
         => _routes.TryGetValue(conversationId, out var route) ? route : null;
+    internal void ClearRoute(string conversationId) => _routes.Remove(conversationId);
     internal void NoteRetryWait(ConversationRun run, int attempt, TimeSpan delay)
     {
         if (attempt == 0) run.EndRetryWait();
@@ -3902,7 +3904,6 @@ internal sealed partial class ChatExecutionCoordinator
         _wakeQueue.Remove(id);
     }
 
-    internal void ClearRoute(string conversationId) => _routes.Remove(conversationId);
 
 
     /// <summary>
@@ -4171,12 +4172,10 @@ internal sealed partial class ChatExecutionCoordinator
 
     private static string? ReachableTier(ModelProvider provider, string model, string effort)
     {
-        var hasEvidence = ModelCatalog.EffortsFor(provider, model).Count > 0;
+        var selectable = ModelCatalog.SelectableReasoningEfforts(provider, model);
         for (var candidate = effort; candidate is { Length: > 0 }; candidate = ModelRouting.StepDown(candidate))
-            if (ModelCatalog.SupportsReasoningEffort(provider, model, candidate)
-                || (!hasEvidence && ModelCatalog.MayTryUnreportedEfforts(provider, model)
-                    && ModelCatalog.MaySendEffort(provider, model, candidate))) return candidate;
-        return null;
+            if (selectable.Contains(candidate, StringComparer.OrdinalIgnoreCase)) return candidate;
+        return selectable.OrderBy(candidate => ModelRouting.Rank(candidate)).FirstOrDefault();
     }
     private static int StampRunElapsed(Conversation opened, TimeSpan elapsed,
         (string? Model, string? Effort) requestSelection)

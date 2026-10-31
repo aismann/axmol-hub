@@ -94,21 +94,37 @@ internal sealed class ShellModelSwitchChecks
                  {
                      (ChatReasoningEfforts.Max, ChatReasoningEfforts.Medium),
                      (ChatReasoningEfforts.High, ChatReasoningEfforts.High),
-                     (ChatReasoningEfforts.Default, ChatReasoningEfforts.Default),
+                     (ChatReasoningEfforts.Default, ChatReasoningEfforts.Medium),
                  })
         {
             var backToSource = panel.SelectModelForCheck(first.Id, sourceModel);
-            var tierAccepted = shell.Chat.SelectReasoningEffort(picked);
+            var tierAccepted = false;
+            if (picked == ChatReasoningEfforts.Default)
+            {
+                // Load an actual old-format session; Default is no longer a selectable user tier.
+                var legacy = new Conversation
+                {
+                    Id = Guid.NewGuid().ToString("N"), ProviderId = first.Id, ModelName = sourceModel,
+                    ReasoningEffort = ChatReasoningEfforts.Default,
+                };
+                new ConversationStore(shell.Workspace.Store.Root).Save(legacy);
+                shell.Chat.OpenConversation(legacy.Id);
+                sessionId = legacy.Id;
+                tierAccepted = shell.Chat.ActiveReasoningEffort == ChatReasoningEfforts.Max
+                    && shell.Chat.StoredCopyForCheck(legacy.Id)?.ReasoningEffort == ChatReasoningEfforts.Max;
+            }
+            else tierAccepted = shell.Chat.SelectReasoningEffort(picked);
             var switchToTarget = panel.SelectModelForCheck(second.Id, targetModel);
             var switched = backToSource && tierAccepted && switchToTarget;
             Relayout(shell, panel);
             var stored = shell.Chat.StoredCopyForCheck(sessionId)?.ReasoningEffort;
-            var slider = ToolTip.GetTip(panel.FindControl<Slider>("ReasoningLevelSlider")!)?.ToString();
-            var expectedSlider = expected == ChatReasoningEfforts.Default ? ChatReasoningEfforts.Medium : expected;
-            var expectedChip = expected == ChatReasoningEfforts.Default ? "" : panel.ReasoningChipLabelForCheck(expected);
+            var sliderControl = panel.FindControl<Slider>("ReasoningLevelSlider")!;
+            var slider = ToolTip.GetTip(sliderControl)?.ToString();
+            var expectedSlider = expected;
+            var expectedChip = panel.ReasoningChipLabelForCheck(expected);
             var selectedRight = panel.SelectedReasoningForCheck == expected;
             var storedRight = stored == expected;
-            var sliderRight = slider == expectedSlider;
+            var sliderRight = sliderControl.IsVisible && slider == expectedSlider;
             var chipRight = panel.ReasoningChipTextForCheck == expectedChip;
             consistent &= switched && selectedRight && storedRight && sliderRight && chipRight;
             observations.Add($"{picked} → 选 {panel.SelectedReasoningForCheck}/{expected} "

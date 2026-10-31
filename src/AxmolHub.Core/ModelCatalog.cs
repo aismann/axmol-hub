@@ -134,6 +134,21 @@ public static class ModelCatalog
             .Where(effort => MaySendEffort(provider, modelName, effort)).ToList();
     }
 
+    /// <summary>Resolves a stored preference to a concrete selectable tier. Legacy default values and obsolete
+    /// tiers use the model's declared default, then Medium, then its middle tier. Default remains only as an
+    /// internal sentinel when the model has no selectable reasoning tiers at all.</summary>
+    public static string ResolveReasoningEffort(ModelProvider? provider, string? modelName, string? preferred)
+    {
+        var efforts = SelectableReasoningEfforts(provider, modelName);
+        var normalized = ChatReasoningEfforts.Normalize(preferred);
+        if (efforts.Contains(normalized, StringComparer.OrdinalIgnoreCase)) return normalized;
+        var declared = DefaultReasoningEffort(provider, modelName);
+        if (efforts.Contains(declared, StringComparer.OrdinalIgnoreCase)) return declared;
+        if (efforts.Contains(ChatReasoningEfforts.Medium, StringComparer.OrdinalIgnoreCase))
+            return ChatReasoningEfforts.Medium;
+        return efforts.Count > 0 ? efforts[efforts.Count / 2] : ChatReasoningEfforts.Default;
+    }
+
     /// <summary>Known GPT model families have a documented selectable ladder even when the endpoint's model
     /// list omits capability metadata. Other unrecognized models use the conservative three-tier fallback.</summary>
     private static string[]? GptEffortsFor(string? modelName)
