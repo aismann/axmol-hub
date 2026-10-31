@@ -659,10 +659,7 @@ public partial class ChatSidebar : UserControl
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        // A pinned session now stays inside its own group, so the pin has to be readable on the row: sorting it
-        // to the front of the bucket is only a rule about order, and order is not visible until something else is
-        // in the way. A bookmark rather than a thumbtack — see Hub.Icon.Pin — and a Path rather than a glyph in
-        // the text: every reader of a row's title takes the first TextBlock it can find.
+        // Keep the pin immediately before the title so its meaning is clear without consuming trailing space.
         if (summary.Pinned) label.Children.Add(BuildPinBadge());
         label.Children.Add(titleBlock);
         var item = new Button
@@ -786,17 +783,14 @@ public partial class ChatSidebar : UserControl
         }
     }
 
-    /// <summary>
-    /// That a session is held at the front of its group on purpose. Accent-coloured like the other marks that
-    /// mean "this one", and docked right so the title keeps its full width.
-    /// </summary>
+    /// <summary>A pin before the title marks a session held at the front of its group.</summary>
     private static Control BuildPinBadge()
     {
         var badge = new StackPanel
         {
             Name = "PinBadge",
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(6, 0, 0, 0),
+            Margin = new Thickness(0, 0, 6, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
         var glyph = new Path { Width = 10, Height = 10, Stretch = Stretch.Uniform };
@@ -805,7 +799,6 @@ public partial class ChatSidebar : UserControl
         glyph.Data = GeometryAt("Hub.Icon.Pin");
         glyph.Bind(Shape.FillProperty, new DynamicResourceExtension("Hub.Accent"));
         badge.Children.Add(glyph);
-        DockPanel.SetDock(badge, Dock.Right);
         return badge;
     }
 
